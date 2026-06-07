@@ -692,23 +692,41 @@ def _apply_main_model_assignment(
 ) -> dict:
     """Apply a main-slot model assignment to a ``model`` config dict in place.
 
-    Sets ``provider``/``default``, then reconciles ``base_url``: custom/local
-    providers persist the supplied endpoint URL (the runtime resolver reads
-    ``model.base_url`` from config and ignores ``OPENAI_BASE_URL``), while every
-    other provider clears any stale URL so the resolver picks that provider's
-    own default endpoint. The hardcoded ``context_length`` override is always
-    dropped since the new model may have a different context window.
+    Sets ``provider``/``default``, then reconciles ``base_url``:
+
+    - An explicitly supplied ``base_url`` is always persisted (covers
+      ``custom``/local endpoints and any provider whose key is bound to a
+      non-default host).
+    - Otherwise, a stale ``base_url`` is cleared ONLY when switching to a
+      *different* provider — that URL belonged to the old provider. When the
+      provider is unchanged and no new URL is supplied, the existing
+      ``base_url`` is preserved. This keeps a user's custom endpoint (e.g. a
+      Xiaomi MiMo Token Plan host, ``https://token-plan-*.xiaomimimo.com/v1``)
+      alive when they merely re-pick a model under the same provider — picking
+      a model previously wiped it, forcing the registry default and breaking
+      Token Plan keys.
+
+    The runtime resolver reads ``model.base_url`` from config (it ignores
+    ``OPENAI_BASE_URL``) and only honors it when the configured provider matches
+    and the pool entry is on the registry default, so preserving it here is what
+    lets the override actually route. The hardcoded ``context_length`` override
+    is always dropped since the new model may have a different context window.
 
     Returns the same dict (coerced to a fresh dict if the input wasn't one) so
-    callers can assign it straight back onto ``cfg["model"]``.
+    callers can assign it straight back onto the model config.
     """
     if not isinstance(model_cfg, dict):
         model_cfg = {}
+    prev_provider = str(model_cfg.get("provider") or "").strip().lower()
+    new_provider = provider.strip().lower()
     model_cfg["provider"] = provider
     model_cfg["default"] = model
-    if provider.strip().lower() == "custom" and base_url.strip():
+    if base_url.strip():
         model_cfg["base_url"] = base_url.strip()
-    elif model_cfg.get("base_url"):
+    elif model_cfg.get("base_url") and new_provider != prev_provider:
+        # Switching providers: the old URL belonged to the old provider, drop
+        # it so the new provider's default endpoint is used. Same-provider
+        # re-assignment keeps the user's configured base_url intact.
         model_cfg["base_url"] = ""
     model_cfg.pop("context_length", None)
     return model_cfg

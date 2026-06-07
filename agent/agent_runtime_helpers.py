@@ -2036,12 +2036,44 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # context_length overrides are honored when switching to a
         # custom provider mid-session (closes #15779).
         _sm_custom_providers = None
+        _sm_cfg = {}
         try:
             from hermes_cli.config import load_config, get_compatible_custom_providers
-            _sm_cfg = load_config()
+            _sm_cfg = load_config() or {}
             _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
         except Exception:
             _sm_custom_providers = None
+
+        # Re-read model.context_length global override from config.yaml so a
+        # user-set context window is honored after /model switch, not just at
+        # session start (issue #40979).
+        _sm_model_cfg = _sm_cfg.get("model", {}) if isinstance(_sm_cfg, dict) else {}
+        _sm_config_ctx = None
+        if isinstance(_sm_model_cfg, dict):
+            _raw = _sm_model_cfg.get("context_length")
+            if _raw is not None:
+                try:
+                    _sm_config_ctx = int(_raw)
+                    if _sm_config_ctx <= 0:
+                        _sm_config_ctx = None
+                except (TypeError, ValueError):
+                    _sm_config_ctx = None
+
+        # Also honor per-model custom_providers context_length for the new model.
+        if _sm_config_ctx is None and _sm_custom_providers:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                _cp_ctx = get_custom_provider_context_length(
+                    model=agent.model,
+                    base_url=agent.base_url,
+                    custom_providers=_sm_custom_providers,
+                )
+                if _cp_ctx:
+                    _sm_config_ctx = int(_cp_ctx)
+            except Exception:
+                pass
+
+        agent._config_context_length = _sm_config_ctx
         # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
         # token provider). ``get_model_context_length`` expects a
         # string for its live-probe paths; for Foundry the context

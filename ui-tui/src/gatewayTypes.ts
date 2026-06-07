@@ -209,6 +209,7 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  account_usage_lines?: string[]
   cache_read?: number
   cache_write?: number
   calls?: number

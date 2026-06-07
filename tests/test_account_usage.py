@@ -95,6 +95,50 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_codex_tolerates_missing_legacy_token_store(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: (_ for _ in ()).throw(FileNotFoundError("no legacy token store")),
+    )
+
+    class _CapturingClient(_Client):
+        def get(self, url, headers=None):
+            seen["url"] = url
+            seen["headers"] = headers or {}
+            return super().get(url, headers=headers)
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _CapturingClient(
+            {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 26},
+                    "secondary_window": {"used_percent": 9},
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert seen["url"] == "https://chatgpt.com/backend-api/wham/usage"
+    assert "ChatGPT-Account-Id" not in seen["headers"]
+    assert [window.label for window in snapshot.windows] == ["Session", "Weekly"]
+    assert "Session: 74% remaining (26% used)" in render_account_usage_lines(snapshot)
+    assert "Weekly: 91% remaining (9% used)" in render_account_usage_lines(snapshot)
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

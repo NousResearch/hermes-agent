@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gateway.config import Platform
+from gateway.session import SessionSource
+
 
 def _make_mock_agent(**overrides):
     """Create a mock AIAgent with realistic session counters."""
@@ -178,6 +181,46 @@ class TestUsageCachedAgent:
 
 class TestUsageAccountSection:
     """Account-limits section appended to /usage output (PR #2486)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.SIGNAL])
+    async def test_usage_command_includes_account_section_for_messaging_platforms(self, monkeypatch, platform):
+        """Telegram/Signal slash commands share the gateway handler, not TUI."""
+        session_key = f"agent:main:{platform.value}:private:12345"
+        agent = _make_mock_agent(provider="openai-codex")
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.api_key = "unused"
+        runner = _make_runner(session_key, cached_agent=agent)
+        event = MagicMock()
+        event.source = SessionSource(
+            platform=platform,
+            chat_id="12345",
+            chat_type="dm",
+            user_id="lou",
+        )
+
+        monkeypatch.setattr(
+            "gateway.run.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.run.render_account_usage_lines",
+            lambda snapshot, markdown=False: [
+                "📈 **Account limits**",
+                "Provider: openai-codex (Pro)",
+                "Session: 74% remaining (26% used)",
+                "Weekly: 91% remaining (9% used)",
+            ],
+        )
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
+            result = await runner._handle_usage_command(event)
+
+        assert "📊 **Session Token Usage**" in result
+        assert "📈 **Account limits**" in result
+        assert "Session: 74% remaining (26% used)" in result
+        assert "Weekly: 91% remaining (9% used)" in result
 
     @pytest.mark.asyncio
     async def test_usage_command_includes_account_section(self, monkeypatch):

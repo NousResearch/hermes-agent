@@ -608,6 +608,30 @@ def _peek_pool_entry(provider: str) -> Optional[Any]:
     return None
 
 
+# ---- SessionModelPool helper (auxiliary slot tracking) ----
+
+_UNSET = object()  # sentinel: distinguishes "never tried" from "pool is None/disabled"
+_aux_pool_cache = _UNSET
+
+
+def _get_session_model_pool():
+    """Return the SessionModelPool singleton (or None if disabled/unavailable).
+
+    Uses a sentinel so that a ``None`` result (pool disabled/not configured)
+    is not cached permanently — if the pool is created later in the process
+    lifetime, subsequent calls will find it.
+    """
+    global _aux_pool_cache
+    if _aux_pool_cache is not _UNSET:
+        return _aux_pool_cache
+    try:
+        from gateway.session_model_pool import get_session_model_pool
+        _aux_pool_cache = get_session_model_pool({})
+    except Exception:
+        _aux_pool_cache = None
+    return _aux_pool_cache
+
+
 def _pool_runtime_api_key(entry: Any) -> str:
     if entry is None:
         return ""
@@ -5090,7 +5114,10 @@ def call_llm(
         extra_body: Additional request body fields.
 
     Returns:
-        Response object with .choices[0].message.content
+        Response object with .choices[0].message.content.
+        Returns ``None`` when the SessionModelPool auxiliary slot is
+        blocked (pool enabled + model saturated). Callers should check
+        for ``None`` before accessing response attributes.
 
     Raises:
         RuntimeError: If no provider is configured.
@@ -5183,6 +5210,24 @@ def call_llm(
 
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
+    #
+    # Session Model Pool: acquire an auxiliary slot before making the call
+    # so the pool can throttle concurrent auxiliary requests to the same model.
+    _pool_aux_acquired = False
+    _pool = _get_session_model_pool()
+    try:
+        if _pool and _pool.enabled:
+            _pool_aux_acquired = _pool.acquire_auxiliary_slot(final_model or "", resolved_provider or "")
+    except Exception:
+        pass
+
+    if not _pool_aux_acquired and _pool and _pool.enabled:
+        logger.warning(
+            "Auxiliary %s: blocked by SessionModelPool for %s:%s — skipping call",
+            task or "call", resolved_provider, final_model,
+        )
+        return None
+
     try:
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
@@ -5502,6 +5547,18 @@ def call_llm(
                 logger.debug("Auxiliary: cache eviction after connection error failed",
                              exc_info=True)
         raise
+    finally:
+        # Session Model Pool: release auxiliary slot after the call
+        # completes (success, error, or fallback).
+        if _pool_aux_acquired:
+            try:
+                if _pool and _pool.enabled:
+                    _pool.release_auxiliary_slot(final_model or "", resolved_provider or "")
+            except Exception as _exc:
+                logger.error(
+                    "SessionModelPool: FAILED to release auxiliary slot for %s:%s — "
+                    "slot may be leaked: %s", resolved_provider, final_model, _exc,
+                )
 
 
 def extract_content_or_reasoning(response) -> str:
@@ -5578,6 +5635,10 @@ async def async_call_llm(
     """Centralized asynchronous LLM call.
 
     Same as call_llm() but async. See call_llm() for full documentation.
+
+    TODO: SessionModelPool auxiliary slot tracking is not yet integrated
+    here — async auxiliary calls are not throttled. See call_llm() for
+    the synchronous implementation. Tracked in #37744.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)

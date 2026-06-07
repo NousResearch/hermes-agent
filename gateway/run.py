@@ -24,6 +24,7 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+
 import asyncio
 import dataclasses
 import inspect
@@ -1981,6 +1982,12 @@ class GatewayRunner:
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Pool-assigned models (populated by SessionModelPool when enabled).
+        # Key: session_key, Value: dict with model/provider/context_length.
+        # These are weaker than manual /model overrides and are released
+        # when the session ends or when a manual override takes effect.
+        self._pool_assigned_models: Dict[str, Dict[str, Any]] = {}
+        self._pool_assigned_models_lock = threading.Lock()
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -2618,6 +2625,41 @@ class GatewayRunner:
                 return None
         return None
 
+    def _mark_pool_override(self, session_key: str) -> None:
+        """Mark a session as manually overridden in the pool.
+
+        Called after ``_release_pool_slot`` so the pool knows not to
+        reassign a model on the next turn.
+        """
+        try:
+            from gateway.session_model_pool import get_session_model_pool as _get_pool
+            _p = _get_pool({})
+            if _p:
+                _p.mark_manual_override(session_key)
+        except Exception as _exc:
+            logger.debug("SessionModelPool: failed to mark override for %s: %s", session_key, _exc)
+
+    def _release_pool_slot(self, session_key: str) -> None:
+        """Release a pool-assigned slot for a session (if one exists).
+
+        Centralizes the release pattern used in 3 places: session reset,
+        /model override, in-place model switch, and any other override path.
+        Thread-safe: acquires ``_pool_assigned_models_lock`` internally.
+        """
+        try:
+            with self._pool_assigned_models_lock:
+                _old_pool = self._pool_assigned_models.pop(session_key, None)
+            if _old_pool:
+                from gateway.session_model_pool import get_session_model_pool as _get_pool
+                # The singleton ignores config after first init; pass {}
+                # to avoid unnecessary disk I/O via _load_gateway_config().
+                _p = _get_pool({})
+                if _p:
+                    _p.release_session_slot(session_key)
+        except Exception as _exc:
+            logger.debug("SessionModelPool: failed to release slot for %s: %s", session_key, _exc)
+
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -2640,6 +2682,42 @@ class GatewayRunner:
 
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        # Will be set by pool integration below if a pool-assigned provider
+        # is available. Applied after runtime_kwargs is created.
+        _pool_provider_override = None
+
+        # --- Session Model Pool integration ---
+        # If no manual override exists for this session, check whether the
+        # pool wants to assign a different model. Pool assignments are
+        # weaker than manual /model overrides and are released when the
+        # session ends or when a manual override takes effect.
+        if not override and resolved_session_key:
+            try:
+                from gateway.session_model_pool import get_session_model_pool as _get_pool
+                _cfg = user_config if user_config else _load_gateway_config()
+                _pool = _get_pool(_cfg)
+                if _pool and _pool.enabled:
+                    # Always call acquire_session_slot — it is thread-safe
+                    # internally and refreshes the session timestamp on every
+                    # call. This prevents premature eviction of active sessions
+                    # and avoids a TOCTOU race between the local cache check
+                    # and the pool's own state.
+                    _pool_assign = _pool.acquire_session_slot(resolved_session_key)
+                    if _pool_assign:
+                        with self._pool_assigned_models_lock:
+                            self._pool_assigned_models[resolved_session_key] = _pool_assign
+                        model = _pool_assign.get("model", model)
+                        # Stash pool provider so it can be injected into
+                        # runtime_kwargs after _resolve_runtime_agent_kwargs().
+                        _pool_provider_override = _pool_assign.get("provider")
+                        logger.debug(
+                            "SessionModelPool: session=%s using pool-assigned model=%s provider=%s",
+                            resolved_session_key, model, _pool_assign.get("provider"),
+                        )
+            except Exception as _pool_exc:
+                logger.debug("SessionModelPool lookup failed: %s", _pool_exc)
+        # --- End Session Model Pool integration ---
+
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -2682,6 +2760,10 @@ class GatewayRunner:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+
+        # Apply pool-assigned provider (set during pool integration above).
+        if not override and _pool_provider_override:
+            runtime_kwargs["provider"] = _pool_provider_override
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -8986,6 +9068,16 @@ class GatewayRunner:
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+            # Release pool-assigned slot for the reset session.
+            self._release_pool_slot(session_key)
+            # Clear manual override so the pool can reassign on next turn.
+            try:
+                from gateway.session_model_pool import get_session_model_pool as _get_pool_rst
+                _p_rst = _get_pool_rst({})
+                if _p_rst:
+                    _p_rst.clear_manual_override(session_key)
+            except Exception as _exc:
+                logger.debug("SessionModelPool: failed to clear override for %s: %s", session_key, _exc)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -11282,6 +11374,11 @@ class GatewayRunner:
                             "api_mode": result.api_mode,
                         }
 
+                        # Release pool-assigned slot for this session if one
+                        # exists — the manual override takes precedence.
+                        self._release_pool_slot(_session_key)
+                        self._mark_pool_override(_session_key)
+
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
                         # stale cache signature to trigger a rebuild.
@@ -11435,6 +11532,11 @@ class GatewayRunner:
             "base_url": result.base_url,
             "api_mode": result.api_mode,
         }
+
+        # Release pool-assigned slot for this session if one exists —
+        # the manual override takes precedence.
+        self._release_pool_slot(session_key)
+        self._mark_pool_override(session_key)
 
         # Evict cached agent so the next turn creates a fresh agent from the
         # override rather than relying on cache signature mismatch detection.

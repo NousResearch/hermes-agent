@@ -1338,7 +1338,18 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
     },
-    
+
+    # Session Model Pool — concurrency-aware model assignment for gateway
+    # sessions.  When multiple chat sessions run simultaneously, the pool
+    # assigns distinct models from this list so load is spread across
+    # providers.  Disabled by default; set enabled: true to activate.
+    "session_model_pool": {
+        "enabled": False,
+        "strategy": "round-robin",     # round-robin | least-loaded | priority
+        "inactive_timeout": 1800,      # seconds — slot released after this idle time
+        "pool": [],                    # list of model entries (see docs)
+    },
+
     "display": {
         "compact": False,
         "personality": "",

@@ -2015,4 +2015,22 @@ def list_picker_providers(
             continue
         filtered.append(p)
 
+    def _picker_family_penalty(provider: dict) -> int:
+        slug = str(provider.get("slug", "")).lower()
+        # GitHub Copilot and Copilot ACP expose the same live catalog, but the
+        # ACP path is the less confusing Telegram/Discord picker default when
+        # both are available. Keep the familiar current-first / model-count
+        # ordering, and only break ties within the Copilot family.
+        if slug == "copilot":
+            return 1
+        return 0
+
+    filtered.sort(
+        key=lambda p: (
+            not bool(p.get("is_current")),
+            -int(p.get("total_models", len(p.get("models", []))) or 0),
+            _picker_family_penalty(p),
+        )
+    )
+
     return filtered

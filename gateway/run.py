@@ -11179,9 +11179,15 @@ class GatewayRunner:
                         # Store model note + session override
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
+                        plabel = result.provider_label or result.target_provider
+                        provider_display = (
+                            plabel
+                            if plabel == result.target_provider
+                            else f"{plabel} ({result.target_provider})"
+                        )
                         _self._pending_model_notes[_session_key] = (
                             f"[Note: model was just switched from {_cur_model} to {result.new_model} "
-                            f"via {result.provider_label or result.target_provider}. "
+                            f"via {provider_display}. "
                             f"Adjust your self-identification accordingly.]"
                         )
                         _self._session_model_overrides[_session_key] = {
@@ -11198,9 +11204,10 @@ class GatewayRunner:
                         _self._evict_cached_agent(_session_key)
 
                         # Build confirmation text
-                        plabel = result.provider_label or result.target_provider
                         lines = [t("gateway.model.switched", model=result.new_model)]
-                        lines.append(t("gateway.model.provider_label", provider=plabel))
+                        lines.append(
+                            t("gateway.model.provider_label", provider=provider_display)
+                        )
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
                         _sw_config_ctx = None

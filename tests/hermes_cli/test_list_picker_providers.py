@@ -230,6 +230,8 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models",
+                        lambda *a, **kw: [])
 
     result = model_switch.list_picker_providers(
         current_provider="custom:ollama",
@@ -259,3 +261,25 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     assert row["slug"] == "custom:ollama"
     assert row["is_current"] is True
     assert row["models"] == ["glm-5.1", "qwen3"]
+
+
+def test_picker_prefers_copilot_acp_over_plain_copilot_on_ties(monkeypatch):
+    """When both GitHub Copilot rows expose the same catalog, show ACP first."""
+    base = [
+        _make_provider("copilot", name="GitHub Copilot", models=["gpt-5-mini", "claude-sonnet-4.6"]),
+        _make_provider("copilot-acp", name="GitHub Copilot ACP", models=["gpt-5-mini", "claude-sonnet-4.6"]),
+    ]
+
+    monkeypatch.setattr(
+        model_switch,
+        "list_authenticated_providers",
+        lambda **kw: list(base),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: pytest.fail("should not be called"),
+    )
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    assert [p["slug"] for p in result] == ["copilot-acp", "copilot"]

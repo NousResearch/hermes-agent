@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -147,6 +148,81 @@ class TestNarrationStore:
         )
 
         loaded = store.get_job(job.job_id)
+        assert loaded["provider"] is None
+
+    def test_init_migrates_legacy_provider_not_null_schema(self, tmp_path):
+        from gateway.tts_narration import NarrationJobStore
+
+        db_path = tmp_path / "legacy-narration.sqlite"
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE tts_narration_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT UNIQUE NOT NULL,
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    thread_id TEXT,
+                    reply_to_message_id TEXT,
+                    provider TEXT NOT NULL,
+                    model TEXT,
+                    voice TEXT,
+                    scope_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    text_sha256 TEXT NOT NULL,
+                    text_chars INTEGER NOT NULL,
+                    chunk_count INTEGER NOT NULL,
+                    policy_json TEXT NOT NULL,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    last_error TEXT
+                );
+                CREATE TABLE tts_narration_chunks (
+                    job_id TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    chunk_total INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    text_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    audio_path TEXT,
+                    sent_message_id TEXT,
+                    telegram_file_id TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (job_id, chunk_index),
+                    FOREIGN KEY (job_id) REFERENCES tts_narration_jobs(job_id)
+                );
+                """
+            )
+
+        store = NarrationJobStore(db_path)
+        with sqlite3.connect(db_path) as conn:
+            provider_column = [row for row in conn.execute("PRAGMA table_info(tts_narration_jobs)") if row[1] == "provider"][0]
+            assert provider_column[3] == 0
+            fk = conn.execute("PRAGMA foreign_key_list(tts_narration_chunks)").fetchall()
+            assert fk[0][2] == "tts_narration_jobs"
+
+        job = store.enqueue_job(
+            platform="telegram",
+            chat_id="123",
+            thread_id=None,
+            reply_to_message_id="msg42",
+            idempotency_key="migrated-default-provider",
+            text="Use configured default provider after migration.",
+            chunks=["Use configured default provider after migration."],
+            provider=None,
+            model=None,
+            voice=None,
+            scope_key="telegram:123",
+            policy={"target_chars": 1000, "max_chars": 1200},
+        )
+
+        loaded = store.get_job(job.job_id)
+        assert loaded is not None
         assert loaded["provider"] is None
 
     def test_completed_job_redacts_sent_chunk_text_but_keeps_hashes(self, tmp_path):

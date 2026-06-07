@@ -199,12 +199,14 @@ class NarrationJobStore:
                 )
                 """
             )
-            columns = {
-                row[1]
-                for row in conn.execute("PRAGMA table_info(tts_narration_jobs)").fetchall()
-            }
+            table_info = conn.execute("PRAGMA table_info(tts_narration_jobs)").fetchall()
+            columns = {row[1] for row in table_info}
             if "metadata_json" not in columns:
                 conn.execute("ALTER TABLE tts_narration_jobs ADD COLUMN metadata_json TEXT")
+                table_info = conn.execute("PRAGMA table_info(tts_narration_jobs)").fetchall()
+                columns = {row[1] for row in table_info}
+            if any(row[1] == "provider" and row[3] for row in table_info):
+                self._migrate_nullable_provider_metadata(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tts_narration_chunks (
@@ -227,6 +229,65 @@ class NarrationJobStore:
                 """
             )
             conn.commit()
+
+    @staticmethod
+    def _migrate_nullable_provider_metadata(conn: sqlite3.Connection) -> None:
+        """Relax old prototype DBs where provider was NOT NULL.
+
+        Early local builds always stored an explicit narration provider.  The
+        upstream-ready path allows NULL provider/model/voice so processing can
+        inherit the regular text_to_speech provider at execution time. SQLite
+        cannot drop a NOT NULL constraint in place, so rebuild the small jobs
+        table while preserving existing rows.
+        """
+        temp_name = "tts_narration_jobs_old_provider_not_null"
+        conn.execute(f"DROP TABLE IF EXISTS {temp_name}")
+        conn.execute("PRAGMA legacy_alter_table=ON")
+        conn.execute("ALTER TABLE tts_narration_jobs RENAME TO tts_narration_jobs_old_provider_not_null")
+        conn.execute("PRAGMA legacy_alter_table=OFF")
+        conn.execute(
+            """
+            CREATE TABLE tts_narration_jobs (
+                job_id TEXT PRIMARY KEY,
+                idempotency_key TEXT UNIQUE NOT NULL,
+                platform TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                thread_id TEXT,
+                reply_to_message_id TEXT,
+                provider TEXT,
+                model TEXT,
+                voice TEXT,
+                scope_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                text_sha256 TEXT NOT NULL,
+                text_chars INTEGER NOT NULL,
+                chunk_count INTEGER NOT NULL,
+                policy_json TEXT NOT NULL,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                last_error TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO tts_narration_jobs (
+                job_id, idempotency_key, platform, chat_id, thread_id,
+                reply_to_message_id, provider, model, voice, scope_key, status,
+                text_sha256, text_chars, chunk_count, policy_json,
+                metadata_json, created_at, started_at, completed_at, last_error
+            )
+            SELECT
+                job_id, idempotency_key, platform, chat_id, thread_id,
+                reply_to_message_id, provider, model, voice, scope_key, status,
+                text_sha256, text_chars, chunk_count, policy_json,
+                metadata_json, created_at, started_at, completed_at, last_error
+            FROM tts_narration_jobs_old_provider_not_null
+            """
+        )
+        conn.execute("DROP TABLE tts_narration_jobs_old_provider_not_null")
 
     def enqueue_job(
         self,

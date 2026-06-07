@@ -1,0 +1,29 @@
+﻿ M agent/agent_init.py
+ M agent/auxiliary_client.py
+ M apps/desktop/electron/main.cjs
+ M apps/desktop/src/app/chat/sidebar/index.tsx
+ M apps/desktop/src/app/chat/sidebar/profile-switcher.tsx
+ M apps/desktop/src/app/desktop-controller.tsx
+ M apps/desktop/src/app/session/hooks/use-model-controls.ts
+ M apps/desktop/src/app/shell/model-menu-panel.tsx
+ M apps/desktop/src/hermes.ts
+ M apps/desktop/src/store/model-visibility.ts
+ M hermes_cli/web_server.py
+?? .apollo-backups/
+?? agent/agent_init.py.apollo-headers-20260606-131832.bak
+?? agent/agent_init.py.apollo-named-custom-20260606-142112.bak
+?? agent/auxiliary_client.py.apollo-custom-runtime-20260606-144449.bak
+?? agent/auxiliary_client.py.apollo-session-headers-20260606-151421.bak
+?? apps/desktop/electron/main.cjs.apollo-artifact-local-path-20260606-193026.bak
+?? apps/desktop/electron/main.cjs.apollo-default-alias-20260606-184646.bak
+?? apps/desktop/main.cjs
+?? apps/desktop/src/app/chat/sidebar/index.tsx.agent-scoped-sessions-20260606-155229.bak
+?? apps/desktop/src/app/desktop-controller.tsx.agent-scoped-sessions-20260606-155229.bak
+?? apps/desktop/src/app/session/hooks/use-model-controls.ts.apollo-custom-normalize-20260606-141849.bak
+?? apps/desktop/src/app/shell/model-menu-panel.tsx.apollo-dedupe-20260606-133814.bak
+?? apps/desktop/src/app/shell/model-menu-panel.tsx.apollo-noheaders-20260606-135739.bak
+?? apps/desktop/src/app/shell/model-menu-panel.tsx.apollo-noheaders-20260606-135836.bak
+?? apps/desktop/src/hermes.ts.agent-scoped-sessions-20260606-155229.bak
+?? apps/desktop/src/store/model-visibility.ts.apollo-dedupe-20260606-133814.bak
+?? hermes_cli/web_server.py.agent-scoped-sessions-20260606-155229.bak
+?? hermes_cli/web_server.py.apollo-baseurl-preserve-20260606-145742.bak

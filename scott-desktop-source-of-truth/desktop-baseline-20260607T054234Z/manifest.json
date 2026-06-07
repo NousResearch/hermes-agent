@@ -1,0 +1,28 @@
+﻿{
+    "created_utc":  "20260607T054234Z",
+    "repo":  "C:\\Users\\Testing03\\AppData\\Local\\hermes\\hermes-agent",
+    "profile":  "C:\\Users\\Testing03\\AppData\\Local\\hermes\\profiles\\scott-omega-profile",
+    "branch":  "main",
+    "head":  "338c07433699569c24c32df4a2d1a8b9472400a8",
+    "short_head":  "338c07433",
+    "describe":  "338c07433-dirty",
+    "ahead_behind_HEAD_origin_main":  "0\t10516",
+    "desktop_exe_path":  "C:\\Users\\Testing03\\AppData\\Local\\hermes\\hermes-agent\\apps\\desktop\\release\\win-unpacked\\Hermes.exe",
+    "desktop_exe_sha256":  "5C7FCBC4A6FCCEBAD44BAEA61A034C340892D86B168D7E5D4E81C4445F19B6CE",
+    "desktop_exe_length":  213963776,
+    "desktop_exe_last_write":  "2026-06-07T02:31:40.2667812Z",
+    "changed_files":  [
+                          "agent/agent_init.py",
+                          "agent/auxiliary_client.py",
+                          "apps/desktop/electron/main.cjs",
+                          "apps/desktop/src/app/chat/sidebar/index.tsx",
+                          "apps/desktop/src/app/chat/sidebar/profile-switcher.tsx",
+                          "apps/desktop/src/app/desktop-controller.tsx",
+                          "apps/desktop/src/app/session/hooks/use-model-controls.ts",
+                          "apps/desktop/src/app/shell/model-menu-panel.tsx",
+                          "apps/desktop/src/hermes.ts",
+                          "apps/desktop/src/store/model-visibility.ts",
+                          "hermes_cli/web_server.py"
+                      ],
+    "known_behavior":  "Scott Hermes Desktop scott-omega-profile baseline with Apollo/Omega providers, Teams session headers, single-profile Desktop behavior, model/session scoped patches, and packaged win-unpacked Hermes.exe from current laptop state."
+}

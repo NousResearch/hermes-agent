@@ -1,0 +1,12 @@
+﻿ agent/agent_init.py                                |    83 +
+ agent/auxiliary_client.py                          | 11714 ++++++------
+ apps/desktop/electron/main.cjs                     | 10951 +++++------
+ apps/desktop/src/app/chat/sidebar/index.tsx        |  2366 +--
+ .../src/app/chat/sidebar/profile-switcher.tsx      |    11 +-
+ apps/desktop/src/app/desktop-controller.tsx        |  1784 +-
+ .../src/app/session/hooks/use-model-controls.ts    |     8 +-
+ apps/desktop/src/app/shell/model-menu-panel.tsx    |    32 +-
+ apps/desktop/src/hermes.ts                         |    15 +-
+ apps/desktop/src/store/model-visibility.ts         |    13 +-
+ hermes_cli/web_server.py                           | 18826 ++++++++++---------
+ 11 files changed, 23041 insertions(+), 22762 deletions(-)

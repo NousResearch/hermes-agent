@@ -1,0 +1,11 @@
+﻿agent/agent_init.py
+agent/auxiliary_client.py
+apps/desktop/electron/main.cjs
+apps/desktop/src/app/chat/sidebar/index.tsx
+apps/desktop/src/app/chat/sidebar/profile-switcher.tsx
+apps/desktop/src/app/desktop-controller.tsx
+apps/desktop/src/app/session/hooks/use-model-controls.ts
+apps/desktop/src/app/shell/model-menu-panel.tsx
+apps/desktop/src/hermes.ts
+apps/desktop/src/store/model-visibility.ts
+hermes_cli/web_server.py

@@ -1176,12 +1176,17 @@ def _normalize_codex_response(
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
-                # Responses ``commentary``/``analysis`` phase text is scratch/tool
-                # preamble for the model/provider protocol, not user-visible final
-                # answer text.  Preserve the exact message item for replay/cache
-                # continuity, but do not expose it as assistant content where the
-                # gateway/CLI/interim callbacks can leak it to the user.
-                if not is_commentary_phase:
+                # Responses ``commentary``/``analysis`` phase text is mid-turn
+                # preamble/progress narration, never the turn's final answer
+                # (Codex CLI excludes it from last-message extraction; issues
+                # #24933 / #41293).  Keep it out of assistant content so it
+                # can't be concatenated into — or leak as — the final response,
+                # but surface it through the reasoning channel so the CLI/
+                # gateway display it like thinking text.  The exact message
+                # item is still preserved below for replay/cache continuity.
+                if is_commentary_phase:
+                    reasoning_parts.append(message_text)
+                else:
                     content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",

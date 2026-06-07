@@ -20,7 +20,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import pytest
-from gateway.platforms.yuanbao_proto import (
+from plugins.platforms.yuanbao.yuanbao_proto import (
     # 基础工具
     _encode_varint,
     _decode_varint,
@@ -312,7 +312,7 @@ class TestDecodeInboundPush:
         text: str = "Hello!",
     ) -> bytes:
         """手工构造 InboundMessagePush bytes（与 proto 字段顺序一致）"""
-        from gateway.platforms.yuanbao_proto import (
+        from plugins.platforms.yuanbao.yuanbao_proto import (
             _encode_field, _encode_string, _encode_message,
             _encode_varint, WT_LEN, WT_VARINT,
         )
@@ -370,7 +370,7 @@ class TestDecodeInboundPush:
         assert result is not None or result is None  # 不崩溃即可
 
     def test_multiple_msg_body_elements(self):
-        from gateway.platforms.yuanbao_proto import (
+        from plugins.platforms.yuanbao.yuanbao_proto import (
             _encode_field, _encode_message, WT_LEN,
         )
         el1 = _encode_msg_body_element(
@@ -429,7 +429,7 @@ class TestEncodeOutbound:
 
     def test_c2c_biz_payload_contains_to_account(self):
         """验证 biz payload 包含 to_account 字段"""
-        from gateway.platforms.yuanbao_proto import _get_string
+        from plugins.platforms.yuanbao.yuanbao_proto import _get_string
         msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "test"}}]
         result = encode_send_c2c_message(
             to_account="target_user",
@@ -443,7 +443,7 @@ class TestEncodeOutbound:
         assert to_acc == "target_user"
 
     def test_group_biz_payload_contains_group_code(self):
-        from gateway.platforms.yuanbao_proto import _get_string
+        from plugins.platforms.yuanbao.yuanbao_proto import _get_string
         msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "test"}}]
         result = encode_send_group_message(
             group_code="group-xyz",
@@ -589,7 +589,7 @@ class TestEndToEnd:
         assert dec["head"]["msg_id"] == "e2e-001"
 
         # 从 biz payload 中读取 to_account 和 msg_body
-        from gateway.platforms.yuanbao_proto import (
+        from plugins.platforms.yuanbao.yuanbao_proto import (
             _get_string, _get_repeated_bytes
         )
         biz = dec["data"]
@@ -605,7 +605,7 @@ class TestEndToEnd:
 
     def test_inbound_push_full_flow(self):
         """构造服务端 push -> 解码入站消息"""
-        from gateway.platforms.yuanbao_proto import (
+        from plugins.platforms.yuanbao.yuanbao_proto import (
             _encode_field, _encode_string, _encode_message,
             _encode_varint, WT_LEN, WT_VARINT,
         )

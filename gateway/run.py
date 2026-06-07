@@ -7013,12 +7013,8 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
-        elif platform == Platform.YUANBAO:
-            from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
-            if not WEBSOCKETS_AVAILABLE:
-                logger.warning("Yuanbao: websockets not installed. Run: pip install websockets")
-                return None
-            return YuanbaoAdapter(config)
+        # yuanbao migrated to a bundled plugin (plugins/platforms/yuanbao/);
+        # the platform_registry check at the top of this method creates it.
 
         return None
 

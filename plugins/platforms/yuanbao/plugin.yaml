@@ -1,0 +1,65 @@
+name: yuanbao-platform
+label: Yuanbao
+kind: platform
+version: 1.0.0
+description: >
+  Yuanbao (元宝) gateway adapter for Hermes Agent. Connects to a Tencent
+  Yuanbao IM Bot over a persistent WebSocket using HMAC-signed protobuf
+  frames and relays messages between Yuanbao group chats / DMs and the
+  Hermes agent. Supports native media attachments, stickers, group and DM
+  access policies, and home-channel cron delivery.
+author: NousResearch
+requires_env:
+  - name: YUANBAO_APP_ID
+    description: "App ID from your Yuanbao IM Bot credentials (PAI -> My Bot)."
+    prompt: "App ID"
+    password: false
+  - name: YUANBAO_APP_SECRET
+    description: "App Secret used for HMAC signing of WebSocket frames."
+    prompt: "App Secret"
+    password: true
+optional_env:
+  - name: YUANBAO_BOT_ID
+    description: "Bot ID, if your deployment requires an explicit bot identifier."
+    prompt: "Bot ID (or empty)"
+    password: false
+  - name: YUANBAO_WS_URL
+    description: "Override the default Yuanbao WebSocket endpoint."
+    prompt: "WebSocket URL (or empty)"
+    password: false
+  - name: YUANBAO_API_DOMAIN
+    description: "Override the default Yuanbao API domain."
+    prompt: "API domain (or empty)"
+    password: false
+  - name: YUANBAO_ROUTE_ENV
+    description: "Routing environment selector (e.g. test / prod)."
+    prompt: "Route env (or empty)"
+    password: false
+  - name: YUANBAO_HOME_CHANNEL
+    description: "Default chat target for cron / notification delivery (group:<code> or direct:<account_id>)."
+    prompt: "Home channel (or empty)"
+    password: false
+  - name: YUANBAO_DM_POLICY
+    description: "DM access policy: open, allowlist, or closed."
+    prompt: "DM policy (or empty)"
+    password: false
+  - name: YUANBAO_DM_ALLOW_FROM
+    description: "Comma-separated account IDs allowed to DM when dm_policy=allowlist."
+    prompt: "DM allowlist (or empty)"
+    password: false
+  - name: YUANBAO_GROUP_POLICY
+    description: "Group access policy: open, allowlist, or closed."
+    prompt: "Group policy (or empty)"
+    password: false
+  - name: YUANBAO_GROUP_ALLOW_FROM
+    description: "Comma-separated group codes allowed when group_policy=allowlist."
+    prompt: "Group allowlist (or empty)"
+    password: false
+  - name: YUANBAO_ALLOWED_USERS
+    description: "Comma-separated account IDs allowed to talk to the bot."
+    prompt: "Allowed users (or empty)"
+    password: false
+  - name: YUANBAO_ALLOW_ALL_USERS
+    description: "Allow any Yuanbao user to trigger the bot (dev only)."
+    prompt: "Allow all users? (true/false)"
+    password: false

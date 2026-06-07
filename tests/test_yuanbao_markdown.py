@@ -16,7 +16,7 @@ import unittest
 # Ensure project root is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gateway.platforms.yuanbao import MarkdownProcessor
+from plugins.platforms.yuanbao.adapter import MarkdownProcessor
 
 
 # ============ has_unclosed_fence ============

@@ -57,7 +57,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.yuanbao_media import (
+from .yuanbao_media import (
     download_url as media_download_url,
     get_cos_credentials,
     upload_to_cos,
@@ -66,7 +66,7 @@ from gateway.platforms.yuanbao_media import (
     guess_mime_type,
     md5_hex,
 )
-from gateway.platforms.yuanbao_proto import (
+from .yuanbao_proto import (
     CMD_TYPE,
     _fields_to_dict,
     _get_string,
@@ -3696,7 +3696,7 @@ class StickerHandler(MediaSendHandler):
         return b"", "sticker", "application/octet-stream"
 
     def build_msg_body(self, upload_result, **kwargs):
-        from gateway.platforms.yuanbao_sticker import (
+        from .yuanbao_sticker import (
             get_sticker_by_name,
             get_random_sticker,
             build_face_msg_body,
@@ -3743,7 +3743,7 @@ class GroupQueryService:
         if adapter._connection.ws is None:
             return None
         encoded = encode_query_group_info(group_code)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
+        from .yuanbao_proto import decode_conn_msg as _decode
         decoded = _decode(encoded)
         req_id = decoded["head"]["msg_id"]
         try:
@@ -3776,7 +3776,7 @@ class GroupQueryService:
         if adapter._connection.ws is None:
             return None
         encoded = encode_get_group_member_list(group_code, offset=offset, limit=limit)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
+        from .yuanbao_proto import decode_conn_msg as _decode
         decoded = _decode(encoded)
         req_id = decoded["head"]["msg_id"]
         try:
@@ -4939,3 +4939,165 @@ async def send_yuanbao_direct(
 ) -> Dict[str, Any]:
     """Delegate to ``OutboundManager.send_direct``."""
     return await adapter._outbound.send_direct(chat_id, message, media_files)
+
+
+# ---------------------------------------------------------------------------
+# Plugin registration entry point
+# ---------------------------------------------------------------------------
+#
+# Yuanbao migrated from a built-in adapter (``gateway/platforms/yuanbao*.py``)
+# into this bundled plugin. The hooks below replace the per-platform wiring
+# that used to be scattered across core:
+#   - adapter_factory      → the ``elif platform == Platform.YUANBAO`` branch
+#                            in ``gateway/run.py::_create_adapter()``
+#   - check_fn             → the websockets-availability guard in that branch
+#   - is_connected         → the ``Platform.YUANBAO`` lambda in
+#                            ``gateway/config.py::get_connected_platforms()``
+#   - setup_fn             → the declarative ``yuanbao`` entry in
+#                            ``hermes_cli/gateway.py::_PLATFORMS``
+#   - standalone_sender_fn → the ``Platform.YUANBAO`` dispatch in
+#                            ``tools/send_message_tool.py``
+#   - cron_deliver_env_var → home-target resolution for ``deliver=yuanbao``
+#
+# Deliberately NOT migrated (these stay generic in core, same as every other
+# platform — see references/platform-plugin-migration.md "What stays generic"):
+#   - the ``Platform.YUANBAO`` enum literal (stable repo-wide identifier)
+#   - the ``_apply_env_overrides`` YUANBAO_* → config.extra/token block in
+#     ``gateway/config.py`` (env-bridge, not a load_gateway_config YAML block;
+#     yuanbao has no per-platform YAML block, so no apply_yaml_config_fn)
+#   - the ``_is_user_authorized`` / ``_UPDATE_ALLOWED_PLATFORMS`` allowlist maps
+#   - the cron ``_KNOWN_DELIVERY_PLATFORMS`` frozenset
+
+
+def check_yuanbao_requirements() -> bool:
+    """Return True when the websockets dependency is importable.
+
+    Mirrors the guard that lived in ``gateway/run.py::_create_adapter()`` —
+    Yuanbao speaks a persistent WebSocket protocol, so without ``websockets``
+    the adapter cannot connect.
+    """
+    return WEBSOCKETS_AVAILABLE
+
+
+def _is_connected(config: PlatformConfig) -> bool:
+    """Yuanbao is connected when both app_id and app_secret are present.
+
+    Ports the ``Platform.YUANBAO`` lambda that used to live in
+    ``gateway/config.py::get_connected_platforms()``.
+    """
+    extra = config.extra or {}
+    return bool(extra.get("app_id") and extra.get("app_secret"))
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document: bool = False,
+):
+    """Deliver a message for ``deliver=yuanbao`` cron / send_message routing.
+
+    Yuanbao uses a single persistent WebSocket owned by the running gateway
+    adapter — there is no throwaway-client path the way HTTP platforms have.
+    So this sender obtains the live singleton via ``get_active_adapter()``
+    and delegates to ``send_yuanbao_direct``. When no gateway is running it
+    returns an error, exactly as the old ``tools/send_message_tool.py::
+    _send_yuanbao`` did. This is behavior-preserving: yuanbao cron delivery
+    has always required the gateway to be live in-process.
+    """
+    adapter = get_active_adapter()
+    if adapter is None:
+        return {
+            "error": (
+                "Yuanbao adapter is not running. "
+                "Start the gateway with the yuanbao platform enabled first."
+            )
+        }
+    try:
+        return await send_yuanbao_direct(
+            adapter, chat_id, message, media_files=media_files
+        )
+    except Exception as e:  # noqa: BLE001 — surface any send failure to cron
+        return {"error": f"Yuanbao send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Interactive setup wizard — replaces the declarative ``yuanbao`` entry
+    in ``hermes_cli/gateway.py::_PLATFORMS``.
+
+    Lazy imports keep the plugin's load surface small (top-level imports of
+    ``hermes_cli.cli_output`` would pull in prompt_toolkit + Rich on every
+    plugin discovery pass). Mirrors the Teams / Mattermost setup_fn shape.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import (
+        prompt,
+        print_header,
+        print_info,
+        print_success,
+    )
+
+    print_header("Yuanbao")
+    print_info("1. Download the Yuanbao app from https://yuanbao.tencent.com/")
+    print_info("2. In the app, go to PAI → My Bot and create a new bot")
+    print_info("3. After the bot is created, copy the App ID and App Secret")
+    print_info("4. Enter them below and Hermes will connect automatically over WebSocket")
+    print()
+
+    existing = get_env_value("YUANBAO_APP_ID")
+    if existing:
+        print_info("Yuanbao: already configured")
+
+    app_id = prompt("App ID")
+    if not app_id:
+        return
+    save_env_value("YUANBAO_APP_ID", app_id)
+
+    app_secret = prompt("App Secret", password=True)
+    if app_secret:
+        save_env_value("YUANBAO_APP_SECRET", app_secret)
+    print_success("Yuanbao credentials saved")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
+    print_info("   Format: 'group:<group_code>' or 'direct:<account_id>'.")
+    home_channel = prompt("Home channel (leave empty to set later)")
+    if home_channel:
+        save_env_value("YUANBAO_HOME_CHANNEL", home_channel)
+    print_info("   Open config in your editor:  hermes config edit")
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs YuanbaoAdapter from a PlatformConfig."""
+    return YuanbaoAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="yuanbao",
+        label="Yuanbao",
+        adapter_factory=_build_adapter,
+        check_fn=check_yuanbao_requirements,
+        is_connected=_is_connected,
+        required_env=["YUANBAO_APP_ID", "YUANBAO_APP_SECRET"],
+        install_hint="pip install websockets",
+        # Interactive setup wizard — replaces the declarative yuanbao entry
+        # in hermes_cli/gateway.py::_PLATFORMS.
+        setup_fn=interactive_setup,
+        # Auth env vars for _is_user_authorized() integration.
+        allowed_users_env="YUANBAO_ALLOWED_USERS",
+        allow_all_env="YUANBAO_ALLOW_ALL_USERS",
+        # Cron home-channel delivery. The live gateway must be running for
+        # delivery to succeed — yuanbao has no out-of-process send path.
+        cron_deliver_env_var="YUANBAO_HOME_CHANNEL",
+        # Send routing for the send_message tool / cron. Uses the live
+        # WebSocket singleton; preserves the pre-migration behavior of
+        # _send_yuanbao in tools/send_message_tool.py.
+        standalone_sender_fn=_standalone_send,
+        # Display
+        emoji="💎",
+    )

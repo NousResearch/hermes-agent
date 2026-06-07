@@ -1748,30 +1748,29 @@ async def _send_qqbot(pconfig, chat_id, message):
 async def _send_yuanbao(chat_id, message, media_files=None):
     """Send via Yuanbao using the running gateway adapter's WebSocket connection.
 
-    Yuanbao uses a persistent WebSocket — unlike HTTP-based platforms, we
-    cannot create a throwaway client.  We obtain the running singleton from
-    the adapter module itself (``get_active_adapter``).
-
-    chat_id format:
-      - Group: "group:<group_code>"
-      - DM:    "direct:<account_id>" or just "<account_id>"
+    Yuanbao migrated to a bundled plugin (``plugins/platforms/yuanbao/``); the
+    send logic now lives in ``_standalone_send`` there. This thin wrapper keeps
+    the in-module call sites (the native-media path and the per-chunk dispatch
+    below) working unchanged. Yuanbao uses a persistent WebSocket owned by the
+    live adapter, so — unlike HTTP platforms — there is no throwaway-client
+    path; ``_standalone_send`` obtains the running singleton via
+    ``get_active_adapter()`` and errors if the gateway is not running.
     """
     try:
-        from gateway.platforms.yuanbao import get_active_adapter, send_yuanbao_direct
+        from plugins.platforms.yuanbao.adapter import _standalone_send
     except ImportError:
         return _error("Yuanbao adapter module not available.")
 
-    adapter = get_active_adapter()
-    if adapter is None:
-        return _error(
-            "Yuanbao adapter is not running. "
-            "Start the gateway with yuanbao platform enabled first."
-        )
+    # pconfig is unused by the yuanbao sender (it reads the live singleton),
+    # so a minimal placeholder keeps the signature satisfied.
+    from types import SimpleNamespace
 
-    try:
-        return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
-    except Exception as e:
-        return _error(f"Yuanbao send failed: {e}")
+    return await _standalone_send(
+        SimpleNamespace(token=None, extra={}),
+        chat_id,
+        message,
+        media_files=media_files,
+    )
 
 
 # --- Registry ---

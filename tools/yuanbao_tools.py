@@ -12,7 +12,7 @@ yuanbao_tools.py - 元宝平台工具集
 LLM 应先用 search_sticker 找到合适的 sticker_id（或直接传中文 name），再用 send_sticker
 发送。不要在文本中夹杂裸的 Unicode emoji 当作贴纸。
 
-The active adapter singleton lives in ``gateway.platforms.yuanbao`` and is
+The active adapter singleton lives in ``plugins.platforms.yuanbao.adapter`` and is
 accessed via ``get_active_adapter()``.
 """
 
@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 def _get_active_adapter():
-    """Lazy import to avoid ImportError when gateway.platforms.yuanbao is unavailable."""
+    """Lazy import to avoid ImportError when plugins.platforms.yuanbao.adapter is unavailable."""
     try:
-        from gateway.platforms.yuanbao import get_active_adapter
+        from plugins.platforms.yuanbao.adapter import get_active_adapter
         return get_active_adapter()
     except ImportError:
         return None
@@ -176,7 +176,7 @@ async def search_sticker(query: str = "", limit: int = 10) -> dict:
     返回每条候选的 sticker_id / name / description / package_id，
     供 LLM 选择后传给 send_sticker。空 query 时返回前 N 条。
     """
-    from gateway.platforms.yuanbao_sticker import search_stickers
+    from plugins.platforms.yuanbao.yuanbao_sticker import search_stickers
 
     try:
         safe_limit = max(1, min(50, int(limit) if limit else 10))
@@ -222,7 +222,7 @@ async def send_sticker(
     Returns: ``{"success": bool, ...}``
     """
     from gateway.session_context import get_session_env
-    from gateway.platforms.yuanbao_sticker import (
+    from plugins.platforms.yuanbao.yuanbao_sticker import (
         get_sticker_by_id,
         get_sticker_by_name,
         get_random_sticker,

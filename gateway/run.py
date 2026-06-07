@@ -12086,7 +12086,12 @@ class GatewayRunner:
                 except ValueError:
                     limit = 5
             platform_name = str(getattr(platform, "value", platform) or "")
-            return _voice_bench_format_recent(platform_name, chat_id, limit=limit)
+            return await asyncio.to_thread(
+                _voice_bench_format_recent,
+                platform_name,
+                chat_id,
+                limit=limit,
+            )
         elif args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()

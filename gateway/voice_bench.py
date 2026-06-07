@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import re
+import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,9 @@ TEXT_PREVIEW_LIMIT = 160
 _LOGGER = logging.getLogger(__name__)
 _LAST_READ_ERROR: str | None = None
 _LAST_WRITE_ERROR: str | None = None
+_WRITE_QUEUE: queue.Queue[tuple[Path, dict[str, Any]] | None] = queue.Queue(maxsize=1000)
+_WRITE_WORKER_STARTED = False
+_WRITE_WORKER_LOCK = threading.Lock()
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[-A-Za-z0-9._~+/=]{8,}\b"),
@@ -71,13 +76,8 @@ def _safe_event(event: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-def append_event(event: dict[str, Any]) -> None:
+def _write_payload(path: Path, payload: dict[str, Any]) -> None:
     global _LAST_WRITE_ERROR
-    payload = {
-        "ts": time.time(),
-        **_safe_event(event),
-    }
-    path = bench_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
@@ -89,6 +89,53 @@ def append_event(event: dict[str, Any]) -> None:
         return
 
 
+def _writer_loop() -> None:
+    while True:
+        item = _WRITE_QUEUE.get()
+        try:
+            if item is None:
+                return
+            path, payload = item
+            _write_payload(path, payload)
+        finally:
+            _WRITE_QUEUE.task_done()
+
+
+def _ensure_write_worker() -> None:
+    global _WRITE_WORKER_STARTED
+    if _WRITE_WORKER_STARTED:
+        return
+    with _WRITE_WORKER_LOCK:
+        if _WRITE_WORKER_STARTED:
+            return
+        thread = threading.Thread(
+            target=_writer_loop,
+            name="hermes-voice-bench-writer",
+            daemon=True,
+        )
+        thread.start()
+        _WRITE_WORKER_STARTED = True
+
+
+def append_event(event: dict[str, Any]) -> None:
+    global _LAST_WRITE_ERROR
+    payload = {
+        "ts": time.time(),
+        **_safe_event(event),
+    }
+    path = bench_path()
+    if os.environ.get("HERMES_VOICE_BENCH_SYNC", "").lower() in {"1", "true", "yes"}:
+        _write_payload(path, payload)
+        return
+
+    _ensure_write_worker()
+    try:
+        _WRITE_QUEUE.put_nowait((path, payload))
+    except queue.Full:
+        _LAST_WRITE_ERROR = "write queue full"
+        _LOGGER.warning("Voice bench telemetry write queue full; dropping event")
+
+
 def recent_events(*, platform: str | None = None, chat_id: str | None = None, max_events: int = MAX_EVENTS) -> list[dict[str, Any]]:
     global _LAST_READ_ERROR
     path = bench_path()
@@ -96,7 +143,8 @@ def recent_events(*, platform: str | None = None, chat_id: str | None = None, ma
         _LAST_READ_ERROR = None
         return []
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_events:]
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            lines = list(deque(fh, maxlen=max_events))
         _LAST_READ_ERROR = None
     except OSError as exc:
         _LAST_READ_ERROR = str(exc)
@@ -141,7 +189,13 @@ def grouped_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         turn["message_id"] = item.get("message_id") or turn.get("message_id")
         stage = str(item.get("stage") or "").strip()
         if stage:
-            turn["stages"][stage] = item
+            existing = turn["stages"].get(stage)
+            if existing is None:
+                turn["stages"][stage] = item
+            elif isinstance(existing, list):
+                existing.append(item)
+            else:
+                turn["stages"][stage] = [existing, item]
     return list(turns.values())
 
 
@@ -149,6 +203,30 @@ def _ms(value: Any) -> str:
     if isinstance(value, (int, float)):
         return f"{value:.0f}ms"
     return "?"
+
+
+def _stage_item(stage: Any) -> dict[str, Any]:
+    if isinstance(stage, list):
+        result: dict[str, Any] = {}
+        elapsed = 0.0
+        has_elapsed = False
+        errors = []
+        for item in stage:
+            if not isinstance(item, dict):
+                continue
+            result.update(item)
+            value = item.get("elapsed_ms")
+            if isinstance(value, (int, float)):
+                elapsed += float(value)
+                has_elapsed = True
+            if item.get("error"):
+                errors.append(str(item.get("error")))
+        if has_elapsed:
+            result["elapsed_ms"] = elapsed
+        if errors:
+            result["error"] = "; ".join(errors)
+        return result
+    return stage if isinstance(stage, dict) else {}
 
 
 def format_recent(platform: str | None = None, chat_id: str | None = None, *, limit: int = DEFAULT_LIMIT) -> str:
@@ -162,17 +240,19 @@ def format_recent(platform: str | None = None, chat_id: str | None = None, *, li
     lines = ["Voice bench recent turns:"]
     for turn in reversed(turns):
         stages = turn.get("stages") or {}
-        stt = stages.get("stt") or {}
-        agent = stages.get("agent") or {}
-        tts = stages.get("tts") or {}
-        delivery = stages.get("delivery") or {}
+        stt = _stage_item(stages.get("stt"))
+        agent = _stage_item(stages.get("agent"))
+        tts = _stage_item(stages.get("tts"))
+        delivery = _stage_item(stages.get("delivery"))
         stage_values = [
             stage.get("elapsed_ms")
             for stage in (stt, agent, tts, delivery)
             if isinstance(stage.get("elapsed_ms"), (int, float))
         ]
         total_ms = sum(stage_values) if stage_values else None
-        status = "ok" if not any((s.get("error") for s in stages.values() if isinstance(s, dict))) else "warn"
+        status = "ok" if not any(
+            (_stage_item(s).get("error") for s in stages.values())
+        ) else "warn"
         lines.append(
             f"- {status} total={_ms(total_ms)} "
             f"stt={_ms(stt.get('elapsed_ms'))} "

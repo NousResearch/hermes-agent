@@ -10,6 +10,7 @@ from gateway import voice_bench
 def test_append_event_redacts_and_renames_text_fields(tmp_path, monkeypatch):
     path = tmp_path / "voice_bench.jsonl"
     monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    monkeypatch.setenv("HERMES_VOICE_BENCH_SYNC", "1")
 
     voice_bench.append_event(
         {
@@ -30,6 +31,7 @@ def test_append_event_redacts_and_renames_text_fields(tmp_path, monkeypatch):
 def test_format_recent_displays_safe_previews(tmp_path, monkeypatch):
     path = tmp_path / "voice_bench.jsonl"
     monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    monkeypatch.setenv("HERMES_VOICE_BENCH_SYNC", "1")
     voice_bench.append_event(
         {
             "turn_id": "voice-1",
@@ -89,6 +91,22 @@ def test_format_recent_redacts_legacy_raw_text_fields(tmp_path, monkeypatch):
     assert "authorization=[REDACTED]" in output
 
 
+def test_format_recent_aggregates_duplicate_stage_timings(tmp_path, monkeypatch):
+    path = tmp_path / "voice_bench.jsonl"
+    monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    rows = [
+        {"turn_id": "voice-dup", "stage": "stt", "platform": "telegram", "chat_id": "123", "elapsed_ms": 100},
+        {"turn_id": "voice-dup", "stage": "stt", "platform": "telegram", "chat_id": "123", "elapsed_ms": 150},
+        {"turn_id": "voice-dup", "stage": "agent", "platform": "telegram", "chat_id": "123", "elapsed_ms": 200},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+    output = voice_bench.format_recent("telegram", "123", limit=1)
+
+    assert "total=450ms" in output
+    assert "stt=250ms" in output
+
+
 def test_recent_events_ignores_malformed_rows_and_filters_chat(tmp_path, monkeypatch):
     path = tmp_path / "voice_bench.jsonl"
     monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
@@ -113,7 +131,7 @@ def test_format_recent_reports_unavailable_on_read_failure(monkeypatch):
         def exists(self):
             return True
 
-        def read_text(self, **_kwargs):
+        def open(self, *_args, **_kwargs):
             raise OSError("permission denied")
 
     monkeypatch.setattr(voice_bench, "bench_path", lambda: BrokenPath())

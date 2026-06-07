@@ -1,6 +1,7 @@
 """Tests for cron/jobs.py — schedule parsing, job CRUD, and due-job detection."""
 
 import threading
+import time
 import pytest
 from datetime import datetime, timedelta, timezone
 
@@ -970,6 +971,127 @@ class TestMarkJobRunConcurrency:
             assert updated["repeat"]["completed"] == 1, (
                 f"Job {job['id']} completed count is {updated['repeat']['completed']}, expected 1"
             )
+
+
+class TestCrudTickerConcurrency:
+    """Regression: the CRUD write paths run in the gateway process alongside
+    the cron ticker thread, which mutates jobs.json under _jobs_file_lock
+    (mark_job_run / advance_next_run / get_due_jobs).
+
+    create_job / update_job / remove_job perform their own load→mutate→save
+    cycle. If they skip _jobs_file_lock they interleave with the ticker: each
+    side reads jobs.json, mutates its in-memory copy and rewrites the whole
+    file, so whoever saves last silently clobbers the other's change — a
+    dropped job, a reverted run counter, or a resurrected one-shot.
+
+    Each test widens the load→save window (slow load_jobs) and races a CRUD
+    call against a concurrent mark_job_run; both writes must survive.
+    """
+
+    @staticmethod
+    def _slow_load(monkeypatch):
+        """Patch load_jobs to linger after reading, forcing the windows to
+        overlap so an unlocked writer reliably loses the race. Returns the
+        original loader for assertions."""
+        import cron.jobs as jobs_mod
+
+        real_load = jobs_mod.load_jobs
+
+        def slow_load():
+            data = real_load()
+            time.sleep(0.05)
+            return data
+
+        monkeypatch.setattr(jobs_mod, "load_jobs", slow_load)
+        return real_load
+
+    def _race(self, ticker_job_id, crud_call, real_load):
+        barrier = threading.Barrier(2)
+        errors: list = []
+
+        def tick():
+            try:
+                barrier.wait()
+                mark_job_run(ticker_job_id, success=True)
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        def crud():
+            try:
+                barrier.wait()
+                crud_call()
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        threads = [threading.Thread(target=tick), threading.Thread(target=crud)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Unexpected exceptions in worker threads: {errors}"
+        return real_load()
+
+    def test_create_job_does_not_clobber_mark_job_run(self, tmp_cron_dir, monkeypatch):
+        ticked = create_job(prompt="Ticker job", schedule="every 1h")
+        real_load = self._slow_load(monkeypatch)
+
+        jobs = self._race(
+            ticked["id"],
+            lambda: create_job(prompt="New job", schedule="every 1h"),
+            real_load,
+        )
+
+        # The concurrently created job must survive the ticker's save.
+        assert len(jobs) == 2, (
+            f"A concurrent create was lost: {[j['prompt'] for j in jobs]}"
+        )
+        # ...and the ticker's increment must not be reverted by create_job's save.
+        survivor = next(j for j in jobs if j["id"] == ticked["id"])
+        assert survivor["repeat"]["completed"] == 1, (
+            "mark_job_run's increment was clobbered by a racing create_job"
+        )
+
+    def test_update_job_does_not_clobber_mark_job_run(self, tmp_cron_dir, monkeypatch):
+        ticked = create_job(prompt="Ticker job", schedule="every 1h")
+        target = create_job(prompt="Edit me", schedule="every 1h")
+        real_load = self._slow_load(monkeypatch)
+
+        jobs = self._race(
+            ticked["id"],
+            lambda: update_job(target["id"], {"name": "renamed"}),
+            real_load,
+        )
+
+        by_id = {j["id"]: j for j in jobs}
+        assert by_id[target["id"]]["name"] == "renamed", (
+            "update_job's rename was clobbered by a racing mark_job_run"
+        )
+        assert by_id[ticked["id"]]["repeat"]["completed"] == 1, (
+            "mark_job_run's increment was clobbered by a racing update_job"
+        )
+
+    def test_remove_job_does_not_clobber_mark_job_run(self, tmp_cron_dir, monkeypatch):
+        ticked = create_job(prompt="Ticker job", schedule="every 1h")
+        doomed = create_job(prompt="Delete me", schedule="every 1h")
+        real_load = self._slow_load(monkeypatch)
+
+        jobs = self._race(
+            ticked["id"],
+            lambda: remove_job(doomed["id"]),
+            real_load,
+        )
+
+        ids = {j["id"] for j in jobs}
+        # The removed job must stay gone (not resurrected by the ticker's save)...
+        assert doomed["id"] not in ids, (
+            "remove_job's deletion was reverted by a racing mark_job_run"
+        )
+        # ...and the ticker's increment must survive remove_job's save.
+        survivor = next(j for j in jobs if j["id"] == ticked["id"])
+        assert survivor["repeat"]["completed"] == 1, (
+            "mark_job_run's increment was clobbered by a racing remove_job"
+        )
 
 
 class TestSaveJobOutput:

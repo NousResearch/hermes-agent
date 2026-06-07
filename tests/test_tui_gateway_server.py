@@ -2169,15 +2169,15 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
 
 
-def test_config_set_model_syncs_inference_provider_env(monkeypatch):
-    """After an explicit provider switch, HERMES_INFERENCE_PROVIDER must
-    reflect the user's choice so ambient re-resolution (credential pool
-    refresh, aux clients) picks up the new provider instead of the original
-    one persisted in config or shell env.
+def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
+    """A /model switch must NOT mutate process-global env vars. The desktop /
+    dashboard tui_gateway backend hosts every same-profile session in one
+    process; writing HERMES_INFERENCE_PROVIDER on a switch leaked the new
+    provider into every other live session's next agent rebuild. The switch
+    must instead record a per-session override and leave shared env untouched.
 
-    Regression: a TUI user switched openrouter → anthropic and the TUI kept
-    trying openrouter because the env-var-backed resolvers still saw the old
-    provider.
+    (Was test_config_set_model_syncs_inference_provider_env, which asserted the
+    leaky env-sync contract that caused the cross-session contamination bug.)
     """
 
     class _Agent:
@@ -2199,7 +2199,8 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
         warning_message="",
     )
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    session = _session(agent=_Agent())
+    server._sessions["sid"] = session
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
@@ -2207,27 +2208,36 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "claude-sonnet-4.6 --provider anthropic",
-            },
-        }
-    )
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic",
+                },
+            }
+        )
 
-    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "anthropic"
+        # Shared process env is UNCHANGED (the contamination vector is gone).
+        assert os.environ["HERMES_INFERENCE_PROVIDER"] == "openrouter"
+        # The switch was recorded as a per-session override instead.
+        assert session["model_override"]["provider"] == "anthropic"
+        assert session["model_override"]["model"] == "claude-sonnet-4.6"
+    finally:
+        server._sessions.clear()
 
 
-def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
-    """Regression for #16857: /model must set HERMES_TUI_PROVIDER even when
-    it wasn't pre-set on launch, so a later /new (which re-runs
-    _resolve_startup_runtime) honours the user's explicit provider choice
-    instead of falling through to static-catalog detection and picking a
-    coincidentally-matching native provider.
+def test_config_set_model_records_per_session_override_not_env(monkeypatch):
+    """Regression for #16857 via the per-session override (not env vars):
+    /model must record the user's explicit provider on the session so a later
+    /new (which rebuilds via _make_agent honoring model_override) honours that
+    choice — WITHOUT writing process-global env vars that would leak into
+    sibling sessions.
+
+    (Was test_config_set_model_syncs_tui_provider_unconditionally.)
     """
 
     class _Agent:
@@ -2249,7 +2259,8 @@ def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
         warning_message="",
     )
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    session = _session(agent=_Agent())
+    server._sessions["sid"] = session
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     monkeypatch.setattr(
@@ -2258,26 +2269,42 @@ def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "deepseek-v4-pro --provider custom:xuanji",
-            },
-        }
-    )
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "deepseek-v4-pro --provider custom:xuanji",
+                },
+            }
+        )
 
-    # Both env vars must reflect the user's choice. HERMES_TUI_PROVIDER is
-    # the canonical explicit-this-process carrier consumed by
-    # _resolve_startup_runtime() on /new.
-    assert os.environ["HERMES_TUI_PROVIDER"] == "custom:xuanji"
-    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "custom:xuanji"
+        # No process-global env mutation.
+        assert "HERMES_TUI_PROVIDER" not in os.environ
+        assert "HERMES_INFERENCE_PROVIDER" not in os.environ
+        # The user's explicit provider + resolved endpoint live on the session,
+        # carried into the next /new rebuild by _make_agent.
+        override = session["model_override"]
+        assert override["provider"] == "custom:xuanji"
+        assert override["model"] == "deepseek-v4-pro"
+        assert override["base_url"] == "https://xuanji.example/v1"
+        assert override["api_key"] == "sk-xuanji"
+        assert override["api_mode"] == "chat_completions"
+    finally:
+        server._sessions.clear()
 
 
-def test_config_set_model_syncs_tui_provider_env(monkeypatch):
+def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
+    """A /model switch mutates the target session's agent in place and records
+    a per-session override; it does NOT write HERMES_MODEL / HERMES_TUI_PROVIDER
+    etc. into the shared process environment.
+
+    (Was test_config_set_model_syncs_tui_provider_env.)
+    """
+
     class Agent:
         model = "gpt-5.3-codex"
         provider = "openai-codex"
@@ -2289,8 +2316,11 @@ def test_config_set_model_syncs_tui_provider_env(monkeypatch):
             self.provider = kwargs["new_provider"]
 
     agent = Agent()
-    server._sessions["sid"] = _session(agent=agent)
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
@@ -2321,9 +2351,16 @@ def test_config_set_model_syncs_tui_provider_env(monkeypatch):
         )
 
         assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
-        assert os.environ["HERMES_TUI_PROVIDER"] == "anthropic"
-        assert os.environ["HERMES_MODEL"] == "anthropic/claude-sonnet-4.6"
-        assert os.environ["HERMES_INFERENCE_MODEL"] == "anthropic/claude-sonnet-4.6"
+        # Agent switched in place...
+        assert agent.model == "anthropic/claude-sonnet-4.6"
+        assert agent.provider == "anthropic"
+        # ...override recorded on the session...
+        assert session["model_override"]["model"] == "anthropic/claude-sonnet-4.6"
+        assert session["model_override"]["provider"] == "anthropic"
+        # ...and the shared process env was NOT touched.
+        assert os.environ["HERMES_TUI_PROVIDER"] == "openai-codex"
+        assert "HERMES_MODEL" not in os.environ
+        assert "HERMES_INFERENCE_MODEL" not in os.environ
     finally:
         server._sessions.clear()
 

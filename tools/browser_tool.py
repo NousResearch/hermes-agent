@@ -2394,7 +2394,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
-                "error": "Blocked: redirect landed on a private/internal address",
+                "error": "Blocked: redirect landed on a private or internal address",
             })
 
         response = {

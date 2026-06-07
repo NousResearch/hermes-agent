@@ -422,9 +422,9 @@ class StreamingConfig:
 # that rely on the generic ``token or api_key`` check (Telegram, Discord,
 # Slack, Matrix, Mattermost, HomeAssistant) do not need an entry here.
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
-    Platform.WEIXIN: lambda cfg: bool(
-        cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
-    ),
+    # weixin migrated to a bundled plugin (plugins/platforms/weixin/); its
+    # connection check (account_id + token) is registered via is_connected on
+    # the PlatformEntry and consulted before the generic token branch.
     Platform.WHATSAPP: lambda cfg: True,  # bridge handles auth
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
     Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
@@ -521,13 +521,23 @@ class GatewayConfig:
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
         """Check whether a single platform is sufficiently configured."""
-        # Weixin requires both a token and an account_id (checked first so
-        # the generic token branch doesn't let it through without account_id).
-        if platform == Platform.WEIXIN:
-            return bool(
-                config.extra.get("account_id")
-                and (config.token or config.extra.get("token"))
-            )
+        # Plugin-registered platforms: consult the plugin's own is_connected
+        # FIRST, before the generic token branch. Some plugins (e.g. weixin,
+        # which migrated to plugins/platforms/weixin/) require more than a bare
+        # token — weixin needs account_id AND token, and it sets config.token
+        # during env-enablement, so the generic branch below would wrongly pass
+        # it on token alone. Letting the plugin's is_connected run first keeps
+        # that requirement intact without a per-platform special-case here.
+        try:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(platform.value)
+            if entry:
+                if entry.is_connected is not None:
+                    return entry.is_connected(config)
+                if entry.validate_config is not None:
+                    return entry.validate_config(config)
+        except Exception:
+            pass  # Registry not yet initialised during early import
 
         # Generic token/api_key auth covers Telegram, Discord, Slack, etc.
         if config.token or config.api_key:
@@ -537,19 +547,6 @@ class GatewayConfig:
         checker = _PLATFORM_CONNECTED_CHECKERS.get(platform)
         if checker is not None:
             return checker(config)
-
-        # Plugin-registered platforms
-        try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(platform.value)
-            if entry:
-                if entry.is_connected is not None:
-                    return entry.is_connected(config)
-                if entry.validate_config is not None:
-                    return entry.validate_config(config)
-                return True
-        except Exception:
-            pass  # Registry not yet initialised during early import
 
         return False
     

@@ -1,0 +1,53 @@
+name: weixin-platform
+label: Weixin / WeChat
+kind: platform
+version: 1.0.0
+description: >
+  Weixin (微信 / WeChat) gateway adapter for Hermes Agent. Connects to a
+  Tencent iLink bot identity via QR login and relays messages between Weixin
+  DMs / groups and the Hermes agent. Supports native text, image, video, and
+  document delivery, context-token session continuity, DM pairing approval,
+  and home-channel cron delivery.
+author: NousResearch
+requires_env:
+  - name: WEIXIN_ACCOUNT_ID
+    description: "Weixin iLink bot account ID (obtained via QR login)."
+    prompt: "Weixin account ID"
+    password: false
+  - name: WEIXIN_TOKEN
+    description: "Weixin iLink session token (obtained via QR login)."
+    prompt: "Weixin token"
+    password: true
+optional_env:
+  - name: WEIXIN_BASE_URL
+    description: "Override the default Weixin iLink API base URL."
+    prompt: "Base URL (or empty)"
+    password: false
+  - name: WEIXIN_CDN_BASE_URL
+    description: "CDN base URL for media downloads (defaults to the c2c CDN)."
+    prompt: "CDN base URL (or empty)"
+    password: false
+  - name: WEIXIN_DM_POLICY
+    description: "DM access policy: pairing, open, allowlist, or disabled."
+    prompt: "DM policy (or empty)"
+    password: false
+  - name: WEIXIN_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to DM the bot (allowlist policy)."
+    prompt: "Allowed users (or empty)"
+    password: false
+  - name: WEIXIN_GROUP_POLICY
+    description: "Group access policy: disabled, open, or allowlist."
+    prompt: "Group policy (or empty)"
+    password: false
+  - name: WEIXIN_GROUP_ALLOWED_USERS
+    description: "Comma-separated group chat IDs allowed (group allowlist policy)."
+    prompt: "Allowed groups (or empty)"
+    password: false
+  - name: WEIXIN_ALLOW_ALL_USERS
+    description: "Allow any Weixin user to trigger the bot (dev only)."
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: WEIXIN_HOME_CHANNEL
+    description: "Default chat target for cron / notification delivery."
+    prompt: "Home channel (or empty)"
+    password: false

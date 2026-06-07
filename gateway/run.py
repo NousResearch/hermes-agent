@@ -6945,12 +6945,8 @@ class GatewayRunner:
                 return None
             return WeComAdapter(config)
 
-        elif platform == Platform.WEIXIN:
-            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
-            if not check_weixin_requirements():
-                logger.warning("Weixin: aiohttp/cryptography not installed")
-                return None
-            return WeixinAdapter(config)
+        # weixin migrated to a bundled plugin (plugins/platforms/weixin/);
+        # the platform_registry check at the top of this method creates it.
 
         elif platform == Platform.MATRIX:
             from gateway.platforms.matrix import MatrixAdapter, check_matrix_requirements
@@ -14977,7 +14973,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATRIX,
         Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:

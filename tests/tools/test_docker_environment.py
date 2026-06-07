@@ -1594,6 +1594,42 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     assert "command not found" in result.get("output", "")
 
 
+@pytest.mark.parametrize(("inspect_rc", "inspect_out", "inspect_err", "reruns"), [
+    (0, "true\n", "", False),  # live container: the phrase came from the command itself
+    (1, "", "Cannot connect to the Docker daemon", False),  # unanswered probe is no confirmation
+    (1, "", "Error: No such object: fake-container-id", True),  # really removed out-of-band
+    (0, "false\n", "", True),  # stopped: recovery restarts it
+])
+def test_execute_reruns_only_when_the_daemon_confirms_the_container_gone(
+        monkeypatch, inspect_rc, inspect_out, inspect_err, reruns):
+    """Recovery re-runs the user's command, so a command whose own output says "is not running"
+    (``service nginx status``) must run once while the container is alive (salvage of #41378)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(persistent_filesystem=True, persist_across_processes=True)
+    base_run = docker_env.subprocess.run
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[1:2] == ["inspect"] and "{{.State.Running}}" in cmd:
+            calls.append((list(cmd), kwargs))
+            return subprocess.CompletedProcess(cmd, inspect_rc, stdout=inspect_out, stderr=inspect_err)
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    ran: list[str] = []
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        ran.append(command)
+        return {"output": " * nginx is not running\n", "returncode": 3}
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(docker_env.DockerEnvironment, "_recreate_container", lambda self: True)
+
+    env.execute("service nginx status")
+
+    assert len(ran) == (2 if reruns else 1)
+
+
 # ── /dev/shm size tests (ported from nanocoai/nanoclaw#2748) ─────────────────
 
 

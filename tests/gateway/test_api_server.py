@@ -894,6 +894,55 @@ class TestChatCompletionsEndpoint:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_stream_includes_reasoning_event(self, adapter):
+        """reasoning_callback deltas are emitted as custom SSE events."""
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                reasoning_cb = kwargs.get("reasoning_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if reasoning_cb:
+                    reasoning_cb("checking constraints")
+                if text_cb:
+                    await asyncio.sleep(0.05)
+                    text_cb("final answer")
+                return (
+                    {"final_response": "final answer", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            assert callable(mock_run.call_args.kwargs["reasoning_callback"])
+            assert "event: hermes.reasoning" in body
+            assert '"text": "checking constraints"' in body
+
+            # Reasoning is out-of-band metadata, not assistant delta content.
+            for line in body.splitlines():
+                if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                    continue
+                try:
+                    chunk = _json.loads(line[len("data: "):])
+                except _json.JSONDecodeError:
+                    continue
+                if chunk.get("object") == "chat.completion.chunk":
+                    for choice in chunk.get("choices", []):
+                        assert choice.get("delta", {}).get("content") != "checking constraints"
+
+    @pytest.mark.asyncio
     async def test_stream_string_false_returns_json_completion(self, adapter):
         """Quoted false must not route chat completions into SSE mode."""
         mock_result = {

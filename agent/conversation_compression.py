@@ -644,10 +644,10 @@ def compress_context(
                 # per-session lookup with no parent walk, so without this an
                 # active goal silently dies at the boundary (#33618).
                 try:
-                    from hermes_cli.goals import migrate_goal_to_session
-                    migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
+                    from hermes_cli.goals import migrate_goal_session
+                    migrate_goal_session(old_session_id, agent.session_id, db=agent._session_db)
                 except Exception as _goal_err:
-                    logger.debug("Could not migrate goal on compression: %s", _goal_err)
+                    logger.debug("GoalManager migration on compression failed: %s", _goal_err)
                 # Auto-number the title for the continuation session
                 if old_title:
                     try:

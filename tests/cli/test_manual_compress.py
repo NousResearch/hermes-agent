@@ -111,6 +111,46 @@ def test_manual_compress_syncs_session_id_after_split():
     assert shell._pending_title is None
 
 
+def test_manual_compress_requests_goal_migration_after_session_split():
+    """CLI /compress should preserve goals even when compression is mocked.
+
+    The real core compression path migrates the goal, but the CLI session-id
+    sync is also a rebind seam. Keeping a fallback call here prevents future
+    edits from reintroducing the old parent-goal orphan in manual /compress.
+    """
+    shell = _make_cli()
+    history = _make_history()
+    old_id = shell.session_id
+    new_child_id = "20260101_000000_child1"
+    compressed = [
+        {"role": "user", "content": "[CONTEXT COMPACTION]"},
+        history[-1],
+    ]
+    db = MagicMock()
+
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.tools = None
+    shell.agent.session_id = old_id
+    shell.agent._session_db = db
+
+    def _fake_compress(*args, **kwargs):
+        shell.agent.session_id = new_child_id
+        return (compressed, "")
+
+    shell.agent._compress_context.side_effect = _fake_compress
+
+    with (
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+        patch("hermes_cli.goals.migrate_goal_session") as migrate_goal_session,
+    ):
+        shell._manual_compress()
+
+    migrate_goal_session.assert_called_once_with(old_id, new_child_id, db=db)
+
+
 def test_manual_compress_flushes_compressed_history_to_child_session_db():
     """Manual /compress must persist the handoff in the continuation DB.
 

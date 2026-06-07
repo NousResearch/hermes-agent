@@ -8638,7 +8638,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     getattr(self.agent, "session_id", None)
                     and self.agent.session_id != self.session_id
                 ):
+                    old_session_id = self.session_id
                     self.session_id = self.agent.session_id
+                    try:
+                        from hermes_cli.goals import migrate_goal_session
+
+                        migrate_goal_session(
+                            old_session_id,
+                            self.session_id,
+                            db=getattr(self.agent, "_session_db", None),
+                        )
+                    except Exception as goal_err:
+                        logger.debug("GoalManager migration on manual /compress failed: %s", goal_err)
                     self._pending_title = None
                     # Manual /compress replaces conversation_history with a new
                     # compressed handoff for the child session. Persist it from

@@ -90,6 +90,58 @@ class TestCompressionBoundaryHook:
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
 
+    def test_compression_boundary_migrates_active_goal_to_child_session(self):
+        from hermes_cli.goals import GoalState
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "tail question"},
+            ]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+
+            original_sid = agent.session_id
+            db.ensure_session(original_sid, source="cli", model=agent.model)
+            state = GoalState(
+                goal="keep the standing goal alive",
+                turns_used=3,
+                last_verdict="continue",
+                last_reason="more work remains",
+                subgoals=["preserve subgoal metadata"],
+            )
+            db.set_meta(f"goal:{original_sid}", state.to_json())
+
+            agent._compress_context(
+                [{"role": "user", "content": f"m{i}"} for i in range(10)],
+                "sys",
+                approx_tokens=10_000,
+            )
+
+            assert agent.session_id != original_sid
+            child_raw = db.get_meta(f"goal:{agent.session_id}")
+            old_raw = db.get_meta(f"goal:{original_sid}")
+            child = GoalState.from_json(child_raw) if child_raw else None
+            old = GoalState.from_json(old_raw) if old_raw else None
+            assert child is not None
+            assert child.goal == state.goal
+            assert child.turns_used == state.turns_used
+            assert child.last_verdict == state.last_verdict
+            assert child.last_reason == state.last_reason
+            assert child.subgoals == state.subgoals
+            assert old is not None
+            assert old.status == "cleared"
+            assert f"migrated to {agent.session_id}" in (old.paused_reason or "")
+
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
         from run_agent import AIAgent

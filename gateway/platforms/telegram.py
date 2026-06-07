@@ -2943,9 +2943,7 @@ class TelegramAdapter(BasePlatformAdapter):
         _AUTH_BADGE = {
             "google-gemini-cli": "🔐OAuth",
             "minimax-oauth": "🔐OAuth",
-            "openai-codex": "🔐OAuth",
-            "opencode-go": "🔐Sub",
-            "opencode-zen": "🔐Sub",
+            "opencode-go": "🔐OAuth",
         }
 
         def _provider_button(p):
@@ -3178,9 +3176,7 @@ class TelegramAdapter(BasePlatformAdapter):
             _AUTH_BADGE = {
                 "google-gemini-cli": "🔐OAuth",
                 "minimax-oauth": "🔐OAuth",
-                "openai-codex": "🔐OAuth",
-                "opencode-go": "🔐Sub",
-                "opencode-zen": "🔐Sub",
+                "opencode-go": "🔐OAuth",
             }
             buttons = []
             for p in members:

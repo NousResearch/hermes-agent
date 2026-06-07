@@ -706,6 +706,71 @@ class TestCustomProviderCompatibility:
         # custom_providers removed by migration — runtime reads via compat layer
         assert "custom_providers" not in raw
 
+    def test_v11_upgrade_preserves_custom_provider_model_metadata(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        model_map = {
+            "kimi-k2.6": {"context_length": 262144},
+            "moonshotai/Kimi-K2.6-ACED": {"context_length": 131072},
+        }
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "custom_providers": [
+                        {
+                            "name": "Kimi Coding Plan",
+                            "base_url": "https://api.kimi.example.com/coding",
+                            "api_key_env": "KIMI_CODING_API_KEY",
+                            "api_mode": "anthropic_messages",
+                            "model": "kimi-k2.6",
+                            "models": model_map,
+                            "context_length": 262144,
+                            "rate_limit_delay": 0.25,
+                            "discover_models": False,
+                            "extra_body": {
+                                "chat_template_kwargs": {"enable_thinking": False}
+                            },
+                        },
+                        {
+                            "name": "List Models",
+                            "base_url": "https://list.example.com/v1",
+                            "models": ["alpha", "beta"],
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            compatible = get_compatible_custom_providers(raw)
+
+        assert "custom_providers" not in raw
+        provider = raw["providers"]["kimi-coding-plan"]
+        assert provider["api"] == "https://api.kimi.example.com/coding"
+        assert provider["key_env"] == "KIMI_CODING_API_KEY"
+        assert provider["transport"] == "anthropic_messages"
+        assert provider["default_model"] == "kimi-k2.6"
+        assert provider["models"] == model_map
+        assert provider["context_length"] == 262144
+        assert provider["rate_limit_delay"] == 0.25
+        assert provider["discover_models"] is False
+        assert provider["extra_body"] == {
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+        assert raw["providers"]["list-models"]["models"] == {
+            "alpha": {},
+            "beta": {},
+        }
+
+        compatible_provider = next(
+            entry for entry in compatible if entry["provider_key"] == "kimi-coding-plan"
+        )
+        assert compatible_provider["models"] == model_map
+        assert compatible_provider["key_env"] == "KIMI_CODING_API_KEY"
+
     def test_providers_dict_resolves_at_runtime(self, tmp_path):
         """After migration deleted custom_providers, get_compatible_custom_providers
         still finds entries from the providers dict."""

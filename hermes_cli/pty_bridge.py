@@ -241,25 +241,74 @@ class PtyBridge:
     # -- teardown ---------------------------------------------------------
 
     def close(self) -> None:
-        """Terminate the child (SIGTERM → 0.5s grace → SIGKILL) and close fds.
+        """Terminate the child (SIGTERM → grace → SIGKILL) and close fds.
 
         Idempotent.  Reaping the child is important so we don't leak
         zombies across the lifetime of the dashboard process.
+
+        Signal escalation rationale (2026-05-24):
+
+        Old sequence ``SIGHUP → SIGTERM → SIGKILL`` with 0.5s per stage
+        races the TUI gateway's own shutdown handler. Reproduction:
+        opening a second dashboard tab while the first is mid-vision
+        triggers the first tab's WebSocketDisconnect → ``bridge.close()``,
+        which fires SIGHUP and SIGTERM in the same second. The
+        ``hermes --tui`` Node process and its spawned ``tui_gateway.entry``
+        Python child (parent=Node) both end up in
+        ``tui_gateway_crash.log`` recording two signals at the same
+        timestamp because the 0.5s grace is shorter than the cascade
+        of node death → child SIGHUP from parent death → Python signal
+        handler atexit drain.
+
+        ``tui_gateway/entry.py``'s signal handler installs a ~1s daemon
+        timer (``_DEFAULT_SHUTDOWN_GRACE_S = 1.0``, configurable via
+        ``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S``) for atexit before
+        falling back to ``os._exit(0)``. 0.5s per stage is shorter
+        than that grace, so the cascade hits the child mid-cleanup.
+
+        New sequence: send SIGTERM once and give the child enough time
+        for its own graceful shutdown before escalating to SIGKILL.
+        SIGHUP is dropped — closing the master fd in
+        ``self._proc.close(force=True)`` already delivers EOF on stdin,
+        which is the kernel-level signal that the controlling terminal
+        is gone. Adding SIGHUP on top duplicates the signal and races
+        the gateway's shutdown handler.
+
+        Grace is tunable via ``HERMES_PTY_BRIDGE_TERM_GRACE_S`` for
+        callers that need faster teardown (tests) or slower (heavy
+        gateway state with cron jobs / long-running tools mid-flight).
         """
         if self._closed:
             return
         self._closed = True
 
-        # SIGHUP is the conventional "your terminal went away" signal.
-        # We escalate if the child ignores it.
-        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        # Default to 2.0s — enough for the TUI gateway's 1s atexit
+        # window plus IPC/socket cleanup, while still being snappy for
+        # interactive tab-close. Override for tests via
+        # HERMES_PTY_BRIDGE_TERM_GRACE_S=<float>.
+        try:
+            term_grace_s = float(
+                os.environ.get("HERMES_PTY_BRIDGE_TERM_GRACE_S", "2.0")
+            )
+        except (TypeError, ValueError):
+            term_grace_s = 2.0
+        if term_grace_s <= 0:
+            term_grace_s = 2.0
+
+        # SIGTERM with grace, then SIGKILL.  windows-footgun: ok — POSIX-only
+        # module (imports fcntl/termios/ptyprocess at top, _PTY_AVAILABLE
+        # gates Windows out).
+        for sig, deadline_s in (
+            (signal.SIGTERM, term_grace_s),
+            (signal.SIGKILL, 0.5),
+        ):
             if not self._proc.isalive():
                 break
             try:
                 self._proc.kill(sig)
             except Exception:
                 pass
-            deadline = time.monotonic() + 0.5
+            deadline = time.monotonic() + deadline_s
             while self._proc.isalive() and time.monotonic() < deadline:
                 time.sleep(0.02)
 

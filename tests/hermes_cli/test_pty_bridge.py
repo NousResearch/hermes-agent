@@ -211,6 +211,112 @@ class TestPtyBridgeClose:
                 break
         assert reaped, f"pid {pid} still running after close()"
 
+    def test_close_does_not_send_sighup(self, monkeypatch):
+        """Regression: ``close()`` used to fire SIGHUP → SIGTERM → SIGKILL
+        with 0.5s per stage. The first two signals landed on the child
+        within the same second, racing the TUI gateway's own
+        ``_log_signal`` shutdown handler (`tui_gateway/entry.py`) which
+        installs a 1s daemon timer for atexit drain.
+
+        Reproduction (real-world, captured 2026-05-24):
+        Opening a second ``hermes dashboard --tui`` browser tab while
+        the first is mid-vision triggers the first tab's
+        ``WebSocketDisconnect`` → ``bridge.close()``. The 0.5s-per-stage
+        cascade resulted in ``tui_gateway_crash.log`` recording both
+        SIGHUP and SIGTERM at the same timestamp.
+
+        Fix: drop SIGHUP entirely. Closing the master fd in
+        ``self._proc.close(force=True)`` already delivers EOF on the
+        child's stdin, which is the kernel's way of signalling the
+        controlling terminal is gone — sending SIGHUP on top duplicates
+        the signal and races the child's own shutdown handler.
+        """
+        # Set a very short grace so the test runs fast; SIGHUP behavior
+        # is independent of grace duration.
+        monkeypatch.setenv("HERMES_PTY_BRIDGE_TERM_GRACE_S", "0.2")
+
+        # Use a tempfile marker the child writes if it receives SIGHUP.
+        import tempfile
+        marker = tempfile.NamedTemporaryFile(
+            prefix="pty_bridge_sighup_", suffix=".marker", delete=False
+        )
+        marker.close()
+        os.unlink(marker.name)  # we want the SIGHUP handler to create it
+
+        # Child: trap SIGHUP and write the marker. Trap SIGTERM and exit
+        # cleanly. If close() sends SIGHUP first (old behavior), the
+        # marker will be created. If close() sends only SIGTERM (new
+        # behavior), the marker won't exist.
+        bridge = PtyBridge.spawn([
+            "/bin/sh", "-c",
+            f"trap 'echo HUP > {marker.name}; exit 0' HUP; "
+            "trap 'exit 0' TERM; "
+            "while true; do sleep 0.05; done",
+        ])
+        time.sleep(0.2)  # let trap install
+        bridge.close()
+        time.sleep(0.3)  # give the SIGHUP handler time to create marker
+
+        try:
+            assert not os.path.exists(marker.name), (
+                "SIGHUP marker was created — close() still sends SIGHUP "
+                "(should be SIGTERM only, with master-fd-close as the "
+                "controlling-terminal-gone signal)"
+            )
+        finally:
+            try:
+                os.unlink(marker.name)
+            except FileNotFoundError:
+                pass
+
+    def test_close_grace_lets_child_finish_atexit(self, monkeypatch):
+        """SIGTERM grace must let the child run a small graceful shutdown
+        before SIGKILL. Default grace is 2.0s in production; tunable for
+        tests via HERMES_PTY_BRIDGE_TERM_GRACE_S.
+
+        Verifies a child trapping SIGTERM and exiting cleanly inside the
+        grace window is reaped naturally — not killed by SIGKILL.
+        """
+        monkeypatch.setenv("HERMES_PTY_BRIDGE_TERM_GRACE_S", "1.0")
+
+        # Child traps SIGTERM, prints a marker, exits 0 after 0.2s —
+        # well inside 1.0s grace. If close() incorrectly delivers SIGKILL
+        # before the grace expires, the trap output would never reach
+        # stdout (SIGKILL is uncatchable).
+        bridge = PtyBridge.spawn([
+            "/bin/sh", "-c",
+            "trap 'echo TERM_TRAPPED; sleep 0.2; exit 0' TERM; "
+            "while true; do sleep 0.05; done",
+        ])
+        time.sleep(0.2)  # let trap install
+        pid = bridge.pid
+
+        before_close = time.monotonic()
+        bridge.close()
+        elapsed = time.monotonic() - before_close
+
+        # The child should have exited via SIGTERM trap in < 1.0s
+        # (0.2s sleep + ~0.05s overhead). If we ran the full grace +
+        # SIGKILL stage, elapsed would be > 1.0s. Allow generous slack
+        # for slow CI: < 1.5s confirms SIGKILL never fired.
+        assert elapsed < 1.5, (
+            f"close() took {elapsed:.2f}s — SIGKILL likely fired before "
+            f"SIGTERM grace expired. Expected child to exit via SIGTERM "
+            f"trap in ~0.25s."
+        )
+
+        # Confirm reaped.
+        deadline = time.monotonic() + 1.0
+        reaped = False
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.02)
+            except ProcessLookupError:
+                reaped = True
+                break
+        assert reaped, f"pid {pid} still running after close()"
+
 
 @skip_on_windows
 class TestPtyBridgeEnv:

@@ -84,6 +84,8 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `skills` | No | List of skill names to load for the agent run. |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
+| `model` | No | Model name override for this route's agent runs (e.g. `claude-sonnet-4-20250514`, `gpt-5.4`). When set, the gateway uses this model instead of the global default. Requires `provider` or resolves via the gateway's auto-detection. |
+| `provider` | No | Provider override for this route's agent runs (e.g. `anthropic`, `openai-codex`). Resolved via the `/model` pipeline — OAuth providers like `openai-codex` get their real endpoint and credentials automatically. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
 
 ### Full example
@@ -327,6 +329,61 @@ hermes webhook subscribe antenna-matches \
 
 ---
 
+## Per-Route Provider/Model Override {#per-route-override}
+
+By default, webhook-triggered agent runs use the gateway's globally configured model and provider. You can override these on a per-route basis so that specific webhooks route through a different provider — for example, routing a CI webhook through `openai-codex` (which supports MCP tool execution over OAuth) while other webhooks use the default provider.
+
+### How it works
+
+When a route specifies `provider` and/or `model`, the webhook adapter attaches the override to the dispatched `MessageEvent`. The gateway runner resolves it through the same `switch_model` pipeline used by the `/model` slash command — this means OAuth providers (like `openai-codex`) are fully resolved with correct `base_url` and credentials, not just a label swap.
+
+The override is session-scoped: it applies only to the agent run triggered by that webhook, then auto-clears when the session resets.
+
+### Static route example
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        codex-ci:
+          secret: "ci-webhook-secret"
+          prompt: "Analyze the build result: {__raw__}"
+          provider: "openai-codex"
+          model: "gpt-5.4"
+          deliver: "log"
+```
+
+### Dynamic subscription via CLI
+
+```bash
+hermes webhook subscribe codex-ci \
+  --provider openai-codex \
+  --model gpt-5.4 \
+  --secret ci-webhook-secret \
+  --deliver log \
+  --prompt "Analyze the build result: {__raw__}"
+```
+
+The `--provider` and `--model` flags are persisted in the subscription and shown in `hermes webhook list`:
+
+```
+◆ codex-ci
+    URL:     http://localhost:8644/webhooks/codex-ci
+    Events:  (all)
+    Deliver: log
+    Override: provider=openai-codex model=gpt-5.4
+```
+
+### Partial overrides
+
+- `provider` only: the gateway auto-detects the default model for that provider.
+- `model` only: resolves the model on the current default provider.
+- Both: uses the exact provider and model specified.
+
+---
+
 ## Dynamic Subscriptions (CLI) {#dynamic-subscriptions}
 
 In addition to static routes in `config.yaml`, you can create webhook subscriptions dynamically using the `hermes webhook` CLI command. This is especially useful when the agent itself needs to set up event-driven triggers.
@@ -340,6 +397,17 @@ hermes webhook subscribe github-issues \
   --deliver telegram \
   --deliver-chat-id "-100123456789" \
   --description "Triage new GitHub issues"
+```
+
+Optional flags `--provider` and `--model` override the gateway's default LLM backend for this subscription (see [Per-Route Provider/Model Override](#per-route-override)):
+
+```bash
+hermes webhook subscribe codex-ci \
+  --provider openai-codex \
+  --model gpt-5.4 \
+  --secret ci-webhook-secret \
+  --deliver log \
+  --prompt "Analyze the build result: {__raw__}"
 ```
 
 This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.

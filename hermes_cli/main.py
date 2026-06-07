@@ -13792,6 +13792,18 @@ def main():
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"
     )
     wh_sub.add_argument(
+        "--provider",
+        default="",
+        help="Override LLM provider for this webhook (e.g. openai-codex, anthropic). "
+        "Defaults to the gateway's auto-selected provider.",
+    )
+    wh_sub.add_argument(
+        "--model",
+        default="",
+        help="Override model for this webhook (e.g. gpt-5.4, claude-sonnet-4-6). "
+        "Used together with --provider; defaults to the provider's default model.",
+    )
+    wh_sub.add_argument(
         "--deliver-only",
         action="store_true",
         help="Skip the agent — deliver the rendered prompt directly as the "

@@ -180,6 +180,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("agent", "gateway_timeout"),
         ("agent", "tool_use_enforcement"),
         ("terminal", "backend"),
+        ("terminal", "shell"),
         ("terminal", "docker_image"),
         ("terminal", "persistent_shell"),
         ("browser", "allow_private_urls"),

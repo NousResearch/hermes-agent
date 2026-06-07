@@ -913,6 +913,13 @@ DEFAULT_CONFIG = {
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Shell used for terminal() command execution.  When empty
+        # (default), Hermes auto-detects from ``$SHELL`` and falls back
+        # to ``/bin/bash``.  Set to an absolute path to override:
+        #   shell: /bin/zsh
+        #   shell: /opt/homebrew/bin/fish
+        #   shell: /usr/bin/xonsh
+        "shell": "",
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.

@@ -236,8 +236,58 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     return sanitized
 
 
-def _find_bash() -> str:
-    """Find bash for command execution."""
+def _read_terminal_shell_config() -> str:
+    """Return the configured shell path from ``terminal.shell``.
+
+    Returns empty string when not configured (auto-detect mode).
+    Best-effort — returns "" on any failure.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        shell = terminal_cfg.get("shell") or ""
+        return str(shell) if shell else ""
+    except Exception:
+        return ""
+
+
+def _resolve_terminal_shell() -> str:
+    """Resolve the shell for command execution.
+
+    Priority:
+    1. ``terminal.shell`` config (explicit override)
+    2. ``$SHELL`` environment variable (user's login shell)
+    3. ``/bin/bash`` (POSIX fallback)
+    """
+    configured = _read_terminal_shell_config()
+    if configured:
+        resolved = shutil.which(configured) or (
+            configured if os.path.isfile(configured) else None
+        )
+        if resolved:
+            return resolved
+        logger.warning(
+            "terminal.shell %r not found on PATH or disk; "
+            "falling back to auto-detect.",
+            configured,
+        )
+
+    if not _IS_WINDOWS:
+        return (
+            os.environ.get("SHELL")
+            or shutil.which("bash")
+            or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
+            or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+            or "/bin/sh"
+        )
+    # Windows: delegate to existing _find_bash (Git Bash lookup)
+    return _find_bash_legacy()
+
+
+def _find_bash_legacy() -> str:
+    """Original bash-finding logic (Windows Git Bash + POSIX bash fallback)."""
     if not _IS_WINDOWS:
         return (
             shutil.which("bash")
@@ -290,6 +340,11 @@ def _find_bash() -> str:
 
 
 # Backward compat — process_registry.py imports this name
+def _find_bash() -> str:
+    """Find shell for command execution (respects terminal.shell config)."""
+    return _resolve_terminal_shell()
+
+
 _find_shell = _find_bash
 
 
@@ -400,7 +455,18 @@ def _resolve_shell_init_files() -> list[str]:
         # alone misses nvm/n PATH additions placed below that guard. We
         # still include it so users who put PATH logic in bashrc (and
         # stripped the guard, or never had one) keep working.
-        candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
+        shell = _read_terminal_shell_config()
+        if shell and shell.endswith("/zsh"):
+            # zsh sources ~/.zshenv on ALL invocations (including non-interactive),
+            # ~/.zprofile for login shells, and ~/.zshrc for interactive shells.
+            # For non-interactive login mode, zshenv + zprofile are the key ones.
+            candidates.extend(["~/.zshenv", "~/.zprofile", "~/.zshrc"])
+        elif shell and shell.endswith("/fish"):
+            # fish handles its own config via ~/.config/fish/config.fish
+            # when invoked as login shell.  No bash-style source needed.
+            pass
+        else:
+            candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
 
     resolved: list[str] = []
     for raw in candidates:
@@ -500,6 +566,9 @@ class LocalEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        is_fish = bash.endswith("/fish")
+        is_zsh = bash.endswith("/zsh")
+
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -509,8 +578,27 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             init_files = _resolve_shell_init_files()
             if init_files:
-                cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+                if is_fish:
+                    # fish can't use `set +e` / `|| true` — source files
+                    # directly; fish's error handling is different.
+                    source_lines = " ; ".join(
+                        f"source {p}" for p in init_files
+                    )
+                    cmd_string = f"{source_lines} ; {cmd_string}"
+                elif is_zsh:
+                    # zsh supports the same bash-style guards
+                    cmd_string = _prepend_shell_init(cmd_string, init_files)
+                else:
+                    cmd_string = _prepend_shell_init(cmd_string, init_files)
+
+        # fish rejects `-l -c` as incompatible options (since fish 3.x);
+        # use `-c` only.  zsh and bash accept `-l -c`.
+        if is_fish:
+            args = [bash, "-c", cmd_string]
+        elif login:
+            args = [bash, "-l", "-c", cmd_string]
+        else:
+            args = [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

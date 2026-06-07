@@ -380,6 +380,15 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = hermes_home
+        # Set the ContextVar override too so code paths that check
+        # ``get_hermes_home_override()`` before the env var (e.g. cron
+        # scheduler, TUI gateway, web server) see the profile directory.
+        # Without this, ``get_hermes_home()`` would fall through to the
+        # env var check, which works for the current process but NOT for
+        # subprocesses or threads where the ContextVar was set before
+        # _apply_profile_override ran.
+        from hermes_constants import set_hermes_home_override
+        set_hermes_home_override(hermes_home)
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):

@@ -38,6 +38,27 @@ from typing import Any, Dict, List, Optional, Union
 # so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
+# Bound individual message bodies returned by discovery/scroll.  A single
+# historical tool result or pasted log can otherwise make one search response
+# tens of thousands of characters even though the caller only needs enough
+# context to decide whether to scroll further.
+_MAX_MESSAGE_CONTENT_CHARS = 2_000
+
+
+def _truncate_message_content(content: Any) -> Any:
+    """Return *content* capped for session-search result payloads."""
+    if not isinstance(content, str) or len(content) <= _MAX_MESSAGE_CONTENT_CHARS:
+        return content
+    omitted = len(content) - _MAX_MESSAGE_CONTENT_CHARS
+    head = _MAX_MESSAGE_CONTENT_CHARS // 2
+    tail = _MAX_MESSAGE_CONTENT_CHARS - head
+    return (
+        content[:head]
+        + f"\n\n... [session_search content truncated: {omitted} chars omitted; "
+        + "use the message id to orient follow-up lookup if exact text is needed] ...\n\n"
+        + content[-tail:]
+    )
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -88,12 +109,17 @@ def _resolve_to_parent(db, session_id: str) -> str:
 
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
+    original_content = m.get("content")
+    shaped_content = _truncate_message_content(original_content)
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": shaped_content,
         "timestamp": m.get("timestamp"),
     }
+    if isinstance(original_content, str) and shaped_content != original_content:
+        entry["content_truncated"] = True
+        entry["original_content_chars"] = len(original_content)
     if m.get("tool_name"):
         entry["tool_name"] = m.get("tool_name")
     if m.get("tool_calls"):

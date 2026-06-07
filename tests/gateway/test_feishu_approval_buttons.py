@@ -58,6 +58,7 @@ def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
+    user_id: str = "",
     token: str = "tok_abc",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
@@ -65,7 +66,7 @@ def _make_card_action_data(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -393,6 +394,23 @@ class TestResolveApproval:
         assert 5 in adapter._approval_state
 
     @pytest.mark.asyncio
+    async def test_resolves_with_cached_user_id_allowlist(self):
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"u_user1"}
+        adapter._cache_sender_identity(SimpleNamespace(open_id="ou_user1", user_id="u_user1", union_id="on_user1"))
+        adapter._approval_state[7] = {
+            "session_key": "sess-7",
+            "message_id": "msg_007",
+            "chat_id": "oc_12345",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._resolve_approval(7, "once", "Alice", open_id="ou_user1", chat_id="oc_12345")
+
+        mock_resolve.assert_called_once_with("sess-7", "once")
+        assert 7 not in adapter._approval_state
+
+    @pytest.mark.asyncio
     async def test_chat_mismatch_does_not_resolve(self):
         adapter = _make_adapter()
         adapter._approval_state[6] = {
@@ -523,6 +541,53 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert card["header"]["template"] == "red"
         assert "Denied" in card["header"]["title"]["content"]
+
+    def test_returns_card_for_approve_action_with_cached_user_id_allowlist(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"u_bob"}
+        adapter._cache_sender_identity(SimpleNamespace(open_id="ou_bob", user_id="u_bob", union_id="on_bob"))
+        adapter._approval_state[7] = {
+            "session_key": "sess-7",
+            "message_id": "msg-7",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 7},
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        assert "Approved once" in response.card.data["header"]["title"]["content"]
+
+    def test_returns_card_for_approve_action_when_operator_includes_user_id(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"u_bob"}
+        adapter._approval_state[8] = {
+            "session_key": "sess-8",
+            "message_id": "msg-8",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 8},
+            open_id="ou_bob",
+            user_id="u_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
 
     def test_ignores_missing_approval_id(self, _patch_callback_card_types):
         adapter = _make_adapter()

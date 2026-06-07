@@ -1439,6 +1439,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
+        self._sender_identity_alias_cache: Dict[str, frozenset[str]] = {}  # sender_id → all known aliases
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
@@ -2572,15 +2573,50 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
+    def _sender_identity_aliases(self, *ids: Optional[str]) -> frozenset[str]:
+        """Return known Feishu identity aliases for any provided id."""
+        direct = frozenset(str(v).strip() for v in ids if str(v or "").strip())
+        if not direct:
+            return frozenset()
+        expanded = set(direct)
+        for value in direct:
+            expanded.update(getattr(self, "_sender_identity_alias_cache", {}).get(value, ()))
+        return frozenset(expanded)
+
+    def _cache_sender_identity(self, sender_id: Any) -> None:
+        """Remember equivalent Feishu user ids seen on normal message events.
+
+        Card-action callbacks commonly include only ``open_id``.  Normal
+        message events can include ``open_id``, tenant-scoped ``user_id``, and
+        ``union_id`` together, so cache that relationship for later approval
+        button allowlist checks.
+        """
+        aliases = frozenset(
+            str(v).strip()
+            for v in (
+                getattr(sender_id, "open_id", None),
+                getattr(sender_id, "user_id", None),
+                getattr(sender_id, "union_id", None),
+            )
+            if str(v or "").strip()
+        )
+        if len(aliases) < 2:
+            return
+        cache = getattr(self, "_sender_identity_alias_cache", None)
+        if cache is None:
+            cache = self._sender_identity_alias_cache = {}
+        for value in aliases:
+            cache[value] = aliases
+
+    def _is_interactive_operator_authorized(self, open_id: str, user_id: str = "") -> bool:
         """Return whether this card-action operator may answer gated prompts."""
-        normalized = str(open_id or "").strip()
-        if not normalized:
+        operator_ids = self._sender_identity_aliases(open_id, user_id)
+        if not operator_ids:
             return False
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
             return True
-        return "*" in allowed_ids or normalized in allowed_ids
+        return "*" in allowed_ids or bool(operator_ids & allowed_ids)
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2596,7 +2632,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        user_id = str(getattr(operator, "user_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
         if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
@@ -2655,7 +2692,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._is_interactive_operator_authorized(open_id):
+        user_id = str(getattr(operator, "user_id", "") or "")
+        if not self._is_interactive_operator_authorized(open_id, user_id):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -3862,6 +3900,7 @@ class FeishuAdapter(BasePlatformAdapter):
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
+        self._cache_sender_identity(sender_id)
         # Prefer tenant-scoped user_id; fall back to app-scoped open_id.
         primary_id = user_id or open_id
         # bot/v3/bots/basic_batch only accepts open_id.
@@ -4095,7 +4134,7 @@ class FeishuAdapter(BasePlatformAdapter):
         """Per-group policy gate for non-DM traffic."""
         sender_open_id = getattr(sender_id, "open_id", None)
         sender_user_id = getattr(sender_id, "user_id", None)
-        sender_ids = {sender_open_id, sender_user_id} - {None}
+        sender_ids = self._sender_identity_aliases(sender_open_id, sender_user_id)
 
         if sender_ids and self._admins and (sender_ids & self._admins):
             return True

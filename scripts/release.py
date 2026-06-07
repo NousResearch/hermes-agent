@@ -316,6 +316,7 @@ AUTHOR_MAP = {
     "manishbyatroy@gmail.com": "manishbyatroy",
     "manusjs@users.noreply.github.com": "manus-use",  # PR #51129 salvage (Discord thread-starter dedup, #51057)
     "chilltulpa@gmail.com": "TheGardenGallery",
+    "rod.boev@gmail.com": "rodboev",
     "al@randomsnowflake.me": "randomsnowflake",
     "zakame@zakame.net": "zakame",
     "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",

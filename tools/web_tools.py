@@ -224,8 +224,9 @@ def _ddgs_package_available() -> bool:
     return ddgs_package_available()
 
 
+# Backward-compat alias for older tests / external callers that imported
+# the previous name. New code should call ``_ddgs_package_available``.
 def _ddgs_package_importable() -> bool:
-    """Backward-compat alias for :func:`_ddgs_package_available`."""
     return _ddgs_package_available()
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────

@@ -126,12 +126,10 @@ def _browser_url_security_block(url: str, *, auto_local_this_nav: bool = False) 
             ),
         }
 
-    if not _is_local_backend() and _is_always_blocked_url(url):
+    if _is_always_blocked_url(url):
         return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
 
     if _is_camofox_mode():
-        if _is_always_blocked_url(url):
-            return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
         if not _is_safe_url(url):
             return {"success": False, "error": "Blocked: URL targets a private or internal address"}
 
@@ -2298,23 +2296,19 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # 169.254.169.254 / metadata.google.internal / ECS task metadata
     # via a browser, and routing those to a local Chromium sidecar
     # on an EC2/GCP/Azure host exfiltrates IAM credentials (#16234).
-    if not _is_local_backend() and _is_always_blocked_url(url):
+    # Local backends are NOT exempt — an agent on EC2 with a local
+    # Chromium and allow_private_urls=true could otherwise hit IMDS.
+    if _is_always_blocked_url(url):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL targets a cloud metadata endpoint",
         })
 
-    if _is_camofox_mode():
-        if _is_always_blocked_url(url):
-            return json.dumps({
-                "success": False,
-                "error": "Blocked: URL targets a cloud metadata endpoint",
-            })
-        if not _is_safe_url(url):
-            return json.dumps({
-                "success": False,
-                "error": "Blocked: URL targets a private or internal address",
-            })
+    if _is_camofox_mode() and not _is_safe_url(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a private or internal address",
+        })
 
     if (
         not auto_local_this_nav
@@ -2378,11 +2372,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # and for the hybrid local sidecar (we're already on a local browser
         # hitting a private URL by design).
         # Always-blocked floor (cloud metadata / IMDS) is enforced even
-        # when auto_local_this_nav is true — see pre-nav check for
-        # rationale (#16234).
+        # when auto_local_this_nav is true and for local backends — see
+        # pre-nav check for rationale (#16234).
         if (
-            not _is_local_backend()
-            and final_url
+            final_url
             and final_url != url
             and _is_always_blocked_url(final_url)
         ):

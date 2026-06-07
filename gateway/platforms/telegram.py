@@ -559,6 +559,50 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 
+    def _is_message_sender_authorized(self, message: Message) -> bool:
+        """Check if the message sender is authorized before any processing.
+        
+        This early auth check (at adapter level) prevents unauthorized users
+        from having their prompts processed, batched, or injected into the
+        agent's context (fixes #40863).
+        
+        Returns True if:
+        - Message is from a group/forum chat (auth is chat-based, not user-based)
+        - Message sender is authorized via TELEGRAM_ALLOWED_USERS or other auth
+        - All users are allowed (TELEGRAM_ALLOW_ALL_USERS or GATEWAY_ALLOW_ALL_USERS)
+        
+        Returns False if sender is unauthorized.
+        """
+        from_user = getattr(message, "from_user", None)
+        chat = getattr(message, "chat", None)
+        if not chat:
+            return False
+        
+        chat_id = str(chat.id) if chat.id is not None else None
+        chat_type = str(chat.type or "private").lower() if hasattr(chat, "type") else "private"
+        
+        # Group/forum/channel auth is chat-based, not user-based
+        # (the chat itself must be in TELEGRAM_GROUP_ALLOWED_CHATS).
+        # Return True here to let _should_process_message handle the group auth.
+        if chat_type in {"group", "supergroup", "channel"}:
+            return True
+        
+        # DM auth: check user authorization
+        user_id = str(from_user.id) if from_user and from_user.id else None
+        if not user_id:
+            return False
+        
+        user_name = from_user.username if from_user else None
+        thread_id = getattr(message, "message_thread_id", None)
+        
+        return self._is_callback_user_authorized(
+            user_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=thread_id,
+            user_name=user_name,
+        )
+
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
         if not metadata:
@@ -5190,6 +5234,17 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        
+        # Early authorization check (fixes #40863): reject unauthorized users
+        # before text batching, event building, or agent processing.
+        if not self._is_message_sender_authorized(msg):
+            logger.debug(
+                "[%s] Rejecting unauthorized text message from user %s",
+                self.name,
+                getattr(getattr(msg, "from_user", None), "id", "unknown"),
+            )
+            return
+        
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
@@ -5206,6 +5261,17 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        
+        # Early authorization check (fixes #40863): reject unauthorized users
+        # before event building or agent processing.
+        if not self._is_message_sender_authorized(msg):
+            logger.debug(
+                "[%s] Rejecting unauthorized command from user %s",
+                self.name,
+                getattr(getattr(msg, "from_user", None), "id", "unknown"),
+            )
+            return
+        
         if not self._should_process_message(msg, is_command=True):
             return
         await self._ensure_forum_commands(msg)
@@ -5220,6 +5286,17 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg:
             return
+        
+        # Early authorization check (fixes #40863): reject unauthorized users
+        # before event building or agent processing.
+        if not self._is_message_sender_authorized(msg):
+            logger.debug(
+                "[%s] Rejecting unauthorized location message from user %s",
+                self.name,
+                getattr(getattr(msg, "from_user", None), "id", "unknown"),
+            )
+            return
+        
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
@@ -5402,6 +5479,17 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
+        
+        # Early authorization check (fixes #40863): reject unauthorized users
+        # before event building or agent processing.
+        if not self._is_message_sender_authorized(update.message):
+            logger.debug(
+                "[%s] Rejecting unauthorized media message from user %s",
+                self.name,
+                getattr(getattr(update.message, "from_user", None), "id", "unknown"),
+            )
+            return
+        
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):
                 _m = update.message

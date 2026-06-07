@@ -8873,7 +8873,22 @@ class GatewayRunner:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
                 _img_mode = self._decide_image_input_mode()
-                if _img_mode == "native":
+                # An explicit verbatim-OCR intent in the caption (or an empty
+                # caption) wins over EVERY routing mode, including native
+                # vision: the user asked for a faithful transcription, so honor
+                # it via the dedicated forced-direct OCR path even when the
+                # model supports inline pixels.
+                if self._caption_requests_ocr(message_text):
+                    logger.info(
+                        "Image routing: text/OCR (mode=%s). Transcribing %d "
+                        "image(s) via ocr_image (OCR intent overrides mode).",
+                        _img_mode, len(image_paths),
+                    )
+                    message_text = await self._enrich_message_with_ocr(
+                        message_text,
+                        image_paths,
+                    )
+                elif _img_mode == "native":
                     # Defer attachment to the run_conversation call site.
                     pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
                     if pending_native is None:
@@ -8883,19 +8898,6 @@ class GatewayRunner:
                     logger.info(
                         "Image routing: native (model supports vision). %d image(s) will be attached inline.",
                         len(image_paths),
-                    )
-                elif self._caption_requests_ocr(message_text):
-                    # Caption signals a verbatim-transcription request (or is
-                    # empty): route to the dedicated OCR path instead of the
-                    # describe path.
-                    logger.info(
-                        "Image routing: text/OCR (mode=%s). Transcribing %d "
-                        "image(s) via ocr_image.",
-                        _img_mode, len(image_paths),
-                    )
-                    message_text = await self._enrich_message_with_ocr(
-                        message_text,
-                        image_paths,
                     )
                 else:
                     logger.info(
@@ -15976,22 +15978,22 @@ class GatewayRunner:
                 if result.get("success"):
                     text = sanitize_context(result.get("text", ""))
                     enriched_parts.append(
-                        f"[The user sent an image to transcribe~ Here is the "
+                        f"[The user sent an image to transcribe. Here is the "
                         f"verbatim text I read from it:\n{text}]\n"
                         f"[If you need to re-read it, use ocr_image with "
-                        f"image_url: {path} ~]"
+                        f"image_url: {path}]"
                     )
                 else:
                     enriched_parts.append(
                         "[The user sent an image to transcribe but I couldn't "
-                        "read it this time (>_<) You can try yourself with "
+                        "read it this time. You can try yourself with "
                         f"ocr_image using image_url: {path}]"
                     )
             except Exception as e:
                 logger.error("OCR auto-transcription error: %s", e)
                 enriched_parts.append(
                     f"[The user sent an image to transcribe but something went "
-                    f"wrong~ You can try ocr_image with image_url: {path}]"
+                    f"wrong. You can try ocr_image with image_url: {path}]"
                 )
 
         if enriched_parts:

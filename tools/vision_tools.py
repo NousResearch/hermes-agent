@@ -1128,6 +1128,12 @@ _OCR_PDF_MAX_PAGES = 20          # hard cap on pages we will OCR from one PDF
 _OCR_PDF_DPI = 200               # rasterization resolution (legible, not huge)
 _OCR_PDF_MAX_BYTES = 50 * 1024 * 1024  # refuse to rasterize PDFs bigger than this
 
+# Output-token budget. A single dense page can run long; multi-page scans add up.
+# We size the per-call budget generously but keep an absolute ceiling so a
+# runaway response can't blow the context/cost. Overridable via `ocr.max_tokens`.
+_OCR_DEFAULT_MAX_TOKENS = 4000   # per single-image / per-page default budget
+_OCR_MAX_TOKENS_CEILING = 16000  # absolute hard cap regardless of config
+
 
 def _resolve_ocr_model() -> str:
     """Resolve the OCR model: env HERMES_OCR_MODEL → config ocr.model → default.
@@ -1142,35 +1148,92 @@ def _resolve_ocr_model() -> str:
         from hermes_cli.config import cfg_get, load_config
         cfg = load_config()
         val = cfg_get(cfg, "ocr", "model")
-        if val:
-            return str(val)
+        # Treat empty/whitespace config values as unset: never return "" — that
+        # would defeat the forced-direct contract and let the model resolve to
+        # the fallback chain.
+        if val is not None and str(val).strip():
+            return str(val).strip()
     except Exception:
         pass
     return _OCR_DEFAULT_MODEL
 
 
 def _resolve_ocr_base_url() -> str:
-    """Resolve the OCR base_url: config ocr.base_url → OpenRouter default."""
+    """Resolve the OCR base_url: config ocr.base_url → OpenRouter default.
+
+    A misconfigured ``ocr.base_url: ""`` must NOT slip through as a falsy
+    base_url — that makes ``not resolved_base_url`` true downstream and silently
+    activates the "auto" vision fallback chain, defeating the forced-direct
+    OpenRouter contract. Empty/whitespace values are treated as unset and fall
+    through to the OpenRouter default; this function never returns "" or None.
+    """
     try:
         from hermes_cli.config import cfg_get, load_config
         cfg = load_config()
         val = cfg_get(cfg, "ocr", "base_url")
-        if val:
-            return str(val)
+        if val is not None and str(val).strip():
+            return str(val).strip()
     except Exception:
         pass
     from hermes_constants import OPENROUTER_BASE_URL
     return OPENROUTER_BASE_URL
 
 
+def _resolve_ocr_max_tokens() -> int:
+    """Resolve the per-call OCR output-token budget.
+
+    Precedence: env HERMES_OCR_MAX_TOKENS → config ocr.max_tokens → default.
+    Empty/whitespace/invalid values are treated as unset. The result is clamped
+    to (1, _OCR_MAX_TOKENS_CEILING] so a misconfiguration can't request an
+    absurd budget.
+    """
+    def _coerce(raw) -> Optional[int]:
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s:
+            return None
+        try:
+            n = int(s)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+
+    val = _coerce(os.getenv("HERMES_OCR_MAX_TOKENS"))
+    if val is None:
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            cfg = load_config()
+            val = _coerce(cfg_get(cfg, "ocr", "max_tokens"))
+        except Exception:
+            val = None
+    if val is None:
+        val = _OCR_DEFAULT_MAX_TOKENS
+    return min(val, _OCR_MAX_TOKENS_CEILING)
+
+
+def _is_truncated_response(response) -> bool:
+    """True if the LLM response was cut short (finish_reason == 'length')."""
+    try:
+        fr = response.choices[0].finish_reason
+    except Exception:
+        return False
+    return str(fr or "").lower() == "length"
+
+
 async def _ocr_one_image_data_url(image_data_url: str, *, model: str,
-                                  base_url: str) -> str:
+                                  base_url: str,
+                                  max_tokens: Optional[int] = None) -> tuple:
     """Run a single verbatim-OCR LLM call on an already-encoded data URL.
 
     FORCES provider=openrouter and task=vision so attribution headers are added
     and the model is the configured OCR model regardless of auxiliary.vision.
-    Returns the transcribed text (may be empty on a content-less response).
+    Returns ``(text, truncated)``: the transcribed text (may be empty on a
+    content-less response) and a flag set when the model stopped because it hit
+    the output-token budget (finish_reason == "length").
     """
+    if max_tokens is None:
+        max_tokens = _resolve_ocr_max_tokens()
     messages = [
         {
             "role": "user",
@@ -1187,10 +1250,11 @@ async def _ocr_one_image_data_url(image_data_url: str, *, model: str,
         base_url=base_url,
         messages=messages,
         temperature=0,
-        max_tokens=4000,
+        max_tokens=max_tokens,
         timeout=120,
     )
     text = extract_content_or_reasoning(response)
+    truncated = _is_truncated_response(response)
     if not text:
         # Retry once on empty content (reasoning-only / transient empty response).
         response = await async_call_llm(
@@ -1200,11 +1264,12 @@ async def _ocr_one_image_data_url(image_data_url: str, *, model: str,
             base_url=base_url,
             messages=messages,
             temperature=0,
-            max_tokens=4000,
+            max_tokens=max_tokens,
             timeout=120,
         )
         text = extract_content_or_reasoning(response)
-    return text or ""
+        truncated = _is_truncated_response(response)
+    return text or "", truncated
 
 
 def _is_pdf(path: Path) -> bool:
@@ -1281,7 +1346,7 @@ def _rasterize_pdf(pdf_path: Path) -> list:
     return data_urls
 
 
-async def ocr_image_tool(image_url: str, model: str = None) -> str:
+async def ocr_image_tool(image_url: str, model: Optional[str] = None) -> str:
     """Transcribe ALL text in an image or PDF verbatim via OpenRouter qwen3-vl.
 
     Accepts an HTTP/HTTPS URL or a local file path. PNG/JPEG/etc. images are
@@ -1333,23 +1398,37 @@ async def ocr_image_tool(image_url: str, model: str = None) -> str:
                 "local file path."
             )
 
+        # Per-call output-token budget. Applied per page for PDFs so a
+        # multi-page scan gets a budget that scales with page count instead of a
+        # single 4000-token cap for the whole document.
+        per_call_max_tokens = _resolve_ocr_max_tokens()
+
         # PDF path: rasterize → OCR each page → concatenate.
         if _is_pdf(temp_image_path):
             logger.info("OCR: input is a PDF — rasterizing pages")
             page_data_urls = _rasterize_pdf(temp_image_path)
             page_texts = []
+            any_truncated = False
             for idx, data_url in enumerate(page_data_urls, start=1):
                 logger.info("OCR: transcribing PDF page %d/%d",
                             idx, len(page_data_urls))
-                page_text = await _ocr_one_image_data_url(
-                    data_url, model=resolved_model, base_url=base_url)
+                page_text, page_truncated = await _ocr_one_image_data_url(
+                    data_url, model=resolved_model, base_url=base_url,
+                    max_tokens=per_call_max_tokens)
                 page_texts.append(page_text)
+                any_truncated = any_truncated or page_truncated
             full_text = "\n\n".join(page_texts).strip()
+            if any_truncated:
+                logger.warning(
+                    "OCR: PDF output truncated (a page hit the %d-token budget)",
+                    per_call_max_tokens,
+                )
             result = {
                 "success": True,
                 "text": full_text or "(no text found)",
                 "pages": len(page_data_urls),
                 "model": resolved_model,
+                "truncated": any_truncated,
             }
             debug_call_data["success"] = True
             debug_call_data["text_length"] = len(full_text)
@@ -1377,13 +1456,20 @@ async def ocr_image_tool(image_url: str, model: str = None) -> str:
                     f"resizing."
                 )
 
-        text = await _ocr_one_image_data_url(
-            image_data_url, model=resolved_model, base_url=base_url)
+        text, truncated = await _ocr_one_image_data_url(
+            image_data_url, model=resolved_model, base_url=base_url,
+            max_tokens=per_call_max_tokens)
+        if truncated:
+            logger.warning(
+                "OCR: image output truncated (hit the %d-token budget)",
+                per_call_max_tokens,
+            )
         result = {
             "success": True,
             "text": text or "(no text found)",
             "pages": 1,
             "model": resolved_model,
+            "truncated": truncated,
         }
         debug_call_data["success"] = True
         debug_call_data["text_length"] = len(text)

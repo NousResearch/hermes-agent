@@ -22,9 +22,12 @@ from tools.vision_tools import (
     ocr_image_tool,
     _resolve_ocr_model,
     _resolve_ocr_base_url,
+    _resolve_ocr_max_tokens,
     _rasterize_pdf,
     _is_pdf,
     _OCR_DEFAULT_MODEL,
+    _OCR_DEFAULT_MAX_TOKENS,
+    _OCR_MAX_TOKENS_CEILING,
     _OCR_PROMPT,
 )
 
@@ -40,13 +43,18 @@ def _make_text_png(path: Path, text: str) -> Path:
     return path
 
 
-def _mock_llm_response(content: str) -> MagicMock:
-    """Build a fake OpenAI-style chat completion carrying `content`."""
+def _mock_llm_response(content: str, finish_reason: str = "stop") -> MagicMock:
+    """Build a fake OpenAI-style chat completion carrying `content`.
+
+    `finish_reason` defaults to "stop"; pass "length" to simulate a response
+    truncated by the output-token budget.
+    """
     resp = MagicMock()
     choice = MagicMock()
     choice.message.content = content
     # Defang reasoning fallback so extract_content_or_reasoning takes content.
     choice.message.reasoning = None
+    choice.finish_reason = finish_reason
     resp.choices = [choice]
     return resp
 
@@ -88,6 +96,74 @@ class TestOcrResolution:
             "ocr": {"base_url": "https://example.test/v1"}
         }):
             assert _resolve_ocr_base_url() == "https://example.test/v1"
+
+    def test_empty_base_url_falls_through_to_openrouter(self):
+        # Finding 2: a misconfigured empty base_url must NOT slip through as "".
+        from hermes_constants import OPENROUTER_BASE_URL
+        with patch("hermes_cli.config.load_config", return_value={
+            "ocr": {"base_url": ""}
+        }):
+            assert _resolve_ocr_base_url() == OPENROUTER_BASE_URL
+
+    def test_whitespace_base_url_falls_through_to_openrouter(self):
+        from hermes_constants import OPENROUTER_BASE_URL
+        with patch("hermes_cli.config.load_config", return_value={
+            "ocr": {"base_url": "   "}
+        }):
+            assert _resolve_ocr_base_url() == OPENROUTER_BASE_URL
+
+    def test_empty_model_falls_through_to_default(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "ocr": {"model": ""}
+        }):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HERMES_OCR_MODEL", None)
+                assert _resolve_ocr_model() == _OCR_DEFAULT_MODEL
+
+    def test_whitespace_env_model_falls_through(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            with patch.dict(os.environ, {"HERMES_OCR_MODEL": "   "}):
+                assert _resolve_ocr_model() == _OCR_DEFAULT_MODEL
+
+
+class TestOcrMaxTokens:
+    def test_default(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HERMES_OCR_MAX_TOKENS", None)
+                assert _resolve_ocr_max_tokens() == _OCR_DEFAULT_MAX_TOKENS
+
+    def test_config_override(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "ocr": {"max_tokens": 8000}
+        }):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HERMES_OCR_MAX_TOKENS", None)
+                assert _resolve_ocr_max_tokens() == 8000
+
+    def test_env_overrides_config(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "ocr": {"max_tokens": 8000}
+        }):
+            with patch.dict(os.environ, {"HERMES_OCR_MAX_TOKENS": "5000"}):
+                assert _resolve_ocr_max_tokens() == 5000
+
+    def test_clamped_to_ceiling(self):
+        with patch("hermes_cli.config.load_config", return_value={
+            "ocr": {"max_tokens": 10_000_000}
+        }):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HERMES_OCR_MAX_TOKENS", None)
+                assert _resolve_ocr_max_tokens() == _OCR_MAX_TOKENS_CEILING
+
+    def test_empty_and_invalid_fall_through_to_default(self):
+        for bad in ("", "   ", "abc", "0", "-5"):
+            with patch("hermes_cli.config.load_config", return_value={
+                "ocr": {"max_tokens": bad}
+            }):
+                with patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("HERMES_OCR_MAX_TOKENS", None)
+                    assert _resolve_ocr_max_tokens() == _OCR_DEFAULT_MAX_TOKENS, bad
 
 
 # ---------------------------------------------------------------------------
@@ -138,19 +214,23 @@ class TestOcrImageSuccess:
     async def test_forced_openrouter_contract(self, tmp_path):
         img = _make_text_png(tmp_path / "c.png", "x")
 
-        with patch(
-            "tools.vision_tools.async_call_llm",
-            new_callable=AsyncMock,
-            return_value=_mock_llm_response("text"),
-        ) as mock_llm:
-            await ocr_image_tool(str(img))
+        with patch("hermes_cli.config.load_config", return_value={}):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HERMES_OCR_MAX_TOKENS", None)
+                os.environ.pop("HERMES_OCR_MODEL", None)
+                with patch(
+                    "tools.vision_tools.async_call_llm",
+                    new_callable=AsyncMock,
+                    return_value=_mock_llm_response("text"),
+                ) as mock_llm:
+                    await ocr_image_tool(str(img))
 
         kw = mock_llm.await_args.kwargs
         assert kw["task"] == "vision"
         assert kw["provider"] == "openrouter"
         assert kw["model"] == _OCR_DEFAULT_MODEL
         assert kw["temperature"] == 0
-        assert kw["max_tokens"] == 4000
+        assert kw["max_tokens"] == _OCR_DEFAULT_MAX_TOKENS
         assert kw["timeout"] == 120
         # Strict verbatim prompt is sent.
         text_part = kw["messages"][0]["content"][0]["text"]
@@ -167,6 +247,65 @@ class TestOcrImageSuccess:
         ) as mock_llm:
             await ocr_image_tool(str(img), model="custom/vl")
         assert mock_llm.await_args.kwargs["model"] == "custom/vl"
+
+
+# ---------------------------------------------------------------------------
+# Truncation signaling (finding 3)
+# ---------------------------------------------------------------------------
+
+
+class TestOcrTruncation:
+    @pytest.mark.asyncio
+    async def test_not_truncated_by_default(self, tmp_path):
+        img = _make_text_png(tmp_path / "ok.png", "x")
+        with patch(
+            "tools.vision_tools.async_call_llm",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response("short text", finish_reason="stop"),
+        ):
+            result = json.loads(await ocr_image_tool(str(img)))
+        assert result["success"] is True
+        assert result["truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_truncated_flag_set_on_length(self, tmp_path):
+        img = _make_text_png(tmp_path / "long.png", "x")
+        with patch(
+            "tools.vision_tools.async_call_llm",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response("cut off", finish_reason="length"),
+        ):
+            result = json.loads(await ocr_image_tool(str(img)))
+        assert result["success"] is True
+        assert result["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_pdf_truncated_flag_set_on_length(self, tmp_path):
+        pdf = _make_one_page_pdf(tmp_path / "trunc.pdf", "rendered")
+        with patch(
+            "tools.vision_tools.async_call_llm",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response("partial page", finish_reason="length"),
+        ):
+            result = json.loads(await ocr_image_tool(str(pdf)))
+        assert result["success"] is True
+        assert result["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_configured_max_tokens_passed_to_llm(self, tmp_path):
+        img = _make_text_png(tmp_path / "mt.png", "x")
+        with patch("hermes_cli.config.load_config", return_value={
+            "ocr": {"max_tokens": 9000}
+        }):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HERMES_OCR_MAX_TOKENS", None)
+                with patch(
+                    "tools.vision_tools.async_call_llm",
+                    new_callable=AsyncMock,
+                    return_value=_mock_llm_response("text"),
+                ) as mock_llm:
+                    await ocr_image_tool(str(img))
+        assert mock_llm.await_args.kwargs["max_tokens"] == 9000
 
 
 # ---------------------------------------------------------------------------
@@ -234,3 +373,21 @@ class TestPdfRasterization:
         assert result["success"] is True
         assert result["pages"] == 1
         assert "PAGE TEXT" in result["text"]
+
+    @pytest.mark.asyncio
+    async def test_file_uri_pdf_routes_to_pdf_path(self, tmp_path):
+        # Finding 6: a file:///tmp/doc.pdf-style input strips the scheme and
+        # routes to the PDF rasterization path (pages>=1), not the image path.
+        pdf = _make_one_page_pdf(tmp_path / "doc.pdf", "rendered")
+        file_uri = "file://" + str(pdf)
+        with patch(
+            "tools.vision_tools.async_call_llm",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response("PAGE TEXT"),
+        ) as mock_llm:
+            result = json.loads(await ocr_image_tool(file_uri))
+        assert result["success"] is True
+        assert result["pages"] == 1
+        assert "PAGE TEXT" in result["text"]
+        # The PDF path must actually invoke the OCR LLM (not be rejected).
+        mock_llm.assert_awaited()

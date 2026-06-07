@@ -15,11 +15,14 @@ adapter, a live agent, or the message guard.
 """
 
 import json
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.run import GatewayRunner
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import Platform, SessionSource
 
 
 def _runner():
@@ -169,3 +172,113 @@ class TestRoutingParity:
             GatewayRunner._caption_requests_ocr("what's in this picture")
             is False
         )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-branch precedence (finding 1): OCR intent overrides native vision
+# ---------------------------------------------------------------------------
+
+
+def _photo_event(caption: str, paths):
+    src = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        user_id="u1",
+        user_name="alice",
+    )
+    return MessageEvent(
+        text=caption,
+        message_type=MessageType.PHOTO,
+        source=src,
+        media_urls=list(paths),
+        media_types=["image/png"] * len(paths),
+    ), src
+
+
+def _wire_runner_for_prepare(runner):
+    """Stub out the runner internals the image-routing branch touches so we can
+    drive _prepare_inbound_message_text without standing up an adapter."""
+    runner.config = SimpleNamespace(
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    runner._session_key_for_source = MagicMock(return_value="telegram:123")
+    runner._consume_pending_native_image_paths = MagicMock(return_value=[])
+    # Sentinel return values let us assert which enrich path ran.
+    runner._enrich_message_with_ocr = AsyncMock(return_value="OCR_RAN")
+    runner._enrich_message_with_vision = AsyncMock(return_value="VISION_RAN")
+    runner._enrich_message_with_transcription = AsyncMock()
+
+
+class TestNativeModeOcrOverride:
+    @pytest.mark.asyncio
+    async def test_ocr_intent_overrides_native_mode(self):
+        # HIGH finding 1: even when the model supports native vision, an explicit
+        # OCR-intent caption must route to ocr_image (NOT be buffered for inline
+        # native attachment, NOT go to vision_analyze).
+        runner = _runner()
+        _wire_runner_for_prepare(runner)
+        event, src = _photo_event("transcribe this", ["/tmp/a.png"])
+
+        with patch.object(runner, "_decide_image_input_mode",
+                          return_value="native"):
+            out = await runner._prepare_inbound_message_text(
+                event=event, source=src, history=[],
+            )
+
+        runner._enrich_message_with_ocr.assert_awaited_once()
+        runner._enrich_message_with_vision.assert_not_awaited()
+        # No native buffer was created for this session.
+        assert not getattr(
+            runner, "_pending_native_image_paths_by_session", {}
+        ).get("telegram:123")
+        assert "OCR_RAN" in out
+
+    @pytest.mark.asyncio
+    async def test_empty_caption_overrides_native_mode(self):
+        runner = _runner()
+        _wire_runner_for_prepare(runner)
+        event, src = _photo_event("", ["/tmp/a.png"])
+
+        with patch.object(runner, "_decide_image_input_mode",
+                          return_value="native"):
+            await runner._prepare_inbound_message_text(
+                event=event, source=src, history=[],
+            )
+        runner._enrich_message_with_ocr.assert_awaited_once()
+        runner._enrich_message_with_vision.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_describe_caption_uses_native_buffer(self):
+        # Parity: a describe caption on a native model must still buffer for
+        # inline attachment (NOT OCR, NOT vision_analyze pre-run).
+        runner = _runner()
+        _wire_runner_for_prepare(runner)
+        event, src = _photo_event("what's in this picture", ["/tmp/a.png"])
+
+        with patch.object(runner, "_decide_image_input_mode",
+                          return_value="native"):
+            await runner._prepare_inbound_message_text(
+                event=event, source=src, history=[],
+            )
+        runner._enrich_message_with_ocr.assert_not_awaited()
+        runner._enrich_message_with_vision.assert_not_awaited()
+        assert runner._pending_native_image_paths_by_session["telegram:123"] == [
+            "/tmp/a.png"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ocr_intent_text_mode_still_ocr(self):
+        # Regression: OCR intent in text mode keeps routing to OCR.
+        runner = _runner()
+        _wire_runner_for_prepare(runner)
+        event, src = _photo_event("please ocr this", ["/tmp/a.png"])
+
+        with patch.object(runner, "_decide_image_input_mode",
+                          return_value="text"):
+            await runner._prepare_inbound_message_text(
+                event=event, source=src, history=[],
+            )
+        runner._enrich_message_with_ocr.assert_awaited_once()
+        runner._enrich_message_with_vision.assert_not_awaited()

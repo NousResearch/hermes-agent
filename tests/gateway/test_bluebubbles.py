@@ -137,6 +137,21 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
         assert adapter.server_url == "http://localhost:1234"
 
+    def test_temp_guid_uses_timezone_aware_utc(self, monkeypatch):
+        from gateway.platforms import bluebubbles
+
+        real_datetime = bluebubbles.datetime
+
+        class FixedDatetime:
+            @staticmethod
+            def now(tz):
+                assert tz is bluebubbles.timezone.utc
+                return real_datetime(2026, 1, 2, 3, 4, 5, tzinfo=tz)
+
+        monkeypatch.setattr(bluebubbles, "datetime", FixedDatetime)
+
+        assert bluebubbles._new_temp_guid() == "temp-1767323045.0"
+
     def test_default_mention_patterns_match_hermes_variants(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, require_mention=True)
 

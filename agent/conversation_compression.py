@@ -292,15 +292,38 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
+def _compression_reason_label(reason: Optional[str], approx_tokens: Optional[int]) -> str:
+    labels = {
+        "threshold": "超过阈值",
+        "provider_error": "provider 大请求失败",
+        "payload_too_large": "请求体过大",
+        "context_overflow": "超过上下文窗口",
+        "manual": "手动触发",
+    }
+    if reason:
+        return labels.get(str(reason), str(reason))
+    return "超过阈值" if approx_tokens else "压缩触发"
+
+
+def _format_compression_start_status(
+    approx_tokens: Optional[int],
+    compression_reason: Optional[str],
+) -> str:
+    token_text = f"约 {int(approx_tokens):,} tokens" if approx_tokens else "约未知 tokens"
+    reason = _compression_reason_label(compression_reason, approx_tokens)
+    return f"🗜️ 开始压缩 context（正在压缩 context）：{token_text}，原因：{reason}。"
+
+
 def compress_context(
     agent: Any,
-    messages: list,
+    messages: List[dict],
     system_message: str,
     *,
     approx_tokens: Optional[int] = None,
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    compression_reason: Optional[str] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -317,6 +340,7 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        compression_reason: Best-effort UI label for why compression started.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -346,7 +370,7 @@ def compress_context(
         focus_topic,
     )
     agent._emit_status(
-        "🗜️ 正在压缩 context：总结前面的对话，方便继续。"
+        _format_compression_start_status(approx_tokens, compression_reason)
     )
 
     # Notify external memory provider before compression discards context

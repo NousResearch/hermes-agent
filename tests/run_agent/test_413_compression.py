@@ -146,6 +146,70 @@ def test_compression_stage_status_helper_emits_concise_chinese_messages():
     assert warnings == []
 
 
+def test_compress_context_start_status_reports_tokens_and_reason():
+    from agent.conversation_compression import compress_context
+
+    statuses = []
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+
+    class FakeCompressor:
+        status_callback = None
+        compression_count = 1
+        _last_compress_aborted = False
+        _last_summary_error = None
+        _last_summary_recovery_stage = None
+        _last_aux_model_failure_model = None
+        _last_aux_model_failure_error = None
+
+        def compress(self, messages, **_kwargs):
+            return [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "compressed"},
+            ]
+
+    class FakeAgent:
+        compression_enabled = True
+        _compression_feasibility_checked = True
+        session_id = None
+        model = "test-model"
+        platform = "qqbot"
+        _memory_manager = None
+        _session_db = None
+        _todo_store = SimpleNamespace(format_for_injection=lambda: "")
+        _cached_system_prompt = "system"
+        tools = None
+        context_compressor = FakeCompressor()
+
+        def _emit_status(self, message):
+            statuses.append(message)
+
+        def _emit_warning(self, _message):
+            pass
+
+        def _invalidate_system_prompt(self):
+            pass
+
+        def _build_system_prompt(self, _system_message):
+            return "system"
+
+    compress_context(
+        FakeAgent(),
+        messages,
+        "system",
+        approx_tokens=277_561,
+        compression_reason="provider_error",
+    )
+
+    first = statuses[0]
+    assert "开始压缩 context" in first
+    assert "277,561" in first
+    assert "原因：provider 大请求失败" in first
+
+
 def test_compress_context_restores_status_callback_after_strict_signature_fallback():
     from agent.conversation_compression import compress_context
 
@@ -717,6 +781,148 @@ class TestHTTP413Compression:
             "role": "user",
             "content": "compressed summary",
         }
+
+    def test_provider_error_retry_emits_large_request_status_and_delta(self, agent):
+        """Provider-error compression should explain the large request and compression delta."""
+        agent.compression_enabled = True
+        agent.compression_soft_request_limit = 220_000
+        agent.retry_compress_on_provider_error = True
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+        err = Exception(
+            "An error occurred while processing your request. "
+            "You can retry your request. Please include the request ID req_123."
+        )
+        ok_resp = _mock_response(content="Recovered after provider-error compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err, ok_resp]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=[230_000, 42_000, 42_000]),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert mock_compress.call_args.kwargs["compression_reason"] == "provider_error"
+        assert result["completed"] is True
+        joined = "\n".join(msg for _ev, msg in status_messages)
+        assert "Provider 在大请求上失败" in joined
+        assert "230,000" in joined
+        assert "先压缩 context" in joined
+        assert "已压缩" in joined
+        assert "messages" in joined
+        assert "230,000" in joined and "42,000" in joined
+        assert "准备重试 provider 请求" in joined
+        assert "req_123" not in joined
+        assert "api_key" not in joined.lower()
+        assert "openrouter.ai" not in joined
+
+    @pytest.mark.parametrize(
+        ("message", "status_code"),
+        [
+            ("HTTP 520 provider processing error", 520),
+            ("HTTP 524 ttfb cutoff waiting for upstream", 524),
+            ("unexpected EOF while reading response", None),
+            ("broken pipe while streaming provider response", None),
+        ],
+    )
+    def test_provider_error_retry_handles_520_524_eof_ttfb(self, agent, message, status_code):
+        """Provider-error compression should include 520/524/EOF/broken-pipe style failures."""
+        agent.compression_enabled = True
+        agent.compression_soft_request_limit = 220_000
+        agent.retry_compress_on_provider_error = True
+        err = Exception(message)
+        if status_code is not None:
+            err.status_code = status_code
+        ok_resp = _mock_response(content="Recovered after transient provider failure", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err, ok_resp]
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=[230_000, 41_000, 41_000]),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello")
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after transient provider failure"
+
+    def test_provider_error_retry_reports_noop_to_user(self, agent):
+        """If provider-error compression does not shrink context, the user should see why retry stops."""
+        agent.compression_enabled = True
+        agent.compression_soft_request_limit = 220_000
+        agent.retry_compress_on_provider_error = True
+        agent._api_max_retries = 1
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+        err = Exception("An error occurred while processing your request. Please include the request ID.")
+        agent.client.chat.completions.create.side_effect = [err]
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=230_000),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            same_messages = [{"role": "user", "content": "hello"}]
+            mock_compress.return_value = (same_messages, "same prompt")
+            result = agent.run_conversation("hello")
+
+        mock_compress.assert_called_once()
+        assert agent.client.chat.completions.create.call_count == 1
+        assert result["completed"] is False
+        joined = "\n".join(msg for _ev, msg in status_messages)
+        assert "压缩未减少上下文" in joined
+        assert "停止 provider-error 压缩重试" in joined
+
+    def test_provider_error_retry_noop_preserves_history_for_failure_persistence(self, agent):
+        """No-op provider-error compression must keep original history boundary when persisting failure."""
+        agent.compression_enabled = True
+        agent.compression_soft_request_limit = 220_000
+        agent.retry_compress_on_provider_error = True
+        agent._api_max_retries = 1
+        err = Exception("An error occurred while processing your request. Please include the request ID.")
+        agent.client.chat.completions.create.side_effect = [err]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        def _noop_compress(messages, system_message, **_kwargs):
+            return list(messages), system_message
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=230_000),
+            patch.object(agent, "_compress_context", side_effect=_noop_compress) as mock_compress,
+            patch.object(agent, "_persist_session") as mock_persist,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        mock_persist.assert_called_once()
+        assert mock_persist.call_args.args[1] == prefill
+        assert result["completed"] is False
 
     def test_small_generic_provider_error_does_not_compress(self, agent):
         """Below soft_request_limit, generic provider errors use normal retry."""

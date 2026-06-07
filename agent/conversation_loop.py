@@ -3106,20 +3106,39 @@ def run_conversation(
                     provider_error_compression_attempted = True
                     original_len = len(messages)
                     agent._emit_status(
-                        f"🗜️ Provider error on large request (~{approx_request_tokens:,} tokens) — "
-                        "compressing once before retry..."
+                        f"⚠️ Provider 在大请求上失败：约 {approx_request_tokens:,} tokens。"
+                        "先压缩 context，再重试一次，避免重复用巨大请求撞墙。"
                     )
                     messages, active_system_prompt = agent._compress_context(
                         messages,
                         system_message,
                         approx_tokens=approx_request_tokens,
                         task_id=effective_task_id,
+                        compression_reason="provider_error",
                     )
-                    # Compression creates a new session; clear the old
-                    # history reference so persistence writes the compressed
-                    # transcript instead of skipping it by length.
-                    conversation_history = None
+                    # Only clear the old history boundary after compression
+                    # actually rotates/reduces context.  A no-op compression
+                    # falls through to normal error handling and must preserve
+                    # the original boundary for persistence.
                     if len(messages) < original_len:
+                        conversation_history = None
+                        try:
+                            compressed_tokens = estimate_request_tokens_rough(
+                                messages,
+                                system_prompt=active_system_prompt or "",
+                                tools=agent.tools or None,
+                            )
+                        except Exception:
+                            compressed_tokens = None
+                        token_delta = (
+                            f"，tokens 约 {approx_request_tokens:,} → {compressed_tokens:,}"
+                            if compressed_tokens is not None
+                            else ""
+                        )
+                        agent._emit_status(
+                            f"✅ 已压缩：{original_len} → {len(messages)} messages{token_delta}，"
+                            "准备重试 provider 请求。"
+                        )
                         if _should_halt_after_auto_compression(
                             agent,
                             original_len=original_len,
@@ -3132,11 +3151,11 @@ def run_conversation(
                                 api_call_count,
                                 effective_task_id,
                             )
-                        agent._emit_status(
-                            f"🗜️ Compressed {original_len} → {len(messages)} messages after provider error, retrying..."
-                        )
                         restart_with_compressed_messages = True
                         break
+                    agent._emit_warning(
+                        "⚠️ 压缩未减少上下文，停止 provider-error 压缩重试，转入普通错误处理。"
+                    )
                     logger.info(
                         "Provider-error compression did not reduce messages; falling through to normal retry. "
                         "session=%s tokens=~%s limit=%s",

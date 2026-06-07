@@ -1581,11 +1581,66 @@ def _run_single_child(
                 duration,
             )
 
+            # When a subagent times out BEFORE making any API call, and we have
+            # a credential chain (fallback models configured), try the next model.
+            child_api_calls = 0
+            try:
+                _summary = child.get_activity_summary()
+                child_api_calls = int(_summary.get("api_call_count", 0) or 0)
+            except Exception:
+                pass
+
+            _cred_chain = getattr(child, "_credential_chain", [])
+            _build_params = getattr(child, "_task_build_params", {})
+
+            if is_timeout and child_api_calls == 0 and len(_cred_chain) > 1 and _build_params:
+                # Determine which fallback to try next by checking if this child
+                # was already a retry (via the _credential_chain_index attribute)
+                _current_idx = getattr(child, "_credential_chain_index", 0)
+                _next_idx = _current_idx + 1
+                if _next_idx < len(_cred_chain):
+                    fb = _cred_chain[_next_idx]
+                    logger.info(
+                        "Subagent %d: model failed with 0 API calls — retrying with "
+                        "fallback '%s' on '%s' (chain index %d/%d)",
+                        task_index, fb.get("model"), fb.get("provider"),
+                        _next_idx + 1, len(_cred_chain),
+                    )
+                    # Rebuild child with fallback credentials
+                    try:
+                        _rebuild_params = dict(_build_params)
+                        _rebuild_params.update({
+                            "model": fb.get("model"),
+                            "override_provider": fb.get("provider"),
+                            "override_base_url": fb.get("base_url"),
+                            "override_api_key": fb.get("api_key"),
+                            "override_api_mode": fb.get("api_mode"),
+                            "override_acp_command": fb.get("command") or _build_params.get("override_acp_command"),
+                            "override_acp_args": list(fb.get("args") or _build_params.get("override_acp_args") or []),
+                        })
+                        new_child = _build_child_agent(**_rebuild_params)
+                        new_child._delegate_saved_tool_names = _saved_tool_names
+                        new_child._credential_chain = _cred_chain
+                        new_child._credential_chain_index = _next_idx
+                        new_child._task_build_params = _build_params
+                        # Re-run with the fallback child (recursive call)
+                        return _run_single_child(
+                            task_index=task_index,
+                            goal=goal,
+                            child=new_child,
+                            parent_agent=parent_agent,
+                        )
+                    except Exception as rebuild_exc:
+                        logger.warning(
+                            "Subagent %d fallback rebuild failed: %s",
+                            task_index, rebuild_exc,
+                        )
+                        # Fall through to normal timeout/error return
+
             # When a subagent times out BEFORE making any API call, dump a
             # diagnostic to help users (and us) see what the child was doing.
             # See #14726 — without this, 0-API-call hangs are black boxes.
             diagnostic_path: Optional[str] = None
-            child_api_calls = 0
             try:
                 _summary = child.get_activity_summary()
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
@@ -2038,15 +2093,12 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    # Resolve delegation credential chain (primary + fallbacks).
+    # _resolve_delegation_credential_chain never returns empty — at minimum
+    # returns the primary entry so the error surfaces at runtime rather than
+    # blocking delegation entirely at config time.
+    cred_chain = _resolve_delegation_credential_chain(cfg, parent_agent)
+    creds = cred_chain[0]
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2134,6 +2186,32 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            # Stash the credential chain so _run_single_child can retry with
+            # fallback models when the primary fails (0 API calls = model not found).
+            child._credential_chain = cred_chain
+            # Stash child build params so _run_single_child can rebuild the agent
+            # with fallback credentials without rebuilding from scratch in the tool.
+            child._task_build_params = {
+                "task_index": i,
+                "goal": t["goal"],
+                "context": t.get("context"),
+                "toolsets": t.get("toolsets") or toolsets,
+                "model": creds["model"],
+                "max_iterations": effective_max_iter,
+                "task_count": n_tasks,
+                "parent_agent": parent_agent,
+                "override_provider": creds["provider"],
+                "override_base_url": creds["base_url"],
+                "override_api_key": creds["api_key"],
+                "override_api_mode": creds["api_mode"],
+                "override_acp_command": t.get("acp_command") or acp_command or creds.get("command"),
+                "override_acp_args": (
+                    task_acp_args
+                    if task_acp_args is not None
+                    else (acp_args if acp_args is not None else creds.get("args"))
+                ),
+                "role": effective_role,
+            }
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
@@ -2513,6 +2591,80 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
+
+
+def _resolve_delegation_credential_chain(cfg: dict, parent_agent) -> list[dict]:
+    """Resolve the full credential chain for delegation (primary + fallbacks).
+
+    Returns a list of credential dicts in order to try.  Each dict has the same
+    shape as ``_resolve_delegation_credentials``: model, provider, base_url,
+    api_key, api_mode, and optionally command/args.
+
+    The first entry is the primary (``delegation.model`` + ``delegation.provider``).
+    Subsequent entries come from ``delegation.fallback_models``, inheriting the
+    top-level delegation provider/base_url when the fallback entry omits them.
+
+    Never returns an empty list — at minimum returns the primary entry, even
+    if credential resolution fails (the caller can surface the error at run time).
+    """
+    try:
+        primary = _resolve_delegation_credentials(cfg, parent_agent)
+        chain = [primary]
+    except ValueError as exc:
+        # If the primary itself can't resolve, return a placeholder
+        # so the caller still tries it (error will surface at runtime).
+        chain = [{
+            "model": str(cfg.get("model", "") or "").strip() or None,
+            "provider": str(cfg.get("provider", "") or "").strip() or None,
+            "base_url": str(cfg.get("base_url", "") or "").strip() or None,
+            "api_key": str(cfg.get("api_key", "") or "").strip() or None,
+            "api_mode": str(cfg.get("api_mode", "") or "").strip().lower() or None,
+        }]
+        logger.debug("Primary credential resolution failed; chain starts with raw config: %s", exc)
+
+    # Resolve fallbacks
+    fallback_list = cfg.get("fallback_models", [])
+    if not isinstance(fallback_list, list):
+        fallback_list = []
+
+    # Inherited defaults for fallback entries
+    top_provider = str(cfg.get("provider", "") or "").strip() or None
+    top_base_url = str(cfg.get("base_url", "") or "").strip() or None
+    top_api_key = str(cfg.get("api_key", "") or "").strip() or None
+    top_api_mode = str(cfg.get("api_mode", "") or "").strip().lower() or None
+
+    for i, fb_entry in enumerate(fallback_list):
+        if not isinstance(fb_entry, dict):
+            logger.debug("Skipping fallback_models[%d]: not a dict", i)
+            continue
+
+        fb_model = str(fb_entry.get("model", "") or "").strip() or None
+        fb_provider = str(fb_entry.get("provider", "") or "").strip() or None
+        if not fb_model:
+            logger.debug("Skipping fallback_models[%d]: no model", i)
+            continue
+
+        # Build a sub-config that looks like a top-level delegation section
+        # so we can reuse _resolve_delegation_credentials
+        fb_cfg = {
+            "model": fb_model,
+            "provider": fb_provider or top_provider,
+            "base_url": str(fb_entry.get("base_url", "") or "").strip() or top_base_url,
+            "api_key": str(fb_entry.get("api_key", "") or "").strip() or top_api_key,
+            "api_mode": str(fb_entry.get("api_mode", "") or "").strip().lower() or top_api_mode,
+        }
+
+        try:
+            fb_creds = _resolve_delegation_credentials(fb_cfg, parent_agent)
+            chain.append(fb_creds)
+        except ValueError as exc:
+            logger.debug(
+                "Fallback model %d ('%s' on '%s') credential resolution failed: %s — skipping",
+                i, fb_model, fb_provider, exc,
+            )
+            continue
+
+    return chain
 
 
 def _load_config() -> dict:

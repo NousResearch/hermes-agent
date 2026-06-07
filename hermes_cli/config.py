@@ -1700,6 +1700,23 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # Fallback model chain for delegation — when the primary delegation model
+        # fails (model not found, unreachable, 0-API-call timeout), the system
+        # tries each fallback in order before returning an error.  Each entry
+        # supports the same fields as the top-level delegation section:
+        #   - model: (REQUIRED) model name or path
+        #   - provider: (optional, defaults to top-level delegation.provider)
+        #   - base_url: (optional) override endpoint
+        #   - api_key: (optional) override key
+        #   - api_mode: (optional) override wire protocol
+        # Falls back to the parent's provider when unconfigured.
+        # Example:
+        #   fallback_models:
+        #     - model: mistral-nemo:12b
+        #       provider: ollama-local
+        #     - model: qwen2.5:14b
+        #       provider: ollama-local
+        "fallback_models": [],
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

@@ -65,20 +65,73 @@ def _termux_microphone_command() -> Optional[str]:
 
 
 
+# Probes used to detect whether the Termux:API Android app is installed.
+# `pm list packages` is the canonical Android lookup but is unreliable on
+# some devices: on certain ROMs / Android API levels `pm` itself isn't on
+# Termux's PATH while `cmd package` is, on others `pm` returns nothing for
+# the calling user even when the app is present.  We try both before
+# concluding that the app is genuinely missing (issue #31015).
+_TERMUX_API_PACKAGE_PROBES = (
+    ("pm", "list", "packages", "com.termux.api"),
+    ("cmd", "package", "list", "packages", "com.termux.api"),
+)
+
+
 def _termux_api_app_installed() -> bool:
+    """Return True iff the Termux:API Android app is installed.
+
+    Strategy (issue #31015):
+
+    1. Try each probe in ``_TERMUX_API_PACKAGE_PROBES`` and look for
+       ``package:com.termux.api`` in stdout.  Any positive hit is
+       authoritative — return True.
+    2. If every probe is *inconclusive* (binary missing, permission
+       denied, timeout, non-zero exit) we cannot honestly say the app
+       is missing; fall back to trusting the ``termux-microphone-record``
+       binary on PATH.  The binary ships with the ``termux-api`` package
+       and is only useful when the Android app is installed; users who
+       installed the package deliberately almost always have the app
+       too.  A false negative on this gate blocks ``/voice on``
+       outright (the symptom reported in #31015), while a false
+       positive only surfaces a precise runtime error from the binary
+       itself — strictly more actionable.
+    3. If at least one probe ran cleanly and definitively did not
+       mention the package, treat the app as missing and return False
+       — that's the genuine "Termux:API CLI installed without the app"
+       case the existing warning was written for.
+    """
     if not _is_termux_environment():
         return False
-    try:
-        result = subprocess.run(
-            ["pm", "list", "packages", "com.termux.api"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
+
+    inconclusive = False
+    for cmd in _TERMUX_API_PACKAGE_PROBES:
+        try:
+            result = subprocess.run(
+                list(cmd),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (FileNotFoundError, PermissionError, OSError):
+            inconclusive = True
+            continue
+        except subprocess.TimeoutExpired:
+            inconclusive = True
+            continue
+        if result.returncode != 0:
+            inconclusive = True
+            continue
+        if "package:com.termux.api" in (result.stdout or "").lower():
+            return True
+
+    if inconclusive and shutil.which("termux-microphone-record") is not None:
+        logger.debug(
+            "Termux package-manager probes inconclusive; trusting "
+            "termux-microphone-record binary on PATH (issue #31015)."
         )
-        return "package:com.termux.api" in (result.stdout or "")
-    except Exception:
-        return False
+        return True
+    return False
 
 
 def _termux_voice_capture_available() -> bool:

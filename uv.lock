@@ -1493,6 +1493,7 @@ google = [
 ]
 hindsight = [
     { name = "hindsight-client" },
+    { name = "hindsight-embed" },
 ]
 homeassistant = [
     { name = "aiohttp" },
@@ -1636,6 +1637,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
+    { name = "hindsight-embed", marker = "extra == 'hindsight'", specifier = ">=0.6,<0.7" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.0.1" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
@@ -1732,6 +1734,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/33/26/8b8efa4be21fc3ba12ade3b1353d87f9837ec0d3ec2607e8adbf85bc9c63/hindsight_client-0.6.1.tar.gz", hash = "sha256:314d0bb9e13622e15586ba1586a799726d405b27bc20d78872474b5d6d96cd51", size = 99833, upload-time = "2026-05-08T13:01:23.537Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/4f/a1d0bc33ef933ecc52e76dc1514163594d25836a5d303c256a61bb61445d/hindsight_client-0.6.1-py3-none-any.whl", hash = "sha256:9fdda176ab50f7cec8d7339c6608c148f0cd9ad7e65d9d76192f2db730bc330a", size = 249379, upload-time = "2026-05-08T13:01:22.035Z" },
+]
+
+[[package]]
+name = "hindsight-embed"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2d/b3/03548b834ef271548341f47005946d53a2830c8d99b9f23ada71b87d4f94/hindsight_embed-0.6.2.tar.gz", hash = "sha256:a6f59635ae619176ee20459ae423aaaea6b45eec498ff34d5071c04e6440e10c", size = 45817, upload-time = "2026-05-14T20:01:42.056Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/2d/12b0a2a204be4feaa4d74291c137f334515bcd8aa833b051dc2ffb9a00c7/hindsight_embed-0.6.2-py3-none-any.whl", hash = "sha256:468c50c3e134a80ac74f6a1355909740d0446b6056611f3bc85cf4d9f750e84a", size = 35386, upload-time = "2026-05-14T20:01:40.971Z" },
 ]
 
 [[package]]

@@ -1401,6 +1401,7 @@ dependencies = [
     { name = "markdown" },
     { name = "openai" },
     { name = "pathspec" },
+    { name = "pillow" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
@@ -1563,9 +1564,6 @@ termux-all = [
 tts-premium = [
     { name = "elevenlabs" },
 ]
-vision = [
-    { name = "pillow" },
-]
 voice = [
     { name = "faster-whisper" },
     { name = "numpy" },
@@ -1654,7 +1652,7 @@ requires-dist = [
     { name = "openai", specifier = "==2.24.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pathspec", specifier = "==1.1.1" },
-    { name = "pillow", marker = "extra == 'vision'", specifier = "==12.2.0" },
+    { name = "pillow", specifier = "==12.2.0" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },

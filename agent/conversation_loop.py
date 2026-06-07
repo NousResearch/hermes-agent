@@ -4667,7 +4667,7 @@ def run_conversation(
             if _m.get("role") == "assistant" and _m.get("tool_calls"):
                 _tcs = _m["tool_calls"]
                 if _tcs and isinstance(_tcs[0], dict):
-                    _last_tool_name = _tcs[-1].get("function", {}).get("name")
+                    _last_tool_name = (_tcs[-1].get("function") or {}).get("name")
                 break
 
     _turn_tool_count = sum(

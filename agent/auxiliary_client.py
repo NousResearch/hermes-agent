@@ -459,7 +459,7 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
             return headers
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        acct_id = (claims.get("https://api.openai.com/auth") or {}).get("chatgpt_account_id")
         if isinstance(acct_id, str) and acct_id:
             headers["ChatGPT-Account-ID"] = acct_id
     except Exception:
@@ -985,7 +985,7 @@ class _AnthropicCompletionsAdapter:
         elif isinstance(tool_choice, dict):
             choice_type = str(tool_choice.get("type", "")).lower()
             if choice_type == "function":
-                normalized_tool_choice = tool_choice.get("function", {}).get("name")
+                normalized_tool_choice = (tool_choice.get("function") or {}).get("name")
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
@@ -1229,7 +1229,7 @@ def _read_nous_auth() -> Optional[dict]:
         data = json.loads(_AUTH_JSON_PATH.read_text())
         if data.get("active_provider") != "nous":
             return None
-        provider = data.get("providers", {}).get("nous", {})
+        provider = (data.get("providers") or {}).get("nous") or {}
         # Must have at least an access_token or agent_key
         if not provider.get("agent_key") and not provider.get("access_token"):
             return None

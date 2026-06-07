@@ -631,11 +631,11 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         data = response.json()
 
         cache = {}
-        for model in data.get("data", []):
+        for model in (data.get("data") or []):
             model_id = model.get("id", "")
             entry = {
                 "context_length": model.get("context_length", 128000),
-                "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
+                "max_completion_tokens": (model.get("top_provider") or {}).get("max_completion_tokens", 4096),
                 "name": model.get("name", model_id),
                 "pricing": model.get("pricing", {}),
             }
@@ -698,7 +698,7 @@ def fetch_endpoint_model_metadata(
                 response.raise_for_status()
                 payload = response.json()
                 cache: Dict[str, Dict[str, Any]] = {}
-                for model in payload.get("models", []):
+                for model in (payload.get("models") or []):
                     if not isinstance(model, dict):
                         continue
                     model_id = model.get("key") or model.get("id")
@@ -744,7 +744,7 @@ def fetch_endpoint_model_metadata(
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
-            for model in payload.get("data", []):
+            for model in (payload.get("data") or []):
                 if not isinstance(model, dict):
                     continue
                 model_id = model.get("id")
@@ -765,7 +765,7 @@ def fetch_endpoint_model_metadata(
             # If this is a llama.cpp server, query /props for actual allocated context
             is_llamacpp = any(
                 m.get("owned_by") == "llamacpp"
-                for m in payload.get("data", []) if isinstance(m, dict)
+                for m in (payload.get("data") or []) if isinstance(m, dict)
             )
             if is_llamacpp:
                 try:
@@ -1214,7 +1214,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                 resp = client.get(f"{server_url}/api/v1/models")
                 if resp.status_code == 200:
                     data = resp.json()
-                    for m in data.get("models", []):
+                    for m in (data.get("models") or []):
                         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
                             # Prefer loaded instance context (actual runtime value)
                             for inst in m.get("loaded_instances", []):
@@ -1238,7 +1238,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
             resp = client.get(f"{server_url}/v1/models")
             if resp.status_code == 200:
                 data = resp.json()
-                models_list = data.get("data", [])
+                models_list = (data.get("data") or [])
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
                         ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
@@ -1281,7 +1281,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
         if resp.status_code != 200:
             return None
         data = resp.json()
-        for m in data.get("data", []):
+        for m in (data.get("data") or []):
             if m.get("id") == model:
                 ctx = m.get("max_input_tokens")
                 if isinstance(ctx, int) and ctx > 0:
@@ -1358,7 +1358,7 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
         logger.debug("Codex /models probe failed: %s", exc)
         return {}
 
-    entries = data.get("models", []) if isinstance(data, dict) else []
+    entries = (data.get("models") or []) if isinstance(data, dict) else []
     result: Dict[str, int] = {}
     for item in entries:
         if not isinstance(item, dict):

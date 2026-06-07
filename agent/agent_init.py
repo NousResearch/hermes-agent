@@ -682,7 +682,7 @@ def init_agent(
         agent._bedrock_guardrail_config = None
         try:
             from hermes_cli.config import load_config as _load_br_cfg
-            _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
+            _gr = (_load_br_cfg().get("bedrock") or {}).get("guardrail") or {}
             if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
                 agent._bedrock_guardrail_config = {
                     "guardrailIdentifier": _gr["guardrail_identifier"],
@@ -1182,7 +1182,7 @@ def init_agent(
         agent.enabled_toolsets is None or "memory" in agent.enabled_toolsets
     ):
         _existing_tool_names = {
-            t.get("function", {}).get("name")
+            (t.get("function") or {}).get("name")
             for t in agent.tools
             if isinstance(t, dict)
         }

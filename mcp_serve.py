@@ -166,7 +166,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype == "image":
-                url = part.get("url", part.get("source", {}).get("url", ""))
+                url = part.get("url", (part.get("source") or {}).get("url", ""))
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype not in {"text",}:
@@ -489,7 +489,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         conversations = []
 
         for key, entry in entries.items():
-            origin = entry.get("origin", {})
+            origin = (entry.get("origin") or {})
             entry_platform = entry.get("platform") or origin.get("platform", "")
 
             if platform and entry_platform.lower() != platform.lower():

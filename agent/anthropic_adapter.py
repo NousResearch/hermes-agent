@@ -1640,10 +1640,10 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                 blocks.extend(converted_content)
         else:
             blocks.append({"type": "text", "text": str(content)})
-    for tc in m.get("tool_calls", []):
+    for tc in (m.get("tool_calls") or []):
         if not tc or not isinstance(tc, dict):
             continue
-        fn = tc.get("function", {})
+        fn = (tc.get("function") or {})
         args = fn.get("arguments", "{}")
         try:
             parsed_args = json.loads(args) if isinstance(args, str) else args

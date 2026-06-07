@@ -1064,18 +1064,18 @@ def _skill_should_show(
     ats = available_toolsets or set()
 
     # fallback_for: hide when the primary tool/toolset IS available
-    for ts in conditions.get("fallback_for_toolsets", []):
+    for ts in (conditions.get("fallback_for_toolsets") or []):
         if ts in ats:
             return False
-    for t in conditions.get("fallback_for_tools", []):
+    for t in (conditions.get("fallback_for_tools") or []):
         if t in at:
             return False
 
     # requires: hide when a required tool/toolset is NOT available
-    for ts in conditions.get("requires_toolsets", []):
+    for ts in (conditions.get("requires_toolsets") or []):
         if ts not in ats:
             return False
-    for t in conditions.get("requires_tools", []):
+    for t in (conditions.get("requires_tools") or []):
         if t not in at:
             return False
 
@@ -1138,7 +1138,7 @@ def build_skills_system_prompt(
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
-        for entry in snapshot.get("skills", []):
+        for entry in (snapshot.get("skills") or []):
             if not isinstance(entry, dict):
                 continue
             skill_name = entry.get("skill_name") or ""

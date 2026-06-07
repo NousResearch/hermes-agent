@@ -572,7 +572,7 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
 
     if toolset:
         merged_tools = sorted(
-            set(toolset.get("tools", []))
+            set(toolset.get("tools") or [])
             | set(registry.get_tool_names_for_toolset(name))
         )
         return {**toolset, "tools": merged_tools}
@@ -670,7 +670,7 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     # Recursively resolve included toolsets, sharing the visited set across
     # sibling includes so diamond dependencies are only resolved once and
     # cycle warnings don't fire multiple times for the same cycle.
-    for included_name in toolset.get("includes", []):
+    for included_name in (toolset.get("includes") or []):
         included_tools = resolve_toolset(included_name, visited)
         tools.update(included_tools)
     

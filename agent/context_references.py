@@ -319,7 +319,7 @@ async def _default_url_fetcher(url: str) -> str:
 
     raw = await web_extract_tool([url], format="markdown", use_llm_processing=True)
     payload = json.loads(raw)
-    docs = payload.get("data", {}).get("documents", [])
+    docs = (payload.get("data") or {}).get("documents", [])
     if not docs:
         return ""
     doc = docs[0]

@@ -595,6 +595,19 @@ def _resolve_api_key_provider_secret(
                 key = str(key).strip()
                 if has_usable_secret(key):
                     return key, f"credential_pool:{provider_id}"
+            # All entries exhausted — return first entry's key anyway so the
+            # upstream API returns a meaningful error (429/402) instead of a
+            # misleading 401 caused by sending an empty api_key.
+            for e in pool._entries:
+                _key = getattr(e, "access_token", "") or getattr(e, "runtime_api_key", "")
+                _key = str(_key).strip()
+                if has_usable_secret(_key):
+                    logger.warning(
+                        "credential pool: all %s entries exhausted; "
+                        "using %s anyway for clearer upstream error",
+                        provider_id, e.label or e.id[:8],
+                    )
+                    return _key, f"credential_pool:{provider_id}"
     except Exception:
         pass
 

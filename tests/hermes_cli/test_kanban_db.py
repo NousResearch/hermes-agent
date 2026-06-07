@@ -2006,6 +2006,91 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
     assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
 
 
+# ---------------------------------------------------------------------------
+# Deferred scratch cleanup for parent/child handoff (#33774)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_workspace_deferred_while_child_active(kanban_home):
+    """A scratch parent's workspace survives completion while a child is still active.
+
+    The dependency chain (parents=[A]) must guarantee child B can read A's
+    handoff artifacts. The old cleanup deleted A's scratch dir immediately on
+    A's completion, before B ever ran.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)  # child depends on parent
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        assert parent_ws.is_dir()
+        # Parent completes; child is still 'todo' -> cleanup must be deferred.
+        kb.complete_task(conn, parent, result="handoff written")
+
+    assert parent_ws.exists(), (
+        "Parent scratch workspace must survive while a linked child is active"
+    )
+
+
+def test_cleanup_workspace_swept_after_last_child_completes(kanban_home):
+    """Once all children are terminal, the deferred parent scratch dir is removed."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        # Give the child its own scratch dir too.
+        c_task = kb.get_task(conn, child)
+        child_ws = kb.resolve_workspace(c_task)
+        kb.set_workspace_path(conn, child, child_ws)
+
+        kb.complete_task(conn, parent, result="ok")
+        assert parent_ws.exists(), "deferred while child active"
+
+        # Child completes -> recompute promotes nothing new; the child's
+        # cleanup sweep should now reap the parent's deferred workspace.
+        kb.complete_task(conn, child, result="done")
+
+    assert not parent_ws.exists(), (
+        "Parent scratch workspace should be swept once all children are terminal"
+    )
+    assert not child_ws.exists(), "Child scratch workspace should be cleaned up too"
+
+
+def test_dir_child_completion_unblocks_deferred_scratch_parent(kanban_home, tmp_path):
+    """A non-scratch ('dir') child completing must still sweep its scratch parent.
+
+    Regression for the gap where ``_cleanup_workspace`` returned early for a
+    non-scratch task and never ran the parent sweep — leaking the parent's
+    deferred scratch dir forever.
+    """
+    child_dir = tmp_path / "persistent-child"
+    child_dir.mkdir()
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="scratch parent")
+        child = kb.create_task(
+            conn, title="dir child", workspace_kind="dir",
+            workspace_path=str(child_dir),
+        )
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+
+        kb.complete_task(conn, parent, result="handoff")
+        assert parent_ws.exists(), "deferred while dir child active"
+
+        kb.complete_task(conn, child, result="built")
+
+    assert not parent_ws.exists(), (
+        "A 'dir' child completing must trigger the parent scratch sweep"
+    )
+    assert child_dir.exists(), "Non-scratch 'dir' child workspace is never deleted"
+
+
 def test_is_managed_scratch_path_accepts_per_board_workspaces(kanban_home, tmp_path):
     """Per-board scratch dirs under ``<kanban_home>/kanban/boards/<slug>/workspaces`` are managed."""
     board_scratch = kanban_home / "kanban" / "boards" / "my-board" / "workspaces" / "task-1"

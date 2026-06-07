@@ -3838,6 +3838,10 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
         if kind != "scratch" or not path:
+            # This task's own workspace isn't a removable scratch dir, but its
+            # completion may still unblock a deferred parent scratch cleanup
+            # (e.g. a 'dir' child whose scratch parent was waiting on it). #33774
+            _try_cleanup_parent_workspaces(conn, task_id)
             return
         # Check if this task has children that still need the workspace.
         # If any child is not yet done/archived, defer cleanup so the

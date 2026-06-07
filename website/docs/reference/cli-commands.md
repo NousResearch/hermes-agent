@@ -1118,6 +1118,7 @@ Inspect shell-script hooks declared in `~/.hermes/config.yaml`, test them agains
 |------------|-------------|
 | `list` (alias: `ls`) | List configured hooks with matcher, timeout, and consent status |
 | `test <event>` | Fire every hook matching `<event>` against a synthetic payload |
+| `allow <command> [--event <event>]` (alias: `approve`) | Persistently allowlist a hook for non-TTY / headless deployments. Without `--event`, every event in `config.yaml` that references the command is approved; with `--event`, a single direct entry is written. Idempotent. |
 | `revoke` (aliases: `remove`, `rm`) | Remove a command's allowlist entries (takes effect on next restart) |
 | `doctor` | Check each configured hook: exec bit, allowlist, mtime drift, JSON validity, and synthetic run timing |
 

@@ -13851,6 +13851,34 @@ def main():
         ),
     )
 
+    _hk_allow = hooks_subparsers.add_parser(
+        "allow",
+        aliases=["approve"],
+        help=(
+            "Persistently allowlist a hook command for non-TTY / "
+            "headless deployments (writes to "
+            "~/.hermes/shell-hooks-allowlist.json)"
+        ),
+    )
+    _hk_allow.add_argument(
+        "command",
+        help=(
+            "The exact command string declared in config.yaml.  Must "
+            "match byte-for-byte; the runtime gate compares the "
+            "literal string."
+        ),
+    )
+    _hk_allow.add_argument(
+        "--event",
+        dest="event",
+        default=None,
+        help=(
+            "Allowlist for this specific event only.  Without --event, "
+            "every event in config.yaml that references the command is "
+            "approved."
+        ),
+    )
+
     _hk_revoke = hooks_subparsers.add_parser(
         "revoke",
         aliases=["remove", "rm"],

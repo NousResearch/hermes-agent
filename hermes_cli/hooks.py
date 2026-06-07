@@ -4,6 +4,7 @@ Usage::
 
     hermes hooks list
     hermes hooks test <event> [--for-tool X] [--payload-file F]
+    hermes hooks allow <command> [--event <event>]
     hermes hooks revoke <command>
     hermes hooks doctor
 
@@ -28,7 +29,7 @@ def hooks_command(args) -> None:
     sub = getattr(args, "hooks_action", None)
 
     if not sub:
-        print("Usage: hermes hooks {list|test|revoke|doctor}")
+        print("Usage: hermes hooks {list|test|allow|revoke|doctor}")
         print("Run 'hermes hooks --help' for details.")
         return
 
@@ -36,6 +37,8 @@ def hooks_command(args) -> None:
         _cmd_list(args)
     elif sub == "test":
         _cmd_test(args)
+    elif sub in {"allow", "approve"}:
+        _cmd_allow(args)
     elif sub in {"revoke", "remove", "rm"}:
         _cmd_revoke(args)
     elif sub == "doctor":
@@ -266,6 +269,99 @@ def _print_run_result(result: Dict[str, Any]) -> None:
 
 def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 3] + "..."
+
+
+# ---------------------------------------------------------------------------
+# allow
+# ---------------------------------------------------------------------------
+
+def _cmd_allow(args) -> None:
+    """Persistently allowlist a hook command for non-TTY deployments.
+
+    Two modes:
+
+    1. *Config-driven* (preferred) — ``hermes hooks allow <command>``
+       inspects ``~/.hermes/config.yaml`` and approves every event that
+       references this exact command.  This is the path the issue's
+       service-account / headless deployment scenarios want: the
+       command is already declared in config, the operator just needs
+       a non-interactive way to flip it from "✗ not allowlisted" to
+       "✓ allowed" without falling back to the blanket
+       ``hooks_auto_accept: true`` switch (#31479).
+
+    2. *Direct* — ``hermes hooks allow <command> --event <event>``
+       writes a single ``(event, command)`` allowlist entry without
+       cross-checking the config.  Useful when the operator is staging
+       config and allowlist together via configuration management
+       tooling, or when they want to pre-approve a hook the next
+       config update will introduce.
+    """
+    from hermes_cli.config import load_config
+    from hermes_cli.plugins import VALID_HOOKS
+    from agent import shell_hooks
+
+    command = args.command
+    event = getattr(args, "event", None)
+
+    # --event takes precedence and bypasses the config lookup so the
+    # operator can pre-stage entries.  Validate against VALID_HOOKS so
+    # typos surface here rather than silently producing a dead entry.
+    if event is not None:
+        if event not in VALID_HOOKS:
+            print(f"Unknown event: {event!r}")
+            print(f"Valid events: {', '.join(sorted(VALID_HOOKS))}")
+            return
+        events_to_approve = [event]
+        config_match_summary = f"--event {event}"
+    else:
+        specs = shell_hooks.iter_configured_hooks(load_config())
+        events_to_approve = sorted({
+            s.event for s in specs if s.command == command
+        })
+        if not events_to_approve:
+            print(
+                f"No hook in ~/.hermes/config.yaml uses command: {command}"
+            )
+            print(
+                "  Either add the hook to config.yaml first, or pass "
+                "--event <event> to write the allowlist entry directly."
+            )
+            print(
+                f"  Valid events: {', '.join(sorted(VALID_HOOKS))}"
+            )
+            return
+        config_match_summary = (
+            f"{len(events_to_approve)} configured event(s)"
+        )
+
+    print(
+        f"Allowlisting {command} for {config_match_summary}:"
+    )
+    new_entries = 0
+    already = 0
+    for ev in events_to_approve:
+        if shell_hooks.approve(ev, command):
+            new_entries += 1
+            print(f"  ✓ {ev} — allowlisted")
+        else:
+            already += 1
+            print(f"  • {ev} — already allowlisted (no change)")
+
+    print()
+    if new_entries and already:
+        print(
+            f"Approved {new_entries} new entry/entries; "
+            f"{already} already present."
+        )
+    elif new_entries:
+        print(f"Approved {new_entries} entry/entries.")
+    else:
+        print("Nothing to do — every requested entry was already allowlisted.")
+
+    print(
+        "Note: currently running CLI / gateway processes only honour the "
+        "new allowlist after they restart."
+    )
 
 
 # ---------------------------------------------------------------------------

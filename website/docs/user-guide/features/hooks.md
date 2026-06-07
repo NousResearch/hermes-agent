@@ -1303,13 +1303,14 @@ printf '{}\n'
 
 Each unique `(event, command)` pair prompts the user for approval the first time Hermes sees it, then persists the decision to `~/.hermes/shell-hooks-allowlist.json`. Subsequent runs (CLI or gateway) skip the prompt.
 
-Three escape hatches bypass the interactive prompt — any one is sufficient:
+Four escape hatches bypass the interactive prompt — any one is sufficient:
 
-1. `--accept-hooks` flag on the CLI (e.g. `hermes --accept-hooks chat`)
-2. `HERMES_ACCEPT_HOOKS=1` environment variable
-3. `hooks_auto_accept: true` in `cli-config.yaml`
+1. `hermes hooks allow <command>` to persistently allowlist a single configured hook ahead of the first run (recommended for service accounts and headless deployments — selective, audit-friendly, no global toggle).
+2. `--accept-hooks` flag on the CLI (e.g. `hermes --accept-hooks chat`) — bypasses the prompt for the current invocation only.
+3. `HERMES_ACCEPT_HOOKS=1` environment variable — same scope as `--accept-hooks`.
+4. `hooks_auto_accept: true` in `cli-config.yaml` — auto-approves every hook globally; coarse but useful when every hook is operator-controlled.
 
-Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning.
+Non-TTY runs (gateway, cron, CI) need one of these four — otherwise any newly-added hook silently stays un-registered and logs a warning.
 
 **Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
 
@@ -1319,6 +1320,7 @@ Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly
 |---------|--------------|
 | `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
+| `hermes hooks allow <command> [--event <event>]` | Persistently allowlist `<command>` for non-TTY / headless deployments. Without `--event`, every event in `config.yaml` that references the command is approved; with `--event`, a single direct entry is written (useful for staging an allowlist alongside an upcoming config change). Idempotent — repeated calls never duplicate entries. |
 | `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (takes effect on next restart) |
 | `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |
 

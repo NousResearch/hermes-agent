@@ -715,6 +715,33 @@ def revoke(command: str) -> int:
     return before - after
 
 
+def approve(event: str, command: str) -> bool:
+    """Persistently allowlist ``command`` for ``event``.
+
+    Public wrapper over :func:`_record_approval` for non-interactive
+    callers — the ``hermes hooks allow`` CLI, deployment scripts, and
+    headless service accounts that have no TTY for the first-use
+    consent prompt and don't want the blanket ``hooks_auto_accept:
+    true`` switch.  Issue #31479.
+
+    Returns ``True`` if a new entry was written, ``False`` if the pair
+    was already on the allowlist.  Idempotent: calling twice never
+    produces duplicate entries (``_record_approval`` rewrites in place
+    when an existing match is found).
+
+    The allowlist key is the literal ``command`` string as it will
+    appear in ``~/.hermes/config.yaml`` — match this byte-for-byte at
+    runtime is what gates registration, so callers must pass the same
+    shape.  Tilde expansion / symlink resolution is *not* applied
+    here so that ``~/.hermes/hooks/x.py`` written by both the user's
+    config and the allowlist line up.
+    """
+    if _is_allowlisted(event, command):
+        return False
+    _record_approval(event, command)
+    return True
+
+
 _SCRIPT_EXTENSIONS: Tuple[str, ...] = (
     ".sh", ".bash", ".zsh", ".fish",
     ".py", ".pyw",

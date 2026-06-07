@@ -2265,3 +2265,147 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+# ---------------------------------------------------------------------------
+# Profile description endpoint — regression tests for get_profile_dir fix
+#
+# The bug: update_profile_description() used get_hermes_home() for the
+# "default" profile, which returns the *active process* HERMES_HOME.  When
+# the dashboard runs under a non-default profile the write landed in the
+# wrong directory.  These tests lock in the correct behaviour: the "default"
+# profile always writes to the canonical ~/.hermes root, not to whatever
+# profile HERMES_HOME is currently pointing at.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def multi_profile_home(tmp_path, monkeypatch):
+    """Two-profile isolated environment.
+
+    Layout:
+        tmp_path/
+          .hermes/              <- default profile root  (canonical ~/.hermes)
+          .hermes/profiles/
+            worker/             <- a named non-default profile
+
+    HERMES_HOME is set to the *worker* profile directory to simulate the
+    dashboard running under a non-default profile — the exact scenario that
+    triggered the bug.
+    """
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir(parents=True)
+    (default_home / "profiles").mkdir()
+    worker_dir = default_home / "profiles" / "worker"
+    worker_dir.mkdir()
+
+    # Point HERMES_HOME at the worker profile (non-default active profile).
+    monkeypatch.setenv("HERMES_HOME", str(worker_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Initialise a kanban DB so the router mounts without errors.
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    kb.init_db()
+    monkeypatch.setenv("HERMES_HOME", str(worker_dir))
+
+    return {"default": default_home, "worker": worker_dir}
+
+
+@pytest.fixture
+def profile_client(multi_profile_home):
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    return TestClient(app), multi_profile_home
+
+
+def test_patch_default_profile_description_writes_to_default_home(profile_client):
+    """PATCH /profiles/default must write to ~/.hermes/profile.yaml.
+
+    Regression: when HERMES_HOME points to a non-default profile the old
+    code wrote to the active profile's directory instead.
+    """
+    client, dirs = profile_client
+    default_home = dirs["default"]
+    worker_dir = dirs["worker"]
+
+    res = client.patch(
+        "/api/plugins/kanban/profiles/default",
+        json={"description": "default role description"},
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["ok"] is True
+    assert data["description"] == "default role description"
+
+    # profile.yaml must exist in the default profile root.
+    default_yaml = default_home / "profile.yaml"
+    assert default_yaml.exists(), "profile.yaml not written to default profile root"
+
+    import yaml
+    written = yaml.safe_load(default_yaml.read_text())
+    assert written["description"] == "default role description"
+
+    # The worker profile must NOT have been touched.
+    worker_yaml = worker_dir / "profile.yaml"
+    assert not worker_yaml.exists(), (
+        "profile.yaml was incorrectly written to the worker profile directory"
+    )
+
+
+def test_patch_named_profile_description_writes_to_correct_dir(profile_client):
+    """PATCH /profiles/worker must write to the worker profile directory only."""
+    client, dirs = profile_client
+    default_home = dirs["default"]
+    worker_dir = dirs["worker"]
+
+    res = client.patch(
+        "/api/plugins/kanban/profiles/worker",
+        json={"description": "specialist worker role"},
+    )
+    assert res.status_code == 200, res.text
+
+    worker_yaml = worker_dir / "profile.yaml"
+    assert worker_yaml.exists(), "profile.yaml not written to worker profile directory"
+
+    import yaml
+    written = yaml.safe_load(worker_yaml.read_text())
+    assert written["description"] == "specialist worker role"
+
+    # The default profile must NOT have been touched.
+    default_yaml = default_home / "profile.yaml"
+    assert not default_yaml.exists(), (
+        "profile.yaml was incorrectly written to the default profile root"
+    )
+
+
+def test_patch_default_and_named_profile_descriptions_are_independent(profile_client):
+    """Saving both profiles writes to separate files with independent content."""
+    client, dirs = profile_client
+    default_home = dirs["default"]
+    worker_dir = dirs["worker"]
+
+    client.patch(
+        "/api/plugins/kanban/profiles/default",
+        json={"description": "orchestrator"},
+    )
+    client.patch(
+        "/api/plugins/kanban/profiles/worker",
+        json={"description": "implementer"},
+    )
+
+    import yaml
+    default_written = yaml.safe_load((default_home / "profile.yaml").read_text())
+    worker_written = yaml.safe_load((worker_dir / "profile.yaml").read_text())
+
+    assert default_written["description"] == "orchestrator"
+    assert worker_written["description"] == "implementer"
+
+
+def test_patch_unknown_profile_returns_404(profile_client):
+    """PATCH /profiles/<nonexistent> must return 404."""
+    client, _ = profile_client
+    res = client.patch(
+        "/api/plugins/kanban/profiles/does-not-exist",
+        json={"description": "whatever"},
+    )
+    assert res.status_code == 404

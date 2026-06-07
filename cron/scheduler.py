@@ -1045,6 +1045,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     try:
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        # macOS: long-running parent processes may close fd 0 (stdin) during their
+        # tool loop. When the child Python process starts, init_sys_streams calls
+        # fstat(0), which fails with EBADF -> Fatal Python error. Passing
+        # stdin=DEVNULL ensures fd 0 is always valid in the child.
+        # See CPython issue #10806 / loky #420.
         result = subprocess.run(
             argv,
             capture_output=True,
@@ -1052,6 +1057,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             timeout=script_timeout,
             cwd=str(path.parent),
             env=run_env,
+            stdin=subprocess.DEVNULL,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()

@@ -156,6 +156,22 @@ class TestRunJobScript:
         assert success is False
         assert "timed out" in output.lower()
 
+    def test_script_survives_closed_parent_stdin(self, cron_env):
+        """Regression: gateway may close fd 0; child Python must not EBADF at init."""
+        import os
+
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "ok.py"
+        script.write_text('print("ok")\n')
+        try:
+            os.close(0)
+        except OSError:
+            pass
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "ok"
+
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""
         from cron.scheduler import _run_job_script

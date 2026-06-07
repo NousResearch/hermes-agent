@@ -3945,7 +3945,7 @@ class AIAgent:
         return None
 
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM and browser resources for a given task.
+        """Clean up VM, browser, and file-state resources for a given task.
 
         Skips ``cleanup_vm`` when the active terminal environment is marked
         persistent (``persistent_filesystem=True``) so that long-lived sandbox
@@ -3972,6 +3972,12 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+        try:
+            from tools import file_state
+            file_state.cleanup_task(task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup file state for task {task_id}: {e}")
 
     # ------------------------------------------------------------------
     # Background memory/skill review

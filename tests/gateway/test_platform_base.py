@@ -1,5 +1,6 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
 from unittest.mock import patch
 
@@ -21,6 +22,88 @@ class TestSecretCaptureGuidance:
         message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
         assert "local cli" in message.lower()
         assert "~/.hermes/.env" in message
+
+
+class _FakeAiohttpContent:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def iter_chunked(self, _size):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, status, *, headers=None, data=b"ok", content_type="image/png"):
+        self.status = status
+        self.headers = headers or {}
+        self.content = _FakeAiohttpContent([data])
+        self.content_type = content_type
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    def raise_for_status(self):
+        raise RuntimeError(f"HTTP {self.status}")
+
+
+class _FakeAiohttpSession:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.requested_urls = []
+
+    def get(self, url, **_kwargs):
+        self.requested_urls.append(url)
+        return self._responses.pop(0)
+
+
+class TestDownloadPublicUrlBytesAiohttp:
+    def test_blocks_unsafe_redirect_target(self):
+        from gateway.platforms.base import download_public_url_bytes_aiohttp
+
+        session = _FakeAiohttpSession(
+            [
+                _FakeAiohttpResponse(
+                    302,
+                    headers={"Location": "http://127.0.0.1/secret.png"},
+                ),
+            ]
+        )
+
+        with patch("tools.url_safety.is_safe_url", side_effect=[True, False]):
+            with pytest.raises(ValueError, match="Blocked unsafe URL"):
+                asyncio.run(
+                    download_public_url_bytes_aiohttp(
+                        session,
+                        "https://safe.example/img.png",
+                        timeout=1,
+                    )
+                )
+
+        assert session.requested_urls == ["https://safe.example/img.png"]
+
+    def test_enforces_download_size_limit_while_streaming(self):
+        from gateway.platforms.base import download_public_url_bytes_aiohttp
+
+        session = _FakeAiohttpSession(
+            [
+                _FakeAiohttpResponse(200, data=b"abcdef", headers={}),
+            ]
+        )
+
+        with patch("tools.url_safety.is_safe_url", return_value=True):
+            with pytest.raises(ValueError, match="byte limit"):
+                asyncio.run(
+                    download_public_url_bytes_aiohttp(
+                        session,
+                        "https://safe.example/large.png",
+                        timeout=1,
+                        max_bytes=3,
+                    )
+                )
 
 
 class TestSafeUrlForLog:

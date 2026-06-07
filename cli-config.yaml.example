@@ -310,21 +310,20 @@ browser:
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
-# Soft warnings are enabled by default. They append guidance to repeated failed
-# or non-progressing tool results but still let the tool execute. Hard stops are
-# opt-in circuit breakers for autonomous/cron sessions where stopping a loop is
-# preferable to spending the full iteration budget.
+# Soft warnings append guidance to repeated failed or non-progressing tool
+# results. Hard stops are enabled by default to bound deterministic loops before
+# they consume the full iteration budget.
 tool_loop_guardrails:
   warnings_enabled: true
-  hard_stop_enabled: false
+  hard_stop_enabled: true
   warn_after:
     exact_failure: 2
     same_tool_failure: 3
     idempotent_no_progress: 2
   hard_stop_after:
-    exact_failure: 5
-    same_tool_failure: 8
-    idempotent_no_progress: 5
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

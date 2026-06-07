@@ -163,6 +163,44 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         ta.join(timeout=3.0)
         tb.join(timeout=3.0)
 
+    def test_lock_path_releases_registry_entry_after_use(self):
+        p = self._mk()
+        reg = file_state.get_registry()
+        with file_state.lock_path(p):
+            self.assertIn(p, reg._path_locks)
+        self.assertNotIn(p, reg._path_locks)
+
+    def test_lock_path_kill_switch_does_not_allocate_lock(self):
+        p = self._mk()
+        reg = file_state.get_registry()
+        prior = os.environ.get("HERMES_DISABLE_FILE_STATE_GUARD")
+        os.environ["HERMES_DISABLE_FILE_STATE_GUARD"] = "1"
+        try:
+            with file_state.lock_path(p):
+                pass
+            self.assertNotIn(p, reg._path_locks)
+        finally:
+            if prior is None:
+                os.environ.pop("HERMES_DISABLE_FILE_STATE_GUARD", None)
+            else:
+                os.environ["HERMES_DISABLE_FILE_STATE_GUARD"] = prior
+
+    def test_cleanup_task_removes_top_level_read_entry(self):
+        p = self._mk()
+        reg = file_state.get_registry()
+        file_state.note_write("child-task", p)
+        self.assertIn("child-task", reg._reads)
+        file_state.cleanup_task("child-task")
+        self.assertNotIn("child-task", reg._reads)
+
+    def test_top_level_read_entries_are_capped(self):
+        p = self._mk()
+        reg = file_state.get_registry()
+        for i in range(file_state._MAX_TASKS + 5):
+            file_state.note_write(f"task-{i}", p)
+        self.assertLessEqual(len(reg._reads), file_state._MAX_TASKS)
+        self.assertNotIn("task-0", reg._reads)
+
     def test_writes_since_filters_by_parent_read_set(self):
         foo = self._mk()
         bar = self._mk()

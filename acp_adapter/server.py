@@ -146,6 +146,64 @@ def _image_data_url(data: bytes, mime_type: str) -> str:
     return f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
 
 
+def _decode_image_base64_payload(payload: str) -> bytes | None:
+    normalized = "".join(str(payload or "").split())
+    if not normalized:
+        return None
+    try:
+        return base64.b64decode(normalized, validate=True)
+    except Exception:
+        return None
+
+
+def _validated_acp_image_data_url(url: str) -> str | None:
+    raw = str(url or "").strip()
+    header, separator, payload = raw.partition(",")
+    if not separator:
+        return None
+    header_lower = header.lower()
+    if not header_lower.startswith("data:image/") or ";base64" not in header_lower:
+        return None
+    data = _decode_image_base64_payload(payload)
+    if data is None or len(data) > _MAX_ACP_RESOURCE_BYTES:
+        return None
+    return raw
+
+
+def _validated_acp_image_uri(uri: str) -> str | None:
+    raw = str(uri or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered.startswith("data:"):
+        return _validated_acp_image_data_url(raw)
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+        return raw
+    return None
+
+
+def _allow_client_stdio_mcp_servers() -> bool:
+    """Return whether ACP clients may provide stdio MCP server commands.
+
+    Stdio MCP transports execute a local command. ACP session data comes from
+    an external client, so keep this disabled unless the operator explicitly
+    opts in through config.yaml.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        logger.debug("Failed to load ACP stdio MCP policy", exc_info=True)
+        return False
+
+    acp_config = config.get("acp") if isinstance(config, dict) else None
+    if not isinstance(acp_config, dict):
+        return False
+    return bool(acp_config.get("allow_client_stdio_mcp_servers", False))
+
+
 def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
@@ -376,18 +434,30 @@ def _extract_text(
 
 
 def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | None:
-    """Convert an ACP image content block to OpenAI-style multimodal content."""
+    """Convert a safe ACP image block to OpenAI-style multimodal content."""
     data = str(getattr(block, "data", "") or "").strip()
     uri = str(getattr(block, "uri", "") or "").strip()
     mime_type = str(getattr(block, "mime_type", "") or "image/png").strip() or "image/png"
 
     if data:
-        url = data if data.startswith("data:") else f"data:{mime_type};base64,{data}"
+        if data.startswith("data:"):
+            url = _validated_acp_image_data_url(data)
+        elif _is_image_resource(mime_type):
+            raw_data = _decode_image_base64_payload(data)
+            if raw_data is not None and len(raw_data) <= _MAX_ACP_RESOURCE_BYTES:
+                url = _image_data_url(raw_data, mime_type)
+            else:
+                url = None
+        else:
+            url = None
     elif uri:
-        url = uri
+        url = _validated_acp_image_uri(uri)
     else:
         return None
 
+    if url is None:
+        logger.warning("Rejected unsafe or oversized ACP image block")
+        return None
     return {"type": "image_url", "image_url": {"url": url}}
 
 

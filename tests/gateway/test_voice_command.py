@@ -187,6 +187,7 @@ class TestHandleVoiceCommand:
         assert runner._VOICE_MODE_PATH.exists()
         data = json.loads(runner._VOICE_MODE_PATH.read_text())
         assert data["telegram:123"] == "voice_only"
+        assert not runner._VOICE_MODE_PATH.with_suffix(".json.tmp").exists()
 
     @pytest.mark.asyncio
     async def test_persistence_loaded(self, runner):

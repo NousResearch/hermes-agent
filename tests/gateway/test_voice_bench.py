@@ -58,6 +58,37 @@ def test_format_recent_displays_safe_previews(tmp_path, monkeypatch):
     assert "reply: 5" in output
 
 
+def test_format_recent_redacts_legacy_raw_text_fields(tmp_path, monkeypatch):
+    path = tmp_path / "voice_bench.jsonl"
+    monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    rows = [
+        {
+            "turn_id": "voice-legacy",
+            "stage": "stt",
+            "platform": "telegram",
+            "chat_id": "123",
+            "elapsed_ms": 100,
+            "transcript": "token=ghp_legacysecretvalue",
+        },
+        {
+            "turn_id": "voice-legacy",
+            "stage": "agent",
+            "platform": "telegram",
+            "chat_id": "123",
+            "elapsed_ms": 100,
+            "response": "authorization: bearer abcdefghijklmnop",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+    output = voice_bench.format_recent("telegram", "123", limit=1)
+
+    assert "ghp_legacysecretvalue" not in output
+    assert "abcdefghijklmnop" not in output
+    assert "token=[REDACTED]" in output
+    assert "authorization=[REDACTED]" in output
+
+
 def test_recent_events_ignores_malformed_rows_and_filters_chat(tmp_path, monkeypatch):
     path = tmp_path / "voice_bench.jsonl"
     monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))

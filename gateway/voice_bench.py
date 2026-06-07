@@ -21,12 +21,12 @@ _LAST_READ_ERROR: str | None = None
 _LAST_WRITE_ERROR: str | None = None
 
 _SECRET_PATTERNS = (
+    re.compile(r"(?i)\bbearer\s+[-A-Za-z0-9._~+/=]{8,}\b"),
     re.compile(
         r"(?i)\b(api[_-]?key|token|secret|password|passwd|authorization)\s*[:=]\s*"
         r"([^\s,;]{4,})"
     ),
     re.compile(r"\b(?:sk|ghp|gho|ghu|ghs|glpat|xox[abprs])-[-A-Za-z0-9_]{8,}\b"),
-    re.compile(r"(?i)\bbearer\s+[-A-Za-z0-9._~+/=]{8,}\b"),
 )
 
 
@@ -180,10 +180,14 @@ def format_recent(platform: str | None = None, chat_id: str | None = None, *, li
             f"tts={_ms(tts.get('elapsed_ms'))} "
             f"send={_ms(delivery.get('elapsed_ms'))}"
         )
-        transcript = str(stt.get("transcript_preview") or stt.get("transcript") or "").strip()
+        transcript = str(
+            stt.get("transcript_preview") or _redact_text(stt.get("transcript"))
+        ).strip()
         if transcript:
             lines.append(f"  heard: {transcript[:120]}")
-        response = str(agent.get("response_preview") or agent.get("response") or "").strip()
+        response = str(
+            agent.get("response_preview") or _redact_text(agent.get("response"))
+        ).strip()
         if response:
             lines.append(f"  reply: {response[:120]}")
     return "\n".join(lines)

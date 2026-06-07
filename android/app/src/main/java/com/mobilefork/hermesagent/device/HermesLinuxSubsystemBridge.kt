@@ -37,15 +37,14 @@ object HermesLinuxSubsystemBridge {
         val currentAppVersionCode = appVersionCode(context)
         val currentAssetFingerprint = assetManifestSha256(context, androidAbi)
         val currentNativeLibraryDir = context.applicationInfo.nativeLibraryDir.orEmpty()
-        readState(context)?.let { savedState ->
-            var state = savedState
+        readState(context)?.let { state ->
             var stateChanged = false
             if (state.optString("android_abi") != androidAbi) {
                 reset(context)
                 return@let
             }
             if (state.optString("native_library_dir") != currentNativeLibraryDir) {
-                state = refreshNativeRuntimePaths(context, androidAbi, state) ?: run {
+                refreshNativeRuntimePaths(context, androidAbi, state) ?: run {
                     reset(context)
                     return@let
                 }
@@ -108,8 +107,8 @@ object HermesLinuxSubsystemBridge {
             val bashPath = nativeBashPath
                 .takeIf { it.isNotBlank() && File(it).canExecute() }
                 ?: prefixBashPath
-            val nativeLlamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server.so")
-            val nativeBionicLlamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server_bionic_spawn.so")
+            val llamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server.so")
+            val bionicLlamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server_bionic_spawn.so")
             val binPath = listOf(nativeBinDir, File(prefixDir, "bin"))
                 .filter { it.isDirectory }
                 .joinToString(":") { it.absolutePath }
@@ -129,8 +128,8 @@ object HermesLinuxSubsystemBridge {
                 put("native_library_dir", context.applicationInfo.nativeLibraryDir.orEmpty())
                 put("app_package_name", context.packageName)
                 put("native_bash_path", nativeBashPath)
-                put("native_llama_server_path", nativeLlamaServerPath)
-                put("bionic_llama_server_path", nativeBionicLlamaServerPath)
+                put("native_llama_server_path", llamaServerPath)
+                put("bionic_llama_server_path", bionicLlamaServerPath)
                 put("native_bin_path", nativeBinDir.absolutePath)
                 put("native_libexec_path", nativeLibexecDir.absolutePath)
                 put("python_path", File(nativeBinDir, PYTHON_BINARY_NAME).absolutePath)
@@ -206,8 +205,8 @@ object HermesLinuxSubsystemBridge {
         val bashPath = nativeBashPath
             .takeIf { it.isNotBlank() && File(it).canExecute() }
             ?: prefixBashPath
-        val nativeLlamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server.so")
-        val nativeBionicLlamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server_bionic_spawn.so")
+        val llamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server.so")
+        val bionicLlamaServerPath = nativeExecutablePath(context, "libhermes_android_llama_server_bionic_spawn.so")
         val binPath = listOf(nativeBinDir, File(prefixDir, "bin"))
             .filter { it.isDirectory }
             .joinToString(":") { it.absolutePath }
@@ -219,8 +218,8 @@ object HermesLinuxSubsystemBridge {
             .put("native_library_dir", context.applicationInfo.nativeLibraryDir.orEmpty())
             .put("app_package_name", context.packageName)
             .put("native_bash_path", nativeBashPath)
-            .put("native_llama_server_path", nativeLlamaServerPath)
-            .put("bionic_llama_server_path", nativeBionicLlamaServerPath)
+            .put("native_llama_server_path", llamaServerPath)
+            .put("bionic_llama_server_path", bionicLlamaServerPath)
             .put("native_bin_path", nativeBinDir.absolutePath)
             .put("native_libexec_path", nativeLibexecDir.absolutePath)
             .put("python_path", File(nativeBinDir, PYTHON_BINARY_NAME).absolutePath)

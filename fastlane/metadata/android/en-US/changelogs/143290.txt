@@ -1,0 +1,5 @@
+Hermes Agent Fork 0.13.132
+
+- Keeps the 0.13.131 F-Droid Termux asset refresh, downloadable Linux sandbox catalog, localized MCP onboarding, and assistant tool-call rendering fixes.
+- Restores the Android Linux subsystem bridge and native terminal direct-call contracts covered by the GitHub Android smoke workflow.
+- Publishes the fixed release metadata at versionCode 143290 for F-Droid tag autosync.

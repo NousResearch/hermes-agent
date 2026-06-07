@@ -275,7 +275,7 @@ class NativeToolCallingChatClient(
             )
         }
 
-        extractDirectTerminalCommand(userText)?.let { command ->
+        extractExactTerminalCommand(userText)?.let { command ->
             val toolResult = executeTerminalTool(
                 ToolCall(
                     id = "direct_${UUID.randomUUID()}",
@@ -3788,6 +3788,9 @@ class NativeToolCallingChatClient(
                 .trim('`')
                 .takeIf { it.isNotBlank() }
         }
+
+        internal fun extractExactTerminalCommand(userText: String): String? =
+            extractDirectTerminalCommand(userText)
 
         fun shouldSkipNativeFollowUpAfterToolResult(toolResult: String): Boolean {
             val parsed = runCatching { JSONObject(toolResult) }.getOrNull() ?: return false

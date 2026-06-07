@@ -95,6 +95,16 @@ def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
 
 
+def _escape_like(value: str) -> str:
+    r"""Escape SQL LIKE wildcards so *value* matches literally under ``ESCAPE '\'``.
+
+    Entity names are extracted from free text (including quoted spans), so they
+    can legitimately contain ``%`` and ``_`` — both LIKE wildcards. Escape the
+    backslash first so the escape character itself is not double-handled.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
@@ -435,20 +445,26 @@ class MemoryStore:
 
         Returns the entity_id.
         """
-        # Exact name match
+        # Exact name match (case-insensitive). Use equality rather than LIKE so
+        # that ``%`` / ``_`` in extracted entity names are compared literally
+        # instead of being interpreted as wildcards — a name like ``Pro%llo``
+        # must not collide with an unrelated ``Project Apollo``.
         row = self._conn.execute(
-            "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            "SELECT entity_id FROM entities WHERE name = ? COLLATE NOCASE", (name,)
         ).fetchone()
         if row is not None:
             return int(row["entity_id"])
 
-        # Search aliases — aliases stored as comma-separated; use LIKE with % boundaries
+        # Search aliases — aliases stored as comma-separated; LIKE with comma
+        # boundaries isolates a single alias. The name is interpolated into the
+        # pattern, so escape its LIKE wildcards and declare an ESCAPE char to
+        # keep the match literal (still case-insensitive: LIKE folds ASCII case).
         alias_row = self._conn.execute(
-            """
+            r"""
             SELECT entity_id FROM entities
-            WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'
+            WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%' ESCAPE '\'
             """,
-            (name,),
+            (_escape_like(name),),
         ).fetchone()
         if alias_row is not None:
             return int(alias_row["entity_id"])

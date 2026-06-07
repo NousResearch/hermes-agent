@@ -455,6 +455,38 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 }
 
 
+_ROUTE_MATCH_KEYS = ("platform", "chat_id", "channel_id", "thread_id", "guild_id", "user_id")
+
+
+def _validate_profile_routing(routing: dict) -> dict:
+    """Fail-closed validation of a profile_routing table (see design §8).
+
+    Raises ValueError on an unknown/invalid target profile or two routes with
+    an identical match-key set.  An absent table is handled by the caller.
+    """
+    from hermes_cli.profiles import profile_exists, validate_profile_name
+
+    routes = routing.get("routes") or []
+    seen: set[tuple] = set()
+    for route in routes:
+        if not isinstance(route, dict):
+            raise ValueError(f"profile_routing route must be a mapping, got {type(route).__name__}")
+        profile = route.get("profile")
+        if not profile:
+            raise ValueError(f"profile_routing route is missing a 'profile': {route!r}")
+        validate_profile_name(str(profile))
+        if not profile_exists(str(profile)):
+            raise ValueError(f"profile_routing references unknown profile {profile!r}")
+        signature = tuple((k, str(route[k])) for k in _ROUTE_MATCH_KEYS if k in route)
+        if signature in seen:
+            raise ValueError(f"Duplicate profile_routing route for match {dict(signature)!r}")
+        seen.add(signature)
+    for name in (routing.get("default"),):
+        if name and not profile_exists(str(name)):
+            raise ValueError(f"profile_routing default references unknown profile {name!r}")
+    return routing
+
+
 @dataclass
 class GatewayConfig:
     """
@@ -491,6 +523,10 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+
+    # Tier-2 profile routing table (gateway.profile_routing).  None => no
+    # routing; every message stays on the host profile (legacy behavior).
+    profile_routing: Optional[dict] = None
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -643,6 +679,12 @@ class GatewayConfig:
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
 
+        profile_routing = data.get("profile_routing")
+        if isinstance(profile_routing, dict):
+            profile_routing = _validate_profile_routing(profile_routing)
+        else:
+            profile_routing = None
+
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
@@ -669,6 +711,7 @@ class GatewayConfig:
                 data.get("filter_silence_narration"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            profile_routing=profile_routing,
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
@@ -754,6 +797,13 @@ def load_gateway_config() -> GatewayConfig:
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
+
+            # profile_routing is gateway-level (cross-platform); accept it under
+            # gateway: or at the top level.
+            _routing = yaml_cfg.get("gateway", {}).get("profile_routing") if isinstance(yaml_cfg.get("gateway"), dict) else None
+            _routing = _routing or yaml_cfg.get("profile_routing")
+            if _routing is not None:
+                gw_data["profile_routing"] = _routing
 
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
@@ -912,7 +962,7 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
-                if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
+                if plat in {Platform.DISCORD, Platform.SLACK, Platform.TELEGRAM} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
@@ -920,6 +970,12 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if "channel_models" in platform_cfg:
+                    channel_models = platform_cfg["channel_models"]
+                    if isinstance(channel_models, dict):
+                        bridged["channel_models"] = {str(k): v for k, v in channel_models.items()}
+                    else:
+                        bridged["channel_models"] = channel_models
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg

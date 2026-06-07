@@ -1167,6 +1167,7 @@ from gateway.platforms.base import (
     MessageType,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    resolve_channel_model,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -1603,6 +1604,18 @@ def _load_gateway_runtime_config() -> dict:
 
     expanded = _expand_env_vars(cfg)
     return expanded if isinstance(expanded, dict) else {}
+
+
+def _only_platforms_filter() -> set[str] | None:
+    """Platforms a worker may initialize, from HERMES_GATEWAY_ONLY_PLATFORMS.
+
+    None => no restriction (the normal front/standalone path).  A worker sets
+    this to ``api_server`` so its token adapters never start (one-loop-per-token).
+    """
+    raw = os.environ.get("HERMES_GATEWAY_ONLY_PLATFORMS", "").strip()
+    if not raw:
+        return None
+    return {p.strip() for p in raw.split(",") if p.strip()}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -2624,6 +2637,7 @@ class GatewayRunner:
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        channel_model: Optional[str] = None,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session, honoring session-scoped /model overrides.
 
@@ -2639,6 +2653,28 @@ class GatewayRunner:
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
+
+        # Per-route model overlay (Tier-1): channel_models on the source's
+        # platform config. A session /model override (below) still wins.
+        # Guard config with getattr: this runs on every _run_agent call,
+        # including lean runners (cron/codex paths) that never set self.config.
+        if source is not None and getattr(self, "config", None) is not None:
+            try:
+                plat_cfg = self.config.platforms.get(source.platform)
+                if routed := resolve_channel_model(
+                    plat_cfg.extra if plat_cfg else {},
+                    str(source.chat_id or ""),
+                    str(source.parent_chat_id or "") or None,
+                ):
+                    model = routed
+            except Exception:
+                logger.debug("channel_models lookup failed", exc_info=True)
+
+        # A per-route model the adapter already resolved (e.g. Telegram
+        # group_topics, scoped by chat_id) wins over flat channel_models.
+        if channel_model:
+            model = channel_model
+
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
@@ -4561,8 +4597,13 @@ class GatewayRunner:
         startup_retryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
+        only_platforms = _only_platforms_filter()
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
+                continue
+            if only_platforms is not None and platform.value not in only_platforms:
+                # Worker mode: skip token adapters so the shared bot token stays
+                # owned by the front (one-loop-per-token invariant).
                 continue
             enabled_platform_count += 1
             
@@ -4583,6 +4624,8 @@ class GatewayRunner:
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter._profile_routing = self.config.profile_routing
+            adapter._chat_bindings = self._chat_bindings()
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -5225,6 +5268,10 @@ class GatewayRunner:
                     except Exception as _e:
                         logger.debug("SessionStore prune failed: %s", _e)
                     self._last_session_store_prune_ts = time.time()
+
+                # Routed-profile worker pool upkeep: reap crashed-while-idle
+                # workers (drives the circuit breaker) and evict idle ones.
+                await self._maintain_worker_pool()
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly
@@ -6335,6 +6382,8 @@ class GatewayRunner:
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    adapter._profile_routing = self.config.profile_routing
+                    adapter._chat_bindings = self._chat_bindings()
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -6662,6 +6711,17 @@ class GatewayRunner:
                         _entry[0] if isinstance(_entry, tuple) else _entry
                     )
                     self._cleanup_agent_resources(_agent)
+
+            # Tear down routed-profile workers we own: they are tracked
+            # (non-detached) child processes, so without this they leak as
+            # orphans on every gateway stop/restart.
+            _worker_pool = getattr(self, "_worker_pool", None)
+            if _worker_pool is not None:
+                try:
+                    await _worker_pool.shutdown()
+                    logger.info("✓ routed-profile worker pool shut down")
+                except Exception as e:
+                    logger.error("✗ worker pool shutdown error: %s", e)
 
             for platform, adapter in list(self.adapters.items()):
                 _adapter_started_at = time.monotonic()
@@ -8891,6 +8951,187 @@ class GatewayRunner:
                 pass
         return source
 
+    def _make_worker_client(self, worker):
+        from gateway.worker_client import WorkerClient
+
+        return WorkerClient(worker.base_url, worker.key)
+
+    async def _maintain_worker_pool(self) -> None:
+        """Periodic upkeep for the routed-profile worker pool.
+
+        ``reap_exited`` records crashes (driving the circuit breaker) for
+        workers that died while idle — i.e. between messages, where the
+        on-demand respawn path never runs — and ``sweep_idle`` evicts workers
+        past their idle TTL so they free their pool slot and stop holding the
+        profile's gateway.lock.  Without this the pool's evict/circuit-break
+        machinery only ever runs on the next inbound message.
+        """
+        pool = getattr(self, "_worker_pool", None)
+        if pool is None:
+            return
+        try:
+            await pool.reap_exited()
+            await pool.sweep_idle()
+        except Exception:
+            logger.debug("worker pool maintenance failed", exc_info=True)
+
+    async def _dispatch_to_worker(self, event, source, profile: str) -> dict:
+        """Dispatch one turn to *profile*'s isolated worker and deliver its reply.
+
+        Raises on any failure so the caller can fail closed — a routed turn must
+        never silently run on the host profile (design §8).
+        """
+        if getattr(self, "_worker_pool", None) is None:
+            from gateway.worker_pool import WorkerPool
+
+            self._worker_pool = WorkerPool()
+        worker = await self._worker_pool.acquire(profile)
+        client = self._make_worker_client(worker)
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=self.config.group_sessions_per_user,
+            thread_sessions_per_user=self.config.thread_sessions_per_user,
+            profile=profile,
+        )
+
+        class _FrontConsumer:
+            def on_delta(self, _text: str) -> None:
+                # Live streaming relay is a refinement; the final reply is sent below.
+                pass
+
+        async def _media_handler(media_event):
+            await self._deliver_worker_media(event, source, media_event)
+
+        async def _approval_handler(_request) -> str:
+            # Interactive approval relay to the routed user is not wired yet, so
+            # we fail closed: deny, but tell the user explicitly instead of a
+            # silent denial they can't explain.
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                try:
+                    await adapter.send(
+                        source.chat_id,
+                        f"⚠️ The '{profile}' profile asked to run a tool that needs approval — "
+                        "auto-denied (approvals aren't supported for routed profiles yet).",
+                    )
+                except Exception:
+                    logger.debug("failed to notify user of routed approval denial", exc_info=True)
+            return "deny"
+
+        # Mint claim-check refs for any inbound media so the worker can
+        # materialize them without ever seeing a front-local path.
+        from gateway.media_spool import MediaSpool, mint_outbound, default_spool_root
+
+        spool = MediaSpool(default_spool_root())
+        media_urls = getattr(event, "media_urls", None) or []
+        inbound = mint_outbound(spool, [(p, False) for p in media_urls]) if media_urls else []
+        try:
+            result = await client.dispatch(
+                input=event.text,
+                instructions=getattr(event, "channel_prompt", None),
+                session_id=session_key,
+                media_refs=inbound,
+                consumer=_FrontConsumer(),
+                media_handler=_media_handler,
+                approval_handler=_approval_handler,
+                continue_session=True,
+            )
+        finally:
+            for ref in inbound:
+                spool.unlink(ref["ref"])  # terminal cleanup of inbound spool bytes
+        output = (result or {}).get("output", "")
+        adapter = self.adapters.get(source.platform)
+        if output and adapter:
+            await adapter.send(source.chat_id, output, reply_to=self._reply_anchor_for_event(event))
+        return result or {}
+
+    async def _deliver_worker_media(self, event, source, media_event) -> None:
+        """Resolve a worker's response.media refs to front-local files and upload
+        them via the platform's existing send_* methods, then unlink the spool."""
+        from gateway.media_spool import MediaSpool, MediaRef, default_spool_root
+        from gateway.platforms.base import get_image_cache_dir, get_document_cache_dir
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        spool = MediaSpool(default_spool_root())
+        images: list[tuple[str, str]] = []
+        for data in media_event.get("media", []):
+            mref = MediaRef.from_wire(data)
+            dest = get_image_cache_dir() if mref.kind == "image" else get_document_cache_dir()
+            path = str(spool.materialize(mref.ref, dest, filename=mref.filename))
+            try:
+                if mref.kind == "image" and not mref.as_document:
+                    images.append((f"file://{path}", ""))
+                elif mref.kind == "voice":
+                    await adapter.send_voice(source.chat_id, path)
+                elif mref.kind == "video":
+                    await adapter.send_video(source.chat_id, path)
+                else:
+                    await adapter.send_document(source.chat_id, path)
+            finally:
+                spool.unlink(mref.ref)  # eager cleanup on fetch
+        if images:
+            await adapter.send_multiple_images(source.chat_id, images)
+
+    async def _reset_routed_worker(self, event, source, profile: str) -> None:
+        """Forward /new or /reset to the routed worker, scoped to its own session."""
+        if getattr(self, "_worker_pool", None) is None:
+            from gateway.worker_pool import WorkerPool
+
+            self._worker_pool = WorkerPool()
+        worker = await self._worker_pool.acquire(profile)
+        client = self._make_worker_client(worker)
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=self.config.group_sessions_per_user,
+            thread_sessions_per_user=self.config.thread_sessions_per_user,
+            profile=profile,
+        )
+        await client.reset_session(session_key)
+        adapter = self.adapters.get(source.platform)
+        if adapter:
+            await adapter.send(source.chat_id, "🔄 Started a new conversation.")
+
+    async def _maybe_dispatch_routed(self, event, source) -> bool:
+        """Route to a worker if the message matched a profile route.
+
+        Returns True when the message was handled here (routed) — the caller
+        must then NOT run the in-process host handler.  A dispatch failure posts
+        a visible error and still returns True: failing closed prevents a routed
+        message from leaking into the host profile.
+        """
+        profile = getattr(event, "routed_profile", None)
+        if not profile:
+            return False
+        cmd = event.get_command() if hasattr(event, "get_command") else None
+        # Control commands (/new, /reset) carry no model cost and must not be
+        # throttled — rate-limiting a reset would strand a stuck conversation.
+        if cmd not in {"new", "reset"}:
+            if getattr(self, "_profile_rate_limiter", None) is None:
+                from gateway.rate_limit import ProfileRateLimiter
+
+                self._profile_rate_limiter = ProfileRateLimiter()
+            if not self._profile_rate_limiter.allow(profile):
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    await adapter.send(source.chat_id, f"⏳ '{profile}' is busy right now — please retry shortly.")
+                return True
+        try:
+            if cmd in {"new", "reset"}:
+                await self._reset_routed_worker(event, source, profile)
+            else:
+                await self._dispatch_to_worker(event, source, profile)
+        except Exception as e:
+            logger.error("routed dispatch to profile %r failed: %s", profile, e, exc_info=True)
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                try:
+                    await adapter.send(source.chat_id, f"⚠️ Could not reach the '{profile}' profile: {e}")
+                except Exception:
+                    logger.error("failed to deliver routing error to user", exc_info=True)
+        return True
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -8901,6 +9142,10 @@ class GatewayRunner:
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview,
         )
+
+        # Tier-2: a routed message runs on an isolated worker, not the host.
+        if await self._maybe_dispatch_routed(event, source):
+            return
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
@@ -9538,6 +9783,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                channel_model=getattr(event, "channel_model", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -10298,19 +10544,42 @@ class GatewayRunner:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
 
+    def _chat_bindings(self) -> "ChatBindings":
+        from gateway.chat_bindings import ChatBindings
+
+        if getattr(self, "_chat_bindings_store", None) is None:
+            self._chat_bindings_store = ChatBindings(Path(self.config.sessions_dir) / "chat_bindings.json")
+        return self._chat_bindings_store
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
+        """Handle /profile [ls | <name>] — show, list, or bind this chat's profile."""
         from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.profiles import get_active_profile_name, list_profiles, profile_exists, validate_profile_name
+        from gateway.chat_bindings import chat_binding_key
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        arg = event.get_command_args().strip()
 
+        if arg in {"ls", "list"}:
+            names = ", ".join(sorted(p.name for p in list_profiles())) or "(none)"
+            return f"Available profiles: {names}"
+
+        if arg:
+            try:
+                validate_profile_name(arg)
+            except ValueError as e:
+                return f"⚠️ {e}"
+            if not profile_exists(arg):
+                return f"⚠️ No such profile '{arg}'. Try /profile ls."
+            self._chat_bindings().set(chat_binding_key(event.source), arg)
+            return f"✅ This chat is now bound to the '{arg}' profile."
+
+        bound = self._chat_bindings().get(chat_binding_key(event.source))
         lines = [
-            t("gateway.profile.header", profile=profile_name),
-            t("gateway.profile.home", home=display),
+            t("gateway.profile.header", profile=get_active_profile_name()),
+            t("gateway.profile.home", home=display_hermes_home()),
         ]
-
+        if bound:
+            lines.append(f"This chat is routed to: {bound}")
         return "\n".join(lines)
 
 
@@ -17076,6 +17345,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        channel_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -17835,6 +18105,7 @@ class GatewayRunner:
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                    channel_model=channel_model,
                 )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
@@ -19237,6 +19508,7 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_channel_model = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -19254,6 +19526,7 @@ class GatewayRunner:
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_channel_model = getattr(pending_event, "channel_model", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -19279,6 +19552,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    channel_model=next_channel_model,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

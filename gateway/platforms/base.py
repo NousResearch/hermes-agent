@@ -1452,6 +1452,13 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Per-route model override (e.g. Telegram group_topics model).  Resolved
+    # in the adapter (scoped by chat_id) so it can't collide across groups.
+    channel_model: Optional[str] = None
+
+    # Tier-2: target profile this message routes to (None => host profile).
+    routed_profile: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the
@@ -1708,6 +1715,28 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def resolve_channel_model(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel model override from platform config.
+
+    Looks up ``channel_models`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (forum threads / child channels inheriting a parent's model).
+
+    Returns the model string, or None if no match.  Blank values are absent.
+    """
+    models = config_extra.get("channel_models") or {}
+    if not isinstance(models, dict):
+        return None
+    for key in (channel_id, parent_id):
+        if key and (model := str(models.get(key) or "").strip()):
+            return model
     return None
 
 
@@ -3824,10 +3853,39 @@ class BasePlatformAdapter(ABC):
         # downstream delivery all agree on the same lane.
         self._apply_topic_recovery(event)
 
+        # Tier-2 routing: resolve the target profile (None => host).  A
+        # resolution failure is safe to fall back — no isolation boundary has
+        # been crossed yet — so it never blocks the host path (design §8).
+        try:
+            from gateway.routing import resolve_profile_route
+
+            from gateway.chat_bindings import chat_binding_key, parse_profile_mention
+
+            # Precedence: per-turn @mention > persisted /profile binding >
+            # config routing table.  A @mention only routes if it names a real
+            # profile; otherwise it stays literal text.
+            mention, body = parse_profile_mention(event.text or "")
+            if mention:
+                from hermes_cli.profiles import profile_exists
+
+                if profile_exists(mention):
+                    event.text = body
+                    event.routed_profile = mention
+            if event.routed_profile is None:
+                bindings = getattr(self, "_chat_bindings", None)
+                bound = bindings.get(chat_binding_key(event.source)) if bindings is not None else None
+                event.routed_profile = bound or resolve_profile_route(
+                    getattr(self, "_profile_routing", None), event.source
+                )
+        except Exception:
+            logger.warning("profile route resolution failed; staying on host profile", exc_info=True)
+            event.routed_profile = None
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.routed_profile or "main",
         )
 
         # On-entry self-heal: if the adapter still has an _active_sessions

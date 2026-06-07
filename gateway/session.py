@@ -601,6 +601,7 @@ def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    profile: str = "main",
 ) -> str:
     """Build a deterministic session key from a message source.
 
@@ -625,6 +626,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    prefix = f"agent:{profile}"
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -633,11 +635,11 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{prefix}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{prefix}:{platform}:dm:{dm_chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{prefix}:{platform}:dm:{source.thread_id}"
+        return f"{prefix}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -645,7 +647,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [prefix, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)

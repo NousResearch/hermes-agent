@@ -965,6 +965,44 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent creation helper
     # ------------------------------------------------------------------
 
+    def _embed_inbound_media(self, user_message: str, media_refs: list) -> str:
+        """Materialize claim-check refs into the cache and append local-path
+        references the vision pipeline already understands."""
+        from gateway.media_spool import MediaSpool, MediaRef, default_spool_root
+        from gateway.platforms.base import get_image_cache_dir, get_document_cache_dir
+
+        spool = MediaSpool(default_spool_root())
+        lines = []
+        for data in media_refs:
+            mref = MediaRef.from_wire(data)
+            dest = get_image_cache_dir() if mref.kind == "image" else get_document_cache_dir()
+            path = spool.materialize(mref.ref, dest, filename=mref.filename)
+            if mref.kind == "image":
+                lines.append(f"[User sent an image: {path}]")
+            elif mref.kind in ("voice", "video"):
+                lines.append(f"[User sent {mref.kind}: {path}]")
+            else:
+                lines.append(f"[User sent a file: {path}]")
+        return (user_message + "\n" + "\n".join(lines)).strip() if lines else user_message
+
+    def _emit_outbound_media(self, run_id: str, output: str, q) -> tuple[list, str]:
+        """Mint refs for the worker's MEDIA: output, emit response.media, return tag-free text."""
+        from gateway.media_spool import MediaSpool, mint_outbound, default_spool_root
+        from gateway.platforms.base import BasePlatformAdapter
+
+        media_files, cleaned = BasePlatformAdapter.extract_media(output or "")
+        if not media_files:
+            return [], output
+        refs = mint_outbound(MediaSpool(default_spool_root()), media_files)
+        if refs:
+            q.put_nowait({
+                "event": "response.media",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "media": refs,
+            })
+        return refs, cleaned
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -1303,6 +1341,29 @@ class APIServerAdapter(BasePlatformAdapter):
         if not session:
             return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
         return session, None
+
+    @staticmethod
+    def _continue_session_id(
+        body: Dict[str, Any],
+        conversation_history: List[Dict[str, Any]],
+        previous_response_id: Optional[str],
+    ) -> Optional[str]:
+        """Session id whose transcript should rehydrate this run, or None.
+
+        ``/v1/runs`` is otherwise stateless: it only uses history the caller
+        supplies (``conversation_history`` / ``previous_response_id``).  A
+        routed worker, however, holds the only copy of its transcript and the
+        front sends just a ``session_id``.  When the caller opts in with
+        ``continue_session`` and supplies no explicit history, load it from the
+        worker's own state.db so a routed conversation keeps memory across
+        turns.  Off by default → existing /v1/runs clients are unaffected.
+        """
+        if conversation_history or previous_response_id:
+            return None
+        if not body.get("continue_session"):
+            return None
+        sid = body.get("session_id")
+        return str(sid) if sid else None
 
     def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
         db = self._ensure_session_db()
@@ -3594,6 +3655,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
+        # Inbound media (Tier-2 claim-check): materialize each ref into the
+        # worker's cache and embed local paths, reusing the existing vision
+        # pipeline's "[User sent ...]" convention (zero downstream change).
+        media_refs = body.get("media_refs") or []
+        if media_refs:
+            try:
+                user_message = self._embed_inbound_media(user_message, media_refs)
+            except Exception:
+                logger.warning("[api_server] failed to materialize inbound media_refs", exc_info=True)
+
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
@@ -3643,6 +3714,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+
+        # Tier-2 continuity: a routed worker rehydrates its own transcript when
+        # the front opts in (continue_session) and sent no explicit history.
+        if (_resume_sid := self._continue_session_id(body, conversation_history, previous_response_id)):
+            conversation_history = self._conversation_history_for_session(_resume_sid)
+
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
@@ -3774,6 +3851,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Outbound media claim-check: mint refs from MEDIA: tags and
+                    # strip them, so the front delivers via its own send_*; the
+                    # output is guaranteed tag-free (same parse → no double-send).
+                    media_wire, final_response = self._emit_outbound_media(run_id, final_response, q)
                     q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,

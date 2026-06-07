@@ -619,6 +619,23 @@ def _gateway_run_args_for_profile(profile: str) -> list[str]:
     return args
 
 
+def _worker_run_args_for_profile(profile: str, port: int, key: str) -> tuple[list[str], dict[str, str]]:
+    """Argv + env for a pool-managed worker: tokenless api_server on loopback.
+
+    Never passes ``--replace`` — the worker shares the profile's real
+    HERMES_HOME and must not SIGTERM a standalone gateway holding its lock.
+    """
+    args = [get_python_path(), "-m", "hermes_cli.main", "--profile", profile, "gateway", "run"]
+    env = {
+        "HERMES_GATEWAY_ONLY_PLATFORMS": "api_server",
+        "API_SERVER_ENABLED": "true",
+        "API_SERVER_HOST": "127.0.0.1",
+        "API_SERVER_PORT": str(port),
+        "API_SERVER_KEY": key,
+    }
+    return args, env
+
+
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
     if old_pid <= 0:

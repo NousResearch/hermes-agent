@@ -5291,7 +5291,7 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        TERMINAL_KINDS = _kb.NOTIFY_TERMINAL_EVENT_KINDS
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -5376,21 +5376,24 @@ class GatewayRunner:
                             # tolerates that race, but we still skip the
                             # redundant call to avoid the wasted work.
                             subs = _kb.list_notify_subs(conn)
-                            if not subs:
+                            board_subs = _kb.list_board_notify_subs(conn)
+                            if not subs and not board_subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
+                                sub = {**sub, "scope": "task"}
                                 owner_profile = sub.get("notifier_profile") or None
+                                sub_target = sub.get("task_id") or f"board:{slug}"
                                 if owner_profile and owner_profile != notifier_profile:
                                     logger.debug(
                                         "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
-                                        sub.get("task_id"), owner_profile, notifier_profile,
+                                        sub_target, owner_profile, notifier_profile,
                                     )
                                     continue
                                 platform = (sub.get("platform") or "").lower()
                                 if platform not in active_platforms:
                                     logger.debug(
                                         "kanban notifier: subscription for %s on %s skipped; adapter not connected",
-                                        sub.get("task_id"), platform or "<missing>",
+                                        sub_target, platform or "<missing>",
                                     )
                                     continue
                                 old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
@@ -5416,6 +5419,48 @@ class GatewayRunner:
                                     "task": task,
                                     "board": slug,
                                 })
+                            for sub in board_subs:
+                                sub = {**sub, "scope": "board"}
+                                owner_profile = sub.get("notifier_profile") or None
+                                sub_target = f"board:{slug}"
+                                if owner_profile and owner_profile != notifier_profile:
+                                    logger.debug(
+                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
+                                        sub_target, owner_profile, notifier_profile,
+                                    )
+                                    continue
+                                platform = (sub.get("platform") or "").lower()
+                                if platform not in active_platforms:
+                                    logger.debug(
+                                        "kanban notifier: subscription for %s on %s skipped; adapter not connected",
+                                        sub_target, platform or "<missing>",
+                                    )
+                                    continue
+                                old_cursor, cursor, events = _kb.claim_unseen_events_for_board_sub(
+                                    conn,
+                                    platform=sub["platform"],
+                                    chat_id=sub["chat_id"],
+                                    thread_id=sub.get("thread_id") or "",
+                                    kinds=TERMINAL_KINDS,
+                                )
+                                if not events:
+                                    continue
+                                task_map = {
+                                    task_id: _kb.get_task(conn, task_id)
+                                    for task_id in {ev.task_id for ev in events}
+                                }
+                                logger.debug(
+                                    "kanban notifier: claimed %d board event(s) for %s cursor %s→%s",
+                                    len(events), sub_target, old_cursor, cursor,
+                                )
+                                deliveries.append({
+                                    "sub": sub,
+                                    "old_cursor": old_cursor,
+                                    "cursor": cursor,
+                                    "events": events,
+                                    "task_map": task_map,
+                                    "board": slug,
+                                })
                         finally:
                             conn.close()
                     return deliveries
@@ -5423,8 +5468,11 @@ class GatewayRunner:
                 deliveries = await asyncio.to_thread(_collect)
                 for d in deliveries:
                     sub = d["sub"]
-                    task = d["task"]
+                    task = d.get("task")
+                    task_map = d.get("task_map", {})
                     board_slug = d.get("board")
+                    sub_scope = sub.get("scope") or "task"
+                    sub_target = sub.get("task_id") or f"board:{board_slug}"
                     platform_str = (sub["platform"] or "").lower()
                     try:
                         plat = _Platform(platform_str)
@@ -5439,7 +5487,7 @@ class GatewayRunner:
                     if adapter is None:
                         logger.debug(
                             "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
-                            platform_str, sub["task_id"],
+                            platform_str, sub_target,
                         )
                         await asyncio.to_thread(
                             self._kanban_rewind,
@@ -5449,13 +5497,19 @@ class GatewayRunner:
                             board_slug,
                         )
                         continue
-                    title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
+                        event_task = task if sub_scope == "task" else task_map.get(ev.task_id)
+                        title = (event_task.title if event_task else ev.task_id)[:120]
+                        event_task_id = ev.task_id if sub_scope == "board" else sub["task_id"]
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
+                        who = (
+                            event_task.assignee
+                            if event_task and event_task.assignee
+                            else None
+                        )
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
@@ -5471,30 +5525,30 @@ class GatewayRunner:
                                 lines = payload_summary.strip().splitlines()
                                 h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
+                            elif event_task and event_task.result:
+                                lines = event_task.result.strip().splitlines()
+                                r = lines[0][:160] if lines else event_task.result[:160]
                                 handoff = f"\n{r}"
                             msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
+                                f"✔ {tag}Kanban {event_task_id} done"
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                            msg = f"⏸ {tag}Kanban {event_task_id} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
+                                f"✖ {tag}Kanban {event_task_id} gave up "
                                 f"after repeated spawn failures{err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
+                                f"✖ {tag}Kanban {event_task_id} worker crashed "
                                 f"(pid gone); dispatcher will retry"
                             )
                         elif kind == "timed_out":
@@ -5502,7 +5556,7 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
+                                f"⏱ {tag}Kanban {event_task_id} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
                         else:
@@ -5511,7 +5565,8 @@ class GatewayRunner:
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         sub_key = (
-                            sub["task_id"], sub["platform"],
+                            sub_scope, board_slug or "", sub.get("task_id") or "",
+                            sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
@@ -5520,7 +5575,7 @@ class GatewayRunner:
                             )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                                kind, event_task_id, platform_str, sub["chat_id"], board_slug,
                             )
                             # After delivering the text notification, surface
                             # any artifact paths the worker referenced in
@@ -5538,12 +5593,12 @@ class GatewayRunner:
                                         chat_id=sub["chat_id"],
                                         metadata=metadata,
                                         event_payload=getattr(ev, "payload", None),
-                                        task=task,
+                                        task=event_task,
                                     )
                                 except Exception as art_exc:
                                     logger.debug(
                                         "kanban notifier: artifact delivery for %s failed: %s",
-                                        sub["task_id"], art_exc,
+                                        event_task_id, art_exc,
                                     )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
@@ -5553,14 +5608,14 @@ class GatewayRunner:
                             logger.warning(
                                 "kanban notifier: send failed for %s on %s "
                                 "(attempt %d/%d): %s",
-                                sub["task_id"], platform_str, fails,
+                                sub_target, platform_str, fails,
                                 MAX_SEND_FAILURES, exc,
                             )
                             if fails >= MAX_SEND_FAILURES:
                                 logger.warning(
                                     "kanban notifier: dropping subscription "
                                     "%s on %s after %d consecutive send failures",
-                                    sub["task_id"], platform_str, fails,
+                                    sub_target, platform_str, fails,
                                 )
                                 await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
                                 sub_fail_counts.pop(sub_key, None)
@@ -5591,7 +5646,7 @@ class GatewayRunner:
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
-                        if task_terminal:
+                        if sub_scope == "task" and task_terminal:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
@@ -5614,14 +5669,23 @@ class GatewayRunner:
         from hermes_cli import kanban_db as _kb
         conn = _kb.connect(board=board)
         try:
-            _kb.advance_notify_cursor(
-                conn,
-                task_id=sub["task_id"],
-                platform=sub["platform"],
-                chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "",
-                new_cursor=cursor,
-            )
+            if (sub.get("scope") or "task") == "board":
+                _kb.advance_board_notify_cursor(
+                    conn,
+                    platform=sub["platform"],
+                    chat_id=sub["chat_id"],
+                    thread_id=sub.get("thread_id") or "",
+                    new_cursor=cursor,
+                )
+            else:
+                _kb.advance_notify_cursor(
+                    conn,
+                    task_id=sub["task_id"],
+                    platform=sub["platform"],
+                    chat_id=sub["chat_id"],
+                    thread_id=sub.get("thread_id") or "",
+                    new_cursor=cursor,
+                )
         finally:
             conn.close()
 
@@ -5629,13 +5693,21 @@ class GatewayRunner:
         from hermes_cli import kanban_db as _kb
         conn = _kb.connect(board=board)
         try:
-            _kb.remove_notify_sub(
-                conn,
-                task_id=sub["task_id"],
-                platform=sub["platform"],
-                chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "",
-            )
+            if (sub.get("scope") or "task") == "board":
+                _kb.remove_board_notify_sub(
+                    conn,
+                    platform=sub["platform"],
+                    chat_id=sub["chat_id"],
+                    thread_id=sub.get("thread_id") or "",
+                )
+            else:
+                _kb.remove_notify_sub(
+                    conn,
+                    task_id=sub["task_id"],
+                    platform=sub["platform"],
+                    chat_id=sub["chat_id"],
+                    thread_id=sub.get("thread_id") or "",
+                )
         finally:
             conn.close()
 
@@ -5650,15 +5722,25 @@ class GatewayRunner:
         from hermes_cli import kanban_db as _kb
         conn = _kb.connect(board=board)
         try:
-            _kb.rewind_notify_cursor(
-                conn,
-                task_id=sub["task_id"],
-                platform=sub["platform"],
-                chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "",
-                claimed_cursor=claimed_cursor,
-                old_cursor=old_cursor,
-            )
+            if (sub.get("scope") or "task") == "board":
+                _kb.rewind_board_notify_cursor(
+                    conn,
+                    platform=sub["platform"],
+                    chat_id=sub["chat_id"],
+                    thread_id=sub.get("thread_id") or "",
+                    claimed_cursor=claimed_cursor,
+                    old_cursor=old_cursor,
+                )
+            else:
+                _kb.rewind_notify_cursor(
+                    conn,
+                    task_id=sub["task_id"],
+                    platform=sub["platform"],
+                    chat_id=sub["chat_id"],
+                    thread_id=sub.get("thread_id") or "",
+                    claimed_cursor=claimed_cursor,
+                    old_cursor=old_cursor,
+                )
         finally:
             conn.close()
 

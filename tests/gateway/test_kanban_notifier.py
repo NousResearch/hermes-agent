@@ -69,6 +69,14 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def _board_notify_subs():
+    conn = kb.connect()
+    try:
+        return kb.list_board_notify_subs(conn)
+    finally:
+        conn.close()
+
+
 def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monkeypatch):
     db_path = tmp_path / "shared-kanban.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -233,3 +241,40 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_kanban_notifier_board_subscription_filters_kinds_and_persists(tmp_path, monkeypatch):
+    db_path = tmp_path / "board-subscription.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        done_tid = kb.create_task(conn, title="done task", assignee="worker-a")
+        blocked_tid = kb.create_task(conn, title="blocked task", assignee="worker-b")
+        crashed_tid = kb.create_task(conn, title="crashed task", assignee="worker-c")
+        kb.add_board_notify_sub(
+            conn,
+            platform="telegram",
+            chat_id="chat-1",
+            kinds=["completed", "blocked"],
+        )
+        kb.complete_task(conn, done_tid, summary="done")
+        kb.block_task(conn, blocked_tid, reason="needs input")
+        kb._append_event(conn, crashed_tid, kind="crashed")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 2
+    texts = [item["text"] for item in adapter.sent]
+    assert any(done_tid in text and "done" in text.lower() for text in texts)
+    assert any(blocked_tid in text and "blocked" in text.lower() for text in texts)
+    assert all(crashed_tid not in text for text in texts)
+
+    subs = _board_notify_subs()
+    assert len(subs) == 1
+    assert subs[0]["kinds"] == ["completed", "blocked"]

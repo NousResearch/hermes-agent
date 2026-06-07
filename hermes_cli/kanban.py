@@ -131,6 +131,21 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
+def _notify_board_help() -> str:
+    return (
+        "Board slug override. Also accepted before the subcommand as "
+        "`hermes kanban --board <slug> ...`."
+    )
+
+
+def _parse_notify_kinds_arg(raw: Optional[str]) -> Optional[list[str]]:
+    if not raw:
+        return None
+    return kb.normalize_notify_kinds(
+        part.strip() for part in raw.split(",") if part.strip()
+    )
+
+
 def _check_dispatcher_presence() -> tuple[bool, str]:
     """Return ``(running, message)``.
 
@@ -678,14 +693,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
-        help="Subscribe a gateway source to a task's terminal events "
-             "(used by /kanban subscribe in the gateway adapter)",
+        help="Subscribe a gateway source to task or board terminal events",
     )
-    p_nsub.add_argument("task_id")
+    p_nsub.add_argument("task_id", nargs="?", default=None)
+    p_nsub.add_argument("--board", default=None, metavar="<slug>", help=_notify_board_help())
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument(
+        "--kinds", default=None,
+        help="Comma-separated terminal event kinds for board subscriptions "
+             "(e.g. 'completed,blocked,crashed')",
+    )
     p_nsub.add_argument(
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
@@ -695,14 +715,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "notify-list",
         help="List notification subscriptions (optionally for a single task)",
     )
+    p_nlist.add_argument("--board", default=None, metavar="<slug>", help=_notify_board_help())
     p_nlist.add_argument("task_id", nargs="?", default=None)
     p_nlist.add_argument("--json", action="store_true")
 
     p_nrm = sub.add_parser(
         "notify-unsubscribe",
-        help="Remove a gateway subscription from a task",
+        help="Remove a gateway subscription from a task or board",
     )
-    p_nrm.add_argument("task_id")
+    p_nrm.add_argument("task_id", nargs="?", default=None)
+    p_nrm.add_argument("--board", default=None, metavar="<slug>", help=_notify_board_help())
     p_nrm.add_argument("--platform", required=True)
     p_nrm.add_argument("--chat-id", required=True)
     p_nrm.add_argument("--thread-id", default=None)
@@ -2417,25 +2439,65 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    try:
+        kinds = _parse_notify_kinds_arg(getattr(args, "kinds", None))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     with kb.connect_closing() as conn:
-        if kb.get_task(conn, args.task_id) is None:
-            print(f"no such task: {args.task_id}", file=sys.stderr)
-            return 1
-        kb.add_notify_sub(
-            conn, task_id=args.task_id,
-            platform=args.platform, chat_id=args.chat_id,
-            thread_id=args.thread_id, user_id=args.user_id,
-            notifier_profile=args.notifier_profile or _profile_author(),
-        )
+        if args.task_id:
+            if kinds:
+                print(
+                    "--kinds is only supported for board-level subscriptions",
+                    file=sys.stderr,
+                )
+                return 2
+            if kb.get_task(conn, args.task_id) is None:
+                print(f"no such task: {args.task_id}", file=sys.stderr)
+                return 1
+            kb.add_notify_sub(
+                conn, task_id=args.task_id,
+                platform=args.platform, chat_id=args.chat_id,
+                thread_id=args.thread_id, user_id=args.user_id,
+                notifier_profile=args.notifier_profile or _profile_author(),
+            )
+        else:
+            kb.add_board_notify_sub(
+                conn,
+                platform=args.platform,
+                chat_id=args.chat_id,
+                thread_id=args.thread_id,
+                user_id=args.user_id,
+                notifier_profile=args.notifier_profile or _profile_author(),
+                kinds=kinds,
+            )
+    target = args.task_id if args.task_id else f"board {kb.get_current_board()}"
+    extra = f" kinds={','.join(kinds)}" if kinds else ""
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
-          + f" to {args.task_id}")
+          + f" to {target}{extra}")
     return 0
 
 
 def _cmd_notify_list(args: argparse.Namespace) -> int:
+    board_slug = kb.get_current_board()
     with kb.connect_closing() as conn:
-        subs = kb.list_notify_subs(conn, args.task_id)
+        task_subs = kb.list_notify_subs(conn, args.task_id)
+        board_subs = [] if args.task_id else kb.list_board_notify_subs(conn)
+    subs = [
+        {"scope": "task", "board": board_slug, "kinds": None, **sub}
+        for sub in task_subs
+    ]
+    subs.extend(
+        {
+            "scope": "board",
+            "board": board_slug,
+            "task_id": None,
+            **sub,
+        }
+        for sub in board_subs
+    )
     if getattr(args, "json", False):
         print(json.dumps(subs, indent=2, ensure_ascii=False))
         return 0
@@ -2445,6 +2507,13 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
+        if s.get("scope") == "board":
+            kinds = ",".join(s.get("kinds") or ()) or "*"
+            print(
+                f"  board:{s['board']:10s}  {s['platform']}:{s['chat_id']}{thr}"
+                f"  (since event {s['last_event_id']}, kinds={kinds}){owner}"
+            )
+            continue
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
               f"  (since event {s['last_event_id']}){owner}")
     return 0
@@ -2452,15 +2521,24 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
 
 def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        ok = kb.remove_notify_sub(
-            conn, task_id=args.task_id,
-            platform=args.platform, chat_id=args.chat_id,
-            thread_id=args.thread_id,
-        )
+        if args.task_id:
+            ok = kb.remove_notify_sub(
+                conn, task_id=args.task_id,
+                platform=args.platform, chat_id=args.chat_id,
+                thread_id=args.thread_id,
+            )
+        else:
+            ok = kb.remove_board_notify_sub(
+                conn,
+                platform=args.platform,
+                chat_id=args.chat_id,
+                thread_id=args.thread_id,
+            )
     if not ok:
         print("(no such subscription)", file=sys.stderr)
         return 1
-    print(f"Unsubscribed from {args.task_id}")
+    target = args.task_id if args.task_id else f"board {kb.get_current_board()}"
+    print(f"Unsubscribed from {target}")
     return 0
 
 

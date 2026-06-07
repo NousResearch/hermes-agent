@@ -868,6 +868,50 @@ def test_cli_notify_subscribe_and_list(kanban_home):
     assert "Unsubscribed" in rm
 
 
+def test_cli_board_notify_subscribe_and_list(kanban_home):
+    run_slash("boards create alpha")
+    out = run_slash(
+        "notify-subscribe --board alpha --platform telegram "
+        "--chat-id 999 --kinds completed,blocked",
+    )
+    assert "Subscribed" in out
+    assert "board alpha" in out
+    lst = run_slash("notify-list --board alpha --json")
+    subs = json.loads(lst)
+    board_subs = [s for s in subs if s.get("scope") == "board"]
+    assert len(board_subs) == 1
+    assert board_subs[0]["platform"] == "telegram"
+    assert board_subs[0]["chat_id"] == "999"
+    assert board_subs[0]["kinds"] == ["completed", "blocked"]
+    rm = run_slash(
+        "notify-unsubscribe --board alpha --platform telegram --chat-id 999",
+    )
+    assert "Unsubscribed" in rm
+
+
+def test_board_notify_subscribe_starts_from_current_cursor(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="historical")
+        kb.complete_task(conn, tid, summary="already done")
+        kb.add_board_notify_sub(
+            conn,
+            platform="telegram",
+            chat_id="chat-1",
+            kinds=["completed"],
+        )
+        cursor, events = kb.unseen_events_for_board_sub(
+            conn,
+            platform="telegram",
+            chat_id="chat-1",
+            kinds=["completed"],
+        )
+    finally:
+        conn.close()
+    assert cursor >= 1
+    assert events == []
+
+
 def test_cli_log_missing_task(kanban_home):
     # No such task → exit-style (no log for...) message on stderr, returned
     # in combined output.

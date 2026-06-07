@@ -641,8 +641,24 @@ def memory_tool(
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """Memory tool is only available when memory_enabled or user_profile_enabled is set.
+    
+    This prevents the memory tool from appearing in the tool surface when the user
+    has disabled built-in memory storage but is using an external memory provider
+    (e.g., Honcho). Previously, the tool would always appear but error on use.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        mem = cfg.get("memory", {})
+        # Default to True to preserve existing behavior for users who haven't
+        # explicitly set these keys (they rely on DEFAULT_CONFIG where both are True).
+        # Only hide the tool when explicitly disabled (both False).
+        return mem.get("memory_enabled", True) or mem.get("user_profile_enabled", True)
+    except Exception:
+        # If we can't read config, default to showing the tool to avoid breaking
+        # existing users. The tool will error gracefully if store isn't initialized.
+        return True
 
 
 # =============================================================================

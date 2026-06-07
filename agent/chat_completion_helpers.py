@@ -277,6 +277,30 @@ def interruptible_api_call(agent, api_kwargs: dict):
     else:
         _codex_idle_timeout_default = 12.0
 
+    # Reasoning-effort multiplier. The token-bucket defaults above were
+    # calibrated for default-effort calls. With reasoning_effort=high or
+    # xhigh, GPT-5+ models routinely spend 30-90s in server-side thinking
+    # BEFORE the first SSE event, well past the small-bucket 12s default.
+    # This caused the "Codex stream produced no SSE events for 12s after
+    # first byte" / "[Errno 32] Broken pipe" failures on small-prompt +
+    # high-effort calls (e.g. lm-council proposals on Copilot gpt-5.5).
+    # Multiply the idle/TTFB budgets to give the model time to think.
+    # Override via HERMES_CODEX_HIGH_EFFORT_MULTIPLIER (default 5.0).
+    _effort_multiplier = 1.0
+    try:
+        _rc = getattr(agent, "reasoning_config", None)
+        _effort_level = ""
+        if isinstance(_rc, dict):
+            _effort_level = str(_rc.get("effort", "")).strip().lower()
+        if _effort_level in {"high", "xhigh"}:
+            _effort_multiplier = _env_float(
+                "HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", 5.0
+            )
+    except Exception:
+        pass
+    if _effort_multiplier > 1.0:
+        _codex_idle_timeout_default = _codex_idle_timeout_default * _effort_multiplier
+
     # No-byte TTFB cutoff. The OpenAI SDK's own streaming read timeout is far
     # longer (openai 2.x DEFAULT_TIMEOUT.read = 600s), so a tight 12s default
     # killed subscription-backed Codex requests mid-prefill before the backend
@@ -286,6 +310,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
     _ttfb_enabled = _codex_watchdog_enabled
     _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
+    # Apply the same reasoning-effort multiplier to TTFB so high-effort
+    # calls aren't killed during the slow first-byte path either.
+    if _effort_multiplier > 1.0:
+        _ttfb_timeout = _ttfb_timeout * _effort_multiplier
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:

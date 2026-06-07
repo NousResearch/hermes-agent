@@ -58,6 +58,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Per-turn credit notices ("• Grant spent · $X top-up left" and usage-band
+    # warnings). On by default; per-message-cost platforms (SMS/iMessage) can opt
+    # down. Depletion / restored notices ignore this and always deliver.
+    "show_credits": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -76,6 +80,7 @@ _TIER_HIGH = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "show_credits": True,
 }
 
 _TIER_MEDIUM = {
@@ -86,6 +91,7 @@ _TIER_MEDIUM = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "show_credits": True,
 }
 
 _TIER_LOW = {
@@ -96,6 +102,7 @@ _TIER_LOW = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
+    "show_credits": False,
 }
 
 _TIER_MINIMAL = {
@@ -106,6 +113,7 @@ _TIER_MINIMAL = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
+    "show_credits": False,
 }
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -252,6 +260,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "busy_ack_detail",
         "busy_steer_ack_enabled",
         "thinking_progress",
+        "show_credits",
     }:
         if isinstance(value, str):
             val = value.strip().lower()

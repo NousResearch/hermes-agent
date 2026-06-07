@@ -335,6 +335,70 @@ class TestPlatformDefaults:
 
 
 # ---------------------------------------------------------------------------
+# show_credits: per-platform credit-notice toggle
+# ---------------------------------------------------------------------------
+
+class TestShowCredits:
+    """show_credits gates per-turn credit notices, on by default for
+    edit-capable tiers and off for no-edit / batch tiers."""
+
+    def test_overrideable_and_global_default_on(self):
+        from gateway.display_config import OVERRIDEABLE_KEYS, _GLOBAL_DEFAULTS
+
+        assert "show_credits" in OVERRIDEABLE_KEYS
+        assert _GLOBAL_DEFAULTS["show_credits"] is True
+
+    def test_high_and_medium_tiers_default_on(self):
+        """Edit-capable, desktop/personal platforms keep the credit footer."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "mattermost", "matrix", "whatsapp"):
+            assert resolve_display_setting({}, plat, "show_credits") is True, plat
+
+    def test_low_and_minimal_tiers_default_off(self):
+        """No-edit / per-message-cost / batch platforms suppress it by default."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("signal", "bluebubbles", "weixin", "dingtalk", "email", "sms", "webhook"):
+            assert resolve_display_setting({}, plat, "show_credits") is False, plat
+
+    def test_unknown_platform_falls_back_to_global_default(self):
+        """A platform with no _PLATFORM_DEFAULTS entry resolves to the global
+        default (True) until it is given a tier."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "sendblue", "show_credits", True) is True
+
+    def test_per_platform_override_beats_tier(self):
+        """display.platforms.<platform>.show_credits overrides the tier default."""
+        from gateway.display_config import resolve_display_setting
+
+        off_on_telegram = {"display": {"platforms": {"telegram": {"show_credits": False}}}}
+        assert resolve_display_setting(off_on_telegram, "telegram", "show_credits") is False
+
+        on_on_signal = {"display": {"platforms": {"signal": {"show_credits": True}}}}
+        assert resolve_display_setting(on_on_signal, "signal", "show_credits") is True
+
+    def test_global_config_beats_tier(self):
+        """display.show_credits applies to platforms without a per-platform override."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"show_credits": False}}
+        # telegram has no per-platform override here → global False wins over tier True.
+        assert resolve_display_setting(config, "telegram", "show_credits") is False
+
+    def test_yaml_bare_off_normalised_to_false(self):
+        """YAML 1.1 bare 'off'/'no' and string truthy values normalise correctly."""
+        from gateway.display_config import resolve_display_setting
+
+        off = {"display": {"platforms": {"telegram": {"show_credits": "off"}}}}
+        assert resolve_display_setting(off, "telegram", "show_credits") is False
+
+        on = {"display": {"platforms": {"signal": {"show_credits": "yes"}}}}
+        assert resolve_display_setting(on, "signal", "show_credits") is True
+
+
+# ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
 # ---------------------------------------------------------------------------
 

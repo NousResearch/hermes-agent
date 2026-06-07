@@ -4182,6 +4182,24 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)
 
+    @staticmethod
+    def _running_under_launchd() -> bool:
+        """Return True when this gateway process appears to be launchd-managed.
+
+        systemd exposes INVOCATION_ID, but macOS launchd does not set an
+        equivalent environment marker.  A LaunchAgent-launched process is
+        reparented to launchd (PID 1), while an interactive ``hermes gateway
+        run`` keeps the user's shell/terminal as its parent.  Use that as the
+        lightweight service-manager signal so in-chat ``/restart`` can take the
+        service restart path instead of spawning a detached helper.
+        """
+        if sys.platform != "darwin":
+            return False
+        try:
+            return os.getppid() == 1
+        except Exception:
+            return False
+
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
@@ -10875,11 +10893,14 @@ class GatewayRunner:
         active_agents = self._running_agent_count()
         # When running under a service manager (systemd/launchd) or inside a
         # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # the planned-restart code so the supervisor/container policy restarts
+        # us.  The detached subprocess approach is brittle under supervisors:
+        # systemd may kill the helper's cgroup, Docker/tini exits with the
+        # gateway, and macOS launchd can throttle/delay the detached
+        # `hermes gateway restart` helper.  Foreground `hermes gateway run`
+        # still uses the detached helper so a user-launched process can come
+        # back without an installed service.
+        _under_service = bool(os.environ.get("INVOCATION_ID")) or self._running_under_launchd()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)

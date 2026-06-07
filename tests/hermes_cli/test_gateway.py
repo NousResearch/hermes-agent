@@ -27,6 +27,7 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
     monkeypatch.setattr(
         gateway, "refresh_systemd_unit_if_needed", lambda system=False: False
     )
+    monkeypatch.setattr(gateway, "refresh_launchd_plist_if_needed", lambda: False)
 
 
 def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
@@ -162,6 +163,49 @@ def test_run_gateway_windows_detached_absorbs_console_controls(monkeypatch):
 
     assert calls == [(False, 0)]
     assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
+
+
+def test_run_gateway_refreshes_launchd_plist_on_macos_service_boot(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    refreshed = []
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "refresh_launchd_plist_if_needed", lambda: refreshed.append(True) or True)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert refreshed == [True]
+    assert calls == [(False, 0)]
+
+
+def test_run_gateway_prefers_systemd_refresh_when_available(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    systemd_refreshed = []
+    launchd_refreshed = []
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "refresh_systemd_unit_if_needed", lambda system=False: systemd_refreshed.append(system) or True)
+    monkeypatch.setattr(gateway, "refresh_launchd_plist_if_needed", lambda: launchd_refreshed.append(True) or True)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert systemd_refreshed == [False]
+    assert launchd_refreshed == []
+    assert calls == [(False, 0)]
 
 
 class TestSystemdLingerStatus:

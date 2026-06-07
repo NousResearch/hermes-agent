@@ -17,8 +17,10 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 @pytest.mark.asyncio
 async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
     # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
-    # which changes the restart call signature.
+    # which changes the restart call signature. Also force non-launchd mode so
+    # this test covers foreground/bare-process behaviour on every OS.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.GatewayRunner, "_running_under_launchd", staticmethod(lambda: False))
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     event = MessageEvent(
@@ -45,6 +47,39 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_service_path_under_launchd(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.GatewayRunner, "_running_under_launchd", staticmethod(lambda: True))
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result is not None
+    assert "Restarting" in result
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+def test_running_under_launchd_detects_macos_launchagent(monkeypatch):
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway_run.os, "getppid", lambda: 1)
+    assert gateway_run.GatewayRunner._running_under_launchd() is True
+
+    monkeypatch.setattr(gateway_run.os, "getppid", lambda: 12345)
+    assert gateway_run.GatewayRunner._running_under_launchd() is False
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+    monkeypatch.setattr(gateway_run.os, "getppid", lambda: 1)
+    assert gateway_run.GatewayRunner._running_under_launchd() is False
 
 
 @pytest.mark.asyncio

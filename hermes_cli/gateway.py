@@ -3633,17 +3633,20 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         except (OSError, AttributeError):
             pass
 
-    # Refresh the systemd unit definition on every boot so that restart
-    # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
-    # when the process was respawned via exit-code-75 (stale-code or
-    # /restart) rather than through `hermes gateway restart` which already
-    # calls refresh_systemd_unit_if_needed().  Without this, a code update
-    # that ships new unit settings won't take effect until the next manual
-    # `hermes gateway start/restart` — leaving the gateway vulnerable to
-    # the exact failure mode the new settings were meant to prevent.
+    # Refresh the service definition on every boot so restart settings stay
+    # current even when the process was respawned by the service manager
+    # (exit-code-75 / /restart) rather than through the manual
+    # `hermes gateway start/restart` commands.  Without this, a code update
+    # that ships new service settings won't take effect until the next manual
+    # CLI restart — leaving /restart on stale launchd/systemd definitions.
     if supports_systemd_services():
         try:
             refresh_systemd_unit_if_needed(system=False)
+        except Exception:
+            pass  # best-effort; don't block gateway startup
+    elif sys.platform == "darwin":
+        try:
+            refresh_launchd_plist_if_needed()
         except Exception:
             pass  # best-effort; don't block gateway startup
 

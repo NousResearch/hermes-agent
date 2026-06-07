@@ -1,0 +1,7 @@
+name: web-anysearch
+version: 1.0.0
+description: "AnySearch web search + content extraction. Purpose-built for AI agents with 17 vertical domains (finance, academic, code, etc.) and one-call search+content. Requires ANYSEARCH_API_KEY — sign up at https://www.anysearch.com"
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - anysearch

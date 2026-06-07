@@ -198,9 +198,49 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
 // powershell wrapper
 // ---------------------------------------------------------------------------
 
+// Canonical PowerShell 5.1 location under a Windows root (%SystemRoot%).
+function powershellUnderRoot(root) {
+  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+// Resolve the PowerShell interpreter to spawn.
+//
+// Spawning bare 'powershell.exe' trusts PATH to contain
+// %SystemRoot%\System32\WindowsPowerShell\v1.0. On machines whose PATH was
+// trimmed, truncated, or stored as a non-expanding REG_SZ (so %SystemRoot%
+// never expands), that lookup fails and the spawn dies with ENOENT before
+// install.ps1 ever runs — the installer stalls at "0 of 0 steps". Resolve by
+// absolute path first, then fall back to PATH (powershell 5.1, then pwsh 7),
+// then a bare name as a last resort.
+function resolveWindowsPowerShell() {
+  for (const v of ['SystemRoot', 'windir']) {
+    const root = process.env[v]
+    if (root) {
+      const candidate = powershellUnderRoot(root)
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        void 0
+      }
+    }
+  }
+  const pathDirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean)
+  for (const exe of ['powershell.exe', 'pwsh.exe']) {
+    for (const dir of pathDirs) {
+      const candidate = path.join(dir, exe)
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        void 0
+      }
+    }
+  }
+  return 'powershell.exe'
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome } = {}) {
   return new Promise((resolve, reject) => {
-    const ps = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+    const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
 
     const child = spawn(ps, fullArgs, {

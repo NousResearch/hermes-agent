@@ -398,6 +398,58 @@ class TestShowCredits:
         assert resolve_display_setting(on, "signal", "show_credits") is True
 
 
+class TestShouldShowCreditNotice:
+    """should_show_credit_notice() is the single gating decision shared by the
+    gateway and CLI render paths: routine credit notices honor show_credits,
+    depletion/restored always pass, non-credit notices are never gated."""
+
+    def test_non_credit_notice_always_shown(self):
+        """A notice whose key is not a credits.* key is never gated, even on a
+        platform with show_credits off."""
+        from gateway.display_config import should_show_credit_notice
+
+        # signal is a low tier (show_credits False) but this isn't a credit notice.
+        assert should_show_credit_notice({}, "signal", "some.other.notice") is True
+        assert should_show_credit_notice({}, "signal", "") is True
+
+    def test_depleted_and_restored_always_shown(self):
+        """Depletion / restored bypass the toggle so a muted platform still learns
+        the agent stopped (or resumed) for credit reasons."""
+        from gateway.display_config import should_show_credit_notice
+
+        for plat in ("signal", "sms", "telegram"):
+            assert should_show_credit_notice({}, plat, "credits.depleted") is True, plat
+            assert should_show_credit_notice({}, plat, "credits.restored") is True, plat
+
+    def test_routine_credit_notices_follow_tier_default(self):
+        """grant_spent / usage band follow show_credits: on for high/medium,
+        off for low/minimal."""
+        from gateway.display_config import should_show_credit_notice
+
+        for key in ("credits.grant_spent", "credits.usage"):
+            assert should_show_credit_notice({}, "telegram", key) is True, key
+            assert should_show_credit_notice({}, "discord", key) is True, key
+            assert should_show_credit_notice({}, "signal", key) is False, key
+            assert should_show_credit_notice({}, "sms", key) is False, key
+
+    def test_per_platform_override_controls_routine_notices(self):
+        """Explicit per-platform show_credits flips routine notices either way."""
+        from gateway.display_config import should_show_credit_notice
+
+        off = {"display": {"platforms": {"telegram": {"show_credits": False}}}}
+        assert should_show_credit_notice(off, "telegram", "credits.grant_spent") is False
+
+        on = {"display": {"platforms": {"signal": {"show_credits": True}}}}
+        assert should_show_credit_notice(on, "signal", "credits.grant_spent") is True
+
+    def test_override_does_not_suppress_depletion(self):
+        """Even with show_credits off, depletion still shows."""
+        from gateway.display_config import should_show_credit_notice
+
+        off = {"display": {"platforms": {"sms": {"show_credits": False}}}}
+        assert should_show_credit_notice(off, "sms", "credits.depleted") is True
+
+
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
 # ---------------------------------------------------------------------------

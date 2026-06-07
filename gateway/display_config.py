@@ -235,6 +235,34 @@ def resolve_display_setting(
     return fallback
 
 
+# Credit notices that always deliver regardless of show_credits: the agent stops
+# (or resumes) responding on these, so a muted platform still needs to know.
+_ALWAYS_DELIVER_CREDIT_KEYS = frozenset({"credits.depleted", "credits.restored"})
+
+
+def should_show_credit_notice(
+    user_config: dict,
+    platform_key: str,
+    notice_key: str,
+) -> bool:
+    """Whether a notice should be rendered for a platform, honoring show_credits.
+
+    The single gating decision shared by the gateway and CLI render paths:
+
+    * Non-credit notices (key not starting ``credits.``) are never gated.
+    * ``credits.depleted`` / ``credits.restored`` always deliver: the agent
+      stops or resumes responding on these, so even a muted platform needs them.
+    * Routine credit notices (grant-spent footer, usage-band warnings) follow the
+      resolved ``show_credits`` setting for the platform.
+    """
+    key = notice_key or ""
+    if not key.startswith("credits."):
+        return True
+    if key in _ALWAYS_DELIVER_CREDIT_KEYS:
+        return True
+    return bool(resolve_display_setting(user_config, platform_key, "show_credits", True))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

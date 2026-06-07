@@ -3867,37 +3867,42 @@ class GatewayRunner:
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _invoke_hook(
-                    "on_session_finalize",
-                    session_id=getattr(agent, "session_id", None),
-                    platform="gateway",
-                    reason="shutdown",
-                )
-            except Exception:
-                pass
-            self._cleanup_agent_resources(agent)
+            _sid = getattr(agent, "session_id", None)
+            self._cleanup_agent_resources(agent, session_id=_sid, platform="gateway")
 
-    def _cleanup_agent_resources(self, agent: Any) -> None:
-        """Best-effort cleanup for temporary or cached agent instances."""
+    def _cleanup_agent_resources(
+        self, agent: Any, session_id: str = None, platform: str = None,
+    ) -> None:
+        """Best-effort cleanup for temporary or cached agent instances.
+
+        ``session_id`` and ``platform`` are forwarded to the
+        ``on_session_finalize`` plugin hook so memory plugins can attribute
+        the session and route extraction appropriately.
+        """
         if agent is None:
             return
+        _session_messages = getattr(agent, "_session_messages", None)
+        if not isinstance(_session_messages, list):
+            _session_messages = None
+
+        # Fire on_session_finalize with the full conversation transcript so
+        # memory plugins can extract facts.  Do this BEFORE shutdown_memory_
+        # provider so plugins see the same transcript the memory provider did.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_finalize",
+                session_id=session_id,
+                platform=platform or "gateway",
+                messages=_session_messages,
+            )
+        except Exception:
+            pass
+
         try:
             if hasattr(agent, "shutdown_memory_provider"):
-                # Pass the agent's own conversation transcript so memory
-                # providers' ``on_session_end`` hooks see the real messages
-                # instead of the empty default (#15165). ``_session_messages``
-                # is set on ``AIAgent`` (run_agent.py:1518) and refreshed at
-                # the end of every ``run_conversation`` turn via
-                # ``_persist_session``; on an agent built through
-                # ``object.__new__`` (test stubs) the attribute may be
-                # absent, so ``getattr`` with a ``None`` default keeps the
-                # call signature-compatible with the pre-fix behaviour
-                # (``shutdown_memory_provider(messages=None)``).
-                session_messages = getattr(agent, "_session_messages", None)
-                if isinstance(session_messages, list):
-                    agent.shutdown_memory_provider(session_messages)
+                if _session_messages is not None:
+                    agent.shutdown_memory_provider(_session_messages)
                 else:
                     agent.shutdown_memory_provider()
         except Exception:
@@ -5138,7 +5143,7 @@ class GatewayRunner:
                         if _cached_agent is None:
                             _cached_agent = self._running_agents.get(key)
                         if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
-                            self._cleanup_agent_resources(_cached_agent)
+                            self._cleanup_agent_resources(_cached_agent, session_id=key, platform="gateway")
                         # Drop the cache entry so the AIAgent (and its LLM
                         # clients, tool schemas, memory provider refs) can
                         # be garbage-collected.  Otherwise the cache grows
@@ -6661,7 +6666,11 @@ class GatewayRunner:
                     _agent = (
                         _entry[0] if isinstance(_entry, tuple) else _entry
                     )
-                    self._cleanup_agent_resources(_agent)
+                    self._cleanup_agent_resources(
+                        _agent,
+                        session_id=getattr(_agent, "session_id", None),
+                        platform="gateway",
+                    )
 
             for platform, adapter in list(self.adapters.items()):
                 _adapter_started_at = time.monotonic()
@@ -9417,11 +9426,12 @@ class GatewayRunner:
                                                 _werr,
                                             )
                                 finally:
-                                    # Evict the cached agent so the next turn
-                                    # rebuilds its system prompt from current
-                                    # SOUL.md, memory, and skills.
                                     self._evict_cached_agent(session_key)
-                                    self._cleanup_agent_resources(_hyg_agent)
+                                    self._cleanup_agent_resources(
+                                        _hyg_agent,
+                                        session_id=getattr(_hyg_agent, "session_id", None),
+                                        platform="gateway",
+                                    )
 
                     except Exception as e:
                         logger.warning(
@@ -10134,16 +10144,30 @@ class GatewayRunner:
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
 
-        # Close tool resources on the old agent (terminal sandboxes, browser
-        # daemons, background processes) before evicting from cache.
-        # Guard with getattr because test fixtures may skip __init__.
+        # Snapshot ``_session_messages`` from the old agent so the
+        # ``on_session_finalize`` hook gets the full conversation transcript
+        # before the agent is evicted.  Fetch it inside the lock while
+        _old_sid = old_entry.session_id if old_entry else None
+        _old_agent_ref = None
+        _session_messages: List[Any] = None  # typed for clarity below
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         if _cache_lock is not None:
             with _cache_lock:
                 _cached = self._agent_cache.get(session_key)
-                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
-            if _old_agent is not None:
-                self._cleanup_agent_resources(_old_agent)
+                _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+                if _cached_agent is not None:
+                    _old_agent_ref = _cached_agent
+                    _raw = getattr(_cached_agent, "_session_messages", None)
+                    if isinstance(_raw, list):
+                        _session_messages = _raw
+            if _old_agent_ref is not None:
+                # Pass session_id + messages so _cleanup_agent_resources fires the
+                # hook once with full context (no need for a separate invoke_hook call).
+                self._cleanup_agent_resources(
+                    _old_agent_ref,
+                    session_id=_old_sid,
+                    platform=source.platform.value if source.platform else "gateway",
+                )
         self._evict_cached_agent(session_key)
 
         # Discard any /queue overflow for this session — /new is a
@@ -10180,7 +10204,7 @@ class GatewayRunner:
         # previous conversation must not survive the reset.
         self._clear_session_boundary_security_state(session_key)
 
-        _old_sid = old_entry.session_id if old_entry else None
+ _old_sid = old_entry.session_id if old_entry else None
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
@@ -12760,7 +12784,11 @@ class GatewayRunner:
                         task_id=task_id,
                     )
                 finally:
-                    self._cleanup_agent_resources(agent)
+                    self._cleanup_agent_resources(
+                        agent,
+                        session_id=getattr(agent, "session_id", None),
+                        platform="gateway",
+                    )
 
             result = await self._run_in_executor_with_context(run_sync)
 
@@ -13331,10 +13359,12 @@ class GatewayRunner:
                 _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
                 _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
             finally:
-                # Evict cached agent so next turn rebuilds system prompt
-                # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
-                self._cleanup_agent_resources(tmp_agent)
+                self._cleanup_agent_resources(
+                    tmp_agent,
+                    session_id=getattr(tmp_agent, "session_id", None),
+                    platform="gateway",
+                )
             lines = [f"🗜️ {summary['headline']}"]
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))
@@ -16688,6 +16718,22 @@ class GatewayRunner:
                 key, len(_cache),
             )
             if agent is not None:
+                # Fire on_session_finalize with the full transcript BEFORE the
+                # daemon thread tears down the agent — the hook needs the agent
+                # object to still be intact.
+                _session_msgs = getattr(agent, "_session_messages", None)
+                if not isinstance(_session_msgs, list):
+                    _session_msgs = None
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _invoke_hook(
+                        "on_session_finalize",
+                        session_id=key,
+                        platform="gateway",
+                        messages=_session_msgs,
+                    )
+                except Exception:
+                    pass
                 threading.Thread(
                     target=self._release_evicted_agent_soft,
                     args=(agent,),
@@ -16736,6 +16782,21 @@ class GatewayRunner:
                 "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",
                 key, now - getattr(agent, "_last_activity_ts", now),
             )
+            # Fire on_session_finalize before the daemon thread runs — the hook
+            # needs the agent object intact to read _session_messages.
+            _session_msgs = getattr(agent, "_session_messages", None)
+            if not isinstance(_session_msgs, list):
+                _session_msgs = None
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_finalize",
+                    session_id=key,
+                    platform="gateway",
+                    messages=_session_msgs,
+                )
+            except Exception:
+                pass
             threading.Thread(
                 target=self._release_evicted_agent_soft,
                 args=(agent,),

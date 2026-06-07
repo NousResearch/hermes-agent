@@ -451,7 +451,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_skip_tool_only": True,
             "show_reasoning": False,
             "streaming": True,
-            "busy_input_mode": "interrupt",
+            "busy_input_mode": "steer",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
 
@@ -984,6 +984,17 @@ def _run_cleanup():
         shutdown_cached_clients()
     except Exception:
         pass
+    # Fetch session messages once, reuse for both the hook and memory shutdown.
+    # ``_session_messages`` is set on ``AIAgent.__init__`` and refreshed every
+    # turn via ``_persist_session``.  Missing attribute means a partially-
+    # initialised agent or test stub — fall back to None in that case.
+    _session_msgs = (
+        getattr(_active_agent_ref, "_session_messages", None)
+        if _active_agent_ref else None
+    )
+    if _session_msgs is not None and not isinstance(_session_msgs, list):
+        _session_msgs = None
+
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
@@ -993,19 +1004,13 @@ def _run_cleanup():
             session_id=_active_agent_ref.session_id if _active_agent_ref else None,
             platform="cli",
             reason="shutdown",
+            messages=_session_msgs,
         )
     except Exception:
         pass
     try:
-        if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
-            # Forward the agent's own transcript so memory providers'
-            # ``on_session_end`` hooks see the real conversation instead of
-            # an empty list (#15165). ``_session_messages`` is set on
-            # ``AIAgent.__init__`` and refreshed every turn via
-            # ``_persist_session``. Fall back to no-arg on test stubs /
-            # partially-initialised agents where the attribute is missing.
-            _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
-            if isinstance(_session_msgs, list):
+        if _active_agent_ref and hasattr(_active_agent_ref, "shutdown_memory_provider"):
+            if _session_msgs is not None:
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
@@ -13516,7 +13521,11 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and _looks_like_slash_command(text)):
+                #steer mode: allow /-prefixed messages through so "busy_input_mode = steer"
+                #means ALL messages auto-steer, not just plain text
+                _looks_slash = text and _looks_like_slash_command(text)
+                _allow_steer = self.busy_input_mode == "steer"
+                if self._agent_running and (not text or not _looks_slash or _allow_steer):
                     _effective_mode = self.busy_input_mode
                     if _effective_mode == "steer":
                         # Route Enter through /steer — inject mid-run after the

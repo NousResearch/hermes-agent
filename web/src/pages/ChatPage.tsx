@@ -860,7 +860,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <PluginSlot name="chat:top" />
+      <div className="shrink-0 max-h-[40vh] overflow-y-auto pb-4">
+        <PluginSlot name="chat:top" />
+      </div>
       {mobileModelToolsPortal}
 
       {banner && (

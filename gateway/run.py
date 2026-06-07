@@ -6203,15 +6203,26 @@ class GatewayRunner:
             try:
                 # Reap zombie children before per-board work so a board DB
                 # failure cannot block cleanup of unrelated workers.
+                #
+                # NOTE: reap_worker_zombies() calls os.waitpid(-1, WNOHANG),
+                # which reaps EVERY zombie child of the gateway process — not
+                # only Kanban task workers. The reaper intentionally stays
+                # decoupled from board state so a board DB failure can't block
+                # cleanup. Because of that, these PIDs may belong to any
+                # gateway child (cron-spawned scripts, terminal-tool
+                # subprocesses, watchers, etc.), so we log under a neutral
+                # "gateway" label rather than attributing them to Kanban.
+                # Mislabeling them as Kanban workers produces a false "Kanban
+                # tasks are running" signal even when the board is empty.
                 pids = await asyncio.to_thread(_kb.reap_worker_zombies)
                 if pids:
-                    logger.info(
-                        "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
+                    logger.debug(
+                        "gateway: reaped %d orphaned child process(es), pids=%s",
                         len(pids),
                         pids,
                     )
             except Exception:
-                logger.exception("kanban dispatcher: zombie reaper failed")
+                logger.exception("gateway: orphaned-child reaper failed")
 
             try:
                 if auto_decompose_enabled:

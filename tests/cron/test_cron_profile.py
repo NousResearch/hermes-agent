@@ -378,6 +378,56 @@ class TestRunJobProfileContext:
         assert os.environ["HERMES_HOME"] == str(root)
 
 
+class TestProfileContextIsolation:
+    """A profile job's home override must stay scoped to its own execution
+    context and never leak into jobs running concurrently on the parallel pool.
+
+    Regression: ``_job_profile_context`` used to set the process-global
+    ``cron.scheduler._hermes_home``, which is shared across every thread.  A
+    parallel (non-profile) job dispatched in the same tick would then resolve
+    the profile job's home through ``_get_hermes_home()`` and load the wrong
+    profile's ``.env`` (API keys/tokens), reading and writing the wrong
+    tenant's tree.  The override now lives only in a ``contextvars`` ContextVar.
+    """
+
+    def test_profile_context_does_not_leak_global_home(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        import threading
+
+        import cron.scheduler as sched
+
+        root, profile_home = isolated_cron_profile_home
+        # Ensure no stray module-global override is present to start with.
+        monkeypatch.setattr(sched, "_hermes_home", None)
+
+        leaked: dict = {}
+
+        def _parallel_worker() -> None:
+            # A fresh thread models a parallel-pool job: it has its own
+            # contextvars context (the profile job's override is not visible)
+            # and must resolve the scheduler default home.
+            leaked["home"] = str(sched._get_hermes_home())
+
+        with sched._job_profile_context("profile-job", "support") as resolved:
+            assert resolved == "support"
+            # The running profile job sees its own home via the context-local
+            # override.
+            assert sched._get_hermes_home() == profile_home.resolve()
+            # The shared process-global hook is never mutated by a running job.
+            assert sched._hermes_home is None
+
+            worker = threading.Thread(target=_parallel_worker)
+            worker.start()
+            worker.join()
+
+        # The concurrent worker resolved the default home — no cross-profile
+        # leak through the module global.
+        assert leaked["home"] == str(root)
+        # Once the context exits the override is fully cleared.
+        assert sched._get_hermes_home() == root
+
+
 class TestTickProfilePartition:
     def test_profile_and_workdir_combined(self, isolated_cron_profile_home, monkeypatch):
         """Both profile and workdir set — verify both are applied and restored."""

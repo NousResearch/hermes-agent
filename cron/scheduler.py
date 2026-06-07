@@ -38,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_hermes_home_override
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -224,7 +224,18 @@ _hermes_home: Path | None = None
 
 
 def _get_hermes_home() -> Path:
-    """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
+    """Resolve Hermes home dynamically while preserving test monkeypatch hooks.
+
+    The context-local override set per job by ``_job_profile_context`` takes
+    precedence so a profile job's home stays scoped to its own execution
+    context and never leaks into jobs running concurrently on the parallel
+    pool.  The module-global ``_hermes_home`` is kept only as a
+    backward-compatible hook for tests and emergency monkeypatches; it is a
+    process-wide value and must never be set from a running job.
+    """
+    override = get_hermes_home_override()
+    if override:
+        return Path(override)
     return _hermes_home or get_hermes_home()
 
 
@@ -240,11 +251,16 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
     """Temporarily run a job under a specific Hermes profile.
 
     Cron jobs are stored and scheduled by the profile running the scheduler, but
-    an individual job can opt into a different runtime profile. While active,
-    the scheduler's test/override hook and a context-local Hermes home override
-    both point at the resolved profile directory so _get_hermes_home(),
-    .env/config loading, script resolution, AIAgent construction, and downstream
-    get_hermes_home() callers agree on the same home.
+    an individual job can opt into a different runtime profile. While active, a
+    context-local Hermes home override points at the resolved profile directory
+    so _get_hermes_home(), .env/config loading, script resolution, AIAgent
+    construction, and downstream get_hermes_home() callers agree on the same
+    home. The override is stored in a ``contextvars`` ContextVar, so it stays
+    scoped to this job's execution context and never leaks into jobs running
+    concurrently on the parallel pool. We deliberately do NOT touch the
+    process-global ``_hermes_home`` here — that value is shared across every
+    thread and setting it would expose this profile's home (and the secrets in
+    its .env) to other tenants' jobs in the same tick.
 
     Some existing provider/config paths still load profile .env values through
     os.environ, so profile jobs also snapshot and restore the process
@@ -256,8 +272,6 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         yield None
         return
 
-    global _hermes_home
-    prior_override = _hermes_home
     env_snapshot = os.environ.copy()
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
@@ -278,7 +292,6 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
     override_token = None
     try:
         override_token = set_hermes_home_override(profile_home)
-        _hermes_home = profile_home
         logger.info(
             "Job '%s': using Hermes profile '%s' (%s)",
             job_id,
@@ -287,7 +300,6 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         )
         yield normalized_profile
     finally:
-        _hermes_home = prior_override
         if override_token is not None:
             reset_hermes_home_override(override_token)
         # Delta-based restore: remove added keys, restore changed keys.
@@ -2137,10 +2149,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
         # process-global runtime state inside run_job. Workdir jobs temporarily
         # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
-        # Hermes home override, scheduler _hermes_home hook, and temporary
-        # profile .env load into os.environ with snapshot/restore. They MUST run
-        # sequentially to avoid corrupting each other. Jobs without either field
-        # stay parallel-safe.
+        # Hermes home override and a temporary profile .env load into os.environ
+        # with snapshot/restore. They MUST run sequentially to avoid corrupting
+        # each other. Jobs without either field stay parallel-safe.
         sequential_jobs = [
             j for j in due_jobs
             if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()

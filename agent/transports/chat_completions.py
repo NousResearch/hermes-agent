@@ -324,7 +324,9 @@ class ChatCompletionsTransport(ProviderTransport):
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
         is_tokenhub = params.get("is_tokenhub", False)
+        is_deepseek = params.get("is_deepseek", False)
         reasoning_config = params.get("reasoning_config")
+        provider_name = str(params.get("provider_name") or "").strip().lower()
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))
@@ -363,6 +365,28 @@ class ChatCompletionsTransport(ProviderTransport):
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
+        # DeepSeek: top-level reasoning_effort + extra_body.thinking.
+        # DeepSeek V4 requires reasoning_effort at the top level and
+        # extra_body.thinking to enable reasoning/thinking in responses.
+        is_deepseek = provider_name == "deepseek"
+        if is_deepseek:
+            _deepseek_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _deepseek_thinking_off:
+                _deepseek_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in {"low", "medium"}:
+                        _deepseek_effort = "high"
+                    elif _e == "xhigh":
+                        _deepseek_effort = "max"
+                    elif _e == "high":
+                        _deepseek_effort = "high"
+                api_kwargs["reasoning_effort"] = _deepseek_effort
+
         # LM Studio: top-level reasoning_effort. Only emit when the model
         # declares reasoning support via /api/v1/models capabilities (gated
         # upstream by params["supports_reasoning"]). resolve_lmstudio_effort
@@ -381,7 +405,6 @@ class ChatCompletionsTransport(ProviderTransport):
         is_openrouter = params.get("is_openrouter", False)
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
-        provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
 
         provider_prefs = params.get("provider_preferences")
@@ -412,6 +435,15 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["thinking"] = {
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
+
+        # DeepSeek extra_body.thinking
+        if is_deepseek:
+            _deepseek_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _deepseek_thinking_enabled = False
+            if _deepseek_thinking_enabled:
+                extra_body["thinking"] = {"type": "enabled"}
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.

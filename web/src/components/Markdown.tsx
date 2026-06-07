@@ -13,10 +13,12 @@ export function Markdown({
   content,
   highlightTerms,
   streaming,
+  onWikiLink,
 }: {
   content: string;
   highlightTerms?: string[];
   streaming?: boolean;
+  onWikiLink?: (target: string) => void;
 }) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
   const caret = streaming ? <StreamingCaret /> : null;
@@ -28,6 +30,7 @@ export function Markdown({
           key={i}
           block={block}
           highlightTerms={highlightTerms}
+          onWikiLink={onWikiLink}
           caret={caret && i === blocks.length - 1 ? caret : null}
         />
       ))}
@@ -43,6 +46,15 @@ function StreamingCaret() {
       className="inline-block w-[0.5em] h-[1em] ml-0.5 align-[-0.15em] bg-foreground/50 animate-pulse"
     />
   );
+}
+
+function headingSlug(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\u0E00-\u0E7F]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "heading";
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,10 +172,12 @@ function Block({
   block,
   highlightTerms,
   caret,
+  onWikiLink,
 }: {
   block: BlockNode;
   highlightTerms?: string[];
   caret?: ReactNode;
+  onWikiLink?: (target: string) => void;
 }) {
   switch (block.type) {
     case "code":
@@ -185,8 +199,8 @@ function Block({
         h4: "text-sm font-medium",
       };
       return (
-        <Tag className={sizes[Tag]}>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+        <Tag id={headingSlug(block.content)} className={`${sizes[Tag]} scroll-mt-20`}>
+          <InlineContent text={block.content} highlightTerms={highlightTerms} onWikiLink={onWikiLink} />
           {caret}
         </Tag>
       );
@@ -209,7 +223,7 @@ function Block({
         >
           {block.items.map((item, i) => (
             <li key={i}>
-              <InlineContent text={item} highlightTerms={highlightTerms} />
+              <InlineContent text={item} highlightTerms={highlightTerms} onWikiLink={onWikiLink} />
               {i === last ? caret : null}
             </li>
           ))}
@@ -220,7 +234,7 @@ function Block({
     case "paragraph":
       return (
         <p>
-          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          <InlineContent text={block.content} highlightTerms={highlightTerms} onWikiLink={onWikiLink} />
           {caret}
         </p>
       );
@@ -237,13 +251,14 @@ type InlineNode =
   | { type: "bold"; content: string }
   | { type: "italic"; content: string }
   | { type: "link"; text: string; href: string }
+  | { type: "wiki"; text: string; target: string }
   | { type: "br" };
 
 function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
-  // Pattern priority: code > link > bold > italic > bare URL > line break
+  // Pattern priority: code > Obsidian wikilink > markdown link > bold > italic > bare URL > line break
   const pattern =
-    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
+    /(`[^`]+`)|(\[\[([^\]]+)\]\])|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -256,18 +271,23 @@ function parseInline(text: string): InlineNode[] {
       // Inline code
       nodes.push({ type: "code", content: match[1].slice(1, -1) });
     } else if (match[2]) {
+      // [[target|label]] Obsidian wikilink
+      const [target, label] = match[3].split("|", 2);
+      const cleanTarget = target.trim();
+      nodes.push({ type: "wiki", target: cleanTarget, text: (label || cleanTarget).trim() });
+    } else if (match[4]) {
       // [text](url) link
-      nodes.push({ type: "link", text: match[3], href: match[4] });
-    } else if (match[5]) {
-      // **bold**
-      nodes.push({ type: "bold", content: match[6] });
+      nodes.push({ type: "link", text: match[5], href: match[6] });
     } else if (match[7]) {
-      // *italic*
-      nodes.push({ type: "italic", content: match[8] });
+      // **bold**
+      nodes.push({ type: "bold", content: match[8] });
     } else if (match[9]) {
+      // *italic*
+      nodes.push({ type: "italic", content: match[10] });
+    } else if (match[11]) {
       // Bare URL
-      nodes.push({ type: "link", text: match[9], href: match[9] });
-    } else if (match[10]) {
+      nodes.push({ type: "link", text: match[11], href: match[11] });
+    } else if (match[12]) {
       // Line break within paragraph
       nodes.push({ type: "br" });
     }
@@ -285,9 +305,11 @@ function parseInline(text: string): InlineNode[] {
 function InlineContent({
   text,
   highlightTerms,
+  onWikiLink,
 }: {
   text: string;
   highlightTerms?: string[];
+  onWikiLink?: (target: string) => void;
 }) {
   const nodes = useMemo(() => parseInline(text), [text]);
 
@@ -335,6 +357,24 @@ function InlineContent({
               >
                 {node.text}
               </a>
+            );
+          case "wiki":
+            if (!onWikiLink) {
+              return (
+                <span key={i} className="text-primary">
+                  {node.text}
+                </span>
+              );
+            }
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onWikiLink(node.target)}
+                className="inline text-left text-primary underline underline-offset-2 decoration-primary/30 transition-colors hover:decoration-primary/70"
+              >
+                {node.text}
+              </button>
             );
           case "br":
             return <br key={i} />;

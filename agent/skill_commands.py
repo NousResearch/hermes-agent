@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
@@ -267,11 +267,31 @@ def _build_skill_message(
 
     parts = [activation_note, "", content.strip()]
 
+    # Resolve the skill directory to the path the agent can actually reach on
+    # the active terminal backend (container / remote home).  All three
+    # agent-visible surfaces below — the [Skill directory: ...] header, the
+    # supporting-file hints, and the ${HERMES_SKILL_DIR} substitution above —
+    # must agree, so they share this single mapped value.  Local/unmapped
+    # backends fall back to the host path (no regression).
+    #
+    # When the backend remaps the path it is always POSIX (container/remote),
+    # so render it with PurePosixPath even on a Windows host; otherwise keep the
+    # native host Path so a local L:\... path still renders with its own
+    # separators.
+    agent_skill_dir: PurePath | None = None
+    if skill_dir:
+        from agent.skill_path_mapping import map_skill_dir_for_backend
+
+        mapped = map_skill_dir_for_backend(skill_dir, task_id=session_id)
+        agent_skill_dir = (
+            Path(mapped) if mapped == str(skill_dir) else PurePosixPath(mapped)
+        )
+
     # ── Inject the absolute skill directory so the agent can reference
     #    bundled scripts without an extra skill_view() round-trip. ──
     if skill_dir:
         parts.append("")
-        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(f"[Skill directory: {agent_skill_dir}]")
         parts.append(
             "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
             "`templates/config.yaml`) against that directory, then run them "
@@ -324,14 +344,18 @@ def _build_skill_message(
         except ValueError:
             # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
+        # Hint paths must be backend-visible (agent runs scripts via the
+        # terminal tool inside the sandbox), so render them against the mapped
+        # directory rather than the host skill_dir.
+        hint_dir = agent_skill_dir or skill_dir
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}  ->  {skill_dir / sf}")
+            parts.append(f"- {sf}  ->  {hint_dir / sf}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {hint_dir}/scripts/foo.js`)."
         )
 
     if user_instruction:

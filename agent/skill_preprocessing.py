@@ -49,7 +49,15 @@ def substitute_template_vars(
     if not content:
         return content
 
-    skill_dir_str = str(skill_dir) if skill_dir else None
+    # Render the path the agent can actually reach on the active terminal
+    # backend (container / remote home), not the raw host path — otherwise
+    # bundled skill scripts referenced via ${HERMES_SKILL_DIR} are unrunnable
+    # inside a Docker/SSH/Daytona sandbox.  Local/unmapped falls back to host.
+    skill_dir_str = None
+    if skill_dir:
+        from agent.skill_path_mapping import map_skill_dir_for_backend
+
+        skill_dir_str = map_skill_dir_for_backend(skill_dir, task_id=session_id)
 
     def _replace(match: re.Match) -> str:
         token = match.group(1)

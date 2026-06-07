@@ -302,6 +302,42 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
+    def test_add_stdio_server_trims_env_value_whitespace(self, tmp_path, capsys, monkeypatch):
+        """Whitespace around the '=' and value is trimmed, not preserved."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["env"] == {
+                "MY_API_KEY": "secret123",
+                "DEBUG": "true",
+            }
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["@mcp/github"],
+            env=["MY_API_KEY = secret123 ", "  DEBUG = true  "],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["github"]
+        assert srv["env"] == {
+            "MY_API_KEY": "secret123",
+            "DEBUG": "true",
+        }
+
     def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
         """Invalid environment variable names are rejected up front."""
         from hermes_cli.mcp_config import cmd_mcp_add
@@ -404,6 +440,98 @@ class TestMcpAdd:
         cmd_mcp_add(_make_args(name="foo", preset="nonexistent"))
         out = capsys.readouterr().out
         assert "Unknown MCP preset" in out
+
+    def test_add_stdio_server_with_multiple_env_flags(self, tmp_path, capsys, monkeypatch):
+        """Regression #37501: multiple --env flags must all be persisted.
+
+        With ``action="append"`` each ``--env`` flag contributes one entry;
+        ``_parse_env_assignments`` flattens the result so all vars are saved.
+        """
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["env"] == {
+                "ALPACA_API_KEY": "xxx",
+                "ALPACA_SECRET_KEY": "yyy",
+            }
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        # Simulate what ``action="append"`` produces for
+        # ``--env A=1 --env B=2``
+        cmd_mcp_add(_make_args(
+            name="alpaca",
+            mcp_command="uvx",
+            args=["alpaca-mcp-server"],
+            env=["ALPACA_API_KEY=xxx", "ALPACA_SECRET_KEY=yyy"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["alpaca"]
+        assert srv["env"] == {
+            "ALPACA_API_KEY": "xxx",
+            "ALPACA_SECRET_KEY": "yyy",
+        }
+
+    def test_parse_env_assignments_flattens_nested_lists(self):
+        """Defensive: ``action="append"`` with ``nargs="*"`` can nest lists."""
+        from hermes_cli.mcp_config import _parse_env_assignments
+
+        result = _parse_env_assignments([["A=1"], ["B=2", "C=3"]])
+        assert result == {"A": "1", "B": "2", "C": "3"}
+
+
+# ---------------------------------------------------------------------------
+# Tests: argparse --env accumulation
+# ---------------------------------------------------------------------------
+
+class TestMcpAddEnvArgparse:
+    """Issue #37501 — verify the parser layer accumulates multiple --env flags."""
+
+    def _build_parser(self):
+        import argparse
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        mcp_p = subparsers.add_parser("mcp")
+        mcp_sub = mcp_p.add_subparsers(dest="mcp_action")
+        mcp_add = mcp_sub.add_parser("add")
+        mcp_add.add_argument("name")
+        mcp_add.add_argument(
+            "--env",
+            action="append",
+            default=[],
+            help="Environment variables for stdio servers (KEY=VALUE)",
+        )
+        return parser
+
+    def test_multiple_env_flags_are_collected(self):
+        parser = self._build_parser()
+        args = parser.parse_args(
+            ["mcp", "add", "alpaca", "--env", "A=1", "--env", "B=2"]
+        )
+        assert args.env == ["A=1", "B=2"]
+
+    def test_single_env_flag_works(self):
+        parser = self._build_parser()
+        args = parser.parse_args(
+            ["mcp", "add", "alpaca", "--env", "A=1"]
+        )
+        assert args.env == ["A=1"]
+
+    def test_no_env_flag_defaults_to_empty_list(self):
+        parser = self._build_parser()
+        args = parser.parse_args(["mcp", "add", "alpaca"])
+        assert args.env == []
 
 
 # ---------------------------------------------------------------------------

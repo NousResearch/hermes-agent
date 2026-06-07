@@ -127,8 +127,15 @@ def _strip_bearer_prefix(token: str) -> str:
 def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
     parsed: Dict[str, str] = {}
+    # Flatten nested lists (action="append" with nargs="*" can produce them).
+    flat: list = []
     for item in raw_env or []:
-        text = str(item or "").strip()
+        if isinstance(item, list):
+            flat.extend(item)
+        else:
+            flat.append(item)
+    for text in flat:
+        text = str(text or "").strip()
         if not text:
             continue
         if "=" not in text:
@@ -139,7 +146,7 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
             raise ValueError(f"Invalid --env value '{text}' (missing variable name)")
         if not _ENV_VAR_NAME_RE.match(key):
             raise ValueError(f"Invalid --env variable name '{key}'")
-        parsed[key] = value
+        parsed[key] = value.strip()
     return parsed
 
 

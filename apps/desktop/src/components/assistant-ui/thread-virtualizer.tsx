@@ -352,9 +352,30 @@ function useThreadScrollAnchor({
       setThreadScrolledUp(!atBottom)
     }
 
+    // Debounce wheel-up disarm: a single spurious wheel event (common on
+    // Windows focus/blur, ConPTY glitches, Electron input quirks) should
+    // not immediately break sticky-bottom.  Require 2 consecutive wheel-up
+    // events within 150ms to confirm intentional upward scroll.
+    let wheelUpCount = 0
+    let lastWheelUpAt = 0
+
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) {
-        disarm()
+        const now = Date.now()
+
+        if (now - lastWheelUpAt > 150) {
+          wheelUpCount = 1
+        } else {
+          wheelUpCount++
+        }
+
+        lastWheelUpAt = now
+
+        if (wheelUpCount >= 2) {
+          disarm()
+        }
+      } else if (event.deltaY > 0) {
+        wheelUpCount = 0
       }
     }
 

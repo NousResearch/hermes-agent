@@ -30,20 +30,27 @@ describe('wheelAccel — native path', () => {
     expect(computeWheelStep(s, 1, 2000)).toBe(1)
   })
 
-  it('direction flip defers one event for bounce detection', () => {
+  it('direction flip defers two events for confirmation', () => {
     const s = initWheelAccel(false, 1)
 
     computeWheelStep(s, 1, 1000)
 
+    // First event in new direction: sets pendingDir, no scroll yet
     expect(computeWheelStep(s, -1, 1050)).toBe(0)
+    // Second event in same new direction: confirms reversal, now scrolling
+    expect(computeWheelStep(s, -1, 1060)).toBeGreaterThanOrEqual(1)
   })
 
-  it('flip-back within bounce window engages wheelMode', () => {
+  it('flip-back within bounce window engages wheelMode (2-event confirmation)', () => {
     const s = initWheelAccel(false, 1)
 
     computeWheelStep(s, 1, 1000)
+    // Scroll up confirmed (2 events) — reversal
     computeWheelStep(s, -1, 1050)
+    computeWheelStep(s, -1, 1060)
+    // Now scroll down — first event sets new pending, second confirms bounce-back
     computeWheelStep(s, 1, 1100)
+    computeWheelStep(s, 1, 1110)
 
     expect(s.wheelMode).toBe(true)
   })
@@ -52,10 +59,31 @@ describe('wheelAccel — native path', () => {
     const s = initWheelAccel(false, 1)
 
     computeWheelStep(s, 1, 1000)
+    // Scroll up confirmed (2 events) — reversal
     computeWheelStep(s, -1, 1050)
+    computeWheelStep(s, -1, 1060)
+    // Scroll down outside bounce window (gap > 60ms from savedTime at t=1050)
     computeWheelStep(s, 1, 1400)
+    computeWheelStep(s, 1, 1410)
 
+    // Bounce-back was outside the 60ms window — no wheelMode
     expect(s.wheelMode).toBe(false)
+  })
+
+  it('single spurious opposite-direction event is ignored (no flip)', () => {
+    const s = initWheelAccel(false, 1)
+
+    computeWheelStep(s, 1, 1000)
+    computeWheelStep(s, 1, 1020)
+
+    // A single spurious "up" event — sets pending, returns 0
+    expect(computeWheelStep(s, -1, 1040)).toBe(0)
+
+    // Next event is back to original direction — pending cleared, normal scroll
+    const rows = computeWheelStep(s, 1, 1060)
+    expect(rows).toBeGreaterThanOrEqual(1)
+    expect(s.wheelMode).toBe(false)
+    expect(s.dir).toBe(1) // stayed in original direction
   })
 
   it('5 consecutive sub-5ms events disengage wheelMode (trackpad signature)', () => {

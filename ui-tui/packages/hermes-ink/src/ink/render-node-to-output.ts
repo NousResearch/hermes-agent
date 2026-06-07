@@ -786,19 +786,22 @@ function renderNodeToOutput(
           node.scrollTop = maxScroll
           node.pendingScrollDelta = undefined
 
-          // Sync flag so useVirtualScroll's isSticky() agrees with positional
-          // state — sticky-broken-but-at-bottom (wheel tremor, click-select
-          // at max) otherwise leaves useVirtualScroll's clamp holding the
-          // viewport short of new streaming content. scrollTo/scrollBy set
-          // false; this restores true, same as scrollToBottom() would.
-          // Only restore when (a) positionally at bottom and (b) the flag
-          // was explicitly broken (===false) by scrollTo/scrollBy. When
-          // undefined (never set by user action) leave it alone — setting it
-          // would make the sticky flag sticky-by-default and lock out
-          // direct scrollTop writes (e.g. the alt-screen-perf test).
-          if (node.stickyScroll === false && scrollTopBeforeFollow >= prevMaxScroll) {
-            node.stickyScroll = true
-          }
+          // Do NOT silently re-enable stickyScroll here.
+          //
+          // Previous code: `if (node.stickyScroll === false && scrollTopBeforeFollow >= prevMaxScroll) { node.stickyScroll = true }`
+          // This caused phantom scrolling: when a user scrolled up to read
+          // older content, their scrollTop could land exactly at prevMaxScroll
+          // (the old bottom) while new content arrived. The positional at-bottom
+          // follow would fire AND re-engage sticky, permanently locking the
+          // viewport to the bottom for every subsequent streaming frame — even
+          // though the user never explicitly requested scrollToBottom().
+          //
+          // Instead, stickyScroll is only (re)enabled by:
+          //   1. The initial `stickyScroll` prop on the component (cold start)
+          //   2. An explicit scrollToBottom() call
+          // The positional follow above (scrollTop = maxScroll when at-bottom)
+          // still works for transient "at bottom" states — it just doesn't
+          // permanently re-lock the sticky flag.
         }
 
         const followDelta = (node.scrollTop ?? 0) - scrollTopBeforeFollow

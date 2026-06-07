@@ -17,6 +17,8 @@ import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   filePathFromMediaPath,
+  gatewayMediaDataUrl,
+  isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
@@ -49,6 +51,12 @@ async function mediaSrc(path: string): Promise<string> {
   // load the whole file into memory, which broke playback for larger videos.
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
     return mediaStreamUrl(path)
+  }
+
+  // Remote gateway: the image lives on the gateway machine, so read it over the
+  // authenticated API rather than this machine's disk.
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {

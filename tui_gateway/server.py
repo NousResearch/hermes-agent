@@ -5097,6 +5097,274 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, str(e))
 
 
+# Byte-upload attach caps. 25 MB matches Anthropic's per-image limit; 50 MB / 25
+# pages bounds a single PDF drop so it can't blow the context budget.
+_ATTACH_BYTES_MAX_BYTES = 25 * 1024 * 1024
+_PDF_ATTACH_MAX_BYTES = 50 * 1024 * 1024
+_PDF_ATTACH_MAX_PAGES = 25
+
+# Leading magic bytes → file extension, for filename-less uploads.
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"BM", ".bmp"),
+)
+
+
+def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
+    """Decode a base64 (optionally data-URL-wrapped) payload.
+
+    Accepts ``data:<mime_prefix>...;base64,<b64>`` plus embedded whitespace.
+    Returns the decoded bytes, or ``None`` when the input isn't valid base64.
+    """
+    import base64 as _base64
+    import re as _re
+
+    cleaned = raw.strip()
+    m = _re.match(
+        rf"^data:{_re.escape(mime_prefix)}[a-zA-Z0-9.+-]*;base64,(.*)$",
+        cleaned,
+        _re.DOTALL,
+    )
+    if m:
+        cleaned = m.group(1)
+    cleaned = _re.sub(r"\s+", "", cleaned)
+    try:
+        return _base64.b64decode(cleaned, validate=True)
+    except Exception:
+        return None
+
+
+def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
+    """Resolve an image extension from a filename hint, else magic bytes.
+
+    Falls back to ``.png``. WebP needs the RIFF/WEBP container check, handled
+    before the generic table.
+    """
+    if filename:
+        suffix = Path(filename).suffix.lower()
+        if suffix:
+            return suffix
+    head = img_bytes[:16]
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return ".webp"
+    for sig, ext in _IMAGE_MAGIC:
+        if head.startswith(sig):
+            return ext
+    return ".png"
+
+
+def _allowed_image_extensions() -> frozenset[str]:
+    try:
+        from cli import _IMAGE_EXTENSIONS
+
+        return frozenset(_IMAGE_EXTENSIONS)
+    except Exception:
+        return frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+
+
+def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
+    """Write image bytes into the gateway's images dir and queue them.
+
+    Mirrors what ``image.attach`` does for a local path: appends to
+    ``session["attached_images"]`` so the next ``prompt.submit`` picks it up via
+    the existing native-image-attach pipeline. Returns the written path.
+    """
+    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+    try:
+        img_path.write_bytes(img_bytes)
+    except Exception:
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        raise
+    session.setdefault("attached_images", []).append(str(img_path))
+    return img_path
+
+
+@method("image.attach_bytes")
+def _(rid, params: dict) -> dict:
+    """Attach an image to the session from base64 bytes (remote-client path).
+
+    A desktop app or web dashboard running on a DIFFERENT machine than the
+    gateway can't hand us a local path — that file only exists on the client's
+    disk. So it uploads the raw image bytes (base64) and we write them into the
+    gateway's own images dir. The response shape mirrors ``image.attach`` so the
+    client treats both identically.
+
+    Params:
+      content_base64 / data (str, required): base64 image bytes. Accepts a
+        ``data:image/...;base64,`` prefix and embedded whitespace. ``data`` is
+        an accepted alias for older desktop builds.
+      filename / ext (str, optional): extension hint. Without it, magic bytes
+        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
+    if not raw_b64:
+        return _err(rid, 4015, "content_base64 required")
+
+    img_bytes = _decode_attach_base64(raw_b64, mime_prefix="image/")
+    if img_bytes is None:
+        return _err(rid, 4017, "data is not valid base64")
+    if not img_bytes:
+        return _err(rid, 4017, "image is empty")
+    if len(img_bytes) > _ATTACH_BYTES_MAX_BYTES:
+        mb = _ATTACH_BYTES_MAX_BYTES // (1024 * 1024)
+        return _err(rid, 4018, f"image too large ({len(img_bytes)} bytes; cap is {mb} MB)")
+
+    filename = str(params.get("filename", "") or "")
+    ext_hint = str(params.get("ext", "") or "").strip().lower()
+    if ext_hint and not ext_hint.startswith("."):
+        ext_hint = "." + ext_hint
+    ext = _sniff_image_ext(img_bytes, filename or (f"x{ext_hint}" if ext_hint else ""))
+    if ext not in _allowed_image_extensions():
+        return _err(rid, 4016, f"unsupported image extension: {ext}")
+
+    try:
+        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
+    except Exception as e:
+        return _err(rid, 5027, f"write failed: {e}")
+
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": len(session["attached_images"]),
+            "remainder": "",
+            "text": f"[User attached image: {img_path.name}]",
+            "bytes": len(img_bytes),
+            **_image_meta(img_path),
+        },
+    )
+
+
+@method("pdf.attach")
+def _(rid, params: dict) -> dict:
+    """Attach a PDF by rendering each page to PNG and queuing the pages.
+
+    Anthropic's vision pipeline accepts images, not PDFs, so this runs
+    ``pdftoppm`` (poppler-utils) at 150 DPI per page and queues each rendered
+    page as an attached image. Accepts either a host ``path`` (local mode) or
+    base64 ``content_base64`` (remote upload). Caps at 50 MB / 25 pages per call.
+
+    Requires ``pdftoppm`` on $PATH (``apt install poppler-utils``); returns 5028
+    if missing.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    if shutil.which("pdftoppm") is None:
+        return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
+
+    raw_path = str(params.get("path", "") or "").strip()
+    raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
+    if not raw_path and not raw_b64:
+        return _err(rid, 4015, "path or content_base64 required")
+
+    with tempfile.TemporaryDirectory(prefix="pdf_attach_") as td:
+        td_path = Path(td)
+        if raw_b64:
+            pdf_bytes = _decode_attach_base64(raw_b64, mime_prefix="application/pdf")
+            if pdf_bytes is None:
+                return _err(rid, 4017, "data is not valid base64")
+            if not pdf_bytes:
+                return _err(rid, 4017, "decoded PDF is empty")
+            if len(pdf_bytes) > _PDF_ATTACH_MAX_BYTES:
+                mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
+                return _err(rid, 4018, f"PDF too large ({len(pdf_bytes)} bytes; cap is {mb} MB)")
+            if pdf_bytes[:5] != b"%PDF-":
+                return _err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
+            pdf_path = td_path / "input.pdf"
+            pdf_path.write_bytes(pdf_bytes)
+            display_name = str(params.get("filename", "") or "uploaded.pdf")
+        else:
+            try:
+                from cli import _resolve_attachment_path
+
+                resolved = _resolve_attachment_path(raw_path)
+            except Exception:
+                resolved = None
+            if resolved is None or not Path(resolved).is_file():
+                return _err(rid, 4016, f"PDF not found: {raw_path}")
+            if Path(resolved).suffix.lower() != ".pdf":
+                return _err(rid, 4016, f"not a PDF: {Path(resolved).name}")
+            if Path(resolved).stat().st_size > _PDF_ATTACH_MAX_BYTES:
+                mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
+                return _err(rid, 4018, f"PDF too large; cap is {mb} MB")
+            pdf_path = Path(resolved)
+            display_name = pdf_path.name
+
+        try:
+            first_page = int(params.get("first_page") or 1)
+            last_page_param = params.get("last_page")
+            last_page = int(last_page_param) if last_page_param is not None else None
+        except (TypeError, ValueError):
+            return _err(rid, 4015, "first_page/last_page must be integers")
+
+        if first_page < 1:
+            return _err(rid, 4015, "first_page must be >= 1")
+        if last_page is None:
+            last_page = first_page + _PDF_ATTACH_MAX_PAGES - 1
+        if last_page < first_page:
+            return _err(rid, 4015, "last_page must be >= first_page")
+        if last_page - first_page + 1 > _PDF_ATTACH_MAX_PAGES:
+            return _err(rid, 4019, f"page range exceeds cap of {_PDF_ATTACH_MAX_PAGES} pages per attach call")
+
+        out_prefix = td_path / "page"
+        argv = [
+            "pdftoppm", "-png", "-r", "150",
+            "-f", str(first_page), "-l", str(last_page),
+            str(pdf_path), str(out_prefix),
+        ]
+        try:
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return _err(rid, 5028, "pdftoppm timed out (>120s)")
+        if res.returncode != 0:
+            tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
+            return _err(rid, 5028, "pdftoppm failed: " + " | ".join(tail))
+
+        rendered = sorted(td_path.glob("page-*.png"))
+        if not rendered:
+            return _err(rid, 5028, "pdftoppm produced no pages (corrupt PDF?)")
+
+        attached_pages = []
+        for src in rendered:
+            page_num = src.stem.split("-", 1)[-1]
+            try:
+                page_int = int(page_num)
+            except ValueError:
+                page_int = first_page + len(attached_pages)
+            dst = _queue_attached_image(session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}")
+            attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
+
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "filename": display_name,
+                "pages_attached": len(attached_pages),
+                "pages": attached_pages,
+                "count": len(session["attached_images"]),
+                "text": f"[User attached PDF: {display_name} ({len(attached_pages)} page(s))]",
+            },
+        )
+
+
 @method("image.detach")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)

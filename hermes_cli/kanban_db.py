@@ -6573,6 +6573,10 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
         return True
     try:
         for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
+            # Mirror the skill loader's resolution: skip archived copies
+            # (agent/skill_commands.py filters .archive from skill paths).
+            if any(part in {".git", ".github", ".hub", ".archive"} for part in skill_md.parts):
+                continue
             if skill_md.is_file():
                 return True
     except OSError:

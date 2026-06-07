@@ -4287,3 +4287,42 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_kanban_worker_skill_available_excludes_archive(tmp_path):
+    """_kanban_worker_skill_available must ignore .archive/ copies.
+
+    The skill loader (agent/skill_commands.py) excludes .archive/ from
+    resolution, so the availability check must do the same.  When only an
+    archived copy exists the function should return False.
+    """
+    skills_dir = tmp_path / "skills"
+    # Only an archived copy — no live copy.
+    archived = skills_dir / ".archive" / "kanban-worker"
+    archived.mkdir(parents=True)
+    (archived / "SKILL.md").write_text("# Kanban Worker\n")
+
+    assert kb._kanban_worker_skill_available(str(tmp_path)) is False
+
+
+def test_kanban_worker_skill_available_finds_live_copy(tmp_path):
+    """Live (non-archived) skill is still detected correctly."""
+    skills_dir = tmp_path / "skills" / "devops" / "kanban-worker"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# Kanban Worker\n")
+
+    assert kb._kanban_worker_skill_available(str(tmp_path)) is True
+
+
+def test_kanban_worker_skill_available_prefers_live_over_archive(tmp_path):
+    """When both live and archived copies exist, returns True (live wins)."""
+    # Live copy
+    live = tmp_path / "skills" / "devops" / "kanban-worker"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text("# Kanban Worker\n")
+    # Archived copy
+    archived = tmp_path / "skills" / ".archive" / "kanban-worker"
+    archived.mkdir(parents=True)
+    (archived / "SKILL.md").write_text("# Kanban Worker (archived)\n")
+
+    assert kb._kanban_worker_skill_available(str(tmp_path)) is True

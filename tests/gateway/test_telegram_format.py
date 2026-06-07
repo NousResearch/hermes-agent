@@ -1012,3 +1012,95 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# =========================================================================
+# format_message — BUG #6388: bullet list display (- → \-)
+# =========================================================================
+
+
+class TestFormatMessageBulletLists:
+    """MarkdownV2 escape was converting '- item' to '\\- item' which Telegram
+    renders literally instead of as a bullet.  The fix converts line-start
+    '- '/ '* ' markers to Unicode bullets (U+2022) before the general
+    MarkdownV2 escape pass.
+    """
+
+    def test_dash_bullet_list_not_escaped(self, adapter):
+        """'- item' at line start must render as '• item', not '\\- item'."""
+        text = "- First item\n- Second item\n- Third item"
+        result = adapter.format_message(text)
+        assert "\\-" not in result
+        assert "• First item" in result
+        assert "• Second item" in result
+        assert "• Third item" in result
+
+    def test_dash_bullet_with_surrounding_text(self, adapter):
+        text = "Here are items:\n- Alpha\n- Beta\nDone."
+        result = adapter.format_message(text)
+        assert "• Alpha" in result
+        assert "• Beta" in result
+        assert "\\-" not in result
+
+    def test_dash_bullet_in_code_block_not_converted(self, adapter):
+        """Bullet markers inside fenced code blocks must stay as '-'."""
+        text = "```shell\n- a\n- b\n```"
+        result = adapter.format_message(text)
+        assert "•" not in result
+        assert "- a" in result
+        assert "- b" in result
+
+    def test_dash_bullet_in_inline_code_not_converted(self, adapter):
+        text = "Use `rm -rf /` carefully"
+        result = adapter.format_message(text)
+        assert "•" not in result or "•" not in result.split("`")[0]
+        assert "`rm -rf /`" in result
+
+    def test_midline_dash_still_escaped(self, adapter):
+        """A dash in the middle of a line is not a bullet and should still be escaped."""
+        text = "a - b"
+        result = adapter.format_message(text)
+        # The dash in "a - b" is mid-line, so it gets escaped
+        assert "\\-" in result or "a \\- b" in result
+
+    def test_asterisk_bullet_list_converted(self, adapter):
+        """'* item' at line start should also become '• item'."""
+        text = "* First\n* Second"
+        result = adapter.format_message(text)
+        assert "\\*" not in result or "• First" in result
+        assert "• Second" in result
+
+    def test_numbered_list_not_affected(self, adapter):
+        """Numbered lists like '1. item' should not be touched by bullet conversion."""
+        text = "1. First\n2. Second"
+        result = adapter.format_message(text)
+        assert "1" in result
+        assert "2" in result
+
+    def test_dash_bullet_with_bold_item(self, adapter):
+        """Bullet list items that also contain bold text should work."""
+        text = "- **important** item\n- normal item"
+        result = adapter.format_message(text)
+        assert "• *important* item" in result
+        assert "• normal item" in result
+        assert "\\-" not in result
+
+    def test_only_start_of_line_dash_converted(self, adapter):
+        """A dash NOT at line start should NOT become a bullet."""
+        text = "use a-b hyphenated-word"
+        result = adapter.format_message(text)
+        assert "•" not in result
+
+    def test_dash_bullet_with_empty_line_between(self, adapter):
+        """Bullet list items separated by blank lines."""
+        text = "Intro:\n\n- Item one\n\n- Item two"
+        result = adapter.format_message(text)
+        assert "• Item one" in result
+        assert "• Item two" in result
+        assert "\\-" not in result
+
+    def test_dash_followed_by_no_space_not_converted(self, adapter):
+        """'-text' (no space after dash) should NOT become a bullet."""
+        text = "-not-a-bullet"
+        result = adapter.format_message(text)
+        assert "•" not in result

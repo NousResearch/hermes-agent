@@ -4471,6 +4471,14 @@ class TelegramAdapter(BasePlatformAdapter):
             flags=re.MULTILINE,
         )
 
+        # 9b) Convert Markdown bullet list markers at line start to Unicode
+        #     bullets (U+2022).  MarkdownV2 requires '-' to be escaped, but
+        #     an escaped '\-' renders literally instead of as a bullet.
+        #     Using the Unicode bullet character avoids the problem entirely.
+        #     Code blocks / inline code are already behind placeholders,
+        #     so this only touches plain-text lines.
+        text = re.sub(r'^[-*] (?=\S)', '• ', text, flags=re.MULTILINE)
+
         # 10) Escape remaining special characters in plain text
         text = _escape_mdv2(text)
 

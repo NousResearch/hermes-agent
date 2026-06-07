@@ -185,6 +185,68 @@ metrics:
 
 
 # ---------------------------------------------------------------------------
+# trust_remote_code — secure-by-default (no silent RCE via shared configs)
+# ---------------------------------------------------------------------------
+
+
+class TestTrustRemoteCodeSecurity:
+    def test_default_is_false(self):
+        # trust_remote_code lets the tokenizer repo execute arbitrary code at
+        # load time; the in-code default must be the safe one.
+        assert CompressionConfig().trust_remote_code is False
+
+    def test_yaml_without_key_stays_false(self, tmp_path):
+        # A shared config that omits the key must NOT inherit a dangerous True.
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text("tokenizer:\n  name: some/repo\n")
+        config = CompressionConfig.from_yaml(str(yaml_file))
+        assert config.trust_remote_code is False
+
+    def test_yaml_explicit_true_is_honored(self, tmp_path):
+        # Explicit opt-in for a trusted tokenizer is still respected.
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text(
+            "tokenizer:\n  name: some/repo\n  trust_remote_code: true\n"
+        )
+        config = CompressionConfig.from_yaml(str(yaml_file))
+        assert config.trust_remote_code is True
+
+    def _run_init_tokenizer(self, trust_remote_code):
+        """Drive _init_tokenizer with a stubbed transformers module.
+
+        Returns (from_pretrained_mock, captured_output_lines)."""
+        from_pretrained = MagicMock(return_value=MagicMock())
+        fake_transformers = SimpleNamespace(
+            AutoTokenizer=SimpleNamespace(from_pretrained=from_pretrained)
+        )
+
+        config = CompressionConfig(
+            tokenizer_name="evil/repo", trust_remote_code=trust_remote_code
+        )
+        tc = TrajectoryCompressor.__new__(TrajectoryCompressor)
+        tc.config = config
+
+        with patch.dict(sys.modules, {"transformers": fake_transformers}):
+            tc._init_tokenizer()
+        return from_pretrained
+
+    def test_init_tokenizer_forwards_false_by_default(self, capsys):
+        from_pretrained = self._run_init_tokenizer(trust_remote_code=False)
+        # The safe flag is passed straight through to HuggingFace.
+        assert from_pretrained.call_args.kwargs["trust_remote_code"] is False
+        # No remote-code execution warning when it is disabled.
+        assert "trust_remote_code=True" not in capsys.readouterr().out
+
+    def test_init_tokenizer_warns_loudly_when_enabled(self, capsys):
+        from_pretrained = self._run_init_tokenizer(trust_remote_code=True)
+        assert from_pretrained.call_args.kwargs["trust_remote_code"] is True
+        out = capsys.readouterr().out
+        # When enabled it must never be silent: warn and name the repo.
+        assert "SECURITY" in out
+        assert "evil/repo" in out
+
+
+# ---------------------------------------------------------------------------
 # TrajectoryMetrics
 # ---------------------------------------------------------------------------
 

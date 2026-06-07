@@ -84,7 +84,14 @@ class CompressionConfig:
     """Configuration for trajectory compression."""
     # Tokenizer
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking"
-    trust_remote_code: bool = True
+    # SECURITY: ``trust_remote_code=True`` makes HuggingFace execute arbitrary
+    # Python shipped in the tokenizer repo at load time — before a single
+    # trajectory is processed. Compression configs in this subsystem are
+    # shareable (see datagen-config-examples/), so this MUST default to False:
+    # a hostile config/tokenizer name would otherwise mean silent RCE. Opt in
+    # only for a tokenizer repo you trust; _init_tokenizer() warns loudly when
+    # it resolves to True so it is never silent.
+    trust_remote_code: bool = False
     
     # Compression targets
     target_max_tokens: int = 15250
@@ -361,6 +368,17 @@ class TrajectoryCompressor:
     
     def _init_tokenizer(self):
         """Initialize HuggingFace tokenizer for token counting."""
+        # SECURITY: trust_remote_code lets the tokenizer repo run arbitrary code
+        # on this machine. Never honor it silently — surface a loud warning that
+        # names the exact repo so a malicious shared config can't smuggle in code
+        # execution unnoticed. See CompressionConfig.trust_remote_code.
+        if self.config.trust_remote_code:
+            print(
+                "⚠️  SECURITY: loading tokenizer "
+                f"'{self.config.tokenizer_name}' with trust_remote_code=True — "
+                "this EXECUTES arbitrary Python from that repo. Only proceed if "
+                "you trust its source."
+            )
         try:
             from transformers import AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(

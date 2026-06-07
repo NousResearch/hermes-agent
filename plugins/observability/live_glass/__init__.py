@@ -295,3 +295,14 @@ def register(ctx) -> None:
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_approval_request", on_pre_approval_request)
     ctx.register_hook("post_approval_response", on_post_approval_response)
+
+    # Bridge computer_use approval into PluginManager hooks so the
+    # live-glass event bus (and any other observer) sees approval events
+    # from computer_use actions.
+    try:
+        from plugins.observability.live_glass.approval_bridge import (
+            register_approval_bridge,
+        )
+        register_approval_bridge(ctx)
+    except Exception:
+        logger.debug("live-glass: approval bridge setup failed", exc_info=True)

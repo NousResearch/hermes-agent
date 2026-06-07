@@ -160,11 +160,9 @@ class TestPluginRegistration:
                 calls.append((name, fn.__name__))
 
         live_glass.register(Ctx())
-        assert calls == [
-            ("post_tool_call", "on_post_tool_call"),
-            ("pre_approval_request", "on_pre_approval_request"),
-            ("post_approval_response", "on_post_approval_response"),
-        ]
+        assert {("post_tool_call", "on_post_tool_call")}.issubset(set(calls))
+        assert ("pre_approval_request", "on_pre_approval_request") in calls
+        assert ("post_approval_response", "on_post_approval_response") in calls
 
     def test_plugin_manager_loads_when_enabled(self, tmp_path, monkeypatch):
         from hermes_cli import plugins as plugins_mod

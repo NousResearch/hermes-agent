@@ -839,7 +839,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
-                            future.cancel()
+                            # Issue #38922: confirmation timeout does not mean send failed.
+                            # The message was already dispatched to the gateway event loop
+                            # and sent on the wire. The confirmation just timed out due to
+                            # loop contention or a slow network. Treat it as delivered to
+                            # avoid the duplicate-send fallback (which would send the same
+                            # message twice). The send was already dispatched; assume-delivered
+                            # is safer than guaranteed-duplicate.
+                            logger.warning(
+                                "Job '%s': live adapter confirmation timeout for %s:%s "
+                                "(message likely delivered; skipping fallback to avoid duplicate)",
+                                job["id"], platform_name, chat_id,
+                            )
+                            adapter_ok = True
+                            delivered = True  # Skip standalone fallback
+                            send_result = None  # No response received, but treat as delivered
+                        except Exception:
+                            # Other exceptions indicate send failure — fall through to standalone
                             raise
                         if send_result and not getattr(send_result, "success", True):
                             err = getattr(send_result, "error", "unknown")

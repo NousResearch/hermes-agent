@@ -2442,9 +2442,20 @@ class TestDeliverResultTimeoutCancelsFuture:
     """
 
     def test_live_adapter_timeout_cancels_future_and_falls_back(self):
-        """End-to-end: live adapter hangs past the 60s budget, _deliver_result
-        patches the timeout down to a fast value, confirms future.cancel() fires,
-        and verifies the standalone fallback path still delivers."""
+        """Issue #38922: TimeoutError on confirmation should NOT trigger duplicate send.
+        
+        OLD behavior (buggy):
+        - TimeoutError on future.result(timeout=60)
+        - future.cancel() called (but message already on wire — too late)
+        - Exception raised → caught → fallback to standalone send
+        - RESULT: message sent twice (duplicate)
+        
+        NEW behavior (fixed):
+        - TimeoutError on future.result(timeout=60)
+        - Message was already dispatched; confirmation just timed out
+        - Set delivered = True to skip fallback
+        - RESULT: logged warning, single send only (no duplicate)
+        """
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -2497,11 +2508,16 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        # 1. The orphan future was cancelled on timeout (the bug fix)
-        assert cancel_calls == [True], "future.cancel() must fire on TimeoutError"
-        # 2. The standalone fallback delivered — no double send, no silent drop
+        # NEW behavior (fix for #38922):
+        # 1. TimeoutError is caught and handled specially (not re-raised)
+        # 2. Message is marked as delivered (skip fallback)
+        # 3. Standalone send is NOT called (prevent duplicate)
+        # 4. Warning is logged about the timeout
         assert result is None, f"expected successful delivery, got error: {result!r}"
-        standalone_send.assert_awaited_once()
+        # The key fix: standalone is NOT called (old code called it once)
+        standalone_send.assert_not_awaited()
+        # future.cancel() is NOT called anymore (it's useless anyway — message already sent)
+        assert cancel_calls == [], "future.cancel() should not be called (message already dispatched)"
 
     def test_live_adapter_thread_fallback_records_delivery_error(self):
         """A cron target with an explicit topic must not be marked clean if

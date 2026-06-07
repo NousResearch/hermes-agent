@@ -5401,15 +5401,20 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     ``return`` immediately — the user cancelled entry, declined to replace, or
     cleared the key and is now unconfigured.
     """
-    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
+    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER, LOCAL_NOAUTH_PLACEHOLDER, _is_local_base_url
     from hermes_cli.config import save_env_value
     from hermes_cli.secret_prompt import masked_secret_prompt
 
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
-    def _prompt_new_key(*, allow_lmstudio_default: bool) -> str:
-        if provider_id == "lmstudio" and allow_lmstudio_default:
-            prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
+    # Determine if this provider allows a no-auth default (local server).
+    _provider_base_url = pconfig.inference_base_url or ""
+    _allows_noauth = provider_id == "lmstudio" or _is_local_base_url(_provider_base_url)
+
+    def _prompt_new_key(*, allow_noauth_default: bool) -> str:
+        if _allows_noauth and allow_noauth_default:
+            _noauth_val = LMSTUDIO_NOAUTH_PLACEHOLDER if provider_id == "lmstudio" else LOCAL_NOAUTH_PLACEHOLDER
+            prompt = f"{key_env} (Enter for no-auth default {_noauth_val!r}): "
         else:
             prompt = f"{key_env} (or Enter to cancel): "
         try:
@@ -5417,8 +5422,10 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         except (KeyboardInterrupt, EOFError):
             print()
             return ""
-        if not entered and provider_id == "lmstudio" and allow_lmstudio_default:
-            return LMSTUDIO_NOAUTH_PLACEHOLDER
+        if not entered and _allows_noauth and allow_noauth_default:
+            if provider_id == "lmstudio":
+                return LMSTUDIO_NOAUTH_PLACEHOLDER
+            return LOCAL_NOAUTH_PLACEHOLDER
         return entered
 
     # First-time entry ────────────────────────────────────────────────────
@@ -5426,7 +5433,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         print(f"No {pconfig.name} API key configured.")
         if not key_env:
             return "", True
-        new_key = _prompt_new_key(allow_lmstudio_default=True)
+        new_key = _prompt_new_key(allow_noauth_default=True)
         if not new_key:
             print("Cancelled.")
             return "", True
@@ -5451,7 +5458,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         choice = "k"
 
     if choice.startswith("r"):
-        new_key = _prompt_new_key(allow_lmstudio_default=False)
+        new_key = _prompt_new_key(allow_noauth_default=False)
         if not new_key:
             print("  No change.")
             print()

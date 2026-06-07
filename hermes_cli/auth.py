@@ -142,6 +142,46 @@ GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 # any remote service.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
 
+# Sentinel used for any local/private-network provider that doesn't require
+# authentication.  Reuses the same value as the runtime "no-key-required"
+# placeholder in cli.py so all code paths treat it consistently.
+LOCAL_NOAUTH_PLACEHOLDER = "no-key-required"
+
+
+def _is_local_base_url(url: str) -> bool:
+    """Return True if *url* points to a local or private-network address.
+
+    Covers:
+      - loopback: 127.0.0.1, localhost, ::1
+      - RFC 1918: 10.x.x.x, 172.16–31.x.x, 192.168.x.x
+      - link-local: 169.254.x.x
+      - hostnames: *.local, *.localhost
+    """
+    if not url:
+        return False
+    from urllib.parse import urlparse as _urlparse
+
+    try:
+        parsed = _urlparse(url)
+    except Exception:
+        return False
+
+    hostname = (parsed.hostname or "").lower()
+
+    # Fast path: common local hostnames
+    if hostname in ("localhost", "127.0.0.1", "::1") or hostname.endswith((".local", ".localhost")):
+        return True
+
+    import ipaddress as _ip
+
+    try:
+        addr = _ip.ip_address(hostname)
+        return addr.is_loopback or addr.is_private or addr.is_link_local
+    except ValueError:
+        # Not a bare IP — could be a LAN hostname we can't resolve here.
+        # Err on the side of requiring auth for non-IP hostnames.
+        return False
+
 
 # =============================================================================
 # Provider Registry
@@ -5870,13 +5910,6 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
-    # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
-    # see the local server as configured. doctor still reports unconfigured
-    # because get_api_key_provider_status uses the raw secret resolver.
-    if not api_key and provider_id == "lmstudio":
-        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
-        key_source = key_source or "default"
-
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
@@ -5889,6 +5922,18 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = env_url.rstrip("/")
     else:
         base_url = pconfig.inference_base_url
+
+    # No-auth for local / private-network providers: substitute a placeholder
+    # so runtime / auxiliary_client treat the server as configured.
+    # LM Studio keeps its own sentinel for backward compat; all other local
+    # servers get the generic LOCAL_NOAUTH_PLACEHOLDER.
+    if not api_key:
+        if provider_id == "lmstudio":
+            api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+            key_source = key_source or "default"
+        elif _is_local_base_url(base_url):
+            api_key = LOCAL_NOAUTH_PLACEHOLDER
+            key_source = key_source or "default"
 
     return {
         "provider": provider_id,

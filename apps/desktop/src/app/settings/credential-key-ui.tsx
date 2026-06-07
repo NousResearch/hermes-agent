@@ -96,7 +96,7 @@ export function KeyField({
         />
         {dirty && (
           <Button className="h-8 shrink-0" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
+            {busy ? <Loader2 className="animate-spin" /> : <Save />}
             {busy ? t.settings.credentials.saving : t.common.save}
           </Button>
         )}
@@ -106,9 +106,10 @@ export function KeyField({
           {info.is_set && (
             <>
               <Button
-                className="h-auto px-0 py-0 text-[0.6875rem] text-destructive hover:text-destructive"
+                className="text-[0.6875rem] text-destructive hover:text-destructive"
                 disabled={busy}
                 onClick={() => void onClear(varKey)}
+                size="inline"
                 type="button"
                 variant="text"
               >

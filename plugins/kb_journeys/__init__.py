@@ -30,11 +30,19 @@ QUEUE_REPLY_TOOL_DECISIONS = {"approve", "reject", "archive", "skip", "complete"
 QUEUE_REPLY_STATE_TTL_SECONDS = 15 * 60
 QUEUE_SCOPE_STATE_TTL_SECONDS = 15 * 60
 MEETING_HANDOFF_STATE_TTL_SECONDS = 15 * 60
+SEMANTIC_WRITE_RECEIPT_PACKET_TYPES = {
+    "semantic_write_receipt",
+    "semantic_write_through_receipt",
+    "semantic_write_through.receipt",
+    "semantic_write.receipt",
+    "kb_semantic_write_receipt",
+}
 SUPPORTED_RESULT_PACKET_TYPES = {
     "durable_graph_validation",
     "publication_observation",
     "request.receipt",
     "report_admission_receipt",
+    *SEMANTIC_WRITE_RECEIPT_PACKET_TYPES,
 }
 DESCRIPTOR_READONLY_TARGET_KINDS = {
     "closeout",
@@ -400,6 +408,147 @@ def _render_publication_observation_packet(packet: dict[str, Any]) -> dict[str, 
     return {"title": "Publication Observation", "text": "\n".join(lines), "actions": []}
 
 
+_PRIVATE_RECEIPT_PATTERNS = (
+    re.compile(r"https?://", re.I),
+    re.compile(r"\bwww\.", re.I),
+    re.compile(r"(?i)(?:^|/)(?:Users|home|private|tmp)/"),
+    re.compile(r"(?i)(?:^|[_-])(?:token|secret|password|api[_-]?key)(?:[_-]|$)"),
+    re.compile(r"(?i)^(?:acct|account|login|user):"),
+    re.compile(r"(?i)\b(?:bearer|sk-[A-Za-z0-9])"),
+    re.compile(r"\S+@\S+"),
+    re.compile(r"^[A-Za-z]:[\\/]"),
+)
+
+
+def _receipt_public_value(value: Any, *, limit: int = 120) -> str:
+    text = _clip(value, limit)
+    if not text:
+        return ""
+    if text.startswith(("/", "~/", "~\\")):
+        return ""
+    if any(pattern.search(text) for pattern in _PRIVATE_RECEIPT_PATTERNS):
+        return ""
+    return text
+
+
+def _receipt_public_values(values: Iterable[Any], *, limit: int = 120) -> list[str]:
+    return _dedupe_list(
+        value
+        for raw in values
+        if (value := _receipt_public_value(raw, limit=limit))
+    )
+
+
+def _semantic_values_from(packet: dict[str, Any], *keys: str) -> list[Any]:
+    values: list[Any] = []
+    for key in keys:
+        value = packet.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    for nested_key in ("id", "object_id", "object_ref", "path", "ref", "operation_id"):
+                        if item.get(nested_key):
+                            values.append(item.get(nested_key))
+                            break
+                else:
+                    values.append(item)
+        elif isinstance(value, dict):
+            for nested_key in ("id", "object_id", "object_ref", "path", "ref", "operation_id"):
+                if value.get(nested_key):
+                    values.append(value.get(nested_key))
+                    break
+        else:
+            values.append(value)
+    return values
+
+
+def _semantic_status(packet: dict[str, Any]) -> str:
+    status = (
+        packet.get("prod_write_status")
+        or packet.get("prod_write_state")
+        or packet.get("prod_status")
+        or packet.get("write_status")
+        or _get_path(packet, "prod_write", "status")
+        or _get_path(packet, "prod_write", "state")
+        or packet.get("status")
+        or packet.get("state")
+    )
+    return _receipt_public_value(status, limit=80)
+
+
+def _semantic_publication_status(packet: dict[str, Any]) -> str:
+    status = (
+        packet.get("publication_status")
+        or packet.get("publication_state")
+        or _get_path(packet, "publication", "status")
+        or _get_path(packet, "publication", "state")
+        or _get_path(packet, "publication", "publication_status")
+        or _get_path(packet, "sync", "status")
+    )
+    return _receipt_public_value(status, limit=80)
+
+
+def _semantic_reconciliation_status(packet: dict[str, Any]) -> str:
+    status = (
+        packet.get("reconciliation_status")
+        or packet.get("offline_reconciliation_status")
+        or packet.get("local_reconciliation_status")
+        or _get_path(packet, "reconciliation", "status")
+        or _get_path(packet, "reconciliation", "state")
+        or _get_path(packet, "local_reconciliation", "status")
+        or _get_path(packet, "local_reconciliation", "state")
+        or _get_path(packet, "offline_reconciliation", "status")
+        or _get_path(packet, "offline", "reconciliation_status")
+    )
+    return _receipt_public_value(status, limit=80)
+
+
+def _semantic_transaction_id(packet: dict[str, Any]) -> str:
+    transaction = packet.get("transaction")
+    transaction_id = packet.get("transaction_id") or packet.get("txid")
+    if not transaction_id and isinstance(transaction, dict):
+        transaction_id = transaction.get("id") or transaction.get("transaction_id")
+    elif not transaction_id:
+        transaction_id = transaction
+    return _receipt_public_value(transaction_id, limit=120)
+
+
+def _render_semantic_write_receipt_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    lines = ["Semantic Write Receipt"]
+    prod_status = _semantic_status(packet)
+    publication_status = _semantic_publication_status(packet)
+    reconciliation_status = _semantic_reconciliation_status(packet)
+    transaction_id = _semantic_transaction_id(packet)
+    changed_paths = _receipt_public_values(_changed_paths(packet), limit=140)
+    object_ids = _receipt_public_values(
+        _semantic_values_from(packet, "object_ids", "object_id", "object_refs", "object_ref", "objects"),
+        limit=140,
+    )
+    operation_ids = _receipt_public_values(
+        _semantic_values_from(packet, "operation_ids", "operation_id", "operations", "operation_receipts"),
+        limit=120,
+    )
+
+    if prod_status:
+        lines.append(f"Prod write: {prod_status}")
+    if publication_status:
+        lines.append(f"Publication: {publication_status}")
+    if reconciliation_status:
+        lines.append(f"Reconciliation: {reconciliation_status}")
+    if transaction_id:
+        lines.append(f"Transaction: {transaction_id}")
+    if changed_paths:
+        lines.append(f"Changed paths: {len(changed_paths)}")
+        lines.extend(_format_changed_paths(changed_paths, limit=4))
+    if object_ids:
+        lines.append(_id_line("Objects", object_ids, limit=4))
+    if operation_ids:
+        lines.append(_id_line("Operations", operation_ids, limit=4))
+    return {"title": "Semantic Write Receipt", "text": "\n".join(lines), "actions": []}
+
+
 def _id_list(value: Any) -> list[str]:
     if isinstance(value, str):
         text = value.strip()
@@ -732,6 +881,8 @@ def _render_supported_result_packet(
         return _render_graph_validation_packet(packet)
     if packet_type == "publication_observation":
         return _render_publication_observation_packet(packet)
+    if packet_type in SEMANTIC_WRITE_RECEIPT_PACKET_TYPES:
+        return _render_semantic_write_receipt_packet(packet)
     if packet_type == "request.receipt":
         return _render_request_receipt_packet(packet, ctx=ctx, target=target)
     return None

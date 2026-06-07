@@ -2085,6 +2085,84 @@ def test_request_receipt_renders_report_reference_fields():
     assert card["actions"] == []
 
 
+def test_semantic_write_receipt_renders_compact_prod_and_publication_statuses():
+    from plugins import kb_journeys
+
+    packet = {
+        "packet_type": "semantic_write_receipt",
+        "schema_version": 1,
+        "prod_write_status": "prod_write_applied",
+        "publication": {"status": "publication_applied"},
+        "local_reconciliation": {"status": "offline_receipt_pending_reconciliation"},
+        "transaction_id": "semantic-txn-123",
+        "changed_paths": [
+            "situations/2026-06-acme-launch/state.md",
+            "https://example.invalid/private-source",
+            "/Users/acosta/secrets/source.md",
+        ],
+        "object_ids": [
+            "situations/2026-06-acme-launch",
+            "anthony@example.com",
+            "acct:private-login",
+        ],
+        "operation_ids": [
+            "object.semantic_update_preview",
+            "control.apply_confirmed",
+        ],
+        "source_body": "private source body should not render",
+        "login": "anthony@example.com",
+        "account": "acct:private-login",
+        "token": "sk-secret-token",
+    }
+
+    card = kb_journeys._render_supported_result_packet({"result": packet})
+
+    assert card["title"] == "Semantic Write Receipt"
+    text = card["text"]
+    assert "Semantic Write Receipt" in text
+    assert "Prod write: prod_write_applied" in text
+    assert "Publication: publication_applied" in text
+    assert "Reconciliation: offline_receipt_pending_reconciliation" in text
+    assert "Transaction: semantic-txn-123" in text
+    assert "Changed paths: 1" in text
+    assert "situations/2026-06-acme-launch/state.md" in text
+    assert "Objects: situations/2026-06-acme-launch" in text
+    assert "Operations: object.semantic_update_preview, control.apply_confirmed" in text
+    assert "private source body" not in text
+    assert "anthony@example.com" not in text
+    assert "acct:private-login" not in text
+    assert "example.invalid" not in text
+    assert "/Users/acosta" not in text
+    assert "sk-secret-token" not in text
+    assert card["actions"] == []
+
+
+def test_semantic_write_receipt_supports_offline_status_aliases():
+    from plugins import kb_journeys
+
+    card = kb_journeys._render_supported_result_packet(
+        {
+            "receipt": {
+                "packet_type": "semantic_write_through_receipt",
+                "status": "offline_not_prod_publication",
+                "publication_status": "manual_publication_expected",
+                "reconciliation_status": "offline_receipt_pending_reconciliation",
+                "object_id": "accounts/mistral",
+                "operation_id": "semantic.update",
+                "transaction": {"id": "offline-txn-7"},
+            }
+        }
+    )
+
+    text = card["text"]
+    assert "Prod write: offline_not_prod_publication" in text
+    assert "Publication: manual_publication_expected" in text
+    assert "Reconciliation: offline_receipt_pending_reconciliation" in text
+    assert "Transaction: offline-txn-7" in text
+    assert "Objects: accounts/mistral" in text
+    assert "Operations: semantic.update" in text
+
+
 def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 

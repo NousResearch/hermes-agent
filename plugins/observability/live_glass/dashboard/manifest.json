@@ -1,0 +1,13 @@
+{
+  "name": "live-glass",
+  "version": "0.1.0",
+  "description": "Live view into computer_use activity",
+  "author": "NousResearch",
+  "tab": {
+    "label": "Live Glass",
+    "path": "/live-glass",
+    "position": 80,
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}

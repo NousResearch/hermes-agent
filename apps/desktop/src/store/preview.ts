@@ -241,6 +241,31 @@ function recordId(sessionId: string, target: PreviewTarget): string {
   return `${sessionId}:${target.url}`
 }
 
+// Auto-opening a remote page in a <webview> the moment a link is surfaced lets
+// it pop WebAuthn passkey dialogs, autoplay audio, and run arbitrary script
+// with no user intent (the preview <webview> in right-rail/preview-pane.tsx has
+// no such guards). Only auto-open local previews — files and loopback URLs;
+// remote web URLs are still registered and open on an explicit click.
+function shouldAutoOpenPreview(target: PreviewTarget): boolean {
+  if (target.kind !== 'url') {
+    return true
+  }
+
+  try {
+    const parsed = new URL(target.url)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return true
+    }
+
+    const host = parsed.hostname.toLowerCase()
+
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  } catch {
+    return false
+  }
+}
+
 export function registerSessionPreview(
   sessionId: string | null | undefined,
   target: PreviewTarget,
@@ -260,7 +285,7 @@ export function registerSessionPreview(
   const normalized = previewTargetForSource(target, source)
 
   const nextRecord: SessionPreviewRecord = {
-    autoOpen: true,
+    autoOpen: shouldAutoOpenPreview(target),
     createdAt: now,
     id: existing?.id || recordId(id, target),
     normalized,

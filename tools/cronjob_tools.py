@@ -21,13 +21,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
+    advance_next_run,
     create_job,
+    get_job,
     list_jobs,
+    mark_job_run,
     parse_schedule,
     pause_job,
     remove_job,
     resolve_job_ref,
     resume_job,
+    save_job_output,
     trigger_job,
     update_job,
 )
@@ -456,6 +460,56 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _execute_job_now(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Execute a cron job immediately, outside the scheduler tick.
+
+    Advances next_run_at first to prevent double-execution by the scheduler,
+    then runs the job, saves output, delivers the result, and marks it as done.
+
+    Returns a dict with execution result info, or None on failure.
+    """
+    job_id = job["id"]
+    try:
+        from cron.scheduler import run_job, _deliver_result
+
+        # Advance next_run_at to the next scheduled time so the scheduler tick
+        # doesn't double-fire this job.
+        advance_next_run(job_id)
+
+        # Execute the job (runs the agent, builds prompt, etc.)
+        success, output, final_response, error = run_job(job)
+
+        # Save output to disk
+        save_job_output(job_id, output)
+
+        # Deliver the result to the configured target
+        delivery_error = None
+        if final_response.strip() and success:
+            try:
+                delivery_error = _deliver_result(job, final_response)
+            except Exception as de:
+                delivery_error = str(de)
+                logger.error("Delivery failed for job %s: %s", job_id, de)
+
+        # Treat empty final_response as a soft failure
+        if success and not final_response.strip():
+            success = False
+            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        # Mark the job as run (updates last_run_at, last_status, etc.)
+        mark_job_run(job_id, success, error, delivery_error=delivery_error)
+
+        return {"success": success, "error": error, "delivery_error": delivery_error}
+
+    except Exception as e:
+        logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
+        try:
+            mark_job_run(job_id, False, str(e))
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -623,7 +677,24 @@ def cronjob(
 
         if normalized in {"run", "run_now", "trigger"}:
             updated = trigger_job(job_id)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            # Execute the job immediately rather than just scheduling for next tick
+            exec_result = _execute_job_now(updated)
+            result = _format_job(updated)
+            if exec_result:
+                result["executed"] = True
+                result["execution_success"] = exec_result.get("success", False)
+                if exec_result.get("error"):
+                    result["execution_error"] = exec_result["error"]
+            # Re-read the job to get updated last_run_at/last_status
+            final_job = get_job(job_id)
+            if final_job:
+                result = _format_job(final_job)
+                if exec_result:
+                    result["executed"] = True
+                    result["execution_success"] = exec_result.get("success", False)
+                    if exec_result.get("error"):
+                        result["execution_error"] = exec_result["error"]
+            return json.dumps({"success": True, "job": result}, indent=2)
 
         if normalized == "update":
             updates: Dict[str, Any] = {}

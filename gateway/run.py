@@ -903,6 +903,7 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
+_cfg: Dict[str, Any] = {}
 if _config_path.exists():
     try:
         import yaml as _yaml
@@ -910,7 +911,8 @@ if _config_path.exists():
             _cfg = _yaml.safe_load(_f) or {}
         # Expand ${ENV_VAR} references before bridging to env vars.
         from hermes_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
+        _expanded = _expand_env_vars(_cfg)
+        _cfg = _expanded if isinstance(_expanded, dict) else {}
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
@@ -1092,7 +1094,7 @@ if _config_path.exists():
 # Apply IPv4 preference if configured (before any HTTP clients are created).
 try:
     from hermes_constants import apply_ipv4_preference
-    _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
+    _network_cfg = _cfg.get("network", {})
     if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
         apply_ipv4_preference(force=True)
 except Exception as _bootstrap_exc:
@@ -1531,6 +1533,25 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
+
+
+def _active_platform_uses_no_mcp(config: dict) -> bool:
+    """Return True if the current platform's toolsets include the no_mcp sentinel.
+
+    The active platform is resolved from the ``HERMES_PLATFORM`` env var (with the
+    ``HERMES_SESSION_PLATFORM`` fallback used elsewhere in the codebase), defaulting
+    to ``"cli"``. When that platform's ``platform_toolsets`` list contains the
+    ``no_mcp`` sentinel, eager MCP discovery can be skipped at startup and deferred
+    until the first child delegation that actually needs MCP toolsets.
+    """
+    platform = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or "cli"
+    )
+    platform_toolsets = (config or {}).get("platform_toolsets", {}) or {}
+    toolsets = platform_toolsets.get(platform, []) or []
+    return "no_mcp" in toolsets
 
 
 def _teams_pipeline_plugin_enabled() -> bool:
@@ -19917,7 +19938,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.mcp_tool import discover_mcp_tools
         _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
+        _gateway_cfg = _load_gateway_config()
+        if _active_platform_uses_no_mcp(_gateway_cfg):
+            from tools.mcp_tool import mark_eager_discovery_skipped
+            mark_eager_discovery_skipped()
+            logger.info(
+                "MCP eager discovery skipped (platform uses no_mcp); "
+                "tools will load lazily on first delegation"
+            )
+        else:
+            await _loop.run_in_executor(None, discover_mcp_tools)
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 

@@ -2397,6 +2397,14 @@ _orphan_stdio_pids: set = set()
 # (``os.getpgid`` is POSIX-only).
 _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 
+# Lazy discovery state -- used when the active platform skips eager discovery
+# (e.g. api_server, whose toolsets include the ``no_mcp`` sentinel). When the
+# gateway marks eager discovery as skipped, the first child agent build that
+# needs MCP toolsets triggers a one-shot, thread-safe lazy discovery instead.
+_eager_discovery_skipped: bool = False
+_lazy_discovery_done: threading.Event = threading.Event()
+_lazy_discovery_lock: threading.Lock = threading.Lock()
+
 
 def _snapshot_child_pids() -> set:
     """Return a set of current child process PIDs.
@@ -2630,8 +2638,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
+            # Coerce stringified booleans/numbers to the types the MCP server's
+            # schema expects (BUG-NEW-6: nextThoughtNeeded sent as "true").
+            call_args = _coerce_args_to_schema(
+                args, _input_schema_for_tool(server, tool_name)
+            )
             async with server._rpc_lock:
-                result = await server.session.call_tool(tool_name, arguments=args)
+                result = await server.session.call_tool(tool_name, arguments=call_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
@@ -3104,6 +3117,88 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         normalized = {**normalized, "properties": {}}
 
     return normalized
+
+
+def _coerce_args_to_schema(args: dict, schema: dict | None) -> dict:
+    """Coerce stringified scalars in tool args to the JSON types the schema wants.
+
+    Why: Some models emit boolean/number fields as JSON strings (e.g.
+    ``"nextThoughtNeeded": "true"`` instead of ``true``). The downstream MCP
+    server validates strictly (Zod) and rejects these with
+    ``expected: boolean, code: invalid_type`` -- e.g. the sequentialthinking
+    tool's required ``nextThoughtNeeded`` boolean (BUG-NEW-6). Coercing here,
+    using the tool's own input schema, makes the call succeed without weakening
+    the server-side contract.
+    What: For each top-level property whose schema ``type`` is ``boolean``,
+    ``integer``, or ``number``, convert a stringified value ("true"/"1"/"5") to
+    the proper JSON type. Unknown/already-correct values pass through untouched.
+    Test: Pass ``{"nextThoughtNeeded": "true", "thoughtNumber": "1"}`` with a
+    schema marking them boolean/integer; assert the result is
+    ``{"nextThoughtNeeded": True, "thoughtNumber": 1}``.
+    """
+    if not isinstance(args, dict) or not isinstance(schema, dict):
+        return args
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return args
+
+    def _to_bool(v):
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("true", "1", "yes"):
+                return True
+            if s in ("false", "0", "no", ""):
+                return False
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return bool(v)
+        return v
+
+    def _to_int(v):
+        if isinstance(v, str):
+            try:
+                return int(v.strip())
+            except ValueError:
+                return v
+        if isinstance(v, float) and v.is_integer():
+            return int(v)
+        return v
+
+    def _to_num(v):
+        if isinstance(v, str):
+            try:
+                return float(v.strip())
+            except ValueError:
+                return v
+        return v
+
+    out = dict(args)
+    for key, value in args.items():
+        spec = props.get(key)
+        if not isinstance(spec, dict):
+            continue
+        t = spec.get("type")
+        if t == "boolean":
+            out[key] = _to_bool(value)
+        elif t == "integer":
+            out[key] = _to_int(value)
+        elif t == "number":
+            out[key] = _to_num(value)
+    return out
+
+
+def _input_schema_for_tool(server, tool_name: str) -> dict | None:
+    """Return the raw inputSchema for ``tool_name`` from a connected server.
+
+    Why: The tool handler needs the schema to coerce arg types before calling.
+    What: Scans ``server._tools`` (discovered MCP tool objects) for a name match
+    and returns its ``.inputSchema`` dict, or None if not found.
+    Test: With a server whose ``_tools`` has a tool named ``sequentialthinking``,
+    assert this returns that tool's inputSchema dict.
+    """
+    for t in getattr(server, "_tools", None) or []:
+        if getattr(t, "name", None) == tool_name:
+            return getattr(t, "inputSchema", None)
+    return None
 
 
 def sanitize_mcp_name_component(value: str) -> str:
@@ -3628,6 +3723,45 @@ def discover_mcp_tools() -> List[str]:
         logger.info(summary)
 
     return tool_names
+
+
+def mark_eager_discovery_skipped() -> None:
+    """Called by gateway startup when the active platform uses no_mcp.
+
+    Signals that eager MCP discovery was intentionally skipped.
+    The first call to ensure_mcp_discovered() will trigger lazy discovery.
+    """
+    global _eager_discovery_skipped
+    _eager_discovery_skipped = True
+
+
+def ensure_mcp_discovered() -> None:
+    """Trigger MCP discovery lazily, exactly once, thread-safe.
+
+    Safe to call concurrently from multiple threads. The first caller runs
+    discovery; subsequent callers return immediately once the Event is set.
+
+    If discovery was NOT skipped at startup (eager path already ran), this
+    is a no-op -- the Event is already set or discovery runs as normal.
+
+    On failure: logs a warning, sets the done-Event to prevent retry storms,
+    and returns -- child agents will get an empty/partial MCP toolset
+    (same degradation as a startup discovery failure).
+    """
+    if not _eager_discovery_skipped:
+        # Eager discovery ran at startup (or wasn't needed); nothing to do.
+        return
+    if _lazy_discovery_done.is_set():
+        return
+    with _lazy_discovery_lock:
+        if _lazy_discovery_done.is_set():
+            return
+        try:
+            discover_mcp_tools()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Lazy MCP discovery failed: %s", exc)
+        finally:
+            _lazy_discovery_done.set()
 
 
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:

@@ -1043,27 +1043,59 @@ def skill_view(
                     _record(None, found_md)
 
         if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
-            logging.getLogger(__name__).warning(
-                "Skill name collision for '%s': %d candidates — %s",
-                name, len(candidates), "; ".join(paths),
-            )
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        f"Ambiguous skill name '{name}': {len(candidates)} skills "
-                        "match across your local skills dir and external_dirs. "
-                        "Refusing to guess — load one explicitly by its categorized path."
-                    ),
-                    "matches": paths,
-                    "hint": (
-                        "Pass the full relative path instead of the bare name "
-                        "(e.g., 'category/skill-name'), or rename one of the "
-                        "colliding skills so each name is unique."
-                    ),
-                },
-                ensure_ascii=False,
+            # Local profile skills are often seeded from the shared root while
+            # the profile also lists that shared root in skills.external_dirs.
+            # In that case the "collision" is the same relative skill path in
+            # two roots (for example autonomous-ai-agents/hermes-agent in both
+            # places). The scan order is intentionally local-first, so prefer
+            # the first candidate when every match has the same root-relative
+            # location. Keep refusing genuinely ambiguous same-name matches
+            # that live at different relative paths.
+            rel_keys = set()
+            has_local_candidate = False
+            for _, smd in candidates:
+                try:
+                    smd.relative_to(SKILLS_DIR)
+                    has_local_candidate = True
+                except ValueError:
+                    pass
+                matched = False
+                for base in all_dirs:
+                    try:
+                        rel_keys.add(str(smd.relative_to(base)))
+                        matched = True
+                        break
+                    except ValueError:
+                        continue
+                if not matched:
+                    rel_keys.add(str(smd))
+            if len(rel_keys) > 1 or not has_local_candidate:
+                paths = [str(smd) for _, smd in candidates]
+                logging.getLogger(__name__).warning(
+                    "Skill name collision for '%s': %d candidates — %s",
+                    name, len(candidates), "; ".join(paths),
+                )
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Ambiguous skill name '{name}': {len(candidates)} skills "
+                            "match across your local skills dir and external_dirs. "
+                            "Refusing to guess — load one explicitly by its categorized path."
+                        ),
+                        "matches": paths,
+                        "hint": (
+                            "Pass the full relative path instead of the bare name "
+                            "(e.g., 'category/skill-name'), or rename one of the "
+                            "colliding skills so each name is unique."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            logging.getLogger(__name__).debug(
+                "Skill duplicate for '%s' has one relative path across roots; using %s",
+                name,
+                candidates[0][1],
             )
 
         if candidates:

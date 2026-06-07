@@ -1107,18 +1107,16 @@ Do the legacy thing.
 class TestSkillViewCollisionDetection:
     """Regression tests for skill_view name collision handling.
 
-    When a skill name resolves to multiple paths across the local skills
-    dir and external_dirs, skill_view must refuse to guess. Silent
-    shadowing — where ``/skills`` shows the local version but
+    When a bare skill name resolves to different relative paths across the
+    local skills dir and external_dirs, skill_view must refuse to guess.
+    Silent shadowing — where ``/skills`` shows the local version but
     ``skill_view`` loads the external one — is the bug class this guards
     against. Reproduces with `skills.external_dirs` registered in
     config.yaml and a same-name skill nested under a category locally.
 
-    Adapted from a regression suite originally proposed by @polkn in PR
-    #6136 (which used local-first precedence). The collision-refusal
-    behavior preserves the same protection without silently picking a
-    side, and gives the user an actionable hint (use the categorized
-    path) to recover.
+    The safe exception is an exact same relative path in the local skills
+    dir and an external root: profile-local seeded/copied skills should use
+    the local-first result instead of failing as ambiguous.
     """
 
     def _patch_dirs(self, local_dir, external_dirs):
@@ -1162,8 +1160,12 @@ class TestSkillViewCollisionDetection:
         assert "hint" in result
 
     def test_top_level_local_collides_with_external(self, tmp_path):
-        """Top-level local + top-level external with the same name also
-        refuses — same-name shadowing is ambiguous regardless of nesting."""
+        """Same relative path across roots prefers the local skill.
+
+        Profile-local skills can intentionally shadow/copy a shared-root skill
+        at the same relative path. This is the local-first behavior users see
+        in skill listing and avoids false ambiguity for profile workers.
+        """
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1177,9 +1179,41 @@ class TestSkillViewCollisionDetection:
             raw = skill_view("shared-name")
 
         result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous" in result["error"]
-        assert len(result["matches"]) == 2
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+        assert "EXTERNAL VERSION" not in result["content"]
+
+    def test_identical_seeded_skill_duplicate_prefers_local(self, tmp_path):
+        """Profile-local seeded skills may duplicate the shared root exactly.
+
+        This is not meaningful shadowing: the profile has a byte-identical copy
+        at the same relative path while also listing the shared root as an
+        external_dir. Bare preload flags such as ``--skills kanban-worker``
+        should continue to work for kanban worker profiles.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        local_skill = _make_skill(
+            local_dir,
+            "kanban-worker",
+            category="devops",
+            body="IDENTICAL VERSION",
+        )
+        external_skill = external_dir / "devops" / "kanban-worker"
+        external_skill.mkdir(parents=True)
+        (external_skill / "SKILL.md").write_text((local_skill / "SKILL.md").read_text())
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("kanban-worker")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["path"] == "devops/kanban-worker/SKILL.md"
+        assert "IDENTICAL VERSION" in result["content"]
 
     def test_collision_resolvable_via_categorized_path(self, tmp_path):
         """User can recover from a collision by passing the full

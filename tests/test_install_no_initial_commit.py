@@ -64,7 +64,7 @@ def _run_guard(install_dir: Path) -> None:
     assert res.returncode == 0, res.stderr
 
 
-def test_install_sh_guard_removes_commitless_checkout(tmp_path: Path) -> None:
+def test_install_sh_guard_moves_commitless_checkout_aside(tmp_path: Path) -> None:
     install_dir = tmp_path / "hermes-agent"
     install_dir.mkdir()
     _git(install_dir, "init")
@@ -78,7 +78,12 @@ def test_install_sh_guard_removes_commitless_checkout(tmp_path: Path) -> None:
     assert head.returncode != 0
 
     _run_guard(install_dir)
-    assert not install_dir.exists(), "commit-less checkout should be removed"
+    # The original path is cleared so a fresh clone can proceed, but the
+    # content is preserved in a backup (never deleted -- review feedback).
+    assert not install_dir.exists(), "commit-less checkout should be moved aside"
+    backups = list(install_dir.parent.glob(install_dir.name + ".broken-*"))
+    assert len(backups) == 1, "broken checkout should be moved to one backup dir"
+    assert (backups[0] / "leftover.txt").read_text() == "partial download"
 
 
 def test_install_sh_guard_keeps_repo_with_commits(tmp_path: Path) -> None:
@@ -92,6 +97,9 @@ def test_install_sh_guard_keeps_repo_with_commits(tmp_path: Path) -> None:
     _run_guard(install_dir)
     assert install_dir.exists()
     assert (install_dir / "f.txt").exists(), "a real checkout must be left intact"
+    assert not list(install_dir.parent.glob(install_dir.name + ".broken-*")), (
+        "a healthy checkout must not be moved aside"
+    )
 
 
 def test_install_sh_guard_ignores_non_repo_dir(tmp_path: Path) -> None:
@@ -117,3 +125,12 @@ def test_install_ps1_validity_requires_initial_commit() -> None:
         r"if \(\$revParseOk -and \$statusOk -and \$hasCommit\) \{",
         text,
     ), "repo validity must be gated on $hasCommit, not just rev-parse + status"
+    # Cleanup must be non-destructive: move the broken checkout aside, never
+    # `Remove-Item -Recurse -Force` it (review feedback on #40998).
+    assert "Move-Item -LiteralPath $InstallDir" in text, (
+        "install.ps1 must move an invalid checkout aside, not delete it"
+    )
+    assert "Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop" not in text, (
+        "the destructive wipe of an existing install dir must be gone "
+        "(transient cleanup of a just-failed clone is fine)"
+    )

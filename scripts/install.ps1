@@ -1209,16 +1209,19 @@ function Install-Repository {
             }
             $didUpdate = $true
         } else {
-            # Directory exists but isn't a usable git repo.  Wipe it and
-            # fall through to a fresh clone.  A leftover ``.git`` stub from
-            # a partial uninstall used to lock the installer into the
-            # "update" branch forever, emitting three ``fatal: not a git
-            # repository`` errors and failing with "not in a git directory".
-            Write-Warn "Existing directory at $InstallDir is not a valid git repo -- replacing it."
+            # Directory exists but isn't a usable git repo -- e.g. an
+            # interrupted clone with no initial commit (#40998), or a leftover
+            # ``.git`` stub from a partial uninstall that used to lock the
+            # installer into the "update" branch forever. Move it aside rather
+            # than deleting it -- never destroy a directory the user might still
+            # want -- and fall through to a fresh clone.
+            $backupDir = "$InstallDir.broken-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+            Write-Warn "Existing directory at $InstallDir is not a valid git repo."
+            Write-Warn "Moving it aside to $backupDir before re-cloning."
             try {
-                Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop
+                Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
             } catch {
-                Write-Err "Could not remove $InstallDir : $_"
+                Write-Err "Could not move $InstallDir aside : $_"
                 Write-Info "Close any programs that might be using files in $InstallDir (editors,"
                 Write-Info "terminals, running hermes processes) and try again."
                 throw

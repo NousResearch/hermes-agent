@@ -1284,6 +1284,22 @@ def init_agent(
         compression_chunk_messages = max(1, int(_chunked_cfg.get("chunk_messages", 40))) if isinstance(_chunked_cfg, dict) else 40
     except (TypeError, ValueError):
         compression_chunk_messages = 40
+    try:
+        _chunk_serialized_default = ContextCompressor._CHUNK_SUMMARY_SERIALIZED_CHARS
+        _chunk_serialized_raw = (
+            _chunked_cfg.get("serialized_chars", _chunk_serialized_default)
+            if isinstance(_chunked_cfg, dict)
+            else _chunk_serialized_default
+        )
+        if isinstance(_chunk_serialized_raw, bool):
+            raise ValueError
+        compression_chunk_serialized_chars = (
+            int(_chunk_serialized_raw)
+        )
+        if compression_chunk_serialized_chars <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        compression_chunk_serialized_chars = ContextCompressor._CHUNK_SUMMARY_SERIALIZED_CHARS
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1504,6 +1520,7 @@ def init_agent(
             safe_retry_enabled=compression_safe_retry_enabled,
             chunked_summary_enabled=compression_chunked_summary_enabled,
             chunk_summary_messages=compression_chunk_messages,
+            chunk_summary_serialized_chars=compression_chunk_serialized_chars,
             extractive_fallback_enabled=compression_extractive_fallback_enabled,
         )
     agent.compression_enabled = compression_enabled

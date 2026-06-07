@@ -2231,6 +2231,138 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert "长期方案怎么设计" in result
         assert c._last_summary_error is None
 
+    def test_dirty_provider_error_prefers_safe_scrubbed_retry_before_main_model_fallback(self):
+        err = Exception("malformed response from provider error: invalid response body")
+        ok = self._mock_summary("## Active Task\ncontinue safely")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                summary_model_override="aux-summary-model",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        first_call = mock_call.call_args_list[0].kwargs
+        second_call = mock_call.call_args_list[1].kwargs
+        first_prompt = first_call["messages"][0]["content"]
+        second_prompt = second_call["messages"][0]["content"]
+        assert first_call["model"] == "aux-summary-model"
+        assert second_call["model"] == "aux-summary-model"
+        assert "Traceback (most recent call last)" in first_prompt
+        assert "Traceback (most recent call last)" not in second_prompt
+        assert "blocked scary output" not in second_prompt
+        assert "[tool output summarized for safe compression retry]" in second_prompt
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert c._last_summary_error is None
+
+    def test_dirty_provider_timeout_status_prefers_safe_retry_before_main_model_fallback(self):
+        class ProviderError(Exception):
+            status_code = 502
+
+        err = ProviderError("bad gateway provider error: malformed response")
+        ok = self._mock_summary("## Active Task\ncontinue safely")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                summary_model_override="aux-summary-model",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        first_call = mock_call.call_args_list[0].kwargs
+        second_call = mock_call.call_args_list[1].kwargs
+        second_prompt = second_call["messages"][0]["content"]
+        assert first_call["model"] == "aux-summary-model"
+        assert second_call["model"] == "aux-summary-model"
+        assert "Traceback (most recent call last)" not in second_prompt
+        assert "blocked scary output" not in second_prompt
+        assert "[tool output summarized for safe compression retry]" in second_prompt
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+
+    def test_dirty_provider_error_falls_back_to_main_after_scrubbed_retry_fails(self):
+        err = Exception("malformed response from provider error: invalid response body")
+        ok = self._mock_summary("## Active Task\nmain recovered")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                summary_model_override="aux-summary-model",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 3
+        first_call = mock_call.call_args_list[0].kwargs
+        second_call = mock_call.call_args_list[1].kwargs
+        third_call = mock_call.call_args_list[2].kwargs
+        third_prompt = third_call["messages"][0]["content"]
+        assert first_call["model"] == "aux-summary-model"
+        assert second_call["model"] == "aux-summary-model"
+        assert "model" not in third_call
+        assert c._last_aux_model_failure_model == "aux-summary-model"
+        assert c.summary_model == ""
+        assert "Traceback (most recent call last)" not in third_prompt
+        assert "blocked scary output" not in third_prompt
+        assert "[tool output summarized for safe compression retry]" in third_prompt
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+
+    def test_dirty_provider_error_falls_back_to_main_when_safe_retry_disabled(self):
+        err = Exception("malformed response from provider error: invalid response body")
+        ok = self._mock_summary("## Active Task\nmain recovered")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                summary_model_override="aux-summary-model",
+                safe_retry_enabled=False,
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        first_call = mock_call.call_args_list[0].kwargs
+        second_call = mock_call.call_args_list[1].kwargs
+        assert first_call["model"] == "aux-summary-model"
+        assert "model" not in second_call
+        assert c._last_aux_model_failure_model == "aux-summary-model"
+        assert c.summary_model == ""
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+
+    def test_filter_blocked_aux_summary_still_falls_back_to_main_model(self):
+        err = Exception("Your request was blocked by content policy.")
+        ok = self._mock_summary("## Active Task\nmain recovered")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                summary_model_override="aux-summary-model",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        first_call = mock_call.call_args_list[0].kwargs
+        second_call = mock_call.call_args_list[1].kwargs
+        assert first_call["model"] == "aux-summary-model"
+        assert "model" not in second_call
+        assert c._last_aux_model_failure_model == "aux-summary-model"
+        assert c.summary_model == ""
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+
     def test_blocked_summary_uses_extractive_fallback_after_safe_retry_fails(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="main-model", quiet_mode=True)
@@ -2299,6 +2431,44 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert mock_call.call_count == 5
         assert result.startswith(SUMMARY_PREFIX)
 
+    def test_chunk_summary_serialized_char_cap_constructor_arg(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_serialized_chars=1_234,
+            )
+
+        assert c.chunk_summary_serialized_chars == 1_234
+
+    def test_chunk_summary_serialized_char_cap_rejects_bool_and_invalid_constructor_values(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            bool_cap = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_serialized_chars=True,
+            )
+            invalid_cap = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_serialized_chars="not-a-number",
+            )
+            zero_cap = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_serialized_chars=0,
+            )
+            negative_cap = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_serialized_chars=-10,
+            )
+
+        assert bool_cap.chunk_summary_serialized_chars == ContextCompressor._CHUNK_SUMMARY_SERIALIZED_CHARS
+        assert invalid_cap.chunk_summary_serialized_chars == ContextCompressor._CHUNK_SUMMARY_SERIALIZED_CHARS
+        assert zero_cap.chunk_summary_serialized_chars == ContextCompressor._CHUNK_SUMMARY_SERIALIZED_CHARS
+        assert negative_cap.chunk_summary_serialized_chars == ContextCompressor._CHUNK_SUMMARY_SERIALIZED_CHARS
+
     def test_chunked_summary_splits_large_serialized_chunks_below_char_cap(self):
         chunk_summaries = [
             self._mock_summary("chunk one"),
@@ -2336,6 +2506,32 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert "chunk-marker-1" in chunk_prompts[1]
         assert "chunk-marker-2" in chunk_prompts[2]
         assert "chunk-marker-3" in chunk_prompts[3]
+
+    def test_chunked_summary_truncates_single_oversized_serialized_turn_to_char_cap(self):
+        chunk1 = self._mock_summary("chunk one")
+        chunk2 = self._mock_summary("chunk two")
+        merged = self._mock_summary("merged")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_messages=10,
+                chunk_summary_serialized_chars=500,
+            )
+        messages = [
+            {"role": "user", "content": "oversized-single-turn " + ("x" * 2_000)},
+            {"role": "assistant", "content": "small second turn"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=[chunk1, chunk2, merged]) as mock_call:
+            result = c._generate_chunked_summary_after_block(messages, error="blocked")
+
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        first_prompt = mock_call.call_args_list[0].kwargs["messages"][0]["content"]
+        chunk_text = first_prompt.split("PART ", 1)[1].split("Use this structure:", 1)[0]
+        assert len(chunk_text) <= c.chunk_summary_serialized_chars + 80
+        assert "[chunk source truncated for safe compression retry]" in chunk_text
 
     def test_chunked_summary_char_cap_counts_serialized_separator_overhead(self):
         chunk1 = self._mock_summary("chunk one")

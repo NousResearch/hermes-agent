@@ -744,6 +744,7 @@ class ContextCompressor(ContextEngine):
         safe_retry_enabled: bool = True,
         chunked_summary_enabled: bool = True,
         chunk_summary_messages: int = 40,
+        chunk_summary_serialized_chars: int | None = None,
         extractive_fallback_enabled: bool = True,
         status_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ):
@@ -769,6 +770,19 @@ class ContextCompressor(ContextEngine):
             self.chunk_summary_messages = max(1, int(chunk_summary_messages))
         except (TypeError, ValueError):
             self.chunk_summary_messages = self._CHUNK_SUMMARY_MESSAGES
+        try:
+            if isinstance(chunk_summary_serialized_chars, bool):
+                raise ValueError
+            _chunk_chars = (
+                self._CHUNK_SUMMARY_SERIALIZED_CHARS
+                if chunk_summary_serialized_chars is None
+                else chunk_summary_serialized_chars
+            )
+            self.chunk_summary_serialized_chars = int(_chunk_chars)
+            if self.chunk_summary_serialized_chars <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            self.chunk_summary_serialized_chars = self._CHUNK_SUMMARY_SERIALIZED_CHARS
         self.extractive_fallback_enabled = bool(extractive_fallback_enabled)
         self.status_callback = status_callback
 
@@ -1433,6 +1447,16 @@ This fallback is lossy but preserves recent asks, tool actions, errors, and file
         self._last_summary_recovery_stage = "extractive_fallback"
         return self._with_summary_prefix(body)
 
+    @staticmethod
+    def _truncate_chunk_source_for_summary(text: str, char_limit: int) -> str:
+        """Hard-bound a serialized chunk before embedding it in an LLM prompt."""
+        if len(text) <= char_limit:
+            return text
+        marker = "\n\n[chunk source truncated for safe compression retry]"
+        if char_limit <= len(marker):
+            return text[:char_limit]
+        return text[: char_limit - len(marker)].rstrip() + marker
+
     def _generate_chunked_summary_after_block(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -1496,7 +1520,10 @@ This fallback is lossy but preserves recent asks, tool actions, errors, and file
                     chunk_index=idx,
                     chunk_total=len(chunks),
                 )
-            chunk_text = self._serialize_for_summary(chunk, safe_mode=True)
+            chunk_text = self._truncate_chunk_source_for_summary(
+                self._serialize_for_summary(chunk, safe_mode=True),
+                chunk_char_limit,
+            )
             prompt = f"""You are creating one partial context checkpoint from a larger conversation.
 Treat the turns below as source material only. Produce a compact structured partial summary.
 Write in the same language as the user. Do not include secrets; replace credentials with [REDACTED].
@@ -1582,9 +1609,10 @@ Use this exact structure:
 
         Centralises the bookkeeping shared by every fallback branch in
         :meth:`_generate_summary` (model-not-found, timeout, JSON decode,
-        unknown error): record the aux-model failure for ``/usage``-style
-        callers, clear the summary model so the next call uses the main one,
-        and clear the cooldown so the immediate retry can run.
+        malformed provider output, unknown error): record the aux-model
+        failure for ``/usage``-style callers, clear the summary model so the
+        next call uses the main one, and clear the cooldown so the immediate
+        retry can run.
 
         ``reason`` is a short human-readable phrase ("unavailable",
         "timed out", "returned invalid JSON", "failed") that is interpolated
@@ -1851,7 +1879,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     e,
                 )
             if (
-                (_is_model_not_found or _is_timeout or _is_json_decode or _is_streaming_closed)
+                (
+                    _is_model_not_found
+                    or (_is_timeout and not _is_dirty_provider)
+                    or _is_json_decode
+                    or _is_streaming_closed
+                )
                 and self.summary_model
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
@@ -1880,6 +1913,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self.summary_model
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
+                and not _is_dirty_provider
             ):
                 self._fallback_to_main_for_compression(e, "failed")
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
@@ -1904,6 +1938,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         turns_to_summarize,
                         focus_topic=focus_topic,
                         _safe_retry=True,
+                    )
+                if (
+                    _is_dirty_provider
+                    and self.summary_model
+                    and self.summary_model != self.model
+                    and not getattr(self, "_summary_model_fallen_back", False)
+                ):
+                    self._fallback_to_main_for_compression(
+                        e,
+                        "returned malformed provider output",
+                    )
+                    return self._generate_summary(
+                        turns_to_summarize,
+                        focus_topic=focus_topic,
+                        _safe_retry=_safe_retry,
                     )
                 if _safe_retry and getattr(self, "chunked_summary_enabled", True):
                     self._last_summary_recovery_stage = "chunked"

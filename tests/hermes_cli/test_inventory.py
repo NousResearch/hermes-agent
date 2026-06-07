@@ -217,6 +217,24 @@ def test_build_models_payload_can_force_fresh_nous_tier():
     assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is True
 
 
+def test_list_authenticated_providers_force_fresh_is_keyword_only():
+    """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
+
+    It was inserted between ``custom_providers`` and ``max_models``; making it
+    keyword-only ensures no positional caller passing ``max_models`` as the 5th
+    arg silently mis-binds it to the tier-refresh flag. Pin the contract so a
+    future signature edit that drops the ``*`` separator is caught.
+    """
+    import inspect
+
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    sig = inspect.signature(list_authenticated_providers)
+    param = sig.parameters["force_fresh_nous_tier"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is False
+
+
 def test_pricing_uses_cached_nous_tier_by_default():
     rows = [_nous_row()]
     ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")

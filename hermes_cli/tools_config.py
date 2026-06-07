@@ -1197,24 +1197,16 @@ def _get_platform_tools(
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
-    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
+    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform.
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
     else:
         explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
-    if include_default_mcp_servers:
-        if "no_mcp" in toolset_names:
-            # Operator opted out of MCP for this platform — keep only the
-            # MCP servers they explicitly named alongside no_mcp.
-            enabled_toolsets.update(explicit_mcp_servers)
-        else:
-            # No no_mcp sentinel — surface every enabled MCP server even when
-            # platform_toolsets lists explicit builtin toolsets. The user's
-            # explicit builtin selection is the platform allowlist; MCP servers
-            # configured globally should not need to be re-listed per platform.
-            enabled_toolsets.update(enabled_mcp_servers)
+
+    if include_default_mcp_servers and not has_explicit_platform_toolsets:
+        enabled_toolsets.update(enabled_mcp_servers)
     else:
         enabled_toolsets.update(explicit_mcp_servers)
 

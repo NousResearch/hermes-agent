@@ -258,7 +258,7 @@ def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
     assert "disabled-server" not in enabled
 
 
-def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
+def test_get_platform_tools_explicit_builtin_selection_excludes_unnamed_mcp_servers():
     config = {
         "platform_toolsets": {"cli": ["web", "memory"]},
         "mcp_servers": {
@@ -271,8 +271,24 @@ def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_sele
 
     assert "web" in enabled
     assert "memory" in enabled
+    assert "exa" not in enabled
+    assert "web-search-prime" not in enabled
+
+
+def test_get_platform_tools_explicit_selection_keeps_named_mcp_servers():
+    config = {
+        "platform_toolsets": {"cli": ["web", "exa"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
     assert "exa" in enabled
-    assert "web-search-prime" in enabled
+    assert "web-search-prime" not in enabled
 
 
 def test_get_platform_tools_no_mcp_sentinel_excludes_all_mcp_servers():

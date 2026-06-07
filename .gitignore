@@ -123,3 +123,7 @@ scripts/out/
 # stores the published notes. They are not a build artifact and must never be
 # committed to the repo root. See the hermes-release skill.
 RELEASE_v*.md
+
+# Rust PTY Bridge binary and build target
+/bin/
+/pty_bridge_rust/target/

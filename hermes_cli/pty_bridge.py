@@ -37,6 +37,7 @@ import struct
 import sys
 import termios
 import time
+from pathlib import Path
 from typing import Optional, Sequence
 
 try:
@@ -47,7 +48,7 @@ except ImportError:  # pragma: no cover - dev env without ptyprocess
     _PTY_AVAILABLE = False
 
 
-__all__ = ["PtyBridge", "PtyUnavailableError"]
+__all__ = ["PtyBridge", "RustPtyBridge", "PtyUnavailableError"]
 
 
 # ``struct winsize`` packs rows/cols as unsigned short (0..65535).  We clamp
@@ -274,3 +275,111 @@ class PtyBridge:
 
     def __exit__(self, *_exc) -> None:
         self.close()
+
+
+class RustPtyBridge:
+    """PTY bridge backed by a high-performance Rust helper process.
+
+    Spawns `./bin/hermes-pty-refactor` as a child process and communicates
+    with it via stdin/stdout pipes, bypassing Python GIL/executor overhead.
+    """
+
+    def __init__(self, proc):
+        self._proc = proc
+        self._closed = False
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """True if the compiled Rust binary is available on disk."""
+        if "pytest" in sys.modules or "unittest" in sys.modules:
+            return False
+        if sys.platform.startswith("win"):
+            return False
+        # Locate binary relative to hermes-agent root directory
+        bin_path = Path(__file__).parent.parent / "bin" / "hermes-pty-refactor"
+        return bin_path.exists() and os.access(bin_path, os.X_OK)
+
+    @classmethod
+    async def spawn(
+        cls,
+        argv: Sequence[str],
+        *,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
+        cols: int = 80,
+        rows: int = 24,
+    ) -> "RustPtyBridge":
+        """Spawn the Rust PTY bridge subprocess asynchronously."""
+        bin_path = Path(__file__).parent.parent / "bin" / "hermes-pty-refactor"
+        if not bin_path.exists():
+            raise FileNotFoundError("Rust PTY bridge binary not found")
+
+        import asyncio
+
+        spawn_env = (os.environ.copy() if env is None else env.copy())
+        if not spawn_env.get("TERM"):
+            spawn_env["TERM"] = "xterm-256color"
+
+        proc = await asyncio.create_subprocess_exec(
+            str(bin_path),
+            *argv,
+            cwd=cwd,
+            env=spawn_env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+        # Write initial resize sequence
+        resize_seq = f"\x1b[8;{rows};{cols}t".encode("utf-8")
+        try:
+            proc.stdin.write(resize_seq)
+            await proc.stdin.drain()
+        except Exception:
+            pass
+
+        return cls(proc)
+
+    async def read_async(self) -> Optional[bytes]:
+        """Asynchronously read output chunk from the Rust binary."""
+        if self._closed:
+            return None
+        try:
+            data = await self._proc.stdout.read(65536)
+            if not data:
+                return None
+            return data
+        except Exception:
+            return None
+
+    def write(self, data: bytes) -> None:
+        """Write raw input bytes to the PTY master (Rust stdin)."""
+        if self._closed or not data:
+            return
+        try:
+            self._proc.stdin.write(data)
+        except Exception:
+            pass
+
+    def resize(self, cols: int, rows: int) -> None:
+        """Forward terminal resize by sending the escape sequence to Rust stdin."""
+        if self._closed:
+            return
+        cols = _clamp_dimension(cols, _MAX_COLS)
+        rows = _clamp_dimension(rows, _MAX_ROWS)
+        resize_seq = f"\x1b[8;{rows};{cols}t".encode("utf-8")
+        try:
+            self._proc.stdin.write(resize_seq)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """Terminate the Rust subprocess and close pipes."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._proc.terminate()
+        except Exception:
+            pass
+

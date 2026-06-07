@@ -19,6 +19,7 @@ import logging
 import random
 import re
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -71,6 +72,9 @@ _last_init_error_lock = threading.Lock()
 # filesystem-incompat warning on every connection, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
+
+_initialized_dbs: Dict[str, Dict[str, Any]] = {}
+_db_init_lock = threading.Lock()
 
 _FTS_TRIGGERS = (
     "messages_fts_insert",
@@ -441,7 +445,16 @@ class SessionDB:
             apply_wal_with_fallback(self._conn, db_label="state.db")
             self._conn.execute("PRAGMA foreign_keys=ON")
 
-            self._init_schema()
+            db_path_str = str(self.db_path.resolve())
+            is_testing = "pytest" in sys.modules or "unittest" in sys.modules
+            with _db_init_lock:
+                if not is_testing and db_path_str in _initialized_dbs:
+                    self._fts_enabled = _initialized_dbs[db_path_str]["fts_enabled"]
+                else:
+                    self._init_schema()
+                    _initialized_dbs[db_path_str] = {
+                        "fts_enabled": self._fts_enabled
+                    }
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database

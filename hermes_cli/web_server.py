@@ -5061,7 +5061,17 @@ def _session_latest_descendant(session_id: str):
         rows = []
         if conn is not None:
             raw_rows = conn.execute(
-                "SELECT id, parent_session_id, started_at FROM sessions"
+                """
+                WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
+                    SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
+                    UNION ALL
+                    SELECT s.id, s.parent_session_id, s.started_at
+                    FROM sessions s
+                    JOIN descendants d ON s.parent_session_id = d.id
+                )
+                SELECT id, parent_session_id, started_at FROM descendants WHERE id != ?
+                """,
+                (sid, sid)
             ).fetchall()
             for row in raw_rows:
                 rows.append({
@@ -8014,10 +8024,11 @@ async def get_models_analytics(days: int = 30):
 # the dashboard (sessions, jobs, metrics, config editor) still loads and the
 # /api/pty endpoint cleanly refuses with a WSL-suggested message.
 try:
-    from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+    from hermes_cli.pty_bridge import PtyBridge, RustPtyBridge, PtyUnavailableError
     _PTY_BRIDGE_AVAILABLE = True
 except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
     PtyBridge = None  # type: ignore[assignment]
+    RustPtyBridge = None
     _PTY_BRIDGE_AVAILABLE = False
 
     class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
@@ -8478,7 +8489,12 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        if RustPtyBridge is not None and RustPtyBridge.is_available():
+            bridge = await RustPtyBridge.spawn(argv, cwd=cwd, env=env)
+            is_rust = True
+        else:
+            bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+            is_rust = False
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
@@ -8493,9 +8509,12 @@ async def pty_ws(ws: WebSocket) -> None:
     # --- reader task: PTY master → WebSocket ----------------------------
     async def pump_pty_to_ws() -> None:
         while True:
-            chunk = await loop.run_in_executor(
-                None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-            )
+            if is_rust:
+                chunk = await bridge.read_async()
+            else:
+                chunk = await loop.run_in_executor(
+                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+                )
             if chunk is None:  # EOF
                 return
             if not chunk:  # no data this tick; yield control and retry

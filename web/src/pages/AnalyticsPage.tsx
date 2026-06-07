@@ -493,7 +493,7 @@ export default function AnalyticsPage() {
                 Token analytics hidden
               </h2>
               <p>
-                The token, cost, and per-day analytics on this page are a
+                The token and per-day analytics on this page are a
                 local debug estimate. They only count successful main-agent
                 responses with a usable <span className="font-mono">usage</span>{" "}
                 block, and silently exclude auxiliary calls (context

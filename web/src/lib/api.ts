@@ -1374,19 +1374,48 @@ export interface AnalyticsDailyEntry {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
-  estimated_cost: number;
-  actual_cost: number;
   sessions: number;
   api_calls: number;
 }
 
 export interface AnalyticsModelEntry {
   model: string;
+  provider: string;
   input_tokens: number;
   output_tokens: number;
-  estimated_cost: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
   sessions: number;
+  api_calls: number;
+}
+
+export interface AnalyticsTotals {
+  total_input: number;
+  total_output: number;
+  total_tokens: number;
+  total_cache_read: number;
+  total_cache_write: number;
+  total_reasoning: number;
+  total_sessions: number;
+  total_api_calls: number;
+  avg_tokens_per_session: number;
+}
+
+export interface AnalyticsTopSessionEntry {
+  session_id: string;
+  title: string | null;
+  model: string | null;
+  provider: string;
+  started_at: number;
+  ended_at: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
   api_calls: number;
 }
 
@@ -1409,16 +1438,12 @@ export interface AnalyticsSkillsSummary {
 export interface AnalyticsResponse {
   daily: AnalyticsDailyEntry[];
   by_model: AnalyticsModelEntry[];
-  totals: {
-    total_input: number;
-    total_output: number;
-    total_cache_read: number;
-    total_reasoning: number;
-    total_estimated_cost: number;
-    total_actual_cost: number;
-    total_sessions: number;
-    total_api_calls: number;
+  top_sessions: AnalyticsTopSessionEntry[];
+  totals: AnalyticsTotals;
+  comparison: {
+    previous_totals: AnalyticsTotals;
   };
+  period_days: number;
   skills: {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];

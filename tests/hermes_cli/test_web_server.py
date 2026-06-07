@@ -2315,11 +2315,19 @@ class TestNewEndpoints:
         data = resp.json()
         assert "daily" in data
         assert "by_model" in data
+        assert "top_sessions" in data
         assert "totals" in data
+        assert "comparison" in data
+        assert data["period_days"] == 7
         assert "skills" in data
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
+        assert "total_tokens" in data["totals"]
+        assert "avg_tokens_per_session" in data["totals"]
         assert "total_api_calls" in data["totals"]
+        assert "total_cache_write" in data["totals"]
+        assert "total_effective_cost" not in data["totals"]
+        assert "previous_totals" in data["comparison"]
         assert data["skills"] == {
             "summary": {
                 "total_skill_loads": 0,
@@ -2329,6 +2337,100 @@ class TestNewEndpoints:
             },
             "top_skills": [],
         }
+
+    def test_analytics_usage_extended_contract_without_costs(self):
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        now = _time.time()
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="analytics-api-heavy",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "analytics-api-heavy",
+                input_tokens=1000,
+                output_tokens=500,
+                model="anthropic/claude-sonnet-4",
+                cache_read_tokens=50,
+                cache_write_tokens=10,
+                reasoning_tokens=25,
+                billing_provider="anthropic",
+                api_call_count=3,
+            )
+            db.create_session(
+                session_id="analytics-token-heavy",
+                source="cli",
+                model="openai/gpt-4.1",
+            )
+            db.update_token_counts(
+                "analytics-token-heavy",
+                input_tokens=5000,
+                output_tokens=1000,
+                model="openai/gpt-4.1",
+                billing_provider="openai",
+                api_call_count=2,
+            )
+            db.create_session(
+                session_id="analytics-previous-window",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "analytics-previous-window",
+                input_tokens=100,
+                output_tokens=50,
+                model="anthropic/claude-sonnet-4",
+                billing_provider="anthropic",
+                api_call_count=1,
+            )
+
+            def _move_session(session_id: str, started_at: float, title: str) -> None:
+                def _do(conn):
+                    conn.execute(
+                        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                        (started_at, title, session_id),
+                    )
+                db._execute_write(_do)
+
+            _move_session("analytics-api-heavy", now - 3600, "API heavy")
+            _move_session("analytics-token-heavy", now - 7200, "Token heavy")
+            _move_session("analytics-previous-window", now - 8 * 86400, "Previous")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["totals"]["total_tokens"] == 7500
+        assert data["totals"]["total_sessions"] == 2
+        assert data["totals"]["total_api_calls"] == 5
+        assert data["totals"]["total_cache_read"] == 50
+        assert data["totals"]["total_cache_write"] == 10
+        assert "total_estimated_cost" not in data["totals"]
+        assert "total_actual_cost" not in data["totals"]
+        assert "total_effective_cost" not in data["totals"]
+        assert "currency" not in data
+        assert data["comparison"]["previous_totals"]["total_tokens"] == 150
+        assert data["comparison"]["previous_totals"]["total_sessions"] == 1
+
+        model_rows = {(row["provider"], row["model"]): row for row in data["by_model"]}
+        assert "actual_cost" not in model_rows[("anthropic", "anthropic/claude-sonnet-4")]
+        assert "estimated_cost" not in model_rows[("anthropic", "anthropic/claude-sonnet-4")]
+        assert "effective_cost" not in model_rows[("anthropic", "anthropic/claude-sonnet-4")]
+        assert model_rows[("anthropic", "anthropic/claude-sonnet-4")]["cache_read_tokens"] == 50
+        assert model_rows[("anthropic", "anthropic/claude-sonnet-4")]["cache_write_tokens"] == 10
+        assert model_rows[("openai", "openai/gpt-4.1")]["input_tokens"] == 5000
+
+        assert data["top_sessions"][0]["session_id"] == "analytics-token-heavy"
+        assert data["top_sessions"][0]["title"] == "Token heavy"
+        assert data["top_sessions"][1]["session_id"] == "analytics-api-heavy"
+        assert "effective_cost" not in data["top_sessions"][0]
 
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB

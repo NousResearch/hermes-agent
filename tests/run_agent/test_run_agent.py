@@ -206,6 +206,7 @@ def _mock_assistant_msg(
     reasoning=None,
     reasoning_content=None,
     reasoning_details=None,
+    provider_data=None,
 ):
     """Return a SimpleNamespace mimicking an OpenAI ChatCompletionMessage."""
     msg = SimpleNamespace(content=content, tool_calls=tool_calls)
@@ -215,6 +216,8 @@ def _mock_assistant_msg(
         msg.reasoning_content = reasoning_content
     if reasoning_details is not None:
         msg.reasoning_details = reasoning_details
+    if provider_data is not None:
+        msg.provider_data = provider_data
     return msg
 
 
@@ -1876,6 +1879,43 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert "reasoning_details" in result
         assert result["reasoning_details"][0]["text"] == "step1"
+
+    def test_private_anthropic_stash_uses_sanitized_history_fields(self, agent):
+        details = [{"type": "thinking", "thinking": "internal plan", "signature": "sig1"}]
+        tc = _mock_tool_call(
+            name="terminal",
+            arguments='{"command":"curl -H \\"Authorization: Bearer sk-live-secret-token\\" https://example.com"}',
+            call_id="call_1",
+        )
+        msg = _mock_assistant_msg(
+            content="Visible answer with sk-live-secret-token",
+            tool_calls=[tc],
+            reasoning_details=details,
+            provider_data={
+                "_anthropic_content_blocks": [
+                    {"type": "thinking", "thinking": "internal plan", "signature": "sig1"},
+                    {"type": "text", "text": "Visible answer with sk-live-secret-token"},
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "terminal",
+                        "input": {
+                            "command": "curl -H 'Authorization: Bearer sk-live-secret-token' https://example.com"
+                        },
+                    },
+                ]
+            },
+        )
+
+        result = agent._build_assistant_message(msg, "tool_calls")
+
+        assert "anthropic_content" not in result
+        assert "_anthropic_content_blocks" in result
+        stashed = result["_anthropic_content_blocks"]
+        assert [block["type"] for block in stashed] == ["thinking", "text", "tool_use"]
+        assert stashed[0]["signature"] == "sig1"
+        assert stashed[1]["text"] == result["content"]
+        assert stashed[2]["input"] == json.loads(result["tool_calls"][0]["function"]["arguments"])
 
     def test_empty_content(self, agent):
         msg = _mock_assistant_msg(content=None)

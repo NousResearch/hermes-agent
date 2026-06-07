@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -48,6 +49,116 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _sanitize_private_anthropic_text(agent, text: Any) -> str:
+    """Sanitize Anthropic text blocks before stashing them in history."""
+    if not isinstance(text, str) or not text:
+        return ""
+    cleaned = _sanitize_surrogates(text)
+    cleaned = agent._strip_think_blocks(cleaned).strip()
+    if cleaned:
+        from agent.redact import redact_sensitive_text
+        cleaned = redact_sensitive_text(cleaned)
+    return cleaned
+
+
+def _build_private_anthropic_content_blocks(
+    agent,
+    assistant_message,
+    msg: Dict[str, Any],
+) -> Optional[list[Dict[str, Any]]]:
+    """Build a sanitized private replay stash preserving Anthropic block order."""
+    provider_data = getattr(assistant_message, "provider_data", None)
+    if not isinstance(provider_data, dict):
+        return None
+
+    raw_blocks = provider_data.get("_anthropic_content_blocks")
+    if not isinstance(raw_blocks, list) or not raw_blocks:
+        # Back-compat for the first T91 draft before the private key landed.
+        raw_blocks = provider_data.get("anthropic_content")
+        if not isinstance(raw_blocks, list) or not raw_blocks:
+            return None
+
+    thinking_blocks: list[Dict[str, Any]] = []
+    for detail in msg.get("reasoning_details", []) or []:
+        if not isinstance(detail, dict):
+            continue
+        block_type = str(detail.get("type", "") or "").strip().lower()
+        if block_type in {"thinking", "redacted_thinking"}:
+            thinking_blocks.append(copy.deepcopy(detail))
+
+    tool_blocks_by_id: Dict[str, Dict[str, Any]] = {}
+    tool_blocks_in_order: list[Dict[str, Any]] = []
+    for tc in msg.get("tool_calls", []) or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function", {})
+        raw_args = fn.get("arguments", "{}")
+        try:
+            parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_args = {}
+        tool_block = {
+            "type": "tool_use",
+            "id": str(tc.get("id", "") or "").strip(),
+            "name": fn.get("name", ""),
+            "input": parsed_args,
+        }
+        tool_blocks_in_order.append(tool_block)
+        if tool_block["id"]:
+            tool_blocks_by_id[tool_block["id"]] = tool_block
+
+    used_tool_ids: set[str] = set()
+    stashed: list[Dict[str, Any]] = []
+    thinking_idx = 0
+
+    for raw_block in raw_blocks:
+        if not isinstance(raw_block, dict):
+            continue
+        block_type = str(raw_block.get("type", "") or "").strip().lower()
+
+        if block_type in {"thinking", "redacted_thinking"}:
+            if thinking_idx < len(thinking_blocks):
+                stashed.append(copy.deepcopy(thinking_blocks[thinking_idx]))
+                thinking_idx += 1
+            elif block_type == "redacted_thinking" and raw_block.get("data"):
+                stashed.append(copy.deepcopy(raw_block))
+            else:
+                thinking_text = _sanitize_private_anthropic_text(
+                    agent, raw_block.get("thinking")
+                )
+                if thinking_text:
+                    stashed.append({"type": "text", "text": thinking_text})
+            continue
+
+        if block_type == "text":
+            text = _sanitize_private_anthropic_text(agent, raw_block.get("text"))
+            if text:
+                stashed.append({"type": "text", "text": text})
+            continue
+
+        if block_type == "tool_use":
+            raw_id = str(raw_block.get("id", "") or "").strip()
+            tool_block = None
+            if raw_id and raw_id in tool_blocks_by_id and raw_id not in used_tool_ids:
+                tool_block = copy.deepcopy(tool_blocks_by_id[raw_id])
+                used_tool_ids.add(raw_id)
+            else:
+                for candidate in tool_blocks_in_order:
+                    candidate_id = candidate.get("id", "")
+                    if candidate_id and candidate_id not in used_tool_ids:
+                        tool_block = copy.deepcopy(candidate)
+                        used_tool_ids.add(candidate_id)
+                        break
+            if tool_block:
+                stashed.append(tool_block)
+            continue
+
+        if block_type == "image":
+            stashed.append(copy.deepcopy(raw_block))
+
+    return stashed or None
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:
@@ -963,7 +1074,6 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     ordered_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
     if ordered_blocks:
         msg["anthropic_content_blocks"] = ordered_blocks
-
     # Codex Responses API: preserve encrypted reasoning items for
     # multi-turn continuity. These get replayed as input on the next turn.
     codex_items = getattr(assistant_message, "codex_reasoning_items", None)
@@ -1037,6 +1147,12 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 tc_dict["extra_content"] = extra
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
+
+    private_anthropic_blocks = _build_private_anthropic_content_blocks(
+        agent, assistant_message, msg
+    )
+    if private_anthropic_blocks:
+        msg["_anthropic_content_blocks"] = private_anthropic_blocks
 
     return msg
 

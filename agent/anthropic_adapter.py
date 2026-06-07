@@ -1754,7 +1754,7 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """
     # Fast path: original Anthropic content array preserved — use it directly
     # to maintain thinking-block signature validity (signed against position).
-    raw = m.get("anthropic_content")
+    raw = m.get("_anthropic_content_blocks")
     if isinstance(raw, list) and raw:
         effective = raw or [{"type": "text", "text": "(empty)"}]
         return {"role": "assistant", "content": effective}
@@ -2104,14 +2104,14 @@ def _manage_thinking_signatures(
                     continue
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-            # Keep anthropic_content in sync: strip thinking blocks there too.
-            if "anthropic_content" in m and isinstance(m["anthropic_content"], list):
-                m["anthropic_content"] = [
-                    b for b in m["anthropic_content"]
+            # Keep the private order-preserving stash in sync too.
+            if "_anthropic_content_blocks" in m and isinstance(m["_anthropic_content_blocks"], list):
+                m["_anthropic_content_blocks"] = [
+                    b for b in m["_anthropic_content_blocks"]
                     if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
                 ]
-                if not m["anthropic_content"]:
-                    m["anthropic_content"] = [{"type": "text", "text": "(thinking elided)"}]
+                if not m["_anthropic_content_blocks"]:
+                    m["_anthropic_content_blocks"] = [{"type": "text", "text": "(thinking elided)"}]
         elif _is_third_party or idx != last_assistant_idx:
             # Third-party: strip ALL thinking blocks (signatures are proprietary).
             # Direct Anthropic: strip from non-latest assistant messages only.
@@ -2120,14 +2120,14 @@ def _manage_thinking_signatures(
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
-            # Keep anthropic_content in sync: strip thinking blocks there too.
-            if "anthropic_content" in m and isinstance(m["anthropic_content"], list):
-                m["anthropic_content"] = [
-                    b for b in m["anthropic_content"]
+            # Keep the private order-preserving stash in sync too.
+            if "_anthropic_content_blocks" in m and isinstance(m["_anthropic_content_blocks"], list):
+                m["_anthropic_content_blocks"] = [
+                    b for b in m["_anthropic_content_blocks"]
                     if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
                 ]
-                if not m["anthropic_content"]:
-                    m["anthropic_content"] = [{"type": "text", "text": "(thinking elided)"}]
+                if not m["_anthropic_content_blocks"]:
+                    m["_anthropic_content_blocks"] = [{"type": "text", "text": "(thinking elided)"}]
         else:
             # Latest assistant on direct Anthropic: keep signed, downgrade unsigned
             # to text so the reasoning isn't lost.
@@ -2163,10 +2163,11 @@ def _manage_thinking_signatures(
                     if thinking_text:
                         new_content.append({"type": "text", "text": thinking_text})
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-            # Keep anthropic_content in sync with the same transformation.
-            if "anthropic_content" in m and isinstance(m["anthropic_content"], list):
+            # Keep the private order-preserving stash in sync with the same
+            # transformation.
+            if "_anthropic_content_blocks" in m and isinstance(m["_anthropic_content_blocks"], list):
                 new_anthropic = []
-                for b in m["anthropic_content"]:
+                for b in m["_anthropic_content_blocks"]:
                     if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                         new_anthropic.append(b)
                         continue
@@ -2184,7 +2185,7 @@ def _manage_thinking_signatures(
                         thinking_text = b.get("thinking", "")
                         if thinking_text:
                             new_anthropic.append({"type": "text", "text": thinking_text})
-                m["anthropic_content"] = new_anthropic or [{"type": "text", "text": "(empty)"}]
+                m["_anthropic_content_blocks"] = new_anthropic or [{"type": "text", "text": "(empty)"}]
 
         # Strip cache_control from any remaining thinking/redacted_thinking
         # blocks — cache markers interfere with signature validation.

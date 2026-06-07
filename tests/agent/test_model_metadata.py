@@ -118,6 +118,23 @@ class TestEstimateMessagesTokensRough:
         result = estimate_messages_tokens_rough([msg])
         assert result < 5000
 
+    def test_private_anthropic_stash_is_ignored(self):
+        baseline = {"role": "assistant", "content": "ok"}
+        with_stash = {
+            "role": "assistant",
+            "content": "ok",
+            "_anthropic_content_blocks": [
+                {"type": "text", "text": "x" * 4000},
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "terminal",
+                    "input": {"command": "y" * 4000},
+                },
+            ],
+        }
+        assert estimate_messages_tokens_rough([with_stash]) == estimate_messages_tokens_rough([baseline])
+
 
 # =========================================================================
 # Default context lengths

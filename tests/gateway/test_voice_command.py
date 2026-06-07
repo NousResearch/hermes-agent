@@ -874,6 +874,33 @@ class TestVoiceReceiver:
         receiver.resume()
         assert receiver._paused is False
 
+    def test_resume_clears_buffers_and_starts_echo_cooldown(self):
+        receiver = self._make_receiver()
+        receiver._buffers[100] = bytearray(b"x" * 96000)
+        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        receiver._decoders[100] = object()
+
+        receiver.resume(cooldown_seconds=0.5)
+
+        assert receiver._buffers == {}
+        assert receiver._last_packet_time == {}
+        assert receiver._decoders == {}
+        assert receiver._ignore_packets_until > time.monotonic()
+        assert receiver.check_silence() == []
+
+    def test_pause_clears_partial_audio_buffers(self):
+        receiver = self._make_receiver()
+        receiver._buffers[100] = bytearray(b"x" * 96000)
+        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        receiver._decoders[100] = object()
+
+        receiver.pause()
+
+        assert receiver._paused is True
+        assert receiver._buffers == {}
+        assert receiver._last_packet_time == {}
+        assert receiver._decoders == {}
+
     def test_check_silence_empty(self):
         receiver = self._make_receiver()
         assert receiver.check_silence() == []
@@ -3105,6 +3132,32 @@ class TestVoiceTTSPlayback:
         )
 
         assert response == "5"
+
+    def test_voice_reply_sanitizer_maps_empty_response_warning(self):
+        """Live voice should not speak the generic empty-response warning."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.DISCORD, chat_id="ch1"),
+            text="Hey Hermes!",
+            message_type=MessageType.VOICE,
+        )
+
+        response = runner._sanitize_voice_reply_response(
+            "⚠️ Processing completed but no response was generated. "
+            "This may be a transient error — try sending your message again.",
+            event,
+        )
+
+        assert response == "Understood. OK."
+
+    def test_short_english_voice_reply_uses_english_edge_voice(self):
+        """Short English fallbacks must not use the Romanian configured voice."""
+        runner = self._make_runner()
+
+        assert runner._voice_reply_edge_voice_for_text("Understood. OK.") == "en-US-AriaNeural"
+        assert runner._voice_reply_edge_voice_for_text("Test ok.") == "en-US-AriaNeural"
 
     def test_voice_reply_context_prompt_absent_for_text_input(self):
         """voice_only must not constrain normal text turns."""

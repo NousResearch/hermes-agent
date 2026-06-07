@@ -31,6 +31,13 @@ def test_non_telegram_status_is_unchanged():
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
 
 
+def test_iteration_budget_status_is_suppressed_for_discord_voice():
+    """Fast voice max-turn fallback should not post this internal status line."""
+    message = "⚠️ Iteration budget exhausted (1/1) — asking model to summarise"
+
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) is None
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

@@ -207,6 +207,38 @@ class TestPlayInVoiceChannelMixerPath:
         vc.play.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_mixer_path_pauses_receiver_during_tts(self):
+        adapter = _make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        adapter._voice_clients[111] = vc
+
+        class _Mixer:
+            def __init__(self):
+                self._polls = 0
+                self.play_speech = MagicMock()
+
+            @property
+            def speech_active(self):
+                self._polls += 1
+                return self._polls <= 1
+
+        mixer = _Mixer()
+        receiver = MagicMock()
+        adapter._voice_mixers[111] = mixer
+        adapter._voice_receivers[111] = receiver
+        adapter._reset_voice_timeout = MagicMock()
+
+        fake_pcm = b"\\x00" * vm.FRAME_SIZE
+        with patch.object(vm, "decode_to_pcm", return_value=fake_pcm):
+            ok = await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
+
+        assert ok is True
+        receiver.pause.assert_called_once()
+        receiver.resume.assert_called_once()
+        mixer.play_speech.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_falls_back_when_decode_fails(self):
         adapter = _make_adapter()
         vc = MagicMock()

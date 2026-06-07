@@ -79,11 +79,17 @@ _VOICE_OPERATIONAL_LINE_RE = re.compile(
 )
 _VOICE_PROVIDER_FAILURE_RE = re.compile(
     r"(?i)(gemini quota exhausted|quota exhausted|rate limit|rate-limited|\b429\b|"
-    r"maximum iterations.*couldn'?t summarize|provider authentication failed|codeassist)"
+    r"maximum iterations.*couldn'?t summarize|provider authentication failed|codeassist|"
+    r"processing completed but no response was generated)"
 )
 _VOICE_SIMPLE_SUM_RE = re.compile(
     r"\b(\d+)\s*(?:\+|plus|adunat\s+cu)\s*(\d+)\b",
     re.IGNORECASE,
+)
+
+_GATEWAY_GLOBAL_NOISY_STATUS_RE = re.compile(
+    r"iteration\s+budget\s+exhausted.+asking\s+model\s+to\s+summari[sz]e",
+    re.IGNORECASE | re.DOTALL,
 )
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -334,6 +340,8 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
+        return None
+    if _GATEWAY_GLOBAL_NOISY_STATUS_RE.search(text):
         return None
     if _gateway_platform_value(platform) != "telegram":
         return text
@@ -10280,6 +10288,12 @@ class GatewayRunner:
             response = _normalize_empty_agent_response(
                 agent_result, response, history_len=len(history),
             )
+            if voice_reply_note:
+                response = self._sanitize_voice_reply_response(
+                    response,
+                    event,
+                    user_text=message_text,
+                )
             response = _sanitize_gateway_final_response(source.platform, response)
 
             # If the agent's session_id changed during compression, update
@@ -13659,10 +13673,18 @@ class GatewayRunner:
         stripped = re.sub(r"https?://\S+", " ", str(text))
         stripped = re.sub(r"`[^`]*`", " ", stripped)
         words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", stripped)
+        lowered_words = [word.lower().strip("'") for word in words]
+        short_english_phrases = {
+            "ok", "okay", "understood", "yes", "no", "thanks", "thank", "hello",
+            "hi", "confirmed", "done", "ready", "working", "test", "weather",
+        }
         if len(words) < 4:
+            if all(ord(char) < 128 for char in stripped) and any(
+                word in short_english_phrases for word in lowered_words
+            ):
+                return "en-US-AriaNeural"
             return ""
 
-        lowered_words = [word.lower().strip("'") for word in words]
         romanian_markers = {
             "si", "și", "sau", "este", "sunt", "pentru", "cu", "din", "daca",
             "dacă", "mai", "foarte", "raspuns", "răspuns", "mesaj", "voce",

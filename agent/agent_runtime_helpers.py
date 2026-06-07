@@ -1520,6 +1520,18 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             from hermes_cli.config import load_config, get_compatible_custom_providers
             _sm_cfg = load_config()
             _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
+            # Restore global model.context_length override that was cleared at
+            # line 1411.  Without this the global setting from config.yaml is
+            # silently dropped on every /model switch and never takes effect
+            # again for the remainder of the session (closes #40979).
+            # Per-model custom_providers overrides are handled separately above
+            # so they remain lower-priority (0b vs. 0) in
+            # get_model_context_length, matching agent_init behavior.
+            _sm_model_cfg = _sm_cfg.get("model", {})
+            if isinstance(_sm_model_cfg, dict):
+                _sm_global_ctx = _sm_model_cfg.get("context_length")
+                if _sm_global_ctx is not None:
+                    agent._config_context_length = int(_sm_global_ctx)
         except Exception:
             _sm_custom_providers = None
         # ``agent.api_key`` may be a callable (Azure Foundry Entra ID

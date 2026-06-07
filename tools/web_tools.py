@@ -229,6 +229,7 @@ def _ddgs_package_available() -> bool:
 def _ddgs_package_importable() -> bool:
     return _ddgs_package_available()
 
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 _firecrawl_client = None

@@ -21,7 +21,7 @@ import yaml
 if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
     import requests
 
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -1476,9 +1476,13 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     cache[key] = length
     path = _get_context_cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+        # Atomic write (temp file + fsync + os.replace): a plain truncating
+        # ``open(path, "w")`` leaves the file empty/partial if the process is
+        # killed mid-dump, and the next _load_context_cache() swallows the
+        # resulting YAML error and returns {} — silently wiping EVERY cached
+        # context length. It also exposes torn reads to a concurrent process
+        # reading between truncate and dump-complete.
+        atomic_yaml_write(path, {"context_lengths": cache})
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
@@ -1525,9 +1529,9 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
         cache.pop(k, None)
     path = _get_context_cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+        # Atomic write — see save_context_length() for why a plain truncating
+        # open() here risks wiping the entire cache on an interrupted dump.
+        atomic_yaml_write(path, {"context_lengths": cache})
     except Exception as e:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
 

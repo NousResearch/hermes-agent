@@ -5470,6 +5470,7 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
+        sid = db.resolve_resume_session_id(sid)
         messages = db.get_messages(sid)
         return {"session_id": sid, "messages": messages}
     finally:

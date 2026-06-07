@@ -1480,10 +1480,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = self._ensure_session_db()
-        messages = db.get_messages(session_id)
+        resolved_id = db.resolve_resume_session_id(session_id)
+        messages = db.get_messages(resolved_id)
         return web.json_response({
             "object": "list",
-            "session_id": session_id,
+            "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],
         })
 

@@ -638,6 +638,37 @@ class TestWebServerEndpoints:
             for r in results
         )
 
+    def test_get_session_messages_follows_compression_tip(self):
+        """Reading a compressed session by its old id should hydrate from the
+        live continuation, matching /resume behavior."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="desktop-root", source="cli")
+            db.append_message(session_id="desktop-root", role="user", content="before compression")
+            db.end_session("desktop-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 10, now - 5, "desktop-root"),
+            )
+            db.create_session(session_id="desktop-tip", source="cli", parent_session_id="desktop-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 4, "desktop-tip"))
+            db.replace_messages("desktop-root", [])
+            db.append_message(session_id="desktop-tip", role="user", content="after compression")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/desktop-root/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["session_id"] == "desktop-tip"
+        assert [m["content"] for m in payload["messages"]] == ["after compression"]
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 

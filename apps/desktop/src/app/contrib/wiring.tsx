@@ -221,6 +221,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
+
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onComposerAppendSelection?.(text => {
+      requestComposerInsert(text, { mode: 'block', target: 'main' })
+    })
+
+    return () => unsubscribe?.()
+  }, [])
+
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)

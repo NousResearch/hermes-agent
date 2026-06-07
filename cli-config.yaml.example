@@ -703,6 +703,17 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#       command_menu:
+#         # Telegram allows up to 100 BotCommands; Hermes defaults to 30 to
+#         # stay under Telegram's payload-size limits while keeping common
+#         # commands visible. Values are clamped to 1..100.
+#         max_commands: 30
+#         # prepend = user priority first, then Hermes defaults
+#         # append  = Hermes defaults first, then user priority
+#         # replace = only the list below defines priority
+#         priority_mode: prepend
+#         priority:
+#           - my_plugin_command
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

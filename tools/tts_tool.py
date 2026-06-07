@@ -1420,14 +1420,21 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     gemini_config = tts_config.get("gemini", {})
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+    # Optional accent/tone direction applied to every utterance. Gemini treats a
+    # leading "<direction>:" as prompt-style guidance and does not vocalize it,
+    # so it is prepended to the text. Lets a deployment pin a consistent speaking
+    # style (accent, mood, pace) without embedding it in each message.
+    style_instructions = str(gemini_config.get("style_instructions", "")).strip()
     base_url = str(
         gemini_config.get("base_url")
         or get_env_value("GEMINI_BASE_URL")
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
 
+    spoken_text = f"{style_instructions}: {text}" if style_instructions else text
+
     payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": text}]}],
+        "contents": [{"parts": [{"text": spoken_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {

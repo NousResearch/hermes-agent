@@ -68,6 +68,7 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    style_instructions: ""      # Optional accent/tone direction prepended to every line, e.g. "Speak with a warm Australian accent"
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code

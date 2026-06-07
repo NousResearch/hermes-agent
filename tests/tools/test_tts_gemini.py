@@ -163,6 +163,29 @@ class TestGenerateGeminiTts:
         endpoint = mock_post.call_args[0][0]
         assert "gemini-2.5-pro-preview-tts" in endpoint
 
+    def test_style_instructions_prepended(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"style_instructions": "Speak with a warm Australian accent"}}
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hello there", str(tmp_path / "test.wav"), config)
+
+        text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert text == "Speak with a warm Australian accent: Hello there"
+
+    def test_no_style_instructions_leaves_text_unchanged(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hello there", str(tmp_path / "test.wav"), {})
+
+        text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert text == "Hello there"
+
     def test_response_modality_is_audio(self, tmp_path, monkeypatch, mock_gemini_response):
         from tools.tts_tool import _generate_gemini_tts
 

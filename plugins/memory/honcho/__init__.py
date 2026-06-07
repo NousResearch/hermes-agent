@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import compact_user_peer_card, sanitize_context
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
@@ -555,21 +555,14 @@ class HonchoMemoryProvider(MemoryProvider):
         if summary:
             parts.append(f"## Session Summary\n{summary}")
 
-        rep = ctx.get("representation", "")
-        if rep:
-            parts.append(f"## User Representation\n{rep}")
-
-        card = ctx.get("card", "")
+        # Normal prompt injection is intentionally compact and peer-card
+        # oriented. Long/raw Honcho representations often include old
+        # timestamped Explicit Observations; assistant self-representation is
+        # especially noisy. Both remain recoverable through Honcho tools, but
+        # they do not belong in every provider prompt.
+        card = compact_user_peer_card(ctx.get("card", ""))
         if card:
-            parts.append(f"## User Peer Card\n{card}")
-
-        ai_rep = ctx.get("ai_representation", "")
-        if ai_rep:
-            parts.append(f"## AI Self-Representation\n{ai_rep}")
-
-        ai_card = ctx.get("ai_card", "")
-        if ai_card:
-            parts.append(f"## AI Identity Card\n{ai_card}")
+            parts.append(f"## Compact peer preferences\n{card}")
 
         if not parts:
             return ""
@@ -592,9 +585,9 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._recall_mode == "context":
             header = (
                 "# Honcho Memory\n"
-                "Active (context-injection mode). Relevant user context is automatically "
-                "injected before each turn. No memory tools are available — context is "
-                "managed automatically."
+                "Active (context-injection mode). Only compact peer-card/session pointers "
+                "are injected before each turn; raw observations stay retrievable in Honcho/wiki stores. "
+                "No memory tools are available — context is managed automatically."
             )
         elif self._recall_mode == "tools":
             header = (
@@ -609,7 +602,8 @@ class HonchoMemoryProvider(MemoryProvider):
         else:  # hybrid
             header = (
                 "# Honcho Memory\n"
-                "Active (hybrid mode). Relevant context is auto-injected AND memory tools are available. "
+                "Active (hybrid mode). Compact peer-card/session pointers are auto-injected; "
+                "raw observations stay retrievable through memory tools and wiki/search when needed. "
                 "Use honcho_profile for a quick factual snapshot, "
                 "honcho_search for raw excerpts, honcho_context for raw peer context, "
                 "honcho_reasoning for synthesized answers (pass reasoning_level "

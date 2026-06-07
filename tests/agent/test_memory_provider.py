@@ -931,18 +931,19 @@ class TestSetupFieldFiltering:
 
 
 class TestMemoryContextFencing:
-    """Prefetch context must be wrapped in <memory-context> fence so the model
-    does not treat recalled memory as user discourse."""
+    """Prefetch context is not auto-injected into active provider prompts."""
 
-    def test_build_memory_context_block_wraps_content(self):
+    def test_build_memory_context_block_returns_pointers_not_fenced_dump(self):
         from agent.memory_manager import build_memory_context_block
         result = build_memory_context_block(
             "## Holographic Memory\n- [0.8] user likes dark mode"
         )
-        assert result.startswith("<memory-context>")
-        assert result.rstrip().endswith("</memory-context>")
-        assert "NOT new user input" in result
-        assert "user likes dark mode" in result
+        assert result == ""
+        assert "INJECTED" not in result
+        assert "Treat as authoritative reference data" not in result
+        assert "~/wiki/projects/*.md" not in result
+        assert "honcho" not in result.lower()
+        assert "user likes dark mode" not in result
 
     def test_build_memory_context_block_empty_input(self):
         from agent.memory_manager import build_memory_context_block
@@ -964,16 +965,164 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
 
-    def test_fenced_block_separates_user_from_recall(self):
+    def test_sanitize_context_strips_compact_memory_pointer_block(self):
+        from agent.memory_manager import sanitize_context
+
+        leaked = (
+            "# Memory context pointers\n"
+            "- Compact peer/preferences: use Honcho tools.\n"
+            "- Project facts: use ~/wiki/projects/*.md.\n\n"
+            "## Compact peer preferences\n"
+            "Knowledge Store: ~/wiki\n"
+            "Tech Stack: Next.js, React, TypeScript\n"
+            "Design Preference: Minimalist black/white brutalist\n"
+            "Model Routing: GPT-5.5\n"
+            "Active Project: AI Film Set Composer\n\n"
+            "The most relevant context to the current conversation emphasizes long-term agent notes.\n"
+            "This foundational context should not be visible.\n"
+            "Recent observations indicate this is an internal memory leak.\n"
+        )
+        result = sanitize_context("before\n" + leaked + "\nafter")
+
+        assert "before" in result
+        assert "after" in result
+        assert "# Memory context pointers" not in result
+        assert "## Compact peer preferences" not in result
+        assert "Knowledge Store:" not in result
+        assert "Tech Stack:" not in result
+        assert "Design Preference:" not in result
+        assert "Model Routing:" not in result
+        assert "Active Project:" not in result
+        assert "The most relevant context to the current conversation" not in result
+        assert "foundational context" not in result
+        assert "observations indicate" not in result
+
+    def test_compact_peer_preferences_can_be_included_without_raw_identity_or_observations(self):
         from agent.memory_manager import build_memory_context_block
-        prefetch = "## Holographic Memory\n- [0.9] user is named Alice"
+        prefetch = (
+            "## User Peer Card\nName: Alice\nAliases: alice@example.com\nPrefers compact answers\n\n"
+            "## Explicit Observations\n2026-01-01 old raw observation\n"
+            "## AI Self-Representation\nagent dump\n"
+            "## Recalled assistant context\nassistant context dump\n"
+            "## AI Identity Card\nidentity dump"
+        )
         block = build_memory_context_block(prefetch)
-        user_msg = "What's the weather today?"
-        combined = user_msg + "\n\n" + block
-        fence_start = combined.index("<memory-context>")
-        fence_end = combined.index("</memory-context>")
-        assert "Alice" in combined[fence_start:fence_end]
-        assert combined.index("weather") < fence_start
+        assert block == ""
+        assert "# Memory context pointers" not in block
+        assert "## Compact peer preferences" not in block
+        assert "## User Peer Card" not in block
+        assert "Alice" not in block
+        assert "alice@example.com" not in block
+        assert "Prefers compact answers" not in block
+        assert "Explicit Observations" not in block
+        assert "old raw observation" not in block
+        assert "AI Self-Representation" not in block
+        assert "agent dump" not in block
+        assert "Recalled assistant context" not in block
+        assert "assistant context dump" not in block
+        assert "AI Identity Card" not in block
+        assert "identity dump" not in block
+
+    def test_compact_peer_preferences_strip_prefixed_honcho_identity_lines(self):
+        from agent.memory_manager import build_memory_context_block
+
+        prefetch = (
+            "## User Peer Card\n"
+            "ATTRIBUTE: Role: Creative Director\n"
+            "ATTRIBUTE: Location: Hidden Harbor\n"
+            "ATTRIBUTE: Org: Example Studio\n"
+            "ATTRIBUTE: Website: example.invalid\n"
+            "ATTRIBUTE: E-mail: person@example.invalid\n"
+            "RELATIONSHIP: Father: Named Parent\n"
+            "RELATIONSHIP: Contractor: Named Client\n"
+            "INSTRUCTION: Name: Private Alias\n"
+            "ATTRIBUTE: Design Preference: Tight functional UI\n"
+        )
+
+        block = build_memory_context_block(prefetch)
+
+        assert block == ""
+        assert "## Compact peer preferences" not in block
+        assert "Design Preference: Tight functional UI" not in block
+        assert "ATTRIBUTE:" not in block
+        assert "INSTRUCTION:" not in block
+        assert "Role: Creative Director" not in block
+        assert "Hidden Harbor" not in block
+        assert "Example Studio" not in block
+        assert "example.invalid" not in block
+        assert "person@example.invalid" not in block
+        assert "Named Parent" not in block
+        assert "Named Client" not in block
+        assert "Private Alias" not in block
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "Full Name",
+            "First Name",
+            "Username",
+            "Handle",
+            "Employer",
+            "Company",
+            "Spouse",
+            "Wife",
+            "Child",
+            "Birthday",
+            "DOB",
+            "SSN",
+            "Coordinates",
+            "City",
+            "Country",
+        ],
+    )
+    def test_compact_peer_preferences_fail_closed_for_identity_labels(self, label):
+        from agent.memory_manager import compact_user_peer_card
+
+        payload = "\n".join(
+            [
+                f"{label}: synthetic forbidden value",
+                f"ATTRIBUTE: {label}: synthetic forbidden value",
+                f"INSTRUCTION: {label}: synthetic forbidden value",
+            ]
+        )
+
+        result = compact_user_peer_card(payload)
+
+        assert result == ""
+        assert "synthetic forbidden value" not in result
+        assert "ATTRIBUTE:" not in result
+        assert "INSTRUCTION:" not in result
+
+    def test_compact_peer_preferences_preserve_only_safe_labels(self):
+        from agent.memory_manager import compact_user_peer_card
+
+        result = compact_user_peer_card(
+            "\n".join(
+                [
+                    "Design Preference: Tight functional UI",
+                    "ATTRIBUTE: Tech Stack: Python, TypeScript",
+                    "INSTRUCTION: Model Routing: GPT-5.5 High",
+                    "Active Project: AIVS",
+                    "Knowledge Store: wiki project notes",
+                    "Company: Synthetic Studio",
+                    "Username: synthetic_user",
+                    "unlabelled preference prose",
+                ]
+            )
+        )
+
+        assert "Design Preference: Tight functional UI" in result
+        assert "Tech Stack: Python, TypeScript" in result
+        assert "Model Routing: GPT-5.5 High" in result
+        assert "Active Project: AIVS" in result
+        assert "Knowledge Store: wiki project notes" in result
+        assert "Company:" not in result
+        assert "Synthetic Studio" not in result
+        assert "Username:" not in result
+        assert "synthetic_user" not in result
+        assert "unlabelled preference prose" not in result
+        assert "ATTRIBUTE:" not in result
+        assert "INSTRUCTION:" not in result
 
 
 # ---------------------------------------------------------------------------

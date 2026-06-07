@@ -40,22 +40,116 @@ logger = logging.getLogger(__name__)
 # Context fencing helpers
 # ---------------------------------------------------------------------------
 
-_FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+_INTERNAL_CONTEXT_TAG_NAMES = (
+    r"memory-context",
+    r"recalled[_-]memory[_-]context",
+    r"supermemory-context",
+    r"ship[_-]mode[_-]guard",
+)
+_INTERNAL_CONTEXT_TAG_RE = r"(?:" + "|".join(_INTERNAL_CONTEXT_TAG_NAMES) + r")"
+_FENCE_TAG_RE = re.compile(rf'</?\s*{_INTERNAL_CONTEXT_TAG_RE}\s*>', re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
-    r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
+    rf'<\s*{_INTERNAL_CONTEXT_TAG_RE}\s*>[\s\S]*?</\s*{_INTERNAL_CONTEXT_TAG_RE}\s*>',
+    re.IGNORECASE,
+)
+_UNTERMINATED_INTERNAL_CONTEXT_RE = re.compile(
+    rf'<\s*{_INTERNAL_CONTEXT_TAG_RE}\s*>\s*'
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.'
+    r'[\s\S]*$',
+    re.IGNORECASE,
+)
+_UNTERMINATED_SHIP_MODE_TAG_RE = re.compile(
+    r'<\s*ship[_-]mode[_-]guard\s*>[\s\S]*$',
+    re.IGNORECASE,
+)
+_UNTERMINATED_CONTEXT_BLOCK_RE = re.compile(
+    rf'(^|\n)[ \t]*<\s*{_INTERNAL_CONTEXT_TAG_RE}\s*>[ \t]*\r?\n[\s\S]*$',
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*'
+    r'(?:Treat as (?:informational background data|authoritative reference data[^\]]*)\.|'
+    r'Recalled memory is useful context, not authoritative;[^\]]*)\]\s*',
     re.IGNORECASE,
 )
+_SHIP_MODE_GUARD_RE = re.compile(
+    r'\[\s*Ship-mode routing guard:[\s\S]*?\]\s*',
+    re.IGNORECASE,
+)
+_RAW_MEMORY_HEADING_RE = re.compile(
+    r'^##\s*(?:Honcho Context|User Representation|Explicit Observations|User Peer Card|'
+    r'AI Self-Representation|Recalled assistant context|AI Identity Card)\s*$',
+    re.IGNORECASE | re.MULTILINE,
+)
+_COMPACT_MEMORY_CONTEXT_RE = re.compile(
+    r'(?ims)(^|\n)[ \t]*#\s*Memory context pointers\s*\n[\s\S]*?(?=\n{2,}(?![ \t]*(?:[-*]|##\s*Compact peer preferences|Knowledge Store:|Tech Stack:|Design Preference:|Model Routing:|Active Project:))|\Z)'
+)
+_COMPACT_PEER_PREFERENCES_RE = re.compile(
+    r'(?ims)(^|\n)[ \t]*##\s*Compact peer preferences\s*\n[\s\S]*?(?=\n{2,}(?![ \t]*(?:Knowledge Store:|Tech Stack:|Design Preference:|Model Routing:|Active Project:))|\Z)'
+)
+_HONCHO_CONTEXT_SUMMARY_RE = re.compile(
+    r'(?ims)(^|\n)[ \t]*(?:The current conversation context|The most relevant context to (?:our|the) current conversation)\b[\s\S]*?(?=\n{2,}|\Z)'
+)
+_HONCHO_LEAK_SUMMARY_LINE_RE = re.compile(
+    r'(?im)^.*\b(?:foundational context|observations indicate)\b.*(?:\n|$)'
+)
+_AIVS_AUTONOMOUS_LOOP_RE = re.compile(
+    r'(?im)^.*Check\s+the\s+AIVS\s+Hermes\s+Kanban\s+board\s+on\s+the\s+VPS\s+'
+    r'and\s+keep\s+the\s+autonomous\s+dev\s+loop\s+moving[^\n]*(?:\n(?!\s*$).*)*\n?',
+)
+_LEADING_COMPACTION_FALLBACK_RE = re.compile(
+    r'^\s*\[CONTEXT COMPACTION\s+[^\]]*\]'
+    r'[\s\S]*?'
+    r'(?:Summary generation was unavailable\.[^\n]*(?:\n|$))'
+    r'(?:[^\n]*removed to free context space[^\n]*(?:\n|$))?'
+    r'(?:[^\n]*messages contained earlier work[^\n]*(?:\n|$))?',
+    re.IGNORECASE,
+)
+_LEADING_GATEWAY_SYSTEM_NOTE_RE = re.compile(
+    r'^\s*\[System note:\s*Your previous turn(?: in this session)? (?:was interrupted|in this session was interrupted)[^\]]*\]\s*',
+    re.IGNORECASE,
+)
+
+
+def _strip_loose_context_tags(text: str) -> str:
+    """Strip loose internal fence tags without deleting normal prose mentions."""
+    text = re.sub(rf'</\s*{_INTERNAL_CONTEXT_TAG_RE}\s*>', '', text, flags=re.IGNORECASE)
+
+    def repl(match: re.Match[str]) -> str:
+        start, end = match.span()
+        prev_char = text[start - 1] if start > 0 else ''
+        next_char = text[end] if end < len(text) else ''
+        # Preserve literal documentation/prose mentions such as
+        # "`<memory-context>`", "The <memory-context> tag", and
+        # "<memory-context> is the literal tag name". Real leaked blocks are
+        # removed above when followed by a newline; suspicious inline opener
+        # escapes are stripped.
+        if prev_char == '`' or next_char == '`':
+            return match.group(0)
+        if next_char.isspace() and next_char not in '\r\n':
+            return match.group(0)
+        return ''
+
+    return re.sub(rf'<\s*{_INTERNAL_CONTEXT_TAG_RE}\s*>', repl, text, flags=re.IGNORECASE)
 
 
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _LEADING_COMPACTION_FALLBACK_RE.sub('', text)
+    text = _LEADING_GATEWAY_SYSTEM_NOTE_RE.sub('', text)
+    text = _SHIP_MODE_GUARD_RE.sub('', text)
+    text = _COMPACT_MEMORY_CONTEXT_RE.sub(lambda m: m.group(1), text)
+    text = _COMPACT_PEER_PREFERENCES_RE.sub(lambda m: m.group(1), text)
+    text = _HONCHO_CONTEXT_SUMMARY_RE.sub(lambda m: m.group(1), text)
+    text = _HONCHO_LEAK_SUMMARY_LINE_RE.sub('', text)
+    text = _AIVS_AUTONOMOUS_LOOP_RE.sub('', text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
+    text = _UNTERMINATED_INTERNAL_CONTEXT_RE.sub('', text)
+    text = _UNTERMINATED_SHIP_MODE_TAG_RE.sub('', text)
+    text = _UNTERMINATED_CONTEXT_BLOCK_RE.sub(lambda m: m.group(1), text)
     text = _INTERNAL_NOTE_RE.sub('', text)
-    text = _FENCE_TAG_RE.sub('', text)
+    text = _RAW_MEMORY_HEADING_RE.sub('## Recalled context', text)
+    text = _strip_loose_context_tags(text)
     return text
 
 
@@ -85,16 +179,27 @@ class StreamingContextScrubber:
     ``reset()``.
     """
 
-    _OPEN_TAG = "<memory-context>"
-    _CLOSE_TAG = "</memory-context>"
+    _TAG_SPANS = tuple(
+        (f"<{name}>", f"</{name}>", True)
+        for name in (
+            "memory-context",
+            "recalled_memory_context",
+            "recalled-memory-context",
+            "supermemory-context",
+            "ship_mode_guard",
+            "ship-mode-guard",
+        )
+    )
 
     def __init__(self) -> None:
         self._in_span: bool = False
+        self._close_tags: tuple[str, ...] = ()
         self._buf: str = ""
         self._at_block_boundary: bool = True
 
     def reset(self) -> None:
         self._in_span = False
+        self._close_tags = ()
         self._buf = ""
         self._at_block_boundary = True
 
@@ -113,22 +218,27 @@ class StreamingContextScrubber:
 
         while buf:
             if self._in_span:
-                idx = buf.lower().find(self._CLOSE_TAG)
-                if idx == -1:
+                match = self._find_earliest_tag(buf, self._close_tags)
+                if match is None:
                     # Hold back a potential partial close tag; drop the rest
-                    held = self._max_partial_suffix(buf, self._CLOSE_TAG)
+                    held = self._max_partial_suffix_any(buf, self._close_tags)
                     self._buf = buf[-held:] if held else ""
                     return "".join(out)
+                idx, close_tag = match
                 # Found close — skip span content + tag, continue
-                buf = buf[idx + len(self._CLOSE_TAG):]
+                buf = buf[idx + len(close_tag):]
                 self._in_span = False
+                self._close_tags = ()
             else:
-                idx = self._find_boundary_open_tag(buf)
-                if idx == -1:
+                match = self._find_boundary_open_span(buf)
+                if match is None:
                     # No open tag — hold back a potential partial open tag
                     held = (
                         self._max_pending_open_suffix(buf)
-                        or self._max_partial_suffix(buf, self._OPEN_TAG)
+                        or self._max_partial_suffix_any(
+                            buf,
+                            tuple(open_tag for open_tag, _close_tag, _requires_newline in self._TAG_SPANS),
+                        )
                     )
                     if held:
                         self._append_visible(out, buf[:-held])
@@ -136,11 +246,13 @@ class StreamingContextScrubber:
                     else:
                         self._append_visible(out, buf)
                     return "".join(out)
+                idx, open_tag, close_tag = match
                 # Emit text before the tag, enter span
                 if idx > 0:
                     self._append_visible(out, buf[:idx])
-                buf = buf[idx + len(self._OPEN_TAG):]
+                buf = buf[idx + len(open_tag):]
                 self._in_span = True
+                self._close_tags = (close_tag,)
 
         return "".join(out)
 
@@ -150,15 +262,16 @@ class StreamingContextScrubber:
         If we're still inside an unterminated span the remaining content is
         discarded (safer: leaking partial memory context is worse than a
         truncated answer).  Otherwise the held-back partial-tag tail is
-        emitted verbatim (it turned out not to be a real tag).
+        emitted after one final sanitizer pass.
         """
         if self._in_span:
             self._buf = ""
             self._in_span = False
+            self._close_tags = ()
             return ""
         tail = self._buf
         self._buf = ""
-        return tail
+        return sanitize_context(tail)
 
     @staticmethod
     def _max_partial_suffix(buf: str, tag: str) -> int:
@@ -174,29 +287,55 @@ class StreamingContextScrubber:
                 return i
         return 0
 
-    def _find_boundary_open_tag(self, buf: str) -> int:
+    @classmethod
+    def _max_partial_suffix_any(cls, buf: str, tags: tuple[str, ...]) -> int:
+        return max((cls._max_partial_suffix(buf, tag) for tag in tags), default=0)
+
+    @staticmethod
+    def _find_earliest_tag(buf: str, tags: tuple[str, ...]) -> tuple[int, str] | None:
+        buf_lower = buf.lower()
+        best: tuple[int, str] | None = None
+        for tag in tags:
+            idx = buf_lower.find(tag)
+            if idx == -1:
+                continue
+            if best is None or idx < best[0]:
+                best = (idx, tag)
+        return best
+
+    def _find_boundary_open_span(self, buf: str) -> tuple[int, str, str] | None:
         """Find an opening fence only when it starts a block-like span."""
         buf_lower = buf.lower()
-        search_start = 0
-        while True:
-            idx = buf_lower.find(self._OPEN_TAG, search_start)
-            if idx == -1:
-                return -1
-            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
-                return idx
-            search_start = idx + 1
+        best: tuple[int, str, str] | None = None
+        for open_tag, close_tag, requires_newline in self._TAG_SPANS:
+            search_start = 0
+            while True:
+                idx = buf_lower.find(open_tag, search_start)
+                if idx == -1:
+                    break
+                if self._is_block_boundary(buf, idx) and (
+                    not requires_newline or self._has_block_opener_suffix(buf, idx, open_tag)
+                ):
+                    candidate = (idx, open_tag, close_tag)
+                    if best is None or candidate[0] < best[0]:
+                        best = candidate
+                    break
+                search_start = idx + 1
+        return best
 
     def _max_pending_open_suffix(self, buf: str) -> int:
         """Hold a complete boundary tag until the following char confirms it."""
-        if not buf.lower().endswith(self._OPEN_TAG):
-            return 0
-        idx = len(buf) - len(self._OPEN_TAG)
-        if not self._is_block_boundary(buf, idx):
-            return 0
-        return len(self._OPEN_TAG)
+        buf_lower = buf.lower()
+        for open_tag, _close_tag, requires_newline in self._TAG_SPANS:
+            if not requires_newline or not buf_lower.endswith(open_tag):
+                continue
+            idx = len(buf) - len(open_tag)
+            if self._is_block_boundary(buf, idx):
+                return len(open_tag)
+        return 0
 
-    def _has_block_opener_suffix(self, buf: str, idx: int) -> bool:
-        after_idx = idx + len(self._OPEN_TAG)
+    def _has_block_opener_suffix(self, buf: str, idx: int, open_tag: str) -> bool:
+        after_idx = idx + len(open_tag)
         if after_idx >= len(buf):
             return False
         return buf[after_idx] in "\r\n"
@@ -213,6 +352,9 @@ class StreamingContextScrubber:
     def _append_visible(self, out: list[str], text: str) -> None:
         if not text:
             return
+        text = sanitize_context(text)
+        if not text:
+            return
         out.append(text)
         self._update_block_boundary(text)
 
@@ -224,21 +366,118 @@ class StreamingContextScrubber:
             self._at_block_boundary = self._at_block_boundary and text.strip() == ""
 
 
+_SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+_SAFE_CONTEXT_SECTION_NAMES = {
+    "session summary",
+    "compact peer preferences",
+    "recalled user context (recent/relevant)",
+}
+_USER_PEER_CARD_SECTION_NAMES = {"user peer card", "user profile", "peer card"}
+_HONCHO_LABEL_RE = re.compile(r"^(attribute|instruction)\s*:\s*(.+)$", re.IGNORECASE)
+_SAFE_PEER_PREFERENCE_LABELS = {
+    "active project",
+    "design preference",
+    "knowledge store",
+    "model routing",
+    "tech stack",
+}
+
+
+def _normalize_peer_preference_label(label: str) -> str:
+    """Normalize compact peer-card labels before fail-closed allowlisting."""
+    label = label.strip().lower().replace("_", " ").replace("-", " ")
+    return re.sub(r"\s+", " ", label)
+
+
+def _safe_peer_preference_line(line: str) -> str | None:
+    """Return a safe compact preference line, or None for unapproved labels.
+
+    Peer cards can contain arbitrary identity fields (names, handles,
+    employers, relationships, locations, dates, etc.).  This parser is
+    fail-closed: only explicitly approved preference labels survive, including
+    when Honcho prefixes the line with ATTRIBUTE:/INSTRUCTION:.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    label_match = _HONCHO_LABEL_RE.match(stripped)
+    if label_match:
+        stripped = label_match.group(2).strip()
+
+    label, separator, value = stripped.partition(":")
+    if separator != ":":
+        return None
+    label = re.sub(r"\s+", " ", label.strip())
+    value = value.strip()
+    if not label or not value:
+        return None
+    if _normalize_peer_preference_label(label) not in _SAFE_PEER_PREFERENCE_LABELS:
+        return None
+    return f"{label}: {value}"
+
+
+def compact_user_peer_card(body: str) -> str:
+    """Keep only allowlisted compact peer preference labels from peer-card text."""
+    lines: list[str] = []
+    for line in sanitize_context(body).splitlines():
+        safe_line = _safe_peer_preference_line(line)
+        if safe_line:
+            lines.append(safe_line)
+    return _truncate_memory_context("\n".join(lines), 1200)
+
+
+def _truncate_memory_context(text: str, limit: int) -> str:
+    """Bound auto-injected recall text before it reaches the active prompt."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    boundary = max(cut.rfind("\n"), cut.rfind(". "), cut.rfind("; "))
+    if boundary >= int(limit * 0.65):
+        cut = cut[:boundary].rstrip()
+    return cut.rstrip() + " …"
+
+
+def _extract_safe_memory_sections(raw_context: str) -> list[str]:
+    """Keep only compact current/session + peer-card sections from recall.
+
+    Honcho/context backends may return raw representations, old explicit
+    observations, and assistant self-representation. Those remain recoverable
+    through memory tools / durable stores, but normal provider prompts get only
+    a compact peer/session slice plus file-backed retrieval pointers.
+    """
+    matches = list(_SECTION_HEADING_RE.finditer(raw_context or ""))
+    sections: list[str] = []
+    for idx, match in enumerate(matches):
+        name = match.group(1).strip()
+        section_name = name.lower()
+        if section_name not in _SAFE_CONTEXT_SECTION_NAMES and section_name not in _USER_PEER_CARD_SECTION_NAMES:
+            continue
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_context)
+        body = sanitize_context(raw_context[start:end]).strip()
+        if not body:
+            continue
+        if section_name in _USER_PEER_CARD_SECTION_NAMES:
+            body = compact_user_peer_card(body)
+            if not body:
+                continue
+            sections.append(f"## Compact peer preferences\n{body}")
+            continue
+        sections.append(f"## {name}\n{_truncate_memory_context(body, 1200)}")
+    return sections
+
+
 def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note."""
-    if not raw_context or not raw_context.strip():
-        return ""
-    clean = sanitize_context(raw_context)
-    if clean != raw_context:
-        logger.warning("memory provider returned pre-wrapped context; stripped")
-    return (
-        "<memory-context>\n"
-        "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
-        "</memory-context>"
-    )
+    """Return no automatic recall context for the active provider prompt.
+
+    Gateway-visible sessions proved that even previously "safe" compact
+    memory pointers can be quoted back to users. Memory remains available via
+    explicit Honcho/wiki/session tools, but no recalled context block is pasted
+    into ordinary user messages at API-call time.
+    """
+    return ""
 
 
 class MemoryManager:

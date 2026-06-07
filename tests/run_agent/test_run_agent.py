@@ -6448,15 +6448,15 @@ class TestSupportsReasoningExtraBody:
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""
 
-    def test_user_message_is_not_mutated_by_run_conversation(self):
-        """User input must reach run_conversation untouched — if a user types
-        a literal <memory-context> tag we don't silently delete their text.
-        The streaming scrubber + plugin-side scrub cover real leak paths."""
+    def test_user_message_is_sanitized_before_history_and_provider_boundaries(self):
+        """Emergency leak guard: pasted internal memory/control packets are
+        removed before the current user turn is persisted or sent to a provider.
+        Literal tag discussion remains covered by sanitize_context's backtick test."""
         import inspect
         from agent.conversation_loop import run_conversation as _rc
         src = inspect.getsource(_rc)
-        assert "sanitize_context(user_message)" not in src
-        assert "sanitize_context(persist_user_message)" not in src
+        assert "user_message = sanitize_context(user_message)" in src
+        assert "persist_user_message = sanitize_context(persist_user_message)" in src
 
     def test_sanitize_context_strips_full_block(self):
         """Helper-level: a string with an embedded memory-context block is

@@ -966,19 +966,29 @@ class TestBaseContextSummary:
         ctx = {
             "summary": "Testing Honcho tools and dialectic depth.",
             "representation": "Eri is a developer.",
-            "card": "Name: Eri Barrett",
+            "card": "Name: Eri Barrett\nDesign Preference: terse verified status",
         }
         formatted = provider._format_first_turn_context(ctx)
         assert "## Session Summary" in formatted
-        assert formatted.index("Session Summary") < formatted.index("User Representation")
+        assert "## Compact peer preferences" in formatted
+        assert formatted.index("Session Summary") < formatted.index("Compact peer preferences")
+
+        assert "## User Representation" not in formatted
+        assert "## User Peer Card" not in formatted
+        assert "Name: Eri" not in formatted
+        assert "Design Preference: terse verified status" in formatted
 
     def test_format_without_summary(self):
         """No summary key means no summary section."""
         provider = HonchoMemoryProvider()
-        ctx = {"representation": "Eri is a developer.", "card": "Name: Eri"}
+        ctx = {"representation": "Eri is a developer.", "card": "Name: Eri\nDesign Preference: terse status"}
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
-        assert "User Representation" in formatted
+        assert "User Representation" not in formatted
+        assert "## User Peer Card" not in formatted
+        assert "Name: Eri" not in formatted
+        assert "## Compact peer preferences" in formatted
+        assert "Design Preference: terse status" in formatted
 
     def test_format_empty_summary_skipped(self):
         """Empty summary string should not produce a section."""
@@ -986,6 +996,27 @@ class TestBaseContextSummary:
         ctx = {"summary": "", "representation": "rep", "card": "card"}
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
+
+    def test_format_does_not_inject_assistant_peer_context_or_raw_identity_by_default(self):
+        provider = HonchoMemoryProvider()
+        ctx = {
+            "card": "Name: Nic\nAliases: nic@example.com\nDesign Preference: terse verified status",
+            "representation": "Current user context",
+            "ai_card": "AI Identity Card: private assistant model",
+            "ai_representation": "AI Self-Representation: private assistant dump",
+        }
+
+        formatted = provider._format_first_turn_context(ctx)
+
+        assert "Design Preference: terse verified status" in formatted
+        assert "Current user context" not in formatted
+        assert "## User Peer Card" not in formatted
+        assert "Name: Nic" not in formatted
+        assert "nic@example.com" not in formatted
+        assert "Assistant peer card" not in formatted
+        assert "AI Identity Card" not in formatted
+        assert "AI Self-Representation" not in formatted
+        assert "private assistant" not in formatted
 
 
 class TestDialecticDepth:

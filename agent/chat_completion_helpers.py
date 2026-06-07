@@ -1820,8 +1820,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        # Keep suppressed tool-turn text on the same streaming
+                        # path as normal assistant deltas. Calling the raw
+                        # callback here bypassed the think/context scrubbers and
+                        # could leak echoed memory or ship-mode guard blocks to
+                        # gateway UIs before final-response sanitization ran.
+                        agent._fire_stream_delta(delta.content)
                     except Exception:
                         pass
 

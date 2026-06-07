@@ -8980,7 +8980,9 @@ class GatewayRunner:
         context = build_session_context(source, self.config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(
+            context, cwd=session_entry.cwd or ""
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -9591,6 +9593,18 @@ class GatewayRunner:
                 self._sync_telegram_topic_binding(
                     source, session_entry, reason="agent-result-compression",
                 )
+
+            # Persist the agent's current working directory so it survives
+            # gateway restarts (#41128).
+            try:
+                from agent.runtime_cwd import resolve_agent_cwd
+
+                current_cwd = str(resolve_agent_cwd())
+                if current_cwd != session_entry.cwd:
+                    session_entry.cwd = current_cwd
+                    self.session_store._save()
+            except Exception:
+                pass
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
@@ -15668,7 +15682,7 @@ class GatewayRunner:
 
         return delivered
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(self, context: SessionContext, cwd: str = "") -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -15687,6 +15701,7 @@ class GatewayRunner:
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            cwd=cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

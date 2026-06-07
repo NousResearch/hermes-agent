@@ -491,6 +491,12 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Logical working directory for this session.  Persisted across gateway
+    # restarts so that long-running conversations don't lose their file-system
+    # context when the agent changes directory via the terminal tool.
+    # See issue #41128.
+    cwd: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -521,6 +527,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "cwd": self.cwd,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -573,6 +580,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            cwd=data.get("cwd"),
         )
 
 

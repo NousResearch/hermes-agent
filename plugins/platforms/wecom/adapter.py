@@ -98,9 +98,10 @@ DEDUP_MAX_SIZE = 1000
 
 # Native streaming (msgtype: stream) constants — modeled on WeCom's official
 # OpenClaw plugin behavior. WeCom's AI Bot supports cumulative stream frames
-# via aibot_respond_msg; sending an empty first frame triggers the client's
-# "typing" animation, subsequent frames push cumulative content, and a final
-# frame with finish=true closes the stream.
+# via aibot_respond_msg; the first frame sends a <think></think> placeholder
+# (matching the plugin's THINKING_MESSAGE) to signal a reasoning turn,
+# subsequent frames push cumulative content, and a final frame with
+# finish=true closes the stream.
 STREAM_EXPIRED_ERRCODE = 846608  # >6 min without update — stream is dead
 STREAM_NOT_SUBSCRIBED_ERRCODE = 846609  # ws connection lost the subscription
 MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
@@ -2240,9 +2241,13 @@ class WeComAdapter(BasePlatformAdapter):
             # The seeded flag prevents double-seed which causes WeCom errcode 6000
             # (data version conflict).
             if not turn.seeded and not turn.finalized:
-                # Seed frame with empty content — triggers WeCom typing indicator
+                # Seed frame with closed empty <think></think> — matches the
+                # official OpenClaw plugin's THINKING_MESSAGE constant.  This
+                # tells the WeCom client that a reasoning turn is starting;
+                # subsequent frames replace it with cumulative content.
                 await self._send_stream_reply(
-                    turn.req_id, turn.stream_id, "", finish=False,
+                    turn.req_id, turn.stream_id,
+                    "<think></think>", finish=False,
                 )
                 turn.seeded = True
                 # If caller sent empty text (consumer's explicit seed call),

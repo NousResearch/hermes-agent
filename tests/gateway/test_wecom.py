@@ -1117,8 +1117,8 @@ class TestSendStreamFrame:
     """`send_stream_frame` lifecycle: init → cumulative updates → finalize."""
 
     @pytest.mark.asyncio
-    async def test_first_call_seeds_empty_frame_then_returns_true(self):
-        """First frame for a chat must be an empty seed (triggers typing UI)."""
+    async def test_first_call_seeds_thinking_frame_then_returns_true(self):
+        """First frame for a chat sends <think></think> (matching official plugin THINKING_MESSAGE)."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1132,11 +1132,11 @@ class TestSendStreamFrame:
         ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
 
         assert ok is True
-        # Two fire-and-forget calls via _send_json: empty seed + content.
+        # Two fire-and-forget calls via _send_json: <think></think> seed + content.
         assert adapter._send_json.await_count == 2
         seed_payload = adapter._send_json.await_args_list[0].args[0]
         assert seed_payload["body"]["msgtype"] == "stream"
-        assert seed_payload["body"]["stream"]["content"] == ""
+        assert seed_payload["body"]["stream"]["content"] == "<think></think>"
         assert seed_payload["body"]["stream"]["finish"] is False
 
         content_payload = adapter._send_json.await_args_list[1].args[0]

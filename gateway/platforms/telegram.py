@@ -5381,16 +5381,45 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
                 self._pending_photo_batch_tasks.pop(batch_key, None)
 
+    # Maximum photos to batch in a single agent turn — beyond this,
+    # the current batch is flushed immediately so remaining photos
+    # arrive as a separate turn (avoids context overload from 7+ photos).
+    MAX_PHOTOS_PER_BURST = 3
+
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
-        """Merge photo events into a pending batch and schedule flush."""
+        """Merge photo events into a pending batch and schedule flush.
+
+        Caps batches at MAX_PHOTOS_PER_BURST photos — when the limit is
+        reached, the current batch is flushed immediately and a new batch
+        starts for the overflow.
+        """
         existing = self._pending_photo_batches.get(batch_key)
         if existing is None:
             self._pending_photo_batches[batch_key] = event
         else:
-            existing.media_urls.extend(event.media_urls)
-            existing.media_types.extend(event.media_types)
-            if event.text:
-                existing.text = self._merge_caption(existing.text, event.text)
+            current_count = len(existing.media_urls)
+            new_count = current_count + len(event.media_urls)
+            if current_count >= self.MAX_PHOTOS_PER_BURST:
+                # Flush the current batch immediately — start a fresh one
+                logger.info(
+                    "[Telegram] Photo batch at limit (%d >= %d) — flushing now, "
+                    "remaining %d photo(s) start new batch",
+                    current_count, self.MAX_PHOTOS_PER_BURST, len(event.media_urls),
+                )
+                prior_task = self._pending_photo_batch_tasks.get(batch_key)
+                if prior_task and not prior_task.done():
+                    prior_task.cancel()
+                # Fire-and-forget the flush of the current full batch
+                self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(
+                    self._flush_photo_batch(batch_key)
+                )
+                # Start a new batch with the overflow
+                self._pending_photo_batches[batch_key] = event
+            else:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+                if event.text:
+                    existing.text = self._merge_caption(existing.text, event.text)
 
         prior_task = self._pending_photo_batch_tasks.get(batch_key)
         if prior_task and not prior_task.done():

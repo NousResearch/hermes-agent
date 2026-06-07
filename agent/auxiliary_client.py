@@ -224,6 +224,14 @@ def _fixed_temperature_for_model(
     return None
 
 
+def _is_deepseek_model(model: Optional[str]) -> bool:
+    """Return True if model is a DeepSeek model (known to degrade above ~200K tokens)."""
+    if not model:
+        return False
+    model_lower = model.lower()
+    return ("deepseek" in model_lower) or model_lower.startswith("ds-")
+
+
 def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
     """Return a context-compression threshold override for specific models.
 
@@ -236,6 +244,10 @@ def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
+    # DeepSeek models have 1M context but degrade severely above ~200K tokens —
+    # streaming stalls for 300+ seconds. Compress early to stay in the fast zone.
+    if _is_deepseek_model(model):
+        return 0.20
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)

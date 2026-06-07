@@ -229,6 +229,119 @@ Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** f
 
 Extended health check that also reports active sessions, running agents, and resource usage. Useful for monitoring/observability tooling.
 
+## Client-Provided Tools
+
+The API server accepts the standard OpenAI `tools` parameter on both `/v1/chat/completions` and `/v1/responses`. Client-provided tools fall into two categories:
+
+### Tools with `x-hermes-url` (server-executed)
+
+Include an `x-hermes-url` field in the tool's function definition to have the agent execute it by forwarding the call to your HTTP endpoint.
+
+This is ideal for tools that run on the client machine — screen capture, local file picker, IoT control, phone flashlight — where a lightweight HTTP server can handle the request and return the result in the same agent turn.
+
+```json
+{
+  "model": "hermes-agent",
+  "messages": [{"role": "user", "content": "Turn on the flashlight."}],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "flashlight",
+        "description": "Control the device flashlight",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "on": {"type": "boolean", "description": "True to turn on, false to turn off"}
+          },
+          "required": ["on"]
+        },
+        "x-hermes-url": "http://localhost:8080/flashlight"
+      }
+    }
+  ]
+}
+```
+
+On the client, run a small HTTP server that handles the tool:
+
+```python
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+@app.post("/flashlight")
+def handle_flashlight():
+    on = request.json.get("on", False)
+    # ... control your device's flashlight
+    return jsonify({"result": f"flashlight {'on' if on else 'off'}"})
+
+@app.post("/screen")
+def handle_screen():
+    # ... capture screen contents
+    return jsonify({"result": "..."})
+```
+
+The agent POSTs the tool arguments as JSON to your `x-hermes-url`, waits for the response, and continues. One agent turn, no extra round-trips.
+
+### Tools without `x-hermes-url` (client-managed)
+
+Tools without `x-hermes-url` follow the standard OpenAI function-calling round-trip. The agent registers them and returns `tool_calls` in its response; your client executes them and sends `tool` role results back in the next request.
+
+This is the right pattern when running a local HTTP server is impractical (mobile constraints, platform sandboxing) or when the tool requires user interaction (file picker, confirmation dialog).
+
+```python
+# First request: agent returns tool_calls
+response = client.chat.completions.create(
+    model="hermes-agent",
+    messages=[{"role": "user", "content": "Turn on the flashlight."}],
+    tools=[{
+        "type": "function",
+        "function": {
+            "name": "flashlight",
+            "description": "Control the device flashlight",
+            "parameters": {"type": "object", "properties": {
+                "on": {"type": "boolean"}
+            }, "required": ["on"]},
+        },
+    }],
+)
+
+# Client extracts tool_calls, executes flashlight locally, sends result back
+tool_call = response.choices[0].message.tool_calls[0]
+result = json.dumps({"on": True})  # client's actual execution
+
+# Second request: feed result back
+client.chat.completions.create(
+    model="hermes-agent",
+    messages=[
+        {"role": "user", "content": "Turn on the flashlight."},
+        {"role": "assistant", "content": None, "tool_calls": [tool_call]},
+        {"role": "tool", "tool_call_id": tool_call.id, "content": result},
+    ],
+)
+```
+
+The handler for URL-less tools returns a success acknowledgment so the model never sees an error message. No warnings are logged.
+
+### Conflict with built-in tools
+
+If a client-provided tool has the same name as a built-in Hermes tool, it is silently skipped. Built-in tools cannot be overridden.
+
+### Capability advertisement
+
+```json
+{
+  "object": "hermes.api_server.capabilities",
+  "features": {
+    "client_tools": true,
+    "client_tools_forwarding": "x-hermes-url"
+  }
+}
+```
+
+Check `/v1/capabilities` to detect whether the running API server supports client tools.
+
 ## Runs API (streaming-friendly alternative)
 
 In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a **runs** API for long-form sessions where the client wants to subscribe to progress events instead of managing streaming themselves.

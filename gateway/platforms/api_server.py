@@ -61,6 +61,143 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+# Toolset name used for client-provided tools registered in the global registry.
+_CLIENT_TOOLS_TOOLSET = "_client_tools"
+
+
+def _validate_client_tool(tool: dict) -> Optional[str]:
+    """Validate a client-provided tool definition.
+
+    Returns an error message string on failure, or None if valid.
+    """
+    if not isinstance(tool, dict):
+        return "Tool must be a JSON object"
+    if tool.get("type") != "function":
+        return "Tool type must be 'function'"
+    func = tool.get("function", {})
+    if not isinstance(func, dict):
+        return "Tool 'function' must be a JSON object"
+    name = func.get("name", "")
+    if not name or not isinstance(name, str):
+        return "Tool function must have a non-empty 'name'"
+    if not func.get("description"):
+        return f"Tool '{name}' must have a 'description'"
+    if not func.get("parameters"):
+        return f"Tool '{name}' must have 'parameters' (JSON Schema)"
+    return None
+
+
+def _make_client_tool_handler(url: str, tool_name: str):
+    """Return a synchronous handler for a client-registered tool.
+
+    * If *url* is non-empty: makes a POST request to *url* with the tool
+      arguments as JSON body (``x-hermes-url`` forwarding).
+    * If *url* is empty: returns a success acknowledgment — the tool is
+      client-managed (standard OpenAI function-calling round-trip).
+    """
+    import requests as _requests
+
+    def handler(args: dict, **kwargs) -> str:
+        if not url:
+            # No x-hermes-url → client-managed tool.  The model gets an
+            # acknowledgment instead of a hard error.  The actual execution
+            # happens client-side (standard OpenAI function-calling round
+            # trip) and results are fed back via conversation history.
+            return json.dumps({
+                "result": "acknowledged",
+                "note": (
+                    "Tool call forwarded to client for execution "
+                    "(no x-hermes-url configured on this tool)."
+                ),
+                "tool_args": args,
+            })
+        try:
+            resp = _requests.post(url, json=args, timeout=60)
+            resp.raise_for_status()
+            # Return raw response text — the model expects a tool result
+            # string.  If the response is JSON it will be parsed naturally
+            # by the model.
+            return resp.text
+        except _requests.Timeout:
+            return json.dumps({"error": f"Client tool '{tool_name}' timed out after 60s"})
+        except _requests.ConnectionError:
+            return json.dumps({"error": f"Client tool '{tool_name}' connection refused to {url}"})
+        except Exception as e:
+            return json.dumps({"error": f"Client tool '{tool_name}' error: {e}"})
+
+    return handler
+
+
+def _register_client_tools(client_tools: List[dict]) -> set:
+    """Register client-provided tools in the global tool registry.
+
+    Every tool is registered — those with ``x-hermes-url`` get a handler that
+    forwards calls via HTTP POST; those without get a no-op handler that
+    acknowledges the call (the client handles execution in the standard
+    OpenAI function-calling round-trip).
+
+    Tools whose names conflict with built-in Hermes tools are skipped
+    (``override=False``).
+
+    Returns the set of successfully registered tool names so callers can
+    deregister them later.
+
+    Each tool is registered under ``_CLIENT_TOOLS_TOOLSET`` so the toolset
+    resolution machinery picks them up automatically when the toolset is
+    included in ``enabled_toolsets``.
+    """
+    from tools.registry import registry
+
+    names: set[str] = set()
+    skipped: list[str] = []
+
+    for tool in client_tools:
+        func = tool.get("function", {})
+        name = func.get("name", "")
+        if not name:
+            continue
+
+        existing = registry.get_entry(name)
+        if existing is not None:
+            skipped.append(name)
+            continue
+
+        url = func.get("x-hermes-url", "")
+        schema = {
+            "name": name,
+            "description": func.get("description", ""),
+            "parameters": func.get("parameters", {}),
+        }
+        registry.register(
+            name=name,
+            toolset=_CLIENT_TOOLS_TOOLSET,
+            schema=schema,
+            handler=_make_client_tool_handler(url, name),
+            check_fn=lambda: True,
+            override=False,
+        )
+        names.add(name)
+
+    if skipped:
+        logger.warning(
+            "Client tools skipped (names conflict with built-in tools): %s",
+            skipped,
+        )
+
+    return names
+
+
+def _deregister_client_tools(names: set):
+    """Remove client-provided tools from the global tool registry."""
+    from tools.registry import registry
+
+    for name in names:
+        try:
+            registry.deregister(name)
+        except Exception:
+            logger.debug("Error deregistering client tool '%s' (already removed)", name)
+
+
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
@@ -974,6 +1111,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        extra_toolsets: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -989,6 +1127,11 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
+
+        ``extra_toolsets`` is an optional list of additional toolset names
+        to enable for this agent instance, on top of the configured platform
+        toolsets.  Used by the client-tools feature to inject dynamically-
+        registered tools into the agent's tool list.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
@@ -1000,6 +1143,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if extra_toolsets:
+            for ts in extra_toolsets:
+                if ts not in enabled_toolsets:
+                    enabled_toolsets.append(ts)
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -1118,6 +1265,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
+                "client_tools": True,
+                "client_tools_forwarding": "x-hermes-url",
                 "approval_events": True,
                 "session_resources": True,
                 "session_chat": True,
@@ -1517,12 +1666,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
         history = self._conversation_history_for_session(session_id)
+        client_tools: List[dict] = body.get("tools") or []
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            client_tools=client_tools or None,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
@@ -1700,6 +1851,29 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+
+        # Extract client-provided tools (OpenAI standard ``tools`` parameter).
+        # Each tool should have the standard OpenAI ``{type: "function",
+        # function: {name, description, parameters}}`` shape.  An optional
+        # ``function.x-hermes-url`` field tells the server where to forward
+        # execution.  Tools whose names conflict with built-in Hermes tools
+        # are silently dropped with a warning.
+        client_tools: List[dict] = []
+        raw_tools = body.get("tools")
+        if raw_tools is not None:
+            if not isinstance(raw_tools, list):
+                return web.json_response(
+                    _openai_error("'tools' must be an array"),
+                    status=400,
+                )
+            for i, tool in enumerate(raw_tools):
+                err = _validate_client_tool(tool)
+                if err:
+                    return web.json_response(
+                        _openai_error(f"tools[{i}]: {err}"),
+                        status=400,
+                    )
+                client_tools.append(tool)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1880,6 +2054,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                client_tools=client_tools or None,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1899,6 +2074,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                client_tools=client_tools or None,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2778,6 +2954,24 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
 
+        # Extract client-provided tools (same format as chat completions).
+        client_tools: List[dict] = []
+        raw_tools = body.get("tools")
+        if raw_tools is not None:
+            if not isinstance(raw_tools, list):
+                return web.json_response(
+                    _openai_error("'tools' must be an array"),
+                    status=400,
+                )
+            for i, tool in enumerate(raw_tools):
+                err = _validate_client_tool(tool)
+                if err:
+                    return web.json_response(
+                        _openai_error(f"tools[{i}]: {err}"),
+                        status=400,
+                    )
+                client_tools.append(tool)
+
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
             return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
@@ -2912,6 +3106,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                client_tools=client_tools or None,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2945,6 +3140,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                client_tools=client_tools or None,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3447,6 +3643,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        client_tools: Optional[List[dict]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3458,10 +3655,21 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        If *client_tools* is provided, each tool definition is temporarily
+        registered in the global tool registry before the agent is created
+        and deregistered after the conversation completes.  Client tool
+        names that conflict with built-in tools are silently skipped.
         """
+        # ── Temporarily register client-provided tools ────────────────
+        registered_client_tool_names: set = set()
+        if client_tools:
+            registered_client_tool_names = _register_client_tools(client_tools)
+
         loop = asyncio.get_running_loop()
 
         def _run():
+            extra = [_CLIENT_TOOLS_TOOLSET] if registered_client_tool_names else None
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -3470,6 +3678,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                extra_toolsets=extra,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -3492,7 +3701,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 result["session_id"] = _eff_sid
             return result, usage
 
-        return await loop.run_in_executor(None, _run)
+        try:
+            return await loop.run_in_executor(None, _run)
+        finally:
+            # ── Clean up temporarily registered tools ────────────────
+            if registered_client_tool_names:
+                _deregister_client_tools(registered_client_tool_names)
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming

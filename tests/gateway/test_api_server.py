@@ -30,10 +30,37 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _register_client_tools,
+    _deregister_client_tools,
+    _validate_client_tool,
+    _make_client_tool_handler,
+    _CLIENT_TOOLS_TOOLSET,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
 )
+
+# Register a stub built-in tool so client-tool conflict detection works in tests.
+_STUB_TOOL_NAME = "_test_stub_builtin"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _seed_registry_with_stub_tool():
+    """Pre-seed a lightweight built-in tool for conflict-detection tests."""
+    from tools.registry import registry
+    registry.register(
+        name=_STUB_TOOL_NAME,
+        toolset="_test_fixtures",
+        schema={
+            "name": _STUB_TOOL_NAME,
+            "description": "Stub built-in for testing conflict detection",
+            "parameters": {"type": "object", "properties": {}},
+        },
+        handler=lambda args, **kw: json.dumps({"ok": True}),
+        check_fn=lambda: True,
+    )
+    yield
+    registry.deregister(_STUB_TOOL_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -1503,6 +1530,330 @@ class TestDeriveChatSessionId:
         """None system prompt doesn't crash."""
         sid = _derive_chat_session_id(None, "test")
         assert isinstance(sid, str) and len(sid) > 4
+
+
+# ---------------------------------------------------------------------------
+# Client-provided tools — unit tests for helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestClientToolValidation:
+    """Tests for _validate_client_tool and _make_client_tool_handler."""
+
+    def test_valid_tool_passes(self):
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+                "x-hermes-url": "http://localhost:8080/weather",
+            },
+        }
+        assert _validate_client_tool(tool) is None
+
+    def test_valid_tool_without_url_passes(self):
+        """x-hermes-url is optional — validation only checks shape."""
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "do_something",
+                "description": "A test tool",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                },
+            },
+        }
+        assert _validate_client_tool(tool) is None
+
+    def test_not_a_dict_fails(self):
+        err = _validate_client_tool("not a dict")
+        assert err is not None
+
+    def test_wrong_type_fails(self):
+        err = _validate_client_tool({"type": "code_interpreter"})
+        assert err is not None
+
+    def test_missing_name_fails(self):
+        err = _validate_client_tool({
+            "type": "function",
+            "function": {"description": "no name here", "parameters": {"type": "object", "properties": {}}},
+        })
+        assert err is not None
+
+    def test_missing_description_fails(self):
+        err = _validate_client_tool({
+            "type": "function",
+            "function": {"name": "foo", "parameters": {"type": "object", "properties": {}}},
+        })
+        assert err is not None
+
+    def test_missing_parameters_fails(self):
+        err = _validate_client_tool({
+            "type": "function",
+            "function": {"name": "foo", "description": "desc"},
+        })
+        assert err is not None
+
+    def test_handler_without_url_acks(self):
+        """No-URL handler returns an acknowledgment, not an error."""
+        handler = _make_client_tool_handler("", "test_tool")
+        result = json.loads(handler({"x": 1}))
+        assert result["result"] == "acknowledged"
+        assert "tool_args" in result
+        assert result["tool_args"] == {"x": 1}
+
+    def test_handler_with_unreachable_url_returns_error(self):
+        handler = _make_client_tool_handler("http://localhost:1/nope", "fail_tool")
+        result = json.loads(handler({"x": 1}))
+        assert "error" in result
+
+
+class TestClientToolRegistry:
+    """Tests for _register_client_tools / _deregister_client_tools."""
+
+    def test_register_and_deregister(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "my_test_tool",
+                "description": "Test tool",
+                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}},
+                "x-hermes-url": "http://localhost:9999/test",
+            },
+        }]
+        names = _register_client_tools(tools)
+        assert "my_test_tool" in names
+
+        from tools.registry import registry
+        assert registry.get_entry("my_test_tool") is not None
+
+        registered_names = registry.get_tool_names_for_toolset(_CLIENT_TOOLS_TOOLSET)
+        assert "my_test_tool" in registered_names
+
+        _deregister_client_tools(names)
+        assert registry.get_entry("my_test_tool") is None
+
+    def test_conflict_with_builtin_is_skipped(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": _STUB_TOOL_NAME,
+                "description": "Should be skipped",
+                "parameters": {"type": "object", "properties": {}},
+                "x-hermes-url": "http://localhost:1/conflict",
+            },
+        }]
+        names = _register_client_tools(tools)
+        assert _STUB_TOOL_NAME not in names
+        # Built-in must still be intact
+        from tools.registry import registry
+        assert registry.get_entry(_STUB_TOOL_NAME) is not None
+        assert registry.get_entry(_STUB_TOOL_NAME).toolset == "_test_fixtures"
+
+    def test_register_without_url_registers(self):
+        """Tools without x-hermes-url should still be registered."""
+        from tools.registry import registry
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "no_url_tool",
+                "description": "No URL provided",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        names = _register_client_tools(tools)
+        assert "no_url_tool" in names
+        entry = registry.get_entry("no_url_tool")
+        assert entry is not None
+        # Handler must return an acknowledgment, not an error
+        result = json.loads(entry.handler({}))
+        assert result["result"] == "acknowledged"
+
+    def test_register_empty_list_returns_empty_set(self):
+        names = _register_client_tools([])
+        assert names == set()
+
+    def test_register_double_deregister_does_not_crash(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "double_test",
+                "description": "Test double deregister",
+                "parameters": {"type": "object", "properties": {}},
+                "x-hermes-url": "http://localhost:1/x",
+            },
+        }]
+        names = _register_client_tools(tools)
+        _deregister_client_tools(names)
+        _deregister_client_tools(names)  # second call must not raise
+
+
+class TestClientToolsChatCompletions:
+    """End-to-end tests for client tools via the chat completions endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_tools_parameter_forwards_to_run_agent(self, adapter):
+        """tools from the request body should be passed to _run_agent."""
+        mock_result = {"final_response": "ok", "messages": []}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "description": "Get weather",
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {"city": {"type": "string"}},
+                                        "required": ["city"],
+                                    },
+                                    "x-hermes-url": "http://localhost:8080/weather",
+                                },
+                            },
+                        ],
+                    },
+                )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_tools_must_be_array(self, adapter):
+        """Non-array tools should return 400."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "tools": "not-an-array",
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "tools" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_invalid_tool_returns_400(self, adapter):
+        """A tool missing required fields should return 400."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "tools": [{"type": "function", "function": {"name": "incomplete"}}],
+                },
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_tools_passed_in_streaming_mode(self, adapter):
+        """tools should be forwarded even when stream=True."""
+        mock_result = {"final_response": "ok", "messages": []}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": True,
+                        "tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "stream_tool",
+                                    "description": "Test tool in stream",
+                                    "parameters": {"type": "object", "properties": {}},
+                                    "x-hermes-url": "http://localhost:8080/tool",
+                                },
+                            },
+                        ],
+                    },
+                )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_no_tools_is_ok(self, adapter):
+        """Omitting the tools parameter entirely should still work."""
+        mock_result = {"final_response": "ok", "messages": []}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            # client_tools should be None when no tools are provided
+            assert call_kwargs.get("client_tools") is None
+
+
+class TestClientToolsResponses:
+    """End-to-end tests for client tools via the responses endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_tools_parameter_forwards_to_run_agent(self, adapter):
+        mock_result = {"final_response": "ok", "messages": []}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "test",
+                        "input": "Hello",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "resp_tool",
+                                    "description": "A tool in responses API",
+                                    "parameters": {"type": "object", "properties": {"x": {"type": "string"}}},
+                                    "x-hermes-url": "http://localhost:8080/tool",
+                                },
+                            },
+                        ],
+                    },
+                )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_invalid_tools_in_responses_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "test",
+                    "input": "Hello",
+                    "tools": "bad-value",
+                },
+            )
+            assert resp.status == 400
 
 
 # ---------------------------------------------------------------------------

@@ -780,8 +780,42 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_accumulates_full_session(self, provider_with_config):
-        """Each retain sends the ENTIRE session, not just the latest batch."""
+    def test_sync_turn_retains_only_pending_batch(self, provider_with_config, monkeypatch):
+        """Append-capable APIs receive only turns since the previous retain."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: True,
+        )
+        p = provider_with_config(retain_every_n_turns=2)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        first_content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "turn1-user" in first_content
+        assert "turn2-user" in first_content
+        assert p._session_turns == []
+
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+
+        content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "turn1-user" not in content
+        assert "turn2-user" not in content
+        assert "turn3-user" in content
+        assert "turn4-user" in content
+        assert p._client.aretain_batch.call_args.kwargs["items"][0]["metadata"]["message_count"] == "4"
+
+    def test_legacy_sync_turn_retains_full_document_batches(self, provider_with_config, monkeypatch):
+        """Legacy replace APIs must receive the retained baseline plus pending turns."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: False,
+        )
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
@@ -794,12 +828,15 @@ class TestSyncTurn:
         p.sync_turn("turn4-user", "turn4-asst")
         p._retain_queue.join()
 
-        content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Should contain ALL turns from the session
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
         assert "turn1-user" in content
         assert "turn2-user" in content
         assert "turn3-user" in content
         assert "turn4-user" in content
+        assert "update_mode" not in item
+        assert item["metadata"]["message_count"] == "8"
+        assert p._session_turns == []
 
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""
@@ -868,6 +905,31 @@ class TestSyncTurn:
         provider._client.aretain_batch.side_effect = RuntimeError("network error")
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
+
+    def test_failed_sync_turn_retain_restores_pending_batch(self, provider_with_config, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: True,
+        )
+        p = provider_with_config(retain_every_n_turns=1)
+        p._client.aretain_batch.side_effect = RuntimeError("network error")
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._retain_queue.join()
+
+        assert "turn1-user" in "".join(p._session_turns)
+        assert p._retain_inflight is False
+
+        p._client.aretain_batch.side_effect = None
+        p._client.aretain_batch.reset_mock()
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["update_mode"] == "append"
+        assert "turn1-user" in item["content"]
+        assert "turn2-user" in item["content"]
+        assert p._session_turns == []
 
     def test_sync_turn_preserves_unicode(self, provider_with_config):
         """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
@@ -943,6 +1005,20 @@ class TestShutdownRace:
         assert client.aretain_batch.call_count == 2
         assert provider._retain_queue.empty()
 
+    def test_shutdown_flushes_partial_retain_buffer(self, provider_with_config):
+        p = provider_with_config(retain_every_n_turns=3)
+        client = p._client
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        client.aretain_batch.assert_not_called()
+
+        p.shutdown()
+
+        client.aretain_batch.assert_called_once()
+        item = client.aretain_batch.call_args.kwargs["items"][0]
+        assert "turn1-user" in item["content"]
+        assert p._retain_queue.empty()
+
     def test_shutdown_is_idempotent(self, provider):
         provider.sync_turn("a", "b")
         provider.shutdown()
@@ -1003,6 +1079,33 @@ class TestSessionSwitchBufferFlush:
         provider._retain_queue.join()
         provider._client.aretain_batch.assert_not_called()
         assert provider._session_id == "new-sid"
+
+    def test_legacy_switch_flush_preserves_retained_baseline(self, provider_with_config, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: False,
+        )
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        old_doc = p._document_id
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        item = kw["items"][0]
+        assert "update_mode" not in item
+        assert "turn1-user" in item["content"]
+        assert "turn2-user" in item["content"]
+        assert "turn3-user" in item["content"]
+        assert item["metadata"]["message_count"] == "6"
+        assert p._retained_turns == []
 
     def test_prefetch_result_cleared_on_switch(self, provider):
         """Stale recall text from the old session must not leak into the

@@ -406,6 +406,24 @@ class TestRestorePrimaryRuntime:
         assert agent.base_url == original_base_url
         agent._swap_credential.assert_not_called()
 
+    def test_restores_config_context_length_and_custom_providers(self):
+        agent = _make_agent()
+        expected_custom_providers = [
+            {"name": "Private", "base_url": "https://private.example/v1"}
+        ]
+        agent._primary_runtime["config_context_length"] = 65536
+        agent._primary_runtime["custom_providers"] = list(expected_custom_providers)
+        agent._fallback_activated = True
+        agent._config_context_length = None
+        agent._custom_providers = []
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._restore_primary_runtime()
+
+        assert agent._config_context_length == 65536
+        assert agent._custom_providers == expected_custom_providers
+        assert agent._custom_providers is not agent._primary_runtime["custom_providers"]
+
     def test_restore_survives_exception(self):
         """If client rebuild fails, the method returns False gracefully."""
         agent = _make_agent()

@@ -1178,6 +1178,8 @@ def restore_primary_runtime(agent) -> bool:
             "use_native_cache_layout",
             agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
         )
+        agent._config_context_length = rt.get("config_context_length")
+        agent._custom_providers = copy.deepcopy(rt.get("custom_providers"))
 
         # ── Rebuild client for the primary provider ──
         if agent.api_mode == "anthropic_messages":
@@ -2074,6 +2076,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 pass
 
         agent._config_context_length = _sm_config_ctx
+        if _sm_custom_providers is not None:
+            agent._custom_providers = copy.deepcopy(_sm_custom_providers)
         # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
         # token provider). ``get_model_context_length`` expects a
         # string for its live-probe paths; for Foundry the context
@@ -2119,6 +2123,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "config_context_length": getattr(agent, "_config_context_length", None),
+        "custom_providers": copy.deepcopy(getattr(agent, "_custom_providers", None)),
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",

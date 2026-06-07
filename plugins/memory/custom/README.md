@@ -44,7 +44,10 @@ memory:
 | Format | Stored as | Recalled later? | Best for |
 |--------|-----------|-----------------|----------|
 | `markdown` (default) | `session-<id>.md`, `facts.md` with frontmatter | **Yes** — same scanner reads them back | Obsidian vaults, a true read+write memory loop |
-| `jsonl` | `session-<id>.jsonl`, `facts.jsonl` | No (export/audit log) | Programmatic re-ingest into another system |
+| `jsonl` | `session-<id>.jsonl`, `facts.jsonl` | No | Programmatic re-ingest, or an append-only **audit trail** |
 
 With `markdown`, what Hermes writes becomes part of your vault and is recalled
-on later turns. With `jsonl`, writes are a structured log and are not recalled.
+on later turns. With `jsonl`, each write is a timestamped JSON record appended
+to the file — not recalled, but ideal as an **audit trail** of exactly what the
+agent stored and when (e.g. for review, compliance, or replay into another
+system).

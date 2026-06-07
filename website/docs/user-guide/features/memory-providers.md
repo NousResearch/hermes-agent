@@ -571,7 +571,7 @@ memory:
     max_results: 5
 ```
 
-With `write_format: markdown`, notes Hermes writes become part of your vault and are recalled on later turns (a full read+write loop). With `jsonl`, writes are a structured export log and are not recalled.
+With `write_format: markdown`, notes Hermes writes become part of your vault and are recalled on later turns (a full read+write loop). With `jsonl`, each write is a timestamped JSON record appended to the file — not recalled, but ideal as an append-only **audit trail** of what the agent stored and when.
 
 ---
 

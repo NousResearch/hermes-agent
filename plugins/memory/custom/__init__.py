@@ -26,8 +26,9 @@ Config (``~/.hermes/config.yaml``)::
 ``dir`` is read for recall and (under ``write_subdir``) written to. With
 ``write_format: markdown`` the notes Hermes writes are themselves recalled on
 later turns (a full read+write loop — ideal for an Obsidian vault). With
-``jsonl`` the writes are a structured, machine-parseable log and are not
-recalled unless you add ``*.jsonl`` to your own tooling.
+``jsonl`` each write is a timestamped JSON record appended to the file — not
+recalled, but suitable as an append-only audit trail of what the agent stored
+and when (review, compliance, or replay into another system).
 """
 
 from __future__ import annotations

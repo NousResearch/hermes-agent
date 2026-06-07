@@ -9117,12 +9117,23 @@ def _build_call_kwargs(
             from hermes_cli.providers import nous_api_mode
 
             _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
+        # OpenRouter budgets credit against the requested output cap; when the
+        # param is omitted it assumes the model's FULL output window (e.g.
+        # 65,536), so low-credit accounts 402 ("can only afford N") even
+        # though the actual summary would cost far less. Preserving the
+        # caller's cap keeps the request affordable (#41035, PR #41055 by
+        # @liuhao1024).
+        _is_openrouter = (
+            _provider_norm == "openrouter"
+            or base_url_host_matches(_effective_base, "openrouter.ai")
+        )
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
             or _is_gemini_native
+            or _is_openrouter
         ):
             # Use auxiliary_max_tokens_param() so models that require
             # max_completion_tokens (GPT-5 family, Copilot) get the right
@@ -9504,7 +9515,94 @@ def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     return False
 
 
+_AFFORDABLE_TOKENS_RE = re.compile(
+    r"can only afford\s+([0-9][0-9,]*)", re.IGNORECASE
+)
+
+# Below this, the affordable budget can't fit a useful auxiliary output
+# (summaries, titles, vision descriptions) — treat as genuine exhaustion.
+_AFFORDABLE_RETRY_FLOOR_TOKENS = 512
+# Headroom under the provider's stated budget so token-count rounding on
+# their side can't 402 the retry (same margin PR #49785 used).
+_AFFORDABLE_RETRY_MARGIN_TOKENS = 64
+
+
+def _affordable_max_tokens_from_error(exc: Exception) -> Optional[int]:
+    """Extract the affordable output budget from a credit-limited 402.
+
+    OpenRouter's insufficient-credit rejection states the budget explicitly:
+    ``402 - This request requires more credits, or fewer max_tokens. You
+    requested up to 65536 tokens, but can only afford 7117.`` The account
+    HAS usable credit — the request just asked for (or defaulted to) an
+    output cap larger than the balance covers. Returns the retryable cap
+    (affordable minus a safety margin), or ``None`` when the error carries
+    no affordable count or the budget is too small to be useful.
+    """
+    if not _is_payment_error(exc):
+        return None
+    match = _AFFORDABLE_TOKENS_RE.search(str(exc))
+    if not match:
+        return None
+    try:
+        affordable = int(match.group(1).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    capped = affordable - _AFFORDABLE_RETRY_MARGIN_TOKENS
+    if capped < _AFFORDABLE_RETRY_FLOOR_TOKENS:
+        return None
+    return capped
+
+
 def _create_with_progress(
+    client: Any,
+    kwargs: Dict[str, Any],
+    task: Optional[str] = None,
+    *,
+    force_stream: bool = False,
+) -> Any:
+    """Credit-aware wrapper over :func:`_create_with_progress_once`.
+
+    A 402 that names an affordable output budget ("can only afford N
+    tokens") is NOT terminal billing exhaustion — the account can pay for
+    the call at a lower ``max_tokens``. Retry ONCE with the provider-stated
+    cap (masoria debug bundle, Aug 2026: compression fell back to
+    OpenRouter, which defaulted the omitted cap to the model's full 65,536
+    window and 402'd three times in a row on an account that could afford
+    7,117 tokens — plenty for a summary). Only lowers, never raises, an
+    existing cap; anything else re-raises for the normal recovery chains.
+    """
+    try:
+        return _create_with_progress_once(
+            client, kwargs, task, force_stream=force_stream,
+        )
+    except Exception as exc:
+        affordable = _affordable_max_tokens_from_error(exc)
+        if affordable is None:
+            raise
+        existing_cap = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
+        if isinstance(existing_cap, (int, float)) and 0 < existing_cap <= affordable:
+            # The request was already within the stated budget — the error
+            # is something else (e.g. prompt-side cost). Don't spin.
+            raise
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("max_tokens", None)
+        retry_kwargs.pop("max_completion_tokens", None)
+        retry_kwargs.update(
+            auxiliary_max_tokens_param(
+                affordable, model=str(kwargs.get("model") or "") or None,
+            )
+        )
+        logger.info(
+            "Auxiliary %s: credit-limited 402 (affordable=%d tokens); "
+            "retrying once with a clamped output cap instead of failing: %s",
+            task or "call", affordable, exc,
+        )
+        return _create_with_progress_once(
+            client, retry_kwargs, task, force_stream=force_stream,
+        )
+
+
+def _create_with_progress_once(
     client: Any,
     kwargs: Dict[str, Any],
     task: Optional[str] = None,

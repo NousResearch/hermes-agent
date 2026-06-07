@@ -4543,6 +4543,36 @@ class DiscordAdapter(BasePlatformAdapter):
             return str(parent_id)
         return None
 
+    async def _thread_started_by_self(self, channel: Any) -> bool:
+        """Return True only if a thread's starter/origin message was sent by this bot.
+
+        For message-based Discord threads, ``thread.id`` equals the id of the
+        starter message in the parent channel, so we fetch that message and
+        check whether its author is us.  This lets a thread a user manually
+        creates from one of *our* messages be treated as bot-participated on
+        its first reply (no @mention needed), without making arbitrary unknown
+        threads free-response.
+
+        Fails closed (returns False) on any fetch error, missing parent, or a
+        starter message that wasn't authored by this bot.
+        """
+        if self._client is None or getattr(self._client, "user", None) is None:
+            return False
+        parent = getattr(channel, "parent", None)
+        if parent is None or not hasattr(parent, "fetch_message"):
+            return False
+        starter_id = getattr(channel, "id", None)
+        if starter_id is None:
+            return False
+        try:
+            starter = await parent.fetch_message(starter_id)
+        except Exception:
+            return False
+        author = getattr(starter, "author", None) if starter is not None else None
+        if author is None:
+            return False
+        return getattr(author, "id", None) == getattr(self._client.user, "id", None)
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
@@ -4793,7 +4823,22 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
-                    return
+                    # A thread a user manually creates from one of *our* own
+                    # messages should be treated as bot-participated on its
+                    # first reply, so that first reply doesn't need an @mention.
+                    # Only do this for threads, only when thread gating is off,
+                    # and only when we can confirm the thread's starter message
+                    # was authored by this bot (fails closed otherwise).
+                    if (
+                        is_thread
+                        and thread_id
+                        and not self._discord_thread_require_mention()
+                        and await self._thread_started_by_self(message.channel)
+                    ):
+                        self._threads.mark(thread_id)
+                        in_bot_thread = True
+                    else:
+                        return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.

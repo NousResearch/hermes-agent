@@ -637,6 +637,109 @@ async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypa
     adapter.handle_message.assert_not_awaited()
 
 
+class FakeParentWithStarter:
+    """A parent text channel that can return a thread's starter message.
+
+    ``fetch_message(thread_id)`` mimics Discord, where a message-based
+    thread's id equals the id of the starter message in the parent channel.
+    """
+
+    def __init__(self, channel_id, starter_author_id, *, name="general", raise_on_fetch=False):
+        self.id = channel_id
+        self.name = name
+        self.guild = SimpleNamespace(name="Hermes Server")
+        self.topic = None
+        self._starter_author_id = starter_author_id
+        self._raise_on_fetch = raise_on_fetch
+
+    async def fetch_message(self, message_id):
+        if self._raise_on_fetch:
+            raise RuntimeError("boom")
+        if self._starter_author_id is None:
+            return None
+        return SimpleNamespace(
+            id=message_id,
+            author=SimpleNamespace(id=self._starter_author_id),
+        )
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_started_by_bot_message_skips_mention_on_first_reply(adapter, monkeypatch):
+    """A user-created thread whose starter message is the bot's own message
+    should be treated as bot-participated on the first reply, even without
+    an @mention, and recorded so subsequent replies stay mention-free."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_id = adapter._client.user.id
+    parent = FakeParentWithStarter(channel_id=200, starter_author_id=bot_id)
+    thread = FakeThread(channel_id=456, name="started from my message", parent=parent)
+
+    message = make_message(channel=thread, content="first reply without mention")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "first reply without mention"
+    assert "456" in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_started_by_other_user_still_requires_mention(adapter, monkeypatch):
+    """A thread whose starter message was authored by a human (not the bot)
+    must still be gated by @mention — arbitrary threads don't go free."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    parent = FakeParentWithStarter(channel_id=200, starter_author_id=42)  # a human
+    thread = FakeThread(channel_id=789, name="user started this", parent=parent)
+
+    message = make_message(channel=thread, content="hello from unrelated thread")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert "789" not in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_starter_fetch_error_fails_closed(adapter, monkeypatch):
+    """If fetching the starter message fails, fail closed — keep requiring mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    parent = FakeParentWithStarter(channel_id=200, starter_author_id=None, raise_on_fetch=True)
+    thread = FakeThread(channel_id=321, name="fetch will fail", parent=parent)
+
+    message = make_message(channel=thread, content="should be ignored")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert "321" not in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_started_by_bot_respects_thread_require_mention(adapter, monkeypatch):
+    """When thread_require_mention=true, even a bot-started thread stays gated."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_id = adapter._client.user.id
+    parent = FakeParentWithStarter(channel_id=200, starter_author_id=bot_id)
+    thread = FakeThread(channel_id=456, name="started from my message", parent=parent)
+
+    message = make_message(channel=thread, content="ambient — should be ignored")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chronological_order(adapter, monkeypatch):

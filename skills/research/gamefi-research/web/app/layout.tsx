@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GameFi Research Workflow — Demo",
+  title: "Game Research Workflow for Hermes",
   description:
-    "Showcase UI for the gamefi-research workflow: neutral, structured research on early-stage Web3 game projects. Research only — not financial advice.",
+    "A structured Hermes workflow for game project discovery, public repository review, and clean research summaries. Showcase demo — static sample data.",
 };
 
 export default function RootLayout({
@@ -14,7 +14,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="bg-slate-950 text-slate-100 antialiased">
+        {children}
+      </body>
     </html>
   );
 }

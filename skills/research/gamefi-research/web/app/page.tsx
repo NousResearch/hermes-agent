@@ -1,213 +1,231 @@
 import {
-  projects,
-  counts,
-  meta,
-  sampleMarkdown,
-  type Category,
+  PR_URL,
+  workflowSteps,
+  features,
+  roadmap,
+  sampleProject,
+  categoryStyle,
+  reportMarkdown,
 } from "@/lib/sampleData";
 
-const CATEGORY_DESC: Record<Category, string> = {
-  WATCH: "Interesting signals, needs more observation",
-  TEST: "A concrete way to test or review exists",
-  CONTACT: "Relevant for creator / community outreach",
-  SKIP: "Weak signals, unclear purpose, or off-topic",
-};
-
-function Badge({ category }: { category: Category }) {
-  return <span className={`badge badge-${category}`}>{category}</span>;
-}
-
-function ScoreBar({ score }: { score: number }) {
+function SectionTitle({
+  eyebrow,
+  title,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  children?: React.ReactNode;
+}) {
   return (
-    <div className="score">
-      <span className="score-num">{score}</span>
-      <span className="score-max">/100</span>
-      <span className="score-bar">
-        <span className="score-fill" style={{ width: `${score}%` }} />
-      </span>
+    <div className="mb-8">
+      <p className="text-xs font-semibold uppercase tracking-widest text-sky-400">
+        {eyebrow}
+      </p>
+      <h2 className="mt-2 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+        {title}
+      </h2>
+      {children ? (
+        <p className="mt-3 max-w-2xl text-slate-400">{children}</p>
+      ) : null}
     </div>
   );
 }
 
 export default function Page() {
   return (
-    <main className="container">
-      <header className="hero">
-        <h1>GameFi Research Workflow</h1>
-        <p className="tagline">
-          Neutral, structured research on early-stage Web3 game projects — from
-          public repository signals to a comparable score and a clear next step.
+    <main className="mx-auto max-w-5xl px-5 py-12 sm:py-16">
+      {/* 1. Hero */}
+      <section className="rounded-3xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 px-6 py-14 text-center sm:px-12">
+        <span className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-xs text-slate-300">
+          Hermes Agent · research workflow skill
+        </span>
+        <h1 className="mx-auto mt-6 max-w-3xl text-4xl font-bold tracking-tight text-white sm:text-5xl">
+          Game Research Workflow for Hermes
+        </h1>
+        <p className="mx-auto mt-5 max-w-2xl text-lg text-slate-400">
+          A structured Hermes workflow for game project discovery, public
+          repository review, and clean research summaries.
         </p>
-        <div className="pills">
-          <span className="pill">Public signals only</span>
-          <span className="pill">Research only — not financial advice</span>
-          <span className="pill">Demo: static sample data</span>
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <a
+            href={PR_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400"
+          >
+            View PR
+          </a>
+          <a
+            href="#report"
+            className="rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-500"
+          >
+            View Sample Report
+          </a>
         </div>
-      </header>
-
-      <section className="card">
-        <h2>What the scanner does</h2>
-        <p>
-          The scanner searches public GitHub repositories for early-stage game
-          projects, fetches each README, and turns public signals — repository
-          activity, freshness, documentation quality, testing/demo indicators,
-          and project clarity — into a 0–100 <strong>Game Research Signal
-          Score</strong> (a transparent heuristic, not an AI model). A
-          lightweight Web3/GameFi relevance filter removes off-topic matches. It
-          then classifies each project and produces a Markdown report.
-        </p>
-      </section>
-
-      <section className="summary">
-        <div className="stat">
-          <span className="stat-num">{meta.totalScanned}</span>
-          <span className="stat-label">scanned (unique)</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num">{counts.TEST}</span>
-          <span className="stat-label">TEST</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num">{counts.CONTACT}</span>
-          <span className="stat-label">CONTACT</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num">{counts.WATCH}</span>
-          <span className="stat-label">WATCH</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num">{counts.SKIP}</span>
-          <span className="stat-label">SKIP</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num">{counts.penalized}</span>
-          <span className="stat-label">relevance-penalized</span>
+        <div className="mt-6 flex flex-wrap justify-center gap-2 text-xs text-slate-500">
+          <span className="rounded-full border border-slate-800 px-3 py-1">
+            Public repository signals only
+          </span>
+          <span className="rounded-full border border-slate-800 px-3 py-1">
+            Research only
+          </span>
+          <span className="rounded-full border border-slate-800 px-3 py-1">
+            Demo · static sample data
+          </span>
         </div>
       </section>
 
-      <section className="card">
-        <h2>Category legend</h2>
-        <ul className="legend">
-          {(Object.keys(CATEGORY_DESC) as Category[]).map((c) => (
-            <li key={c}>
-              <Badge category={c} /> <span>{CATEGORY_DESC[c]}</span>
+      {/* 2. Problem */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="The problem" title="Interesting projects get found too late">
+          Gaming communities often discover interesting projects too late. This
+          workflow helps organize early research using public repository
+          signals, documentation quality, project notes, and a clear next-step
+          classification.
+        </SectionTitle>
+      </section>
+
+      {/* 3. Workflow */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="How it works" title="The workflow" />
+        <div className="flex flex-wrap items-center gap-3">
+          {workflowSteps.map((step, i) => (
+            <div key={step} className="flex items-center gap-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm font-medium text-slate-200">
+                <span className="mr-2 text-sky-400">{i + 1}</span>
+                {step}
+              </div>
+              {i < workflowSteps.length - 1 ? (
+                <span className="text-slate-600">→</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 4. Current Features */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="Shipped" title="Current features" />
+        <div className="grid gap-3 sm:grid-cols-2">
+          {features.map((f) => (
+            <div
+              key={f}
+              className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+            >
+              <span className="mt-0.5 text-emerald-400">✓</span>
+              <span className="text-sm text-slate-200">{f}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 5. Sample Output */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="Example" title="Sample output" />
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-lg font-semibold text-white">
+              {sampleProject.name}
+            </h3>
+            <span
+              className={`rounded-md px-2.5 py-1 text-xs font-bold tracking-wide ${categoryStyle[sampleProject.classification]}`}
+            >
+              {sampleProject.classification}
+            </span>
+          </div>
+
+          <div className="mt-4">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl font-bold text-white">
+                {sampleProject.score}
+              </span>
+              <span className="text-sm text-slate-500">/ 100</span>
+              <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-sky-400"
+                  style={{ width: `${sampleProject.score}%` }}
+                />
+              </div>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Research Signal Score — research signal strength, not a
+              recommendation.
+            </p>
+          </div>
+
+          <div className="mt-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Signals
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {sampleProject.signals.map((s) => (
+                <span
+                  key={s}
+                  className="rounded-full border border-slate-700 bg-slate-800/60 px-3 py-1 text-xs text-slate-300"
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Suggested next action
+            </p>
+            <p className="mt-1 text-sm text-slate-200">
+              {sampleProject.nextAction}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* 6. Report Preview */}
+      <section id="report" className="mt-16 scroll-mt-8">
+        <SectionTitle eyebrow="Generated report" title="Report preview">
+          The same Markdown format the scanner prototype writes.
+        </SectionTitle>
+        <pre className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950 p-5 text-xs leading-relaxed text-slate-300">
+          {reportMarkdown}
+        </pre>
+      </section>
+
+      {/* 7. Roadmap */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="What's next" title="Roadmap" />
+        <ul className="grid gap-3 sm:grid-cols-2">
+          {roadmap.map((r) => (
+            <li
+              key={r}
+              className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3"
+            >
+              <span className="mt-0.5 text-sky-400">→</span>
+              <span className="text-sm text-slate-200">{r}</span>
             </li>
           ))}
         </ul>
       </section>
 
-      <section className="card">
-        <h2>Top projects</h2>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Project</th>
-                <th>Score</th>
-                <th>Category</th>
-                <th>Top signals</th>
-              </tr>
-            </thead>
-            <tbody>
-              {projects.map((p) => (
-                <tr key={p.name}>
-                  <td>{p.rank}</td>
-                  <td>
-                    <a href={p.url} target="_blank" rel="noreferrer">
-                      {p.name}
-                    </a>
-                  </td>
-                  <td>
-                    <ScoreBar score={p.score} />
-                  </td>
-                  <td>
-                    <Badge category={p.category} />
-                  </td>
-                  <td className="muted">{p.signals.slice(0, 3).join(", ")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {/* 8. Links */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="Links" title="Project links" />
+        <a
+          href={PR_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-sky-300 transition hover:border-slate-600"
+        >
+          Pull Request · NousResearch/hermes-agent #40136
+        </a>
       </section>
 
-      <section className="card">
-        <h2>Project details &amp; score breakdown</h2>
-        {projects.map((p) => (
-          <div key={p.name} className="project">
-            <div className="project-head">
-              <a href={p.url} target="_blank" rel="noreferrer">
-                {p.name}
-              </a>
-              <Badge category={p.category} />
-              <span className="project-score">{p.score}/100</span>
-            </div>
-            <p className="reason">{p.reason}</p>
-            <p className="muted small">{p.stats}</p>
-
-            <div className="kv">
-              <span className="kv-key">Detected signals</span>
-              <span className="kv-val">
-                {p.signals.length ? p.signals.join(", ") : "none"}
-              </span>
-            </div>
-            <div className="kv">
-              <span className="kv-key">Risk notes</span>
-              <span className="kv-val">
-                {p.risks.length ? p.risks.join(", ") : "none"}
-              </span>
-            </div>
-            <div className="kv">
-              <span className="kv-key">Score breakdown</span>
-              <span className="kv-val mono">{p.breakdown.join(" · ")}</span>
-            </div>
-            <div className="kv">
-              <span className="kv-key">Sources</span>
-              <span className="kv-val">
-                <a href={p.sources.repository} target="_blank" rel="noreferrer">
-                  repository
-                </a>
-                {" · "}
-                {p.sources.readme.startsWith("http") ? (
-                  <a href={p.sources.readme} target="_blank" rel="noreferrer">
-                    README
-                  </a>
-                ) : (
-                  <span className="muted">README: {p.sources.readme}</span>
-                )}
-              </span>
-            </div>
-          </div>
-        ))}
-      </section>
-
-      <section className="card">
-        <h2>Sample Markdown report</h2>
-        <p className="muted small">
-          The same format <code>gamefi_scan.py --report</code> writes (excerpt).
+      <footer className="mt-16 border-t border-slate-800 pt-6 text-xs text-slate-500">
+        <p>Game Research Workflow for Hermes · demo page · static sample data.</p>
+        <p className="mt-1">
+          Neutral research showcase. Public repository signals only. All data
+          shown is illustrative and unverified — verify manually.
         </p>
-        <pre className="markdown">{sampleMarkdown}</pre>
-      </section>
-
-      <section className="card disclaimer">
-        <h2>Manual verification &amp; disclaimer</h2>
-        <p>
-          All signals are <strong>automated and unverified</strong>. Before
-          acting on any entry, open the repository, read the README, and confirm
-          the detected signals (testnet / demo / early access, etc.) are real and
-          current.
-        </p>
-        <p className="muted small">
-          The Game Research Signal Score reflects research signal strength, not
-          financial merit. Neutral research summary — not financial advice, not a
-          trading tool, not an investment recommendation. Public signals only.
-        </p>
-      </section>
-
-      <footer className="footer">
-        <span>gamefi-research · Hermes Agent skill</span>
-        <span className="muted">Demo UI · static sample data · no secrets</span>
       </footer>
     </main>
   );

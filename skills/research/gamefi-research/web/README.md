@@ -1,17 +1,18 @@
-# GameFi Research Workflow — Demo UI
+# Game Research Workflow for Hermes — Demo Page
 
-A lightweight **showcase** web UI for the [`gamefi-research`](../) Hermes Agent
-skill. It presents the scanner's output — top projects, Game Research Signal
-Score, WATCH / TEST / CONTACT / SKIP categories, score breakdowns, source
-links, and a sample Markdown report.
+A clean, lightweight **showcase** page for the
+[`gamefi-research`](../) Hermes Agent skill. It presents the workflow visually:
+the problem, the Scan → Review → Score → Classify → Generate flow, current
+features, a sample output card, a generated report preview, and the roadmap.
 
 This is a **demo only**. It uses **static sample data** (`lib/sampleData.ts`),
-makes no network calls, and contains **no tokens or secrets**.
+makes **no API calls**, has **no backend**, and contains **no secrets**.
 
 ## Tech
 
 - Next.js 14 (App Router) + React 18 + TypeScript
-- No UI framework, no external data — just one CSS file and sample data
+- Tailwind CSS
+- Static sample data
 
 ## Run locally
 
@@ -34,9 +35,8 @@ This app lives in a subdirectory of the repo, so point Vercel at it:
 
 1. Import the repository in Vercel.
 2. Set **Root Directory** to `skills/research/gamefi-research/web`.
-3. Framework preset: **Next.js** (auto-detected). Build/output settings are
-   the defaults.
-4. No environment variables are required (the demo has no secrets).
+3. Framework preset: **Next.js** (auto-detected); default build settings.
+4. No environment variables are required.
 5. Deploy.
 
 CLI alternative:
@@ -47,14 +47,7 @@ npx vercel        # preview
 npx vercel --prod # production
 ```
 
-## Updating the sample data
-
-Edit `lib/sampleData.ts`. The shape mirrors the real output of
-`scripts/gamefi_scan.py` (projects, scores, categories, breakdowns, sources,
-and the raw Markdown report string), so a real report can be dropped in later.
-
 ## Disclaimer
 
-Neutral research showcase. Not financial advice, not a trading tool, not an
-investment recommendation. Public signals only; all data shown is illustrative
-and unverified.
+Neutral research showcase. Public repository signals only. All data shown is
+illustrative and unverified. Not advice of any kind.

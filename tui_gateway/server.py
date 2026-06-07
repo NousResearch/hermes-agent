@@ -9025,23 +9025,32 @@ def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
         return None
 
 
-def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
-    """Resolve an image extension from a filename hint, else magic bytes.
-
-    Falls back to ``.png``. WebP needs the RIFF/WEBP container check, handled
-    before the generic table.
-    """
+def _image_extension_hint(filename: str = "", ext_hint: str = "") -> str:
+    """Return a normalized image extension hint from client-supplied metadata."""
+    if ext_hint:
+        ext = ext_hint.strip().lower()
+        if ext and not ext.startswith("."):
+            ext = "." + ext
+        if ext:
+            return ext
     if filename:
-        suffix = Path(filename).suffix.lower()
-        if suffix:
-            return suffix
+        return Path(filename).suffix.lower()
+    return ""
+
+
+def _image_ext_match_key(ext: str) -> str:
+    return ".jpg" if ext == ".jpeg" else ext
+
+
+def _sniff_image_ext(img_bytes: bytes) -> str | None:
+    """Resolve an image extension from magic bytes only."""
     head = img_bytes[:16]
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return ".webp"
     for sig, ext in _IMAGE_MAGIC:
         if head.startswith(sig):
             return ext
-    return ".png"
+    return None
 
 
 def _allowed_image_extensions() -> frozenset[str]:
@@ -9088,8 +9097,8 @@ def _(rid, params: dict) -> dict:
       content_base64 / data (str, required): base64 image bytes. Accepts a
         ``data:image/...;base64,`` prefix and embedded whitespace. ``data`` is
         an accepted alias for older desktop builds.
-      filename / ext (str, optional): extension hint. Without it, magic bytes
-        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
+      filename / ext (str, optional): extension hint. Magic bytes identify
+        PNG/JPEG/GIF/WebP/BMP; conflicting or unknown bytes are rejected.
     """
     session, err = _sess(params, rid)
     if err:
@@ -9108,11 +9117,16 @@ def _(rid, params: dict) -> dict:
         mb = _ATTACH_BYTES_MAX_BYTES // (1024 * 1024)
         return _err(rid, 4018, f"image too large ({len(img_bytes)} bytes; cap is {mb} MB)")
 
-    filename = str(params.get("filename", "") or "")
-    ext_hint = str(params.get("ext", "") or "").strip().lower()
-    if ext_hint and not ext_hint.startswith("."):
-        ext_hint = "." + ext_hint
-    ext = _sniff_image_ext(img_bytes, filename or (f"x{ext_hint}" if ext_hint else ""))
+    ext = _sniff_image_ext(img_bytes)
+    if ext is None:
+        return _err(rid, 4017, "image bytes do not match a supported image signature")
+
+    hint = _image_extension_hint(
+        filename=str(params.get("filename", "") or ""),
+        ext_hint=str(params.get("ext", "") or ""),
+    )
+    if hint and _image_ext_match_key(hint) != _image_ext_match_key(ext):
+        return _err(rid, 4016, f"image extension does not match image bytes: {hint} != {ext}")
     if ext not in _allowed_image_extensions():
         return _err(rid, 4016, f"unsupported image extension: {ext}")
 

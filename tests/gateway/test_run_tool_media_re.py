@@ -15,7 +15,9 @@ This test file validates that both equivalent regex patterns correctly match
 Windows paths while preserving existing Unix path matching behavior.
 """
 
+import ast
 import re
+from pathlib import Path
 
 import pytest
 
@@ -145,3 +147,37 @@ class TestToolMediaReWindowsPaths:
         """File extensions are matched case-insensitively."""
         match = _TOOL_MEDIA_RE.search(media_tag)
         assert match is not None, f"Should match: {media_tag}"
+
+
+def test_tool_media_re_is_not_reassigned_inside_functions():
+    """Regression: assigning _TOOL_MEDIA_RE in GatewayRunner._run_agent's
+    nested run_sync made Python treat it as a local variable, then later
+    references crashed with UnboundLocalError when history had no media tags.
+    """
+    source_path = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
+    tree = ast.parse(source_path.read_text())
+
+    offenders = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self):
+            self.function_stack = []
+
+        def visit_FunctionDef(self, node):
+            self.function_stack.append(node.name)
+            self.generic_visit(node)
+            self.function_stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Name(self, node):
+            if (
+                node.id == "_TOOL_MEDIA_RE"
+                and isinstance(node.ctx, ast.Store)
+                and self.function_stack
+            ):
+                offenders.append((tuple(self.function_stack), node.lineno))
+
+    Visitor().visit(tree)
+
+    assert offenders == []

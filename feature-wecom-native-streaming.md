@@ -3,7 +3,7 @@
 > **分支**：`feat/wecom-native-streaming`  
 > **日期**：2026-06-04 ~ 2026-06-07  
 > **基于**：hermes-agent main (`40420a619`)  
-> **最新 commit**：`c49384360`
+> **最新 commit**：`c747fb17b`
 
 ## 背景
 
@@ -68,18 +68,24 @@ Token bucket: 30 tokens/minute/chat，按分钟窗口重置。
 - **Consumer 发空帧**：adapter 检测到空 text + 未 seeded → 发 `<think></think>` seed 并返回
 - **_native_stream_opened 跟踪**：用于 fallback finalize 判断
 
-### 中间帧背压（Backpressure）
+### 中间帧节流（Throttle）
 
-对齐官方 OpenClaw 插件的 `replyStreamNonBlocking` 语义：
+中间帧不进 token bucket 队列，不阻塞 finalize，但有两层保护防止帧积压：
 
-- **中间帧可跳过**：如果上一帧发送距今 < 150ms（`STREAM_FRAME_SKIP_WINDOW`），当前帧被丢弃
-- **累积文本保证不丢信息**：跳过的帧内容会更新 `turn.accumulated_text`，下一次未跳过的帧或 finalize 会携带完整内容
-- **Finalize 帧永远发送**：不受背压影响，确保 stream 可靠关闭
-- **自适应**：慢网络 → 帧间隔自然拉长 → 几乎不跳过；快 LLM + 快网络 → 高频输出 → 自动降帧
+| 保护层 | 参数 | 说明 |
+|--------|------|------|
+| **时间节流** | `STREAM_FRAME_SKIP_WINDOW = 200ms` | 上一帧发送距今 < 200ms 时丢弃当前帧 |
+| **帧数上限** | `MAX_INTERMEDIATE_FRAMES = 85` | 达到后所有中间帧丢弃，预留 finalize 空间 |
+
+关键语义：
+- **中间帧可跳过**：累积文本保证不丢信息，下一帧或 finalize 携带完整内容
+- **Finalize 帧永远发送**：不受节流影响，确保 stream 可靠关闭
+- **与官方的差异**：官方 `replyStreamNonBlocking` 基于 in-flight ack 状态跳过；我们的 fire-and-forget 没有 ack 信号，改用时间窗口 + 帧数上限模拟等效效果
 
 ```
-官方插件:  replyStreamNonBlocking — 上一帧未 ack 则跳过
-Hermes:    _last_frame_sent_at + 150ms skip window — 等价语义
+官方插件:  replyStreamNonBlocking — 有 pending ack 则 skip
+openclaw:  800ms throttle + 85 帧上限
+Hermes:    200ms throttle + 85 帧上限（无 ack，靠时间模拟）
 ```
 
 ### 边界处理
@@ -163,12 +169,13 @@ except (asyncio.TimeoutError, RuntimeError):
 
 ## 测试覆盖
 
-**总计：30 tests passed**
+**总计：31 tests passed**
 
-### test_wecom.py::TestSendStreamFrame (4 tests)
+### test_wecom.py::TestSendStreamFrame (5 tests)
 - Seed frame sends `<think></think>` ✓
 - Stream ID shared across frames ✓
-- Backpressure skip within 150ms window ✓
+- Throttle skip within 200ms window ✓
+- Frame cap drops excess intermediate frames ✓
 - Finalize sends finish=true and resets state ✓
 
 ### test_stream_consumer_wecom_native.py (13 tests)

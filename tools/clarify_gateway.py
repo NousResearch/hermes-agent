@@ -54,6 +54,7 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    deadline: float = 0.0       # monotonic deadline, touched on user activity
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -120,10 +121,12 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
 
-    deadline = time.monotonic() + max(timeout, 0.0)
+    # Store deadline on the entry so touch_clarify_deadline() can reset it
+    # on user activity (cursor movement, typing, etc.).
+    entry.deadline = time.monotonic() + max(timeout, 0.0)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = entry.deadline - time.monotonic()
         if remaining <= 0:
             break
         if entry.event.wait(timeout=min(1.0, remaining)):
@@ -159,6 +162,32 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
             return False
     entry.response = str(response) if response is not None else ""
     entry.event.set()
+    return True
+
+
+def touch_clarify_deadline(clarify_id: str, timeout: Optional[float] = None) -> bool:
+    """Reset the clarify timeout on user activity.
+
+    When the user interacts (cursor movement, typing, any message),
+    the clarify deadline should restart — proves they are not AFK.
+
+    Args:
+        clarify_id: The clarify entry to touch.
+        timeout: New timeout in seconds. If None, reads from config
+                 (same as get_clarify_timeout()).
+
+    Returns True if an entry was found and deadline updated, False otherwise.
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+    if entry is None:
+        return False
+
+    if timeout is None:
+        timeout = float(get_clarify_timeout())
+
+    import time as _time
+    entry.deadline = _time.monotonic() + timeout
     return True
 
 

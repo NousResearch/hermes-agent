@@ -99,7 +99,7 @@ class TestFlushDeduplication:
             assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
 
     def test_ensure_db_session_prefers_explicit_session_source(self):
-        """``hermes chat --source`` must override the default CLI platform tag."""
+        """Explicit source metadata must override the agent platform tag."""
         from hermes_state import SessionDB
         from run_agent import AIAgent
 

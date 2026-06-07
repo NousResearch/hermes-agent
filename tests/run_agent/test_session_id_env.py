@@ -12,10 +12,12 @@ from run_agent import AIAgent
 
 @pytest.fixture(autouse=True)
 def _cleanup_env():
-    """Remove HERMES_SESSION_ID before/after each test."""
+    """Remove Hermes session env vars before/after each test."""
     os.environ.pop("HERMES_SESSION_ID", None)
+    os.environ.pop("HERMES_SESSION_SOURCE", None)
     yield
     os.environ.pop("HERMES_SESSION_ID", None)
+    os.environ.pop("HERMES_SESSION_SOURCE", None)
 
 
 def test_session_id_env_set_on_init():
@@ -59,3 +61,20 @@ def test_session_id_contextvar_set():
     )
     from gateway.session_context import get_session_env
     assert get_session_env("HERMES_SESSION_ID") == custom_id
+
+
+def test_session_source_env_overrides_platform():
+    """The source resolver honors explicit source metadata for any platform."""
+    agent = object.__new__(AIAgent)
+    agent.platform = "telegram"
+    os.environ["HERMES_SESSION_SOURCE"] = "tool"
+
+    assert agent._resolve_session_source() == "tool"
+
+
+def test_session_source_falls_back_to_platform():
+    """Without explicit source metadata, the agent platform remains canonical."""
+    agent = object.__new__(AIAgent)
+    agent.platform = "telegram"
+
+    assert agent._resolve_session_source() == "telegram"

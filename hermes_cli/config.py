@@ -4691,6 +4691,48 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
 
+    # ── Version 26 → 27: validate and restore corrupted platform_toolsets ──
+    # Issue #38798: config migration v25->v26 was corrupting platform_toolsets:
+    # - Valid toolset names like 'hermes-cli' were being changed to 'hermes'
+    # - Platform entries (telegram, discord, etc.) were being stripped
+    # This migration detects and repairs such corruption.
+    if current_ver < 27:
+        config = read_raw_config()
+        platform_toolsets = config.get("platform_toolsets")
+        touched = False
+        
+        if isinstance(platform_toolsets, dict):
+            repaired_entries = []
+            for platform, ts_list in platform_toolsets.items():
+                if not isinstance(ts_list, list):
+                    continue
+                
+                # Check each toolset name — 'hermes' alone is invalid (should be 'hermes-cli')
+                repaired_list = []
+                for toolset_name in ts_list:
+                    if toolset_name == "hermes":
+                        # Corruption detected: 'hermes' should be 'hermes-cli'
+                        repaired_list.append("hermes-cli")
+                        repaired_entries.append(f"{platform}: hermes → hermes-cli")
+                        touched = True
+                    else:
+                        repaired_list.append(toolset_name)
+                
+                if repaired_list != ts_list:
+                    platform_toolsets[platform] = repaired_list
+                    touched = True
+            
+            if touched:
+                config["platform_toolsets"] = platform_toolsets
+                save_config(config)
+                results["config_added"].append(
+                    f"platform_toolsets repaired ({len(repaired_entries)} corrupted entries fixed)"
+                )
+                if not quiet and repaired_entries:
+                    print("  ✓ Repaired corrupted platform_toolsets:")
+                    for entry in repaired_entries:
+                        print(f"    → {entry}")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     

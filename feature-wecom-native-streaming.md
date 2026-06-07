@@ -155,6 +155,55 @@ except (asyncio.TimeoutError, RuntimeError):
     response = await self._send_request(APP_CMD_SEND, {...})
 ```
 
+## send_message 工具跨 loop 死锁修复（2026-06-07）
+
+### 问题
+
+Agent 通过 `send_message` 工具调用 WeCom adapter 的 `send()` 时，adapter 的
+`_enqueue_chat_send()` 内部使用 `asyncio.Queue` + worker task 做 per-chat FIFO
+发送。这些 queue/worker 绑定在 gateway 主事件循环上。
+
+但 agent 的 tool handler 运行在线程池 worker 线程中，通过 `_run_async()` →
+`_get_worker_loop()` 获取一个独立的 per-thread event loop。跨 loop 调用
+`adapter.send()` 导致：
+
+1. `_enqueue_chat_send` 在 worker loop 上创建 Future
+2. Gateway 主循环的 `_chat_send_worker` 处理请求后调用 `future.set_result()`
+3. `set_result()` 用非线程安全的 `loop.call_soon()` 通知 worker loop
+4. Worker loop 在 `selector.select(None)` 中无限等待，永远不会被唤醒 → **死锁**
+
+### 修复
+
+在 `tools/send_message_tool.py` 的 `_send_via_adapter()` 中：
+
+| 场景 | 处理 |
+|------|------|
+| `current_loop is gateway_loop` | 直接 `await adapter.send()` |
+| `current_loop is not gateway_loop` 且 gateway loop running | `safe_schedule_threadsafe()` → `asyncio.shield(asyncio.wrap_future(fut))` |
+| `gateway_loop` 存在但已停止 | 返回明确错误，不尝试 direct await |
+| 无 `gateway_loop`（CLI/测试） | 直接 `await adapter.send()` |
+
+关键设计：
+- **`asyncio.shield`**：保护已入队的发送不被 caller cancel 取消，避免"工具报错但消息稍后发出 → agent 重试 → 重复发送"
+- **无外层 timeout**：依赖 adapter 内部 `REQUEST_TIMEOUT_SECONDS=15s` 和上层 `_run_async` 300s timeout，不引入额外取消语义
+
+### 改动文件
+
+| 文件 | 说明 |
+|------|------|
+| `tools/send_message_tool.py` | `_send_via_adapter()` 跨 loop dispatch 逻辑 |
+| `tests/tools/test_send_message_cross_loop.py` | 4 个 regression tests |
+
+### 测试覆盖
+
+```
+tests/tools/test_send_message_cross_loop.py — 4 passed
+  ✓ 跨 loop 时 send 在 gateway loop 执行
+  ✓ 同 loop 时直接 await（防自锁）
+  ✓ Gateway loop 已停止时返回错误
+  ✓ Shield 防止 cancel 取消已入队发送
+```
+
 ## 改动文件
 
 | 文件 | 说明 |
@@ -162,14 +211,16 @@ except (asyncio.TimeoutError, RuntimeError):
 | `gateway/platforms/wecom.py` | Per-turn model, priority queue, stream protocol, fallback |
 | `gateway/stream_consumer.py` | Approval boundary, segment break, seed lifecycle, re-seed |
 | `gateway/run.py` | Approval callback, /approve /deny handlers |
+| `tools/send_message_tool.py` | 跨 loop dispatch 修复（`_send_via_adapter`） |
 | `cron/scheduler.py` | Delivery diagnostic logging |
 | `tests/gateway/test_stream_consumer_wecom_native.py` | Native streaming + segment break tests |
 | `tests/gateway/test_wecom_per_turn.py` | Per-turn isolation + multi-user tests |
 | `tests/gateway/test_approval_boundary.py` | Approval boundary regression tests |
+| `tests/tools/test_send_message_cross_loop.py` | 跨 loop dispatch regression tests |
 
 ## 测试覆盖
 
-**总计：31 tests passed**
+**总计：35 tests passed**
 
 ### test_wecom.py::TestSendStreamFrame (5 tests)
 - Seed frame sends `<think></think>` ✓
@@ -195,6 +246,12 @@ except (asyncio.TimeoutError, RuntimeError):
 - Clears initial_reply_to for fresh req_id
 - Re-seed uses new turn_id
 - Success path sends visible placeholder
+
+### test_send_message_cross_loop.py (4 tests)
+- Cross-loop dispatches to gateway loop ✓
+- Same loop uses direct await (防自锁) ✓
+- Gateway loop not running returns error ✓
+- Shield prevents cancel of enqueued send ✓
 
 ## 回退指南
 

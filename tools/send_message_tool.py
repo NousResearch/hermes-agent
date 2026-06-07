@@ -730,7 +730,48 @@ async def _send_via_adapter(
                     metadata["publish_topic"] = chat_id
                 if not metadata:
                     metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+
+                # The adapter's send() uses asyncio.Queue + worker tasks bound
+                # to the gateway's main event loop.  Calling send() from a
+                # different thread/loop (the agent's tool worker thread) causes
+                # a cross-loop Future deadlock: the worker loop's selector never
+                # gets woken when the gateway loop resolves the future.
+                # When on a different loop, dispatch onto the gateway loop via
+                # run_coroutine_threadsafe and await the wrapped future.
+                gateway_loop = getattr(runner, "_gateway_loop", None)
+                try:
+                    _current_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    _current_loop = None
+
+                _need_cross_loop = (
+                    gateway_loop is not None
+                    and _current_loop is not gateway_loop
+                )
+
+                if _need_cross_loop:
+                    if not gateway_loop.is_running():
+                        return {"error": "Gateway loop is not running; cannot dispatch adapter send"}
+                    from agent.async_utils import safe_schedule_threadsafe
+                    fut = safe_schedule_threadsafe(
+                        adapter.send(chat_id=chat_id, content=chunk, metadata=metadata),
+                        gateway_loop,
+                        logger=logger,
+                        log_message="send_message: failed to schedule on gateway loop",
+                    )
+                    if fut is None:
+                        return {"error": "Gateway loop unavailable for send dispatch"}
+                    # Use shield so that if the caller's task is cancelled (e.g.
+                    # agent interrupt), the already-enqueued send on the gateway
+                    # loop is NOT cancelled — preventing "tool failed but message
+                    # still sent later" followed by agent retry causing duplicates.
+                    # No explicit timeout here: the adapter's internal request
+                    # timeout (15s) and the upper-layer _run_async 300s timeout
+                    # provide sufficient protection against hangs.
+                    result = await asyncio.shield(asyncio.wrap_future(fut))
+                else:
+                    # Same loop or no gateway loop (CLI, tests) — direct await.
+                    result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

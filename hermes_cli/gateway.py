@@ -664,6 +664,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         # Platform-appropriate detach for the respawned gateway.  On POSIX
         # start_new_session=True maps to os.setsid; on Windows we need
         # explicit creationflags because start_new_session is a no-op there.
+        # CREATE_BREAKAWAY_FROM_JOB is critical: the watcher itself may have
+        # been spawned inside a job object (Electron/Tauri parent), and
+        # without breakaway the respawned gateway would die when that job
+        # tears down. See _subprocess_compat.windows_detach_flags().
         _popen_kwargs = {
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
@@ -672,8 +676,12 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
             _CREATE_NEW_PROCESS_GROUP = 0x00000200
             _DETACHED_PROCESS = 0x00000008
             _CREATE_NO_WINDOW = 0x08000000
+            _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
             _popen_kwargs["creationflags"] = (
-                _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
+                _CREATE_NEW_PROCESS_GROUP
+                | _DETACHED_PROCESS
+                | _CREATE_NO_WINDOW
+                | _CREATE_BREAKAWAY_FROM_JOB
             )
         else:
             _popen_kwargs["start_new_session"] = True

@@ -97,6 +97,16 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NO_WINDOW = 0x08000000
+# Escape any Win32 job object the parent process belongs to. Without this,
+# a detached child still inherits its parent's job object membership, and
+# when that parent (Electron, Tauri, Windows Terminal, the Desktop GUI's
+# bootstrap-installer) dies, the OS tears down the whole job — taking the
+# "detached" child with it. Critical for the post-update gateway watcher:
+# Electron spawns the Tauri updater inside its own job, the updater spawns
+# the watcher subprocess; without BREAKAWAY the watcher dies the instant
+# Electron exits, so the gateway never gets respawned after a `hermes
+# update` triggered from the GUI. See fix/windows-gateway-reliability.
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 def windows_detach_flags() -> int:
@@ -116,10 +126,30 @@ def windows_detach_flags() -> int:
     - ``CREATE_NO_WINDOW`` — suppress the brief cmd flash that would
       otherwise appear when launching a console app.  Redundant with
       DETACHED_PROCESS but explicit for clarity.
+    - ``CREATE_BREAKAWAY_FROM_JOB`` — escape any job object the parent is
+      in.  Electron (Desktop app) and Tauri (bootstrap installer) wrap
+      their children in job objects; without breakaway, those children
+      die when the parent process exits even if they were spawned with
+      DETACHED_PROCESS.  This was the missing flag that made the
+      post-update gateway respawn watcher silently die alongside the
+      Tauri updater after the Electron Desktop's update flow finished.
+
+    If a process is in a job that disallows breakaway (rare —
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK isn't set), CreateProcess returns
+    ERROR_ACCESS_DENIED.  Python surfaces that as ``PermissionError``
+    on the ``subprocess.Popen`` call.  Callers in this codebase already
+    wrap detached spawns in ``try/except OSError`` and fall back to a
+    cmd.exe wrapper, so the breakaway-denied case degrades gracefully
+    rather than crashing.
     """
     if not IS_WINDOWS:
         return 0
-    return _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
+    return (
+        _CREATE_NEW_PROCESS_GROUP
+        | _DETACHED_PROCESS
+        | _CREATE_NO_WINDOW
+        | _CREATE_BREAKAWAY_FROM_JOB
+    )
 
 
 def windows_hide_flags() -> int:

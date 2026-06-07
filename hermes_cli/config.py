@@ -2640,6 +2640,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "AGIONE_API_KEY": {
+        "description": "AGIone API key",
+        "prompt": "AGIone API key",
+        "url": "https://agione.pro/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AGIONE_BASE_URL": {
+        "description": "AGIone base URL override",
+        "prompt": "AGIone base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",

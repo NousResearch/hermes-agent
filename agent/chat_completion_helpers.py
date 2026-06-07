@@ -34,7 +34,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -2058,7 +2058,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _call():
         import httpx as _httpx
 
-        _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", 2))
+        _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
 
         try:
             for _stream_attempt in range(_max_stream_retries + 1):

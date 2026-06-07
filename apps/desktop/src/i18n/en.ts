@@ -1044,6 +1044,7 @@ export const en: Translations = {
     nav: {
       'new-session': 'New session',
       skills: 'Skills & Tools',
+      'jarvis-cockpit': 'Jarvis Cockpit',
       messaging: 'Messaging',
       artifacts: 'Artifacts'
     },

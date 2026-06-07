@@ -35,6 +35,7 @@ function rawHashLooksLikeSession(): boolean {
   return (
     !hash.startsWith('/settings') &&
     !hash.startsWith('/skills') &&
+    !hash.startsWith('/jarvis') &&
     !hash.startsWith('/messaging') &&
     !hash.startsWith('/artifacts')
   )

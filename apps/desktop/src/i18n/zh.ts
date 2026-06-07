@@ -1231,6 +1231,7 @@ export const zh: Translations = {
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',
+      'jarvis-cockpit': 'Jarvis 驾驶舱',
       messaging: '消息平台',
       artifacts: '产物'
     },

@@ -562,6 +562,85 @@ def test_mention_outside_strict_mode_still_registers_thread():
 
 
 # ---------------------------------------------------------------------------
+# Regression: bot-sourced @-mentions must NOT register the thread, otherwise
+# sibling-bot ack loops bypass SLACK_ALLOW_BOTS=mentions on every follow-up.
+# ---------------------------------------------------------------------------
+
+def test_bot_sourced_mention_does_not_register_thread():
+    """A one-shot @-mention from another bot (e.g. sibling agent asking a
+    question) is fine to process, but the thread MUST NOT be memoized — or
+    every subsequent bot reply in that thread bypasses the mentions filter
+    and feeds an infinite ack loop.
+    """
+    adapter = _make_adapter(strict_mention=False)
+    adapter._bot_user_id = "U_BOT"
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+
+    thread_ts = "1700000000.100200"
+    event_thread_ts = thread_ts
+
+    # Simulated Slack event: sibling bot @-mentions us
+    event = {"bot_id": "B_SIBLING", "text": "<@U_BOT> can you check this?"}
+    text = event["text"]
+    is_mentioned = f"<@{adapter._bot_user_id}>" in text
+    assert is_mentioned
+
+    from_bot = bool(event.get("bot_id")) or event.get("subtype") == "bot_message"
+    if event_thread_ts and not adapter._slack_strict_mention() and not from_bot:
+        adapter._mentioned_threads.add(event_thread_ts)
+
+    assert thread_ts not in adapter._mentioned_threads
+
+
+def test_bot_message_subtype_mention_does_not_register_thread():
+    """Same as above for the subtype=bot_message variant (legacy webhooks)."""
+    adapter = _make_adapter(strict_mention=False)
+    adapter._bot_user_id = "U_BOT"
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+
+    thread_ts = "1700000000.100200"
+    event_thread_ts = thread_ts
+
+    event = {"subtype": "bot_message", "text": "<@U_BOT> ping"}
+    text = event["text"]
+    is_mentioned = f"<@{adapter._bot_user_id}>" in text
+    assert is_mentioned
+
+    from_bot = bool(event.get("bot_id")) or event.get("subtype") == "bot_message"
+    if event_thread_ts and not adapter._slack_strict_mention() and not from_bot:
+        adapter._mentioned_threads.add(event_thread_ts)
+
+    assert thread_ts not in adapter._mentioned_threads
+
+
+def test_human_mention_still_registers_thread_under_new_guard():
+    """Sanity: with the new bot-source guard in place, human @-mentions
+    continue to register the thread for follow-up auto-trigger (the whole
+    point of _mentioned_threads — humans don't want to @-mention every turn).
+    """
+    adapter = _make_adapter(strict_mention=False)
+    adapter._bot_user_id = "U_BOT"
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+
+    thread_ts = "1700000000.100200"
+    event_thread_ts = thread_ts
+
+    event = {"user": "U_HUMAN", "text": "<@U_BOT> hi"}
+    text = event["text"]
+    is_mentioned = f"<@{adapter._bot_user_id}>" in text
+    assert is_mentioned
+
+    from_bot = bool(event.get("bot_id")) or event.get("subtype") == "bot_message"
+    if event_thread_ts and not adapter._slack_strict_mention() and not from_bot:
+        adapter._mentioned_threads.add(event_thread_ts)
+
+    assert thread_ts in adapter._mentioned_threads
+
+
+# ---------------------------------------------------------------------------
 # Tests: _slack_allowed_channels
 # ---------------------------------------------------------------------------
 

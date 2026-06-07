@@ -2347,7 +2347,15 @@ class SlackAdapter(BasePlatformAdapter):
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
             # defeat the feature (and re-enable agent-to-agent ack loops).
-            if event_thread_ts and not self._slack_strict_mention():
+            #
+            # Also skipped when the @-mention came from another bot: a sibling
+            # bot's one-shot question (e.g. "@dev please check this") should be
+            # processed, but the thread MUST NOT then be memoized as "always
+            # answer", or both bots' subsequent courtesy replies (Standing by,
+            # Idle, busy-acks) will bypass SLACK_ALLOW_BOTS=mentions and feed
+            # an infinite acknowledgment loop that drains tokens.
+            from_bot = bool(event.get("bot_id")) or event.get("subtype") == "bot_message"
+            if event_thread_ts and not self._slack_strict_mention() and not from_bot:
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[

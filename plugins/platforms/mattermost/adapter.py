@@ -1182,6 +1182,13 @@ def register(ctx) -> None:
         # adapter" when cron runs separately from the gateway.  Mirrors
         # the Discord / Teams pattern.
         standalone_sender_fn=_standalone_send,
+        # ``_standalone_send`` genuinely uploads attachments via POST /files and
+        # references the returned file_ids on the post, so it is a first-class
+        # out-of-process media path, not a text-only cron fallback. Declare it
+        # so send_message_tool forwards ``media_files`` instead of stripping
+        # them; without this flag ``deliver=mattermost`` cron attachments are
+        # silently dropped.
+        supports_standalone_media=True,
         # Mattermost practical post-length limit (server default is 16383
         # but 4000 is the readable threshold the adapter has used since
         # day one).

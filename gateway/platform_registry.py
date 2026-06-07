@@ -158,6 +158,14 @@ class PlatformEntry:
     # targets when the gateway is not co-resident with the cron process.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
 
+    # True only when the standalone sender is a first-class media path.
+    #
+    # ``standalone_sender_fn`` by itself means "can send out-of-process text",
+    # usually for cron delivery. Some plugins accept ``media_files`` only for
+    # signature parity and ignore them, so send_message must not treat the
+    # hook's existence as attachment support.
+    supports_standalone_media: bool = False
+
 
 class PlatformRegistry:
     """Central registry of platform adapters.

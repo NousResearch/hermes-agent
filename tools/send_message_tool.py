@@ -65,6 +65,10 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_MEDIA_DELIVERY_SUPPORT_TEXT = (
+    "telegram, discord, matrix, weixin, signal, yuanbao, feishu, "
+    "or plugin platforms that explicitly declare standalone media support"
+)
 
 
 def _sanitize_error_text(text) -> str:
@@ -613,6 +617,19 @@ async def _send_via_adapter(
       3. A descriptive error explaining both options.
     """
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
+    entry = None
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_name)
+    except Exception:
+        entry = None
+
+    can_send_standalone_media = bool(
+        entry is not None
+        and entry.standalone_sender_fn is not None
+        and getattr(entry, "supports_standalone_media", False)
+    )
+
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -620,7 +637,11 @@ async def _send_via_adapter(
     except Exception:
         runner = None
 
-    if runner is not None:
+    # Prefer the live adapter whenever it exists. Only bypass it for media when
+    # the platform explicitly declares its standalone hook as a native media
+    # path; most plugin standalone hooks are cron text fallbacks and may accept
+    # media_files only for signature parity.
+    if runner is not None and not (media_files and can_send_standalone_media):
         try:
             adapter = runner.adapters.get(platform)
         except Exception:
@@ -643,21 +664,15 @@ async def _send_via_adapter(
                 return {"success": True, "message_id": result.message_id}
             return {"error": f"Adapter send failed: {result.error}"}
 
-    entry = None
-    try:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name)
-    except Exception:
-        entry = None
-
     if entry is not None and entry.standalone_sender_fn is not None:
+        standalone_media_files = media_files if can_send_standalone_media else []
         try:
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
                 thread_id=thread_id,
-                media_files=media_files,
+                media_files=standalone_media_files,
                 force_document=force_document,
             )
         except asyncio.CancelledError:
@@ -870,22 +885,36 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Non-media platforms ---
-    if media_files and not message.strip():
+    plugin_media_sender_available = False
+    if media_files:
+        try:
+            from gateway.platform_registry import platform_registry
+            plugin_entry = platform_registry.get(platform.value)
+            plugin_media_sender_available = bool(
+                plugin_entry is not None
+                and plugin_entry.standalone_sender_fn is not None
+                and getattr(plugin_entry, "supports_standalone_media", False)
+            )
+        except Exception:
+            plugin_media_sender_available = False
+
+    if media_files and not message.strip() and not plugin_media_sender_available:
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for {_MEDIA_DELIVERY_SUPPORT_TEXT}; "
                 f"target {platform.value} had only media attachments"
             )
         }
     warning = None
-    if media_files:
+    if media_files and not plugin_media_sender_available:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            f"send_message media delivery is currently only supported for {_MEDIA_DELIVERY_SUPPORT_TEXT}"
         )
 
     last_result = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
+        is_last = (i == len(chunks) - 1)
         if platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk, thread_ts=thread_id)
         elif platform == Platform.WHATSAPP:
@@ -913,13 +942,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
+            plugin_media_files = (
+                media_files if (plugin_media_sender_available and is_last) else []
+            )
             result = await _send_via_adapter(
                 platform,
                 pconfig,
                 chat_id,
                 chunk,
                 thread_id=thread_id,
-                media_files=media_files,
+                media_files=plugin_media_files,
                 force_document=force_document,
             )
 

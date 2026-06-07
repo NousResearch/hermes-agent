@@ -1,0 +1,36 @@
+name: burnbar-platform
+label: BurnBar Cloud
+kind: platform
+version: 1.0.0
+description: >
+  BurnBar Cloud gateway adapter for Hermes Agent. Connects Hermes to BurnBar
+  Cloud through the BurnBar Hermes Gateway API, using device-code auth, scoped
+  bearer tokens, event polling with durable cursor persistence, typing state,
+  message delivery, and signed attachment upload initiation.
+author: BurnBar contributors
+requires_env:
+  - name: BURNBAR_ACCESS_TOKEN
+    description: "BurnBar Hermes Gateway bearer token from the device-code setup flow"
+    prompt: "BurnBar access token"
+    password: true
+optional_env:
+  - name: BURNBAR_API_BASE_URL
+    description: "BurnBar Hermes Gateway API base URL"
+    prompt: "BurnBar API base URL"
+    password: false
+  - name: BURNBAR_HOME_CHANNEL
+    description: "Default BurnBar destination for cron / notification delivery"
+    prompt: "BurnBar home destination"
+    password: false
+  - name: BURNBAR_HOME_CHANNEL_NAME
+    description: "Human label for the BurnBar home destination"
+    prompt: "BurnBar home destination name"
+    password: false
+  - name: BURNBAR_ALLOWED_USERS
+    description: "Comma-separated BurnBar sender IDs allowed to talk to Hermes"
+    prompt: "Allowed BurnBar sender IDs"
+    password: false
+  - name: BURNBAR_ALLOW_ALL_USERS
+    description: "Allow any BurnBar sender from this account to talk to Hermes"
+    prompt: "Allow all BurnBar senders? (true/false)"
+    password: false

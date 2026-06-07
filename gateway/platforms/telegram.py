@@ -5965,6 +5965,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
+        quoted_message = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             quote = getattr(message, "quote", None)
@@ -5977,6 +5978,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     or message.reply_to_message.caption
                     or None
                 )
+            quoted_message = {
+                "message_id": reply_to_id,
+                "text": getattr(message.reply_to_message, "text", None),
+                "caption": getattr(message.reply_to_message, "caption", None),
+                "quote_text": quote_text,
+            }
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
@@ -5996,6 +6003,7 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            quoted_message=quoted_message,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

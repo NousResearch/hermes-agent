@@ -285,8 +285,28 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    reply_to_message_id TEXT,
+    lcm_label TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS task_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL UNIQUE,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    status TEXT NOT NULL DEFAULT 'open',
+    content TEXT,
+    platform TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    source_message_id TEXT,
+    reply_to_message_id TEXT,
+    lcm_label TEXT NOT NULL DEFAULT 'ACTIVE_TASK',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -306,6 +326,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_task_ledger_anchor
+    ON task_ledger(platform, chat_id, thread_id, source_message_id);
+CREATE INDEX IF NOT EXISTS idx_task_ledger_open_thread
+    ON task_ledger(platform, chat_id, thread_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
 
@@ -2009,6 +2033,10 @@ class SessionDB:
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
         platform_message_id: str = None,
+        chat_id: str = None,
+        thread_id: str = None,
+        reply_to_message_id: str = None,
+        lcm_label: str = None,
         observed: bool = False,
     ) -> int:
         """
@@ -2051,8 +2079,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, chat_id, thread_id,
+                   reply_to_message_id, lcm_label, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2069,6 +2098,10 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     platform_message_id,
+                    chat_id,
+                    thread_id,
+                    reply_to_message_id,
+                    lcm_label,
                     1 if observed else 0,
                 ),
             )
@@ -2089,6 +2122,125 @@ class SessionDB:
             return msg_id
 
         return self._execute_write(_do)
+
+    def task_open(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        platform: str = None,
+        chat_id: str = None,
+        thread_id: str = None,
+        source_message_id: str = None,
+        reply_to_message_id: str = None,
+        lcm_label: str = "ACTIVE_TASK",
+        task_id: str = None,
+    ) -> str:
+        """Persist an open task bound to its platform/chat/thread/message anchor."""
+        task_id = task_id or f"task_{int(time.time() * 1000)}_{random.getrandbits(32):08x}"
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO task_ledger (
+                    task_id, session_id, status, content, platform, chat_id, thread_id,
+                    source_message_id, reply_to_message_id, lcm_label, created_at, updated_at
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    status='open',
+                    content=excluded.content,
+                    platform=excluded.platform,
+                    chat_id=excluded.chat_id,
+                    thread_id=excluded.thread_id,
+                    source_message_id=excluded.source_message_id,
+                    reply_to_message_id=excluded.reply_to_message_id,
+                    lcm_label=excluded.lcm_label,
+                    updated_at=excluded.updated_at""",
+                (
+                    task_id,
+                    session_id,
+                    content,
+                    platform,
+                    chat_id,
+                    thread_id,
+                    source_message_id,
+                    reply_to_message_id,
+                    lcm_label or "ACTIVE_TASK",
+                    now,
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        return task_id
+
+    def task_update(
+        self,
+        task_id: str,
+        *,
+        content: str = None,
+        status: str = None,
+        lcm_label: str = None,
+        reply_to_message_id: str = None,
+    ) -> bool:
+        """Update an existing task ledger entry."""
+        if not task_id:
+            return False
+        now = time.time()
+
+        def _do(conn):
+            result = conn.execute(
+                """UPDATE task_ledger SET
+                    content = COALESCE(?, content),
+                    status = COALESCE(?, status),
+                    lcm_label = COALESCE(?, lcm_label),
+                    reply_to_message_id = COALESCE(?, reply_to_message_id),
+                    updated_at = ?
+                   WHERE task_id = ?""",
+                (content, status, lcm_label, reply_to_message_id, now, task_id),
+            )
+            return result.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def task_done(self, task_id: str) -> bool:
+        """Mark a task ledger entry done."""
+        return self.task_update(task_id, status="done", lcm_label="CLOSED_FINDING")
+
+    def get_open_tasks(
+        self,
+        *,
+        platform: str = None,
+        chat_id: str = None,
+        thread_id: str = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Return open task ledger rows, prioritizing the requested chat/thread."""
+        clauses = ["status = 'open'"]
+        params: list[Any] = []
+        if platform is not None:
+            clauses.append("platform = ?")
+            params.append(platform)
+        if chat_id is not None:
+            clauses.append("(chat_id = ? OR chat_id IS NULL)")
+            params.append(chat_id)
+        where = " AND ".join(clauses)
+        params.append(max(1, int(limit or 20)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""SELECT * FROM task_ledger
+                    WHERE {where}
+                    ORDER BY
+                        CASE
+                            WHEN chat_id = ? AND COALESCE(thread_id, '') = COALESCE(?, '') THEN 0
+                            WHEN chat_id = ? THEN 1
+                            ELSE 2
+                        END,
+                        updated_at DESC
+                    LIMIT ?""",
+                tuple(params[:-1] + [chat_id, thread_id, chat_id, params[-1]]),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
@@ -2141,8 +2293,9 @@ class SessionDB:
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id, chat_id, thread_id,
+                       reply_to_message_id, lcm_label, observed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -2159,6 +2312,10 @@ class SessionDB:
                         codex_items_json,
                         codex_message_items_json,
                         platform_msg_id,
+                        msg.get("chat_id"),
+                        msg.get("thread_id"),
+                        msg.get("reply_to_message_id"),
+                        msg.get("lcm_label"),
                         1 if msg.get("observed") else 0,
                     ),
                 )
@@ -2498,7 +2655,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
+                "codex_reasoning_items, codex_message_items, platform_message_id, "
+                "chat_id, thread_id, reply_to_message_id, lcm_label, observed "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY id",
                 tuple(session_ids),
@@ -2527,6 +2685,14 @@ class SessionDB:
             # for backward compatibility with the JSONL transcript shape.
             if row["platform_message_id"]:
                 msg["message_id"] = row["platform_message_id"]
+            if row["chat_id"]:
+                msg["chat_id"] = row["chat_id"]
+            if row["thread_id"]:
+                msg["thread_id"] = row["thread_id"]
+            if row["reply_to_message_id"]:
+                msg["reply_to_message_id"] = row["reply_to_message_id"]
+            if row["lcm_label"]:
+                msg["lcm_label"] = row["lcm_label"]
             if row["observed"]:
                 msg["observed"] = True
             # Restore reasoning fields on assistant messages so providers

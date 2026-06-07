@@ -573,6 +573,7 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
+    _LEADING_INVISIBLE_MESSAGE_CHARS = "\ufeff\u200b\u200c\u200e\u200f"
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -3120,8 +3121,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Discord uses its own markdown variant.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        return content.lstrip(self._LEADING_INVISIBLE_MESSAGE_CHARS)
 
     async def _run_simple_slash(
         self,

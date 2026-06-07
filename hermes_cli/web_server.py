@@ -896,12 +896,18 @@ def _knowledge_clean_relative_candidate(value: str) -> str:
     return "/".join(parts)
 
 
-def _knowledge_resolve_link(root: Path, link: str, from_path: str = "") -> str | None:
+def _knowledge_resolve_link(
+    root: Path,
+    link: str,
+    from_path: str = "",
+    file_index: dict[str, str] | None = None,
+) -> str | None:
     normalized = _knowledge_normalize_link(link)
     if not normalized:
         return None
 
-    file_index = _knowledge_file_index(root)
+    if file_index is None:
+        file_index = _knowledge_file_index(root)
     candidates: list[str] = []
     source_parent = PurePosixPath(from_path).parent if from_path else PurePosixPath("")
     if from_path and str(source_parent) not in {"", "."}:
@@ -933,10 +939,19 @@ def _knowledge_target_candidates(rel: str) -> set[str]:
     return {rel, stem_path, path.stem}
 
 
-def _knowledge_backlink_rows(root: Path, target_rel: str) -> list[dict[str, Any]]:
+def _knowledge_backlink_rows(
+    root: Path,
+    target_rel: str,
+    file_index: dict[str, str] | None = None,
+    safe_files: list[Path] | None = None,
+) -> list[dict[str, Any]]:
+    if file_index is None:
+        file_index = _knowledge_file_index(root)
+    if safe_files is None:
+        safe_files = _knowledge_safe_files(root)
     candidates = _knowledge_target_candidates(target_rel)
     rows: list[dict[str, Any]] = []
-    for item in _knowledge_safe_files(root):
+    for item in safe_files:
         rel = _knowledge_relative(root, item)
         if rel == target_rel:
             continue
@@ -945,7 +960,7 @@ def _knowledge_backlink_rows(root: Path, target_rel: str) -> list[dict[str, Any]
         resolved_links = {
             resolved
             for link in links
-            if (resolved := _knowledge_resolve_link(root, link, rel))
+            if (resolved := _knowledge_resolve_link(root, link, rel, file_index))
         }
         if target_rel in resolved_links or any(link in candidates for link in links):
             rows.append({
@@ -1079,7 +1094,8 @@ async def search_knowledge(q: str = "", limit: int = _KNOWLEDGE_SEARCH_MAX_RESUL
 @app.get("/api/knowledge/resolve")
 async def resolve_knowledge_link(link: str, from_path: str = ""):
     root = _knowledge_vault_root()
-    resolved = _knowledge_resolve_link(root, link, from_path)
+    file_index = _knowledge_file_index(root)
+    resolved = _knowledge_resolve_link(root, link, from_path, file_index)
     if not resolved:
         raise _knowledge_http_error(404, "Knowledge link target not found.")
     root, target = _knowledge_resolve(resolved)
@@ -1101,38 +1117,70 @@ async def get_knowledge_backlinks(path: str):
     if not _knowledge_safe_file(root, target):
         raise _knowledge_http_error(404, "Knowledge file not found.")
     target_rel = _knowledge_relative(root, target)
-    return {"ok": True, "path": target_rel, "items": _knowledge_backlink_rows(root, target_rel)}
+    file_index = _knowledge_file_index(root)
+    safe_files = _knowledge_safe_files(root)
+    return {"ok": True, "path": target_rel, "items": _knowledge_backlink_rows(root, target_rel, file_index, safe_files)}
 
 
 @app.get("/api/knowledge/graph")
-async def get_knowledge_graph(path: str):
+async def get_knowledge_graph(path: str, depth: int = 2, limit: int = 40):
     root, target = _knowledge_resolve(path)
     if not _knowledge_safe_file(root, target):
         raise _knowledge_http_error(404, "Knowledge file not found.")
     target_rel = _knowledge_relative(root, target)
-    target_content = _knowledge_read_text(target)
-    nodes: dict[str, dict[str, Any]] = {
-        target_rel: {"id": target_rel, "path": target_rel, "label": _knowledge_title(target, target_content)}
-    }
+    max_depth = max(1, min(depth, 3))
+    max_nodes = max(4, min(limit, 80))
+    file_index = _knowledge_file_index(root)
+    safe_files = _knowledge_safe_files(root)
+    nodes: dict[str, dict[str, Any]] = {}
     edges: set[tuple[str, str]] = set()
-    for link in _knowledge_extract_links(target_content):
-        resolved = _knowledge_resolve_link(root, link, target_rel)
-        if not resolved:
+    queue: list[tuple[str, int]] = [(target_rel, 0)]
+    visited: set[str] = set()
+
+    while queue and len(nodes) < max_nodes:
+        rel, level = queue.pop(0)
+        if rel in visited:
             continue
-        linked_path = root / resolved
-        linked_content = _knowledge_read_text(linked_path)
-        nodes.setdefault(
-            resolved,
-            {"id": resolved, "path": resolved, "label": _knowledge_title(linked_path, linked_content)},
-        )
-        edges.add((target_rel, resolved))
-    for row in _knowledge_backlink_rows(root, target_rel):
+        visited.add(rel)
+        current_path = root / rel
+        if not _knowledge_safe_file(root, current_path):
+            continue
+        content = _knowledge_read_text(current_path)
+        nodes.setdefault(rel, {"id": rel, "path": rel, "label": _knowledge_title(current_path, content)})
+        if level >= max_depth:
+            continue
+        for link in _knowledge_extract_links(content):
+            resolved = _knowledge_resolve_link(root, link, rel, file_index)
+            if not resolved:
+                continue
+            linked_path = root / resolved
+            if not _knowledge_safe_file(root, linked_path):
+                continue
+            if resolved not in nodes:
+                if len(nodes) >= max_nodes:
+                    break
+                linked_content = _knowledge_read_text(linked_path)
+                nodes[resolved] = {
+                    "id": resolved,
+                    "path": resolved,
+                    "label": _knowledge_title(linked_path, linked_content),
+                }
+            edges.add((rel, resolved))
+            if resolved not in visited and len(nodes) < max_nodes:
+                queue.append((resolved, level + 1))
+
+    for row in _knowledge_backlink_rows(root, target_rel, file_index, safe_files):
+        if len(nodes) >= max_nodes:
+            break
         source = row["path"]
         nodes.setdefault(source, {"id": source, "path": source, "label": row["title"]})
         edges.add((source, target_rel))
+
     return {
         "ok": True,
         "path": target_rel,
+        "depth": max_depth,
+        "limit": max_nodes,
         "nodes": sorted(nodes.values(), key=lambda node: node["id"]),
         "edges": [{"source": source, "target": target} for source, target in sorted(edges)],
     }

@@ -316,10 +316,12 @@ export const api = {
     fetchJSON<KnowledgeBacklinksResponse>(
       `/api/knowledge/backlinks?path=${encodeURIComponent(path)}`,
     ),
-  getKnowledgeGraph: (path: string) =>
-    fetchJSON<KnowledgeGraphResponse>(
-      `/api/knowledge/graph?path=${encodeURIComponent(path)}`,
-    ),
+  getKnowledgeGraph: (path: string, options: { depth?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams({ path });
+    if (options.depth !== undefined) qs.set("depth", String(options.depth));
+    if (options.limit !== undefined) qs.set("limit", String(options.limit));
+    return fetchJSON<KnowledgeGraphResponse>(`/api/knowledge/graph?${qs.toString()}`);
+  },
 
   // Dashboard plugins
   getPlugins: () =>
@@ -484,6 +486,8 @@ export interface KnowledgeGraphEdge {
 export interface KnowledgeGraphResponse {
   ok: boolean;
   path: string;
+  depth: number;
+  limit: number;
   nodes: KnowledgeGraphNode[];
   edges: KnowledgeGraphEdge[];
 }

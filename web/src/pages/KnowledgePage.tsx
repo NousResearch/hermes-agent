@@ -48,6 +48,8 @@ const ROOT_PATH = "";
 const RECENT_STORAGE_KEY = "hermes.knowledge.recent";
 const PINNED_STORAGE_KEY = "hermes.knowledge.pinned";
 const MAX_RECENT_NOTES = 8;
+const GRAPH_DEPTH = 2;
+const GRAPH_LIMIT = 24;
 
 type StoredNote = {
   path: string;
@@ -220,7 +222,7 @@ export default function KnowledgePage() {
         void loadTree(parentPath(file.path));
         return Promise.all([
           api.getKnowledgeBacklinks(file.path).then((resp) => setBacklinks(resp.items)),
-          api.getKnowledgeGraph(file.path).then(setGraph),
+          api.getKnowledgeGraph(file.path, { depth: GRAPH_DEPTH, limit: GRAPH_LIMIT }).then(setGraph),
         ]);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
@@ -333,7 +335,7 @@ export default function KnowledgePage() {
         setSaveMessage(file.backup_path ? `Saved · backup ${file.backup_path}` : "Saved");
         return Promise.all([
           api.getKnowledgeBacklinks(file.path).then((resp) => setBacklinks(resp.items)),
-          api.getKnowledgeGraph(file.path).then(setGraph),
+          api.getKnowledgeGraph(file.path, { depth: GRAPH_DEPTH, limit: GRAPH_LIMIT }).then(setGraph),
         ]);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
@@ -655,7 +657,7 @@ export default function KnowledgePage() {
           </section>
 
           <section className="border border-current/20 bg-background-base/35">
-            <PanelHeader icon={Network} title="Graph" meta={`${graph?.nodes.length ?? 0} · ${graph?.edges.length ?? 0}`} />
+            <PanelHeader icon={Network} title="Graph" meta={`D${graph?.depth ?? GRAPH_DEPTH} · ${graph?.nodes.length ?? 0} · ${graph?.edges.length ?? 0}`} />
             <div className="p-2">
               {graph && graph.nodes.length > 1 ? (
                 <GraphMap

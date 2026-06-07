@@ -339,3 +339,48 @@ def test_knowledge_search_matches_file_paths_with_hyphenated_tokens(
     assert [item["path"] for item in response.json()["items"]] == [
         "10-Knowledge/lessons/auto-daily-2026-05-15.md"
     ]
+
+
+def test_knowledge_graph_depth_expands_second_hop_links(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    vault = tmp_path / "HermesAgent"
+    _write(vault / "10-Knowledge" / "lessons" / "daily.md", "# Daily\n\nSee [[Router]].")
+    _write(vault / "Router.md", "# Router\n\nSee [[Skill Graph]].")
+    _write(vault / "Skill Graph.md", "# Skill Graph\n\nSecond hop target.")
+
+    response = client.get(
+        "/api/knowledge/graph",
+        params={"path": "10-Knowledge/lessons/daily.md", "depth": 2},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    node_ids = {node["id"] for node in payload["nodes"]}
+    edge_pairs = {(edge["source"], edge["target"]) for edge in payload["edges"]}
+
+    assert payload["depth"] == 2
+    assert "Router.md" in node_ids
+    assert "Skill Graph.md" in node_ids
+    assert ("10-Knowledge/lessons/daily.md", "Router.md") in edge_pairs
+    assert ("Router.md", "Skill Graph.md") in edge_pairs
+
+
+def test_knowledge_graph_respects_node_limit(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    vault = tmp_path / "HermesAgent"
+    links = " ".join(f"[[Note {index}]]" for index in range(10))
+    _write(vault / "Hub.md", f"# Hub\n\n{links}")
+    for index in range(10):
+        _write(vault / f"Note {index}.md", f"# Note {index}\n")
+
+    response = client.get(
+        "/api/knowledge/graph",
+        params={"path": "Hub.md", "depth": 2, "limit": 6},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["limit"] == 6
+    assert len(payload["nodes"]) <= 6

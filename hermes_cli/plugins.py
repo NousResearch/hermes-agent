@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import importlib.metadata
 import importlib.util
 import inspect
@@ -465,6 +466,46 @@ class PluginContext:
             "args_hint": (args_hint or "").strip(),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
+
+    # -- kanban worker lane registration ------------------------------------
+
+    def register_worker_lane(
+        self,
+        *,
+        match: str,
+        spawn_fn: Callable,
+        profile_exists: bool = True,
+    ) -> None:
+        """Register an external Kanban worker lane.
+
+        ``match`` is an assignee string or glob pattern, for example
+        ``agentplane-*``. The dispatcher treats matching assignees as spawnable
+        without requiring a Hermes profile and delegates process creation to
+        ``spawn_fn(task, workspace, board=...)``.
+        """
+        pattern = str(match or "").strip()
+        if not pattern:
+            logger.warning(
+                "Plugin '%s' tried to register a worker lane with an empty match.",
+                self.manifest.name,
+            )
+            return
+        if not callable(spawn_fn):
+            logger.warning(
+                "Plugin '%s' tried to register worker lane %r with a non-callable spawn_fn.",
+                self.manifest.name,
+                pattern,
+            )
+            return
+        self._manager._worker_lanes.append(
+            {
+                "match": pattern,
+                "spawn_fn": spawn_fn,
+                "profile_exists": bool(profile_exists),
+                "plugin": self.manifest.name,
+            }
+        )
+        logger.debug("Plugin %s registered worker lane: %s", self.manifest.name, pattern)
 
     # -- tool dispatch -------------------------------------------------------
 
@@ -1038,6 +1079,7 @@ class PluginManager:
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
+        self._worker_lanes: List[Dict[str, Any]] = []
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -1066,6 +1108,7 @@ class PluginManager:
             self._plugin_tool_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
+            self._worker_lanes.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._context_engine = None
@@ -1899,6 +1942,47 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     """
     manager = _ensure_plugins_discovered()
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
+
+
+def _worker_lane_matches(pattern: str, assignee: str) -> bool:
+    return fnmatch.fnmatchcase(assignee, pattern)
+
+
+def _matching_worker_lane(manager: PluginManager, assignee: object) -> Optional[Dict[str, Any]]:
+    name = str(assignee or "").strip()
+    if not name:
+        return None
+    for lane in manager._worker_lanes:
+        pattern = str(lane.get("match") or "").strip()
+        if pattern and _worker_lane_matches(pattern, name):
+            return lane
+    return None
+
+
+def build_worker_lane_dispatch() -> tuple[Optional[Callable], Optional[Callable[[object], bool]]]:
+    """Return dispatcher helpers for plugin-registered Kanban worker lanes.
+
+    The first callable is a composite ``spawn_fn``: it delegates matching
+    assignees to plugin lanes and falls back to the built-in Hermes profile
+    spawner for normal assignees. The second callable lets ``dispatch_once``
+    treat matching non-profile assignees as spawnable.
+    """
+    manager = _ensure_plugins_discovered()
+    if not manager._worker_lanes:
+        return None, None
+
+    def is_spawnable(assignee: object) -> bool:
+        return _matching_worker_lane(manager, assignee) is not None
+
+    def spawn(task, workspace, *, board=None):
+        lane = _matching_worker_lane(manager, getattr(task, "assignee", None))
+        if lane is not None:
+            return lane["spawn_fn"](task, workspace, board=board)
+        from hermes_cli import kanban_db
+
+        return kanban_db._default_spawn(task, workspace, board=board)
+
+    return spawn, is_spawnable
 
 
 def get_plugin_toolsets() -> List[tuple]:

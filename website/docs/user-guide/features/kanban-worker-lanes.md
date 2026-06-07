@@ -44,7 +44,10 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 | `HERMES_PROFILE` | the worker's own profile name (for `kanban_comment` author attribution) |
 | `HERMES_TENANT` | tenant namespace, if the task has one |
 
-For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
+For non-Hermes lanes (registered via a plugin), the plugin calls
+`ctx.register_worker_lane(match=..., spawn_fn=..., profile_exists=True)`. The dispatcher treats
+matching assignees as spawnable without requiring a Hermes profile. The `spawn_fn` callable gets
+`task`, `workspace`, and `board` and returns an optional pid for crash detection.
 
 ### 3. A lifecycle terminator
 
@@ -90,7 +93,22 @@ A specialisation of the profile lane: an orchestrator is a Hermes profile whose 
 
 ## Adding an external CLI worker lane
 
-Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is *not yet a paved path*. The dispatcher's spawn function is pluggable (`spawn_fn` is a parameter on `dispatch_once`), and a plugin could register its own `spawn_fn` for a non-Hermes assignee, but the surrounding integration work — wrapping the CLI's exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy — is still per-integration design work.
+Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is done through a plugin-owned worker-lane registration:
+
+```python
+def register(ctx):
+    ctx.register_worker_lane(
+        match="my-runner-*",
+        spawn_fn=spawn_my_runner,
+        profile_exists=True,
+    )
+```
+
+The dispatcher still owns claim, retry, crash detection, timeout, and run history. The plugin owns
+only process spawning for matching assignees. The surrounding integration work — wrapping the CLI's
+exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox
+conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy —
+remains per-integration design work.
 
 If you're considering adding a CLI lane, open an issue describing the specific CLI and the workflow you're trying to enable. The contract above is the constraints any such lane must satisfy; the implementation shape (one plugin per CLI vs a generic CLI-runner plugin parameterised by config) is open.
 

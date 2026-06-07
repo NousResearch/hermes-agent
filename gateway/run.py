@@ -5998,6 +5998,12 @@ class GatewayRunner:
                 disabled_corrupt_boards.pop(slug, None)
             try:
                 conn = _kb.connect(board=slug)
+                try:
+                    from hermes_cli.plugins import build_worker_lane_dispatch
+
+                    worker_lane_spawn, worker_lane_exists = build_worker_lane_dispatch()
+                except Exception:
+                    worker_lane_spawn, worker_lane_exists = None, None
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
@@ -6006,6 +6012,8 @@ class GatewayRunner:
                 # `_kanban_notifier_watcher` and issue #21378.
                 return _kb.dispatch_once(
                     conn,
+                    spawn_fn=worker_lane_spawn,
+                    spawnable_assignee_fn=worker_lane_exists,
                     board=slug,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,

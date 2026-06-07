@@ -233,6 +233,17 @@ hermes claw migrate         Migrate from OpenClaw
 hermes uninstall            Uninstall Hermes
 ```
 
+### Desktop & Web UI
+
+```
+hermes dashboard [--port N] [--host HOST] [--no-open] [--insecure] [--skip-build] [--stop] [--status] [register]
+    Launch the web UI dashboard (default port 9119)
+hermes desktop [--source] [--build-only] [--fake-boot] [--ignore-existing] [--hermes-root PATH] [--cwd PATH] [--skip-build] [--force-build]
+    Build and launch the native Electron desktop app
+hermes gui
+    Alias for `hermes desktop` (deprecated, kept for one release)
+```
+
 ---
 
 ## Slash Commands (In-Session)

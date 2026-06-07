@@ -65,6 +65,25 @@ def test_returns_false_when_config_provider_is_different(tmp_path, monkeypatch):
     assert is_provider_explicitly_configured("anthropic") is False
 
 
+def test_returns_true_when_fallback_provider_matches(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+        "fallback_providers": [
+            {"provider": "gemini", "model": "gemini-3.5-flash"},
+            {"provider": "anthropic", "model": "claude-opus-4-8"},
+        ],
+    })
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "active_provider": None,
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
 def test_returns_true_when_anthropic_env_var_set(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-realkey")

@@ -331,6 +331,21 @@ def _run_agent(
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
+    # Match normal CLI/gateway behavior: oneshot calls must honor the profile's
+    # reasoning_effort, otherwise `hermes chat -q -m claude-opus-4-8` silently
+    # runs Opus without adaptive thinking.
+    try:
+        import importlib
+
+        constants_mod = importlib.import_module("hermes_constants")
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else {}
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+        reasoning_config = constants_mod.parse_reasoning_effort(
+            str(agent_cfg.get("reasoning_effort", "")).strip()
+        )
+    except Exception:
+        reasoning_config = None
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),
@@ -344,6 +359,7 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        reasoning_config=reasoning_config,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

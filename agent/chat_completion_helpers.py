@@ -1141,6 +1141,37 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
+        # Optional per-fallback reasoning override. This lets the chain keep
+        # cheaper defaults for primary providers while making an expensive
+        # rescue model run at a different thinking budget, e.g.
+        # ``reasoning_effort: max`` on Claude Opus.
+        fb_reasoning_effort = str(fb.get("reasoning_effort") or "").strip()
+        if fb_reasoning_effort:
+            try:
+                from hermes_constants import parse_reasoning_effort
+
+                parsed_reasoning = parse_reasoning_effort(fb_reasoning_effort)
+                if parsed_reasoning is not None:
+                    agent.reasoning_config = parsed_reasoning
+                else:
+                    logger.warning(
+                        "Fallback %s/%s ignored invalid reasoning_effort=%r",
+                        fb_provider,
+                        fb_model,
+                        fb_reasoning_effort,
+                    )
+            except Exception as _reasoning_err:
+                logger.warning(
+                    "Fallback %s/%s could not apply reasoning_effort=%r: %s",
+                    fb_provider,
+                    fb_model,
+                    fb_reasoning_effort,
+                    _reasoning_err,
+                )
+        else:
+            _primary_reasoning = (agent._primary_runtime or {}).get("reasoning_config")
+            agent.reasoning_config = dict(_primary_reasoning) if isinstance(_primary_reasoning, dict) else _primary_reasoning
+
         # Clear the credential pool when the fallback provider doesn't match
         # the pool's provider.  The pool was seeded for the primary provider;
         # leaving it attached means downstream recovery (rate_limit / billing /

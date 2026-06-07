@@ -1352,7 +1352,10 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. Check config.yaml model.provider
+    # 2. Check config.yaml model.provider and fallback_providers. A provider in
+    # the fallback chain is an explicit user choice too; without this, Anthropic
+    # fallback entries cannot import Claude Code credentials even when the user
+    # deliberately configured Opus as a fallback.
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1361,6 +1364,14 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             cfg_provider = (model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == normalized:
                 return True
+        fallback_cfg = cfg.get("fallback_providers")
+        if isinstance(fallback_cfg, list):
+            for entry in fallback_cfg:
+                if not isinstance(entry, dict):
+                    continue
+                fb_provider = (entry.get("provider") or "").strip().lower()
+                if fb_provider == normalized:
+                    return True
     except Exception:
         pass
 

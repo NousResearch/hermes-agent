@@ -31,7 +31,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1626,14 +1626,18 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
-        _cfg = {}
+        _cfg: Dict[str, Any] = {}
         try:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
-                _cfg = _expand_env_vars(_cfg)
+                if not isinstance(_cfg, dict):
+                    _cfg = {}
+                _cfg = cast(Dict[str, Any], _expand_env_vars(_cfg))
+                if not isinstance(_cfg, dict):
+                    _cfg = {}
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
                     if isinstance(_model_cfg, str):
@@ -1652,9 +1656,14 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
+        # Reasoning config. Jobs may override the profile default with a
+        # top-level `reasoning_effort` field while existing jobs keep using
+        # config.yaml's agent.reasoning_effort.
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else {}
+        if not isinstance(_agent_cfg, dict):
+            _agent_cfg = {}
+        effort = str(job.get("reasoning_effort") or _agent_cfg.get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml. The top-level
@@ -1780,7 +1789,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
-            fallback_model=fallback_model,
+            fallback_model=cast(Any, fallback_model),
             credential_pool=credential_pool,
             providers_allowed=pr.get("only"),
             providers_ignored=pr.get("ignore"),

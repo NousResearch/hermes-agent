@@ -182,6 +182,75 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_applies_per_fallback_reasoning_effort(self):
+        """Fallback entries can override the active reasoning budget."""
+        fbs = [
+            {
+                "provider": "anthropic",
+                "model": "claude-opus-4-8",
+                "reasoning_effort": "max",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "reasoning_config", {"enabled": True, "effort": "high"})
+        agent._primary_runtime["reasoning_config"] = {"enabled": True, "effort": "high"}
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client("https://api.anthropic.com"), "claude-opus-4-8"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "model") == "claude-opus-4-8"
+        assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "max"}
+
+    def test_fallback_without_reasoning_effort_resets_to_primary_reasoning(self):
+        """Reasoning overrides are scoped to the fallback entry that sets them."""
+        fbs = [
+            {
+                "provider": "anthropic",
+                "model": "claude-opus-4-8",
+                "reasoning_effort": "max",
+            },
+            {"provider": "openai", "model": "gpt-5.5"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        primary_reasoning = {"enabled": True, "effort": "high"}
+        agent.reasoning_config = dict(primary_reasoning)
+        agent._primary_runtime["reasoning_config"] = dict(primary_reasoning)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client("https://api.openai.com/v1"), "resolved"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.reasoning_config == {"enabled": True, "effort": "max"}
+            assert agent._try_activate_fallback() is True
+
+        assert agent.model == "gpt-5.5"
+        assert agent.reasoning_config == primary_reasoning
+
+    def test_restore_primary_runtime_restores_primary_reasoning_config(self):
+        """Per-fallback reasoning overrides must not leak into future turns."""
+        fbs = [
+            {
+                "provider": "anthropic",
+                "model": "claude-opus-4-8",
+                "reasoning_effort": "max",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        primary_reasoning = {"enabled": True, "effort": "high"}
+        agent.reasoning_config = dict(primary_reasoning)
+        agent._primary_runtime["reasoning_config"] = dict(primary_reasoning)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client("https://api.anthropic.com"), "claude-opus-4-8"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "max"}
+        assert agent._restore_primary_runtime() is True
+        assert agent.reasoning_config == primary_reasoning
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

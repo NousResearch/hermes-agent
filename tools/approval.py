@@ -258,7 +258,21 @@ _USER_SENSITIVE_WRITE_TARGET = (
     rf'{_CREDENTIAL_FILES})'
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
+# Anchor for the cp/mv/install rule, where the sensitive path is only a write
+# target when it is the LAST argument (the destination). Requiring end-of-line
+# (or a command separator) keeps `cp config.yaml backup.yaml` — config.yaml as
+# the SOURCE — out of the deny.
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+# Boundary for stream-write rules (`>`/`>>` redirection and `tee`), where the
+# sensitive path is ALWAYS a write target no matter what follows it. We only
+# need the path token to END at a shell word boundary — whitespace, a quote, a
+# command separator, a redirection operator, a `#` comment, or end-of-line.
+# Using _COMMAND_TAIL here was too strict: it required the rest of the line to
+# be empty or a command separator, so `echo x > .env extra` (extra arg to echo)
+# and `echo x > .env # note` (trailing comment) slipped past the deny even
+# though the shell still overwrites `.env`. Mirrors the looser system-path
+# redirection rule, which never had this restriction.
+_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>#"\']|$)'
 
 # =========================================================================
 # Hardline (unconditional) blocklist
@@ -454,8 +468,8 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
-    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via tee"),
-    (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via redirection"),
+    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
+    (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # find -exec rm / -execdir rm — the -execdir variant (same semantics,
     # runs in the directory of each match) was previously missed. Claude

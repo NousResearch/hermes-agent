@@ -642,6 +642,37 @@ class TestSensitiveRedirectPattern:
         assert key is None
         assert desc is None
 
+    def test_redirect_to_dotenv_with_trailing_arg_requires_approval(self):
+        # The redirection target is still `.env`; the trailing token is just an
+        # extra argument to `echo`, so the file is overwritten. The old
+        # _COMMAND_TAIL anchor required the rest of the line to be empty/a
+        # separator and let this slip past the deny.
+        dangerous, key, desc = detect_dangerous_command("echo secret > .env extra")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_to_dotenv_with_trailing_comment_requires_approval(self):
+        # A trailing `#` comment does not change the redirection target.
+        dangerous, key, desc = detect_dangerous_command("echo secret > .env # note")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_append_to_config_yaml_with_trailing_arg_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo mode: prod >> config.yaml foo")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_to_config_yaml_backup_is_safe(self):
+        # `config.yaml.bak` is a different file; the boundary must end the path
+        # token at a word boundary so backup writes stay out of the deny.
+        dangerous, key, desc = detect_dangerous_command("echo x > config.yaml.bak")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
 
 class TestProjectSensitiveCopyPattern:
     def test_cp_to_local_dotenv_requires_approval(self):
@@ -821,6 +852,14 @@ class TestWindowsAbsolutePathFolding:
 class TestProjectSensitiveTeePattern:
     def test_tee_to_local_dotenv_requires_approval(self):
         dangerous, key, desc = detect_dangerous_command("printenv | tee .env.local")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_tee_to_dotenv_with_trailing_file_arg_requires_approval(self):
+        # tee writes to every file argument, so `.env` is overwritten even when
+        # another file follows it. The old _COMMAND_TAIL anchor missed this.
+        dangerous, key, desc = detect_dangerous_command("printenv | tee .env backup")
         assert dangerous is True
         assert key is not None
         assert "project env/config" in desc.lower()

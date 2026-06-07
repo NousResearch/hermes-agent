@@ -30,6 +30,15 @@ const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const {
+  buildPosixCleanupScript,
+  buildWindowsCleanupScript,
+  modeRemovesAgent,
+  modeRemovesUserData,
+  resolveRemovableAppPath,
+  shouldRemoveAppBundle,
+  uninstallArgsForMode
+} = require('./desktop-uninstall.cjs')
+const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -1488,6 +1497,20 @@ function forceKillProcessTree(pid) {
 // aggressively SIGKILL-ing the backend here would be an untested behavior change
 // for no benefit. So we no-op off Windows and leave that path exactly as it was.
 async function releaseBackendLockForUpdate(updateRoot) {
+  return releaseBackendLock(updateRoot, 'updates')
+}
+
+// Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
+// hand-off and the desktop uninstaller — they have the identical Windows
+// problem: the desktop's backend (and the grandchildren IT spawned — a hermes
+// REPL, a pty terminal, the gateway) keep `hermes.exe` and other files in the
+// venv mandatory-locked, so any in-place replace/delete of the install tree
+// races a live handle and half-fails (#37532). We tree-kill every backend PID
+// the desktop owns, then poll the shim until it's genuinely writable.
+//
+// `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
+// locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
+async function releaseBackendLock(updateRoot, tag) {
   if (!IS_WINDOWS) return { unlocked: true }
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
@@ -1512,14 +1535,12 @@ async function releaseBackendLockForUpdate(updateRoot) {
   const deadlineMs = Date.now() + 15000
   while (Date.now() < deadlineMs) {
     if (!isShimLocked(shim)) {
-      rememberLog('[updates] venv shim unlocked; safe to hand off the update')
+      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
       return { unlocked: true }
     }
     await new Promise(r => setTimeout(r, 300))
   }
-  // Timed out: the updater's own wait_for_venv_free + force-kill is the second
-  // line of defense, and we pass --force so the guard won't dead-end. Log it.
-  rememberLog('[updates] venv shim still locked after 15s; handing off anyway (updater will force)')
+  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
   return { unlocked: false }
 }
 
@@ -5472,6 +5493,199 @@ ipcMain.handle('hermes:version', async () => ({
   platform: process.platform,
   hermesRoot: resolveUpdateRoot()
 }))
+
+// ===========================================================================
+// Uninstall — remove the Chat GUI (and optionally the agent / user data).
+// ===========================================================================
+//
+// The renderer's About → Danger Zone surfaces three options that mirror the
+// CLI exactly: GUI only, Lite (keep user data), Full. We ask the agent to do
+// the actual removal via `hermes uninstall …` so the cross-platform PATH /
+// registry / service / node-symlink cleanup all lives in one place
+// (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
+//
+// getUninstallSummary() shells out to `--gui-summary` (a fast, no-side-effect
+// JSON probe) so the UI can gate options on what's actually installed — and
+// detect a missing agent (a future "lite client" that ships without the
+// bundled agent), hiding the agent/full options when there's nothing to remove.
+
+function uninstallVenvPython() {
+  return getVenvPython(VENV_ROOT)
+}
+
+async function getUninstallSummary() {
+  const py = uninstallVenvPython()
+  const agentRoot = ACTIVE_HERMES_ROOT
+  // Fast JS-side fallback used when the agent venv is gone (lite client) or the
+  // probe fails — the renderer still needs *something* to render options from.
+  const fallback = () => ({
+    hermes_home: HERMES_HOME,
+    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
+    gui_installed: true,
+    source_built_artifacts: [],
+    packaged_app_paths: [],
+    userdata_dir: app.getPath('userData'),
+    userdata_exists: true,
+    platform: process.platform,
+    probe: 'fallback'
+  })
+
+  if (!fileExists(py)) {
+    return fallback()
+  }
+
+  return new Promise(resolve => {
+    let stdout = ''
+    let settled = false
+    const done = value => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    try {
+      const child = spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'], {
+        cwd: agentRoot,
+        env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
+      child.stdout.on('data', chunk => {
+        stdout += chunk.toString()
+      })
+      child.on('error', () => done(fallback()))
+      child.on('exit', code => {
+        if (code !== 0) return done(fallback())
+        try {
+          const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
+          const parsed = JSON.parse(line)
+          // The app bundle the renderer would be removing on *this* machine,
+          // resolved from the running exe (the Python probe only knows the
+          // standard locations, not where THIS build actually runs from).
+          parsed.running_app_path = resolveRemovableAppPath(process.execPath, process.platform, process.env)
+          done(parsed)
+        } catch {
+          done(fallback())
+        }
+      })
+      setTimeout(() => done(fallback()), 8000)
+    } catch {
+      done(fallback())
+    }
+  })
+}
+
+async function runDesktopUninstall(mode) {
+  let uninstallArgs
+  try {
+    uninstallArgs = uninstallArgsForMode(mode)
+  } catch (error) {
+    return { ok: false, error: 'invalid-mode', message: error.message }
+  }
+
+  const venvPy = uninstallVenvPython()
+  if (!fileExists(venvPy)) {
+    return {
+      ok: false,
+      error: 'agent-missing',
+      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
+    }
+  }
+
+  // Interpreter choice (Finding 3): lite/full rmtree the venv that holds the
+  // running python.exe. On Windows a running .exe is mandatory-locked, so the
+  // rmtree must NOT be driven by the venv's own interpreter — use a system
+  // Python with PYTHONPATH=<agentRoot> so `import hermes_cli` resolves from
+  // source while the venv is torn down. gui-only doesn't touch the venv, so the
+  // venv python is fine there. If no system Python exists (the Windows edge
+  // case), fall back to the venv python — gui-only is unaffected; lite/full may
+  // leave venv remnants the user can delete, which we log.
+  let py = venvPy
+  let pythonPath = null
+  if (modeRemovesAgent(mode)) {
+    const sysPy = findSystemPython()
+    if (sysPy) {
+      py = sysPy
+      pythonPath = ACTIVE_HERMES_ROOT
+    } else if (IS_WINDOWS) {
+      rememberLog(
+        '[uninstall] no system Python found for lite/full on Windows; falling back ' +
+          'to the venv python — venv files locked by the running interpreter may ' +
+          'remain and need manual deletion.'
+      )
+    }
+  }
+
+  const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
+  const removeBundle = shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
+
+  // CRITICAL (Windows): tear down every backend the desktop owns and wait for
+  // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete
+  // the venv, and even gui-only removes the install tree's GUI artifacts — a
+  // live backend grandchild (gateway / pty / REPL) holding a mandatory file
+  // lock would make the script's rmdir half-fail (#37532 for the update path).
+  // Reuses the incident-hardened update teardown; no-op on macOS/Linux.
+  try {
+    await releaseBackendLock(ACTIVE_HERMES_ROOT, 'uninstall')
+  } catch (error) {
+    rememberLog(`[uninstall] backend teardown errored (continuing): ${error.message}`)
+  }
+
+  const scriptArgs = {
+    desktopPid: process.pid,
+    pythonExe: py,
+    pythonPath,
+    agentRoot: ACTIVE_HERMES_ROOT,
+    uninstallArgs,
+    appPath: removeBundle,
+    hermesHome: HERMES_HOME
+  }
+
+  let scriptPath
+  let runner
+  let runnerArgs
+  try {
+    if (IS_WINDOWS) {
+      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.cmd`)
+      fs.writeFileSync(scriptPath, buildWindowsCleanupScript(scriptArgs))
+      runner = process.env.ComSpec || 'cmd.exe'
+      runnerArgs = ['/c', scriptPath]
+    } else {
+      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.sh`)
+      fs.writeFileSync(scriptPath, buildPosixCleanupScript(scriptArgs), { mode: 0o755 })
+      runner = '/bin/bash'
+      runnerArgs = [scriptPath]
+    }
+  } catch (error) {
+    return { ok: false, error: 'script-write-failed', message: error.message }
+  }
+
+  try {
+    const child = spawn(runner, runnerArgs, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    child.unref()
+  } catch (error) {
+    return { ok: false, error: 'spawn-failed', message: error.message }
+  }
+
+  rememberLog(
+    `[uninstall] launched detached cleanup (${mode}): ${scriptPath} ` +
+      `(removesAgent=${modeRemovesAgent(mode)} removesUserData=${modeRemovesUserData(mode)} bundle=${removeBundle || 'none'})`
+  )
+
+  // Give the renderer a beat to show its "uninstalling…" state, then quit so
+  // the venv python shim + app bundle unlock and the cleanup script can run.
+  setTimeout(() => app.quit(), 800)
+  return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
+}
+
+ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
+ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
+  const mode = payload && typeof payload === 'object' ? payload.mode : payload
+  return runDesktopUninstall(String(mode || ''))
+})
+
 
 app.whenReady().then(() => {
   if (IS_MAC) {

@@ -1085,6 +1085,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                # For cron jobs, also check if last_run_at is set — if the job
+                # has never run (last_run_at is None/empty), don't skip it on
+                # first tick; the user may have just triggered it manually.
+                last_run = job.get("last_run_at")
+                if kind == "cron" and not last_run:
+                    # First run for a cron job — don't fast-forward, let it run.
+                    due.append(job)
+                    continue
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(

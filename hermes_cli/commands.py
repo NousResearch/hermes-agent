@@ -63,6 +63,8 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
+    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+               gateway_only=True),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
@@ -76,15 +78,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
+               args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", "Manually compress conversation context", "Session",
-               args_hint="[focus topic]"),
+    CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns)", "Session",
+               args_hint="[here [N] | focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
@@ -121,7 +124,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
-               aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+               args_hint="[model] [--provider name] [--global] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
@@ -164,7 +167,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
-               subcommands=("search", "browse", "inspect", "install")),
+               subcommands=("search", "browse", "inspect", "install", "audit")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -213,6 +216,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
+    CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",)),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
@@ -346,6 +350,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "stop",
         "update",
+        "version",
     }
 )
 
@@ -449,7 +454,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     :func:`hermes_cli.plugins.PluginContext.register_command`. They behave
     like ``CommandDef`` entries for gateway surfacing: they appear in the
     Telegram command menu, in Slack's ``/hermes`` subcommand mapping, and
-    (via :func:`gateway.platforms.discord._register_slash_commands`) in
+    (via :func:`plugins.platforms.discord.adapter._register_slash_commands`) in
     Discord's native slash command picker.
 
     Lookup is lazy so importing this module never forces plugin discovery
@@ -506,6 +511,68 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         if tg_name:
             result.append((tg_name, description))
     return result
+
+
+_TELEGRAM_MENU_PRIORITY = (
+    # Most-typed everyday commands first.
+    "help",
+    "new",
+    "stop",
+    "status",
+    "resume",
+    "sessions",
+    "model",
+    # Maintenance / diagnostics — the ones that prompted this priority list.
+    "debug",
+    "restart",
+    "update",
+    "verbose",
+    "commands",
+    # Mid-turn session control.
+    "approve",
+    "deny",
+    "queue",
+    "steer",
+    "background",
+    # Lower-priority but still useful operational built-ins.
+    "reasoning",
+    "usage",
+    "platforms",
+    "platform",
+    "profile",
+    "whoami",
+)
+"""Built-in commands that should stay visible in Telegram's capped menu.
+
+Telegram only displays a small BotCommand menu in practice.  The full Hermes
+registry is still dispatchable when typed manually, but operational commands
+need to survive the visible menu cap ahead of lower-priority built-ins.
+"""
+
+
+def _prioritize_telegram_menu_commands(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    priority = {
+        _sanitize_telegram_name(name): index
+        for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
+    }
+    return [
+        command
+        for _index, command in sorted(
+            enumerate(commands),
+            key=lambda item: (
+                0,
+                priority[item[1][0]],
+                item[0],
+            )
+            if item[1][0] in priority
+            else (
+                1,
+                item[0],
+            ),
+        )
+    ]
 
 
 _CMD_NAME_LIMIT = 32
@@ -721,11 +788,12 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
 
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
-        skill commands omitted due to the cap.
+        commands omitted due to the cap.
     """
-    core_commands = list(telegram_bot_commands())
+    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
+    hidden_core_count = max(0, len(all_commands) - max_commands)
 
     remaining_slots = max(0, max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
@@ -737,7 +805,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count
+    return all_commands[:max_commands], hidden_count + hidden_core_count
 
 
 def discord_skill_commands(
@@ -1080,41 +1148,6 @@ def slack_subcommand_map() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Autocomplete
 # ---------------------------------------------------------------------------
-
-
-# Per-process cache for /model<space> LM Studio autocomplete. Probing on
-# every keystroke would block the UI; a short TTL keeps it live without
-# hammering the server.
-_LMSTUDIO_COMPLETION_CACHE: tuple[float, list[str]] | None = None
-
-
-def _lmstudio_completion_models() -> list[str]:
-    """Locally-loaded LM Studio models for /model autocomplete (cached, gated)."""
-    global _LMSTUDIO_COMPLETION_CACHE
-    # Gate: don't probe 127.0.0.1 on every keystroke for users who don't use LM Studio.
-    if not (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL")):
-        try:
-            from hermes_cli.auth import _load_auth_store
-            store = _load_auth_store() or {}
-            if "lmstudio" not in (store.get("providers") or {}) \
-               and "lmstudio" not in (store.get("credential_pool") or {}):
-                return []
-        except Exception:
-            return []
-    now = time.time()
-    if _LMSTUDIO_COMPLETION_CACHE and (now - _LMSTUDIO_COMPLETION_CACHE[0]) < 30.0:
-        return _LMSTUDIO_COMPLETION_CACHE[1]
-    try:
-        from hermes_cli.models import fetch_lmstudio_models
-        models = fetch_lmstudio_models(
-            api_key=os.environ.get("LM_API_KEY", ""),
-            base_url=os.environ.get("LM_BASE_URL") or "http://127.0.0.1:1234/v1",
-            timeout=0.8,
-        )
-    except Exception:
-        models = []
-    _LMSTUDIO_COMPLETION_CACHE = (now, models)
-    return models
 
 
 class SlashCommandCompleter(Completer):
@@ -1533,52 +1566,6 @@ class SlashCommandCompleter(Completer):
         except Exception:
             pass
 
-    def _model_completions(self, sub_text: str, sub_lower: str):
-        """Yield completions for /model from config aliases + built-in aliases."""
-        seen = set()
-        # Config-based direct aliases (preferred — include provider info)
-        try:
-            from hermes_cli.model_switch import (
-                _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
-            )
-            _ensure_direct_aliases()
-            for name, da in DIRECT_ALIASES.items():
-                if name.startswith(sub_lower) and name != sub_lower:
-                    seen.add(name)
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{da.model} ({da.provider})",
-                    )
-            # Built-in catalog aliases not already covered
-            for name in sorted(MODEL_ALIASES.keys()):
-                if name in seen:
-                    continue
-                if name.startswith(sub_lower) and name != sub_lower:
-                    identity = MODEL_ALIASES[name]
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{identity.vendor}/{identity.family}",
-                    )
-        except Exception:
-            pass
-        # LM Studio: surface locally-loaded models. Gated on the user actually
-        # having LM Studio configured (env var or auth-store entry) so we
-        # don't probe 127.0.0.1 on every keystroke for users who don't use it.
-        for name in _lmstudio_completion_models():
-            if name in seen:
-                continue
-            if name.startswith(sub_lower) and name != sub_lower:
-                yield Completion(
-                    name,
-                    start_position=-len(sub_text),
-                    display=name,
-                    display_meta="LM Studio",
-                )
-
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
@@ -1602,9 +1589,6 @@ class SlashCommandCompleter(Completer):
 
             # Dynamic completions for commands with runtime lists
             if " " not in sub_text:
-                if base_cmd == "/model":
-                    yield from self._model_completions(sub_text, sub_lower)
-                    return
                 if base_cmd == "/skin":
                     yield from self._skin_completions(sub_text, sub_lower)
                     return
@@ -1722,7 +1706,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
                     return Suggestion(cmd_name[len(word):])
             return None
 
-        # Command is complete — suggest subcommands or model names
+        # Command is complete — suggest subcommands
         sub_text = parts[1] if len(parts) > 1 else ""
         sub_lower = sub_text.lower()
 

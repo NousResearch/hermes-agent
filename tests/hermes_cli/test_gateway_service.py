@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 pwd = pytest.importorskip("pwd")
+grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
 from gateway import status
@@ -678,6 +679,162 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
+    def test_launchd_domain_uses_user_domain(self):
+        # The user/<uid> domain (not gui/<uid>) is the one reachable from
+        # non-Aqua/background sessions on macOS 26+ (issue #23387).
+        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+
+    def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
+        # Codes that persist after a fresh bootstrap → launchd truly unavailable.
+        assert gateway_cli._launchctl_domain_unsupported(5) is True
+        assert gateway_cli._launchctl_domain_unsupported(125) is True
+        assert gateway_cli._launchctl_domain_unsupported(3) is False
+        assert gateway_cli._launchctl_domain_unsupported(113) is False
+        assert gateway_cli._launchctl_domain_unsupported(0) is False
+
+    def test_launchd_start_reloads_on_kickstart_exit_code_125(self, tmp_path, monkeypatch):
+        """Exit code 125 means the job is absent from the domain → bootstrap recovery."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+
+        calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_start_falls_back_to_detached_when_rebootstrap_fails(self, tmp_path, monkeypatch, capsys):
+        """If even a fresh bootstrap can't manage the domain, spawn detached."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        target = f"{gateway_cli._launchd_domain()}/{label}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd == ["launchctl", "kickstart", target]:
+                # First kickstart: job not loaded (125). After bootstrap also
+                # fails, this won't be reached again.
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_start()
+
+        assert spawned == [True]
+        assert "background process" in capsys.readouterr().out.lower()
+
+    def test_launchd_install_falls_back_to_detached_on_bootstrap_5(self, tmp_path, monkeypatch, capsys):
+        """macOS bootstrap error 5 should spawn a detached gateway, not crash."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_install(force=True)
+
+        assert spawned == [True]
+        assert "Service installed and loaded" not in capsys.readouterr().out
+
+    def test_launchd_restart_falls_back_to_detached_on_error_5(self, monkeypatch, capsys):
+        """kickstart -k error 5 (domain unmanageable) should relaunch detached."""
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert spawned == [True]
+
+    def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
+        """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""
+        def fake_run(cmd, check=False, **kwargs):
+            if "bootout" in cmd:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda **kw: None)
+
+        gateway_cli.launchd_stop()
+
+        assert "stopped" in capsys.readouterr().out.lower()
+
+    def test_launchd_fallback_exits_when_spawn_fails(self, monkeypatch, capsys):
+        """If the detached spawn fails, surface the manual workaround and exit 1."""
+        monkeypatch.setattr(gateway_cli, "_spawn_detached_gateway", lambda: False)
+
+        with pytest.raises(SystemExit) as exc:
+            gateway_cli._launchd_fallback_to_detached("test reason")
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "nohup hermes gateway run" in out
+
 
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
@@ -1321,7 +1478,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "root")
@@ -1332,7 +1488,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_explicit_root_is_allowed(self, monkeypatch):
         """When root is explicitly passed via --run-as-user root, allow it."""
-        import grp
 
         root_info = pwd.getpwnam("root")
         root_group = grp.getgrgid(root_info.pw_gid).gr_name
@@ -1343,7 +1498,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "nobody")
@@ -1631,6 +1785,14 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_supports_aqua_and_background_sessions(self):
+        # macOS 26+ only loads the agent in non-Aqua sessions when the plist
+        # opts into Background as well (issue #23387).
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>LimitLoadToSessionType</key>" in plist
+        assert "<string>Aqua</string>" in plist
+        assert "<string>Background</string>" in plist
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)
@@ -1706,7 +1868,12 @@ class TestSystemUnitPathRemapping:
         assert str(root_home) not in unit
         # Target user paths should be present
         assert "/home/alice" in unit
-        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit
+        # WorkingDirectory is anchored at the target user's HERMES_HOME (stable,
+        # always exists) — NOT the source checkout under it. Pinning cwd to the
+        # checkout is the rot bug fixed alongside this: a relocated/removed
+        # checkout would crash-loop the unit on CHDIR (status=200).
+        assert "WorkingDirectory=/home/alice/.hermes" in unit
+        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" not in unit
 
 
 class TestDockerAwareGateway:
@@ -2533,3 +2700,67 @@ class TestGatewayCommandCatchesSystemScopeError:
         # Renders the message, NOT the ``('msg', 'action')`` tuple repr
         assert "System gateway start requires root. Re-run with sudo." in out
         assert "('" not in out  # no tuple repr leaking through
+
+
+class TestServiceWorkingDirIsStable:
+    """The gateway service must anchor WorkingDirectory at a stable path
+    (HERMES_HOME), never the source checkout / worktree, so a relocated or
+    deleted checkout can't crash-loop the unit on CHDIR (status=200).
+    """
+
+    def test_stable_working_dir_uses_hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        assert Path(gateway_cli._stable_service_working_dir()) == home.resolve()
+
+    def test_stable_working_dir_falls_back_to_project_root(self, tmp_path, monkeypatch):
+        # HERMES_HOME points somewhere that does not exist -> fall back.
+        missing = tmp_path / "does-not-exist" / ".hermes"
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: missing)
+        assert gateway_cli._stable_service_working_dir() == str(gateway_cli.PROJECT_ROOT)
+
+    def test_user_unit_workingdirectory_is_hermes_home_not_checkout(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        wd = [l for l in unit.splitlines() if l.startswith("WorkingDirectory=")]
+        assert wd, "unit has no WorkingDirectory line"
+        value = wd[0].split("=", 1)[1]
+        assert Path(value).resolve() == home.resolve()
+        # The bug class: never pin cwd inside a transient worktree checkout.
+        assert "/.worktrees/" not in value
+
+    def test_launchd_workingdirectory_is_hermes_home(self, tmp_path, monkeypatch):
+        import re
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+        m = re.search(r"<key>WorkingDirectory</key>\s*<string>(.*?)</string>", plist)
+        assert m, "plist has no WorkingDirectory entry"
+        assert Path(m.group(1)).resolve() == home.resolve()
+        assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_plist_keepalive_unconditional(self, tmp_path, monkeypatch):
+        """KeepAlive must be unconditional <true/> so the gateway restarts on clean exits.
+
+        Bug #37388: the old ``KeepAlive.SuccessfulExit = false`` dict form meant
+        launchd would NOT restart after a zero-exit (e.g. ``gateway run --replace``
+        causes the old instance to exit cleanly).  Switching to the scalar
+        ``<key>KeepAlive</key><true/>`` makes launchd restart regardless of exit code.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        plist = gateway_cli.generate_launchd_plist()
+
+        # Scalar <true/> must be present immediately after the KeepAlive key
+        assert "<key>KeepAlive</key>" in plist
+        # The unconditional form
+        assert "<key>KeepAlive</key>\n    <true/>" in plist
+        # The old conditional dict form must NOT appear
+        assert "SuccessfulExit" not in plist
+        assert "<key>KeepAlive</key>\n    <dict>" not in plist

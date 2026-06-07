@@ -11,13 +11,11 @@ Windows runner.
 
 from __future__ import annotations
 
-import importlib
 import os
 import signal
-import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -543,10 +541,12 @@ class TestSubprocessCompatHelpers:
     def test_windows_flags_zero_on_posix(self):
         from hermes_cli._subprocess_compat import (
             windows_detach_flags,
+            windows_detach_flags_without_breakaway,
             windows_hide_flags,
         )
         if sys.platform != "win32":
             assert windows_detach_flags() == 0
+            assert windows_detach_flags_without_breakaway() == 0
             assert windows_hide_flags() == 0
 
     def test_windows_detach_popen_kwargs_is_posix_equivalent_on_posix(self):
@@ -558,7 +558,9 @@ class TestSubprocessCompatHelpers:
             # branch behaviour.  Do NOT break Linux/macOS here.
             assert kwargs == {"start_new_session": True}
         else:
-            # Windows path must include creationflags with all 3 bits set.
+            # Windows path must include creationflags with all 4 bits set
+            # (including CREATE_BREAKAWAY_FROM_JOB — see the dedicated
+            # breakaway test below for the rationale).
             assert "creationflags" in kwargs
             assert kwargs["creationflags"] != 0
             # No start_new_session on Windows (silently no-op there).
@@ -569,10 +571,57 @@ class TestSubprocessCompatHelpers:
         from hermes_cli import _subprocess_compat as sc
         monkeypatch.setattr(sc, "IS_WINDOWS", True)
         flags = sc.windows_detach_flags()
-        # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW
+        # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW |
+        # CREATE_BREAKAWAY_FROM_JOB
         assert flags & 0x00000200, "missing CREATE_NEW_PROCESS_GROUP"
         assert flags & 0x00000008, "missing DETACHED_PROCESS"
         assert flags & 0x08000000, "missing CREATE_NO_WINDOW"
+        assert flags & 0x01000000, "missing CREATE_BREAKAWAY_FROM_JOB"
+
+    def test_windows_detach_flags_includes_breakaway_from_job(self, monkeypatch):
+        """CREATE_BREAKAWAY_FROM_JOB is load-bearing for the GUI-driven update path.
+
+        Without it, the gateway-respawn watcher spawned by ``hermes update``
+        (which runs under hermes-setup.exe, itself a grandchild of the
+        Electron Desktop app) gets reaped when Electron exits and its
+        Win32 job object is torn down by the OS.  Result: gateway dies
+        during update and never comes back.
+
+        Regression guard against accidentally dropping the breakaway bit
+        from the default detach bundle.  This was fixed in
+        ``fix/windows-gateway-reliability`` (PR #40909) and the bit must
+        stay in the default bundle going forward.
+        """
+        from hermes_cli import _subprocess_compat as sc
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        assert sc.windows_detach_flags() & 0x01000000, (
+            "CREATE_BREAKAWAY_FROM_JOB (0x01000000) must remain in the "
+            "default detach flag bundle so the Desktop GUI update flow "
+            "can respawn the gateway after Electron exits."
+        )
+
+    def test_windows_detach_flags_without_breakaway_drops_only_that_bit(
+        self, monkeypatch
+    ):
+        """Fallback retry payload for restrictive job objects.
+
+        Some Windows Terminal / container / kiosk configurations refuse
+        CREATE_BREAKAWAY_FROM_JOB with ERROR_ACCESS_DENIED.  Callers
+        catch ``OSError`` and retry with this payload (see
+        ``gateway_windows._spawn_detached`` for the canonical pattern).
+        It must drop ONLY the breakaway bit — DETACHED_PROCESS et al.
+        are still required for the child to survive the parent's exit.
+        """
+        from hermes_cli import _subprocess_compat as sc
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        full = sc.windows_detach_flags()
+        fallback = sc.windows_detach_flags_without_breakaway()
+        # Fallback equals full minus the breakaway bit, nothing else changed.
+        assert fallback == full & ~0x01000000
+        # And the three "detach" bits we still need are present.
+        assert fallback & 0x00000200, "fallback missing CREATE_NEW_PROCESS_GROUP"
+        assert fallback & 0x00000008, "fallback missing DETACHED_PROCESS"
+        assert fallback & 0x08000000, "fallback missing CREATE_NO_WINDOW"
 
 
 # ---------------------------------------------------------------------------
@@ -625,10 +674,21 @@ class TestKanbanWaitpidWindowsGuard:
         # Find the waitpid call and confirm it's inside a POSIX gate.
         idx = source.find("os.waitpid(-1, os.WNOHANG)")
         assert idx > 0, "waitpid call must exist"
-        # Look backwards up to 400 chars for the gate.
+        # Look backwards up to 400 chars for the gate. Accept either form:
+        #   `if os.name != "nt":` (run iff POSIX), or
+        #   `if os.name == "nt": return []` (early-return guard).
+        # Both correctly keep the waitpid loop off Windows; the early-return
+        # form is stronger because the rest of the function never runs.
         preamble = source[max(0, idx - 400):idx]
-        assert 'os.name != "nt"' in preamble or "os.name != 'nt'" in preamble, (
-            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name != 'nt' guard"
+        guard_patterns = (
+            'os.name != "nt"',
+            "os.name != 'nt'",
+            'os.name == "nt"',  # early-return guard
+            "os.name == 'nt'",
+        )
+        assert any(p in preamble for p in guard_patterns), (
+            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name guard "
+            f"(checked patterns: {guard_patterns})"
         )
 
 
@@ -871,3 +931,77 @@ class TestGatewayDetachedWatcherWindowsFlags:
         assert 'if sys.platform == "win32":' in source
         # Windows branch uses windows_detach_popen_kwargs
         assert "windows_detach_popen_kwargs" in source
+
+    def test_launch_detached_profile_gateway_restart_inlined_watcher_uses_breakaway(self):
+        """The inlined respawn script (stringified Python passed to ``python -c``)
+        must include CREATE_BREAKAWAY_FROM_JOB so the *respawned gateway* also
+        breaks away from any job-object the watcher itself inherits.
+
+        Static check — the watcher source is built at import time and embedded
+        verbatim in the module text.  Parsing it for an exact AST node would be
+        brittle; the textual presence of the hex flag plus the symbolic name is
+        a sufficient regression guard.
+
+        The bit was added to the inlined payload by PR #40909.  This test
+        ensures a future refactor of the dedent block doesn't silently drop it.
+        """
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "hermes_cli" / "gateway.py").read_text(encoding="utf-8")
+        marker = "watcher = textwrap.dedent("
+        idx = text.find(marker)
+        assert idx != -1, "watcher block not found in gateway.py"
+        end = text.find(").strip()", idx)
+        assert end != -1, "watcher block end not found"
+        block = text[idx:end]
+        assert "0x01000000" in block, (
+            "Inlined respawn watcher must set CREATE_BREAKAWAY_FROM_JOB "
+            "(0x01000000) on the respawned gateway — without it, the new "
+            "gateway is reaped when the parent job is torn down."
+        )
+        assert "_CREATE_BREAKAWAY_FROM_JOB" in block, (
+            "Inlined respawn watcher must name CREATE_BREAKAWAY_FROM_JOB "
+            "symbolically so the intent is greppable."
+        )
+
+    def test_launch_detached_profile_gateway_restart_outer_popen_has_access_denied_fallback(
+        self,
+    ):
+        """When the outer watcher Popen raises OSError (breakaway denied by
+        the parent job object), the watcher launch must retry without the
+        breakaway bit instead of giving up.
+
+        This mirrors the canonical pattern in
+        ``gateway_windows._spawn_detached`` and brings the post-update
+        watcher path into parity with the gateway-start path: a
+        breakaway-denied job object on the parent process (rare but
+        possible on Windows Terminal with restrictive job settings,
+        containers, kiosk-mode shells) shouldn't take out the entire
+        gateway-respawn chain.
+
+        Static check — without standing up a real Windows job object
+        with breakaway forbidden, we can't trigger the OSError in a unit
+        test.  The textual presence of the fallback helper import +
+        ``windows_detach_flags_without_breakaway`` in the fallback path
+        is the regression guard.
+        """
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "hermes_cli" / "gateway.py").read_text(encoding="utf-8")
+        assert "windows_detach_flags_without_breakaway" in text, (
+            "launch_detached_profile_gateway_restart must import "
+            "windows_detach_flags_without_breakaway so it can retry a "
+            "breakaway-denied Popen without giving up on the watcher."
+        )
+        # And the inlined watcher's respawn must also handle the denial —
+        # check the symbol is referenced INSIDE the watcher block (not
+        # just at module scope).
+        marker = "watcher = textwrap.dedent("
+        idx = text.find(marker)
+        end = text.find(").strip()", idx)
+        block = text[idx:end]
+        # The inlined script catches OSError on the respawn and retries
+        # with breakaway cleared via ``& ~_CREATE_BREAKAWAY_FROM_JOB``.
+        assert "~_CREATE_BREAKAWAY_FROM_JOB" in block, (
+            "Inlined respawn must catch OSError on the breakaway-denied "
+            "CreateProcess and retry without the breakaway bit, matching "
+            "gateway_windows._spawn_detached's fallback pattern."
+        )

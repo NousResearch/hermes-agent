@@ -10,7 +10,7 @@ description: "Set up Hermes Agent as an SMS chatbot via Twilio"
 Hermes connects to SMS through the [Twilio](https://www.twilio.com/) API. People text your Twilio phone number and get AI responses back — same conversational experience as Telegram or Discord, but over standard text messages.
 
 :::info Shared Credentials
-The SMS gateway shares credentials with the optional [telephony skill](/docs/reference/skills-catalog). If you've already set up Twilio for voice calls or one-off SMS, the gateway works with the same `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`.
+The SMS gateway shares credentials with the optional [telephony skill](/reference/skills-catalog). If you've already set up Twilio for voice calls or one-off SMS, the gateway works with the same `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`.
 :::
 
 ---
@@ -126,7 +126,7 @@ Text your Twilio number — Hermes will respond via SMS.
 | `TWILIO_PHONE_NUMBER` | Yes | Your Twilio phone number (E.164 format) |
 | `SMS_WEBHOOK_URL` | Yes | Public URL for Twilio signature validation — must match the webhook URL in your Twilio Console |
 | `SMS_WEBHOOK_PORT` | No | Webhook listener port (default: `8080`) |
-| `SMS_WEBHOOK_HOST` | No | Webhook bind address (default: `0.0.0.0`) |
+| `SMS_WEBHOOK_HOST` | No | Webhook bind address (default: `127.0.0.1`) |
 | `SMS_INSECURE_NO_SIGNATURE` | No | Set to `true` to disable signature validation (local dev only — **not for production**) |
 | `SMS_ALLOWED_USERS` | No | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | No | Set to `true` to allow anyone (not recommended) |

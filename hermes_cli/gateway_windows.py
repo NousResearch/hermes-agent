@@ -491,186 +491,6 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
 
 
-# ---------------------------------------------------------------------------
-# Supervisor task: poll-and-respawn for crash recovery
-# ---------------------------------------------------------------------------
-#
-# The ONLOGON Scheduled Task above only fires when a user logs in. That covers
-# the "reboot" case but NOT the "gateway crashed mid-session" or "hermes update
-# SIGTERM'd the gateway and the watcher failed to respawn" cases. On Linux,
-# systemd's ``Restart=always`` handles that. The Windows equivalent has to be
-# built — Scheduled Tasks can include a ``<RestartOnFailure>`` element, but
-# that only triggers on non-zero exit codes, not on external taskkill, and
-# requires the XML schema (no /sc flag shortcut).
-#
-# Instead we install a SECOND Scheduled Task that runs every minute, checks
-# whether the gateway is alive via the PID-file / lock-file probes, and
-# spawns it again if not. Cheap (one pythonw startup per minute when down,
-# one PID-existence check per minute when up), no extra resident process,
-# survives every crash mode equally.
-
-
-def get_supervisor_task_name() -> str:
-    """Per-profile name for the poll-and-respawn supervisor task."""
-    _assert_windows()
-    from hermes_cli.gateway import _profile_suffix
-
-    suffix = _profile_suffix()
-    if not suffix:
-        return f"{_TASK_NAME_DEFAULT}_Supervisor"
-    return f"{_TASK_NAME_DEFAULT}_Supervisor_{suffix}"
-
-
-def get_supervisor_script_path() -> Path:
-    """Path to the supervisor .cmd that the per-minute task invokes."""
-    _assert_windows()
-    from hermes_cli.config import get_hermes_home
-
-    script_dir = Path(get_hermes_home()) / "gateway-service"
-    script_dir.mkdir(parents=True, exist_ok=True)
-    return script_dir / f"{_sanitize_filename(get_supervisor_task_name())}.cmd"
-
-
-def _build_supervisor_cmd_script(
-    python_path: str,
-    working_dir: str,
-    hermes_home: str,
-    profile_arg: str,
-) -> str:
-    """Render the supervisor .cmd.
-
-    Invokes ``pythonw -m hermes_cli.gateway_supervisor`` which re-uses the
-    same get_running_pid() truth source ``hermes gateway status`` uses, and
-    only spawns a new gateway if the probe says no gateway is alive. Pieces:
-
-    - ``pythonw.exe`` — no console flash every minute.
-    - Output redirected to NUL; the supervisor module writes its own log.
-    - The respawn calls ``_spawn_detached()`` which uses
-      CREATE_BREAKAWAY_FROM_JOB, so the respawned gateway is independent
-      of the schtasks-spawned probe and of any job object the probe is in.
-    """
-    pythonw_path = _derive_venv_pythonw(python_path)
-    venv_dir = str(Path(python_path).resolve().parent.parent)
-
-    lines = ["@echo off", f"rem {_TASK_DESCRIPTION} (supervisor)"]
-    lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
-    lines.append(f'set "HERMES_HOME={hermes_home}"')
-    lines.append('set "PYTHONIOENCODING=utf-8"')
-    lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
-
-    prog_args = [pythonw_path, "-m", "hermes_cli.gateway_supervisor"]
-    if profile_arg:
-        # Pass the same --profile X argv the rest of the install path uses,
-        # so the supervisor sees the right HERMES_HOME / config.
-        prog_args.extend(profile_arg.split())
-    lines.append(
-        " ".join(_quote_cmd_script_arg(a) for a in prog_args) + " >NUL 2>&1"
-    )
-    lines.append("exit /b 0")
-    return "\r\n".join(lines) + "\r\n"
-
-
-def _write_supervisor_script() -> Path:
-    """Generate and write the supervisor .cmd. Return its absolute path."""
-    _assert_windows()
-    from hermes_cli.config import get_hermes_home
-    from hermes_cli.gateway import (
-        PROJECT_ROOT,
-        _profile_arg,
-        get_python_path,
-    )
-
-    python_path = get_python_path()
-    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
-    hermes_home = str(Path(get_hermes_home()).resolve())
-    profile_arg = _profile_arg(hermes_home)
-
-    content = _build_supervisor_cmd_script(python_path, working_dir, hermes_home, profile_arg)
-    script_path = get_supervisor_script_path()
-    tmp = script_path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8", newline="")
-    tmp.replace(script_path)
-    return script_path
-
-
-def _install_supervisor_task(task_name: str, script_path: Path) -> tuple[bool, str]:
-    """Create/replace the per-minute supervisor Scheduled Task.
-
-    Trigger: ``MINUTE /MO 1`` — fires once a minute starting at install.
-    Run level: LIMITED (no admin context needed; probe + detached spawn
-    work as the logged-in user).
-
-    Returns (success, detail).
-    """
-    quoted_script = _quote_schtasks_arg(str(script_path))
-
-    delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
-    delete_detail = (delete_err or delete_out or "").strip()
-    if delete_code != 0 and delete_detail and "cannot find" not in delete_detail.lower():
-        if _is_access_denied(delete_detail):
-            return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
-
-    base = [
-        "/Create",
-        "/F",
-        "/SC",
-        "MINUTE",
-        "/MO",
-        "1",
-        "/RL",
-        "LIMITED",
-        "/TN",
-        task_name,
-        "/TR",
-        quoted_script,
-    ]
-    user = _resolve_task_user()
-    variants = []
-    if user:
-        variants.append([*base, "/RU", user, "/NP", "/IT"])
-    variants.append(base)
-
-    last_code = 1
-    last_err = ""
-    for argv in variants:
-        code, out, err = _exec_schtasks(argv)
-        if code == 0:
-            return (True, f"Created Scheduled Task {task_name!r} (every 1 min)")
-        last_code, last_err = code, (err or out or "")
-    return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
-
-
-def is_supervisor_task_registered() -> bool:
-    """True iff the per-minute supervisor task exists."""
-    code, _out, _err = _exec_schtasks(["/Query", "/TN", get_supervisor_task_name()])
-    return code == 0
-
-
-def _install_supervisor_best_effort() -> bool:
-    """Write the supervisor script + register the per-minute Scheduled Task.
-
-    Best-effort: any failure is printed as a warning, never raised. The
-    primary install path completed before this is called, so the user
-    still has working autostart even if supervisor registration fails
-    (e.g. on locked-down task ACLs).
-
-    Returns True on success, False on any failure.
-    """
-    try:
-        script_path = _write_supervisor_script()
-    except Exception as exc:
-        print(f"⚠ Could not write gateway supervisor script: {exc}")
-        print("  (Login autostart still installed. Reliability: every-minute respawn disabled.)")
-        return False
-
-    ok, detail = _install_supervisor_task(get_supervisor_task_name(), script_path)
-    if ok:
-        print(f"✓ {detail} — gateway will auto-respawn within 60s of any crash.")
-        return True
-    print(f"⚠ Could not register gateway supervisor: {detail}")
-    print("  (Login autostart still installed. Reliability: every-minute respawn disabled.)")
-    return False
-
 
 
 def _install_startup_entry(script_path: Path) -> Path:
@@ -905,7 +725,6 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
     entry = _install_startup_entry(script_path)
     print(f"✓ Installed Windows login item: {entry}")
     print(f"  Task script: {script_path}")
-    _install_supervisor_best_effort()
 
     # Re-running `hermes -p <profile> gateway install` must be safe.
     # Startup-folder fallback only installs login persistence. Starting is
@@ -988,7 +807,6 @@ def install(
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
         print("ℹ Gateway auto-start installed for Windows login.")
-        _install_supervisor_best_effort()
         if start_now:
             running_pids = _gateway_pids()
             if running_pids:
@@ -1029,7 +847,6 @@ def install(
         entry = _install_startup_entry(script_path)
         print(f"✓ Installed Windows login item: {entry}")
         print(f"  Task script: {script_path}")
-        _install_supervisor_best_effort()
 
         # Re-running `hermes -p <profile> gateway install` must be safe.
         # Startup-folder fallback only installs login persistence. Starting is
@@ -1098,22 +915,8 @@ def uninstall() -> None:
     """Remove both the Scheduled Task and the Startup-folder fallback, if present."""
     _assert_windows()
     task_name = get_task_name()
-    supervisor_name = get_supervisor_task_name()
     script_path = get_task_script_path()
-    supervisor_script = get_supervisor_script_path()
     startup_entry = get_startup_entry_path()
-
-    # Remove the supervisor first so it can't try to respawn the gateway we're
-    # about to clean up. Best-effort: schtasks /Delete on a non-existent task
-    # returns nonzero, which we treat as "already gone".
-    if is_supervisor_task_registered():
-        code, _out, err = _exec_schtasks(["/Delete", "/F", "/TN", supervisor_name])
-        if code == 0:
-            print(f"✓ Removed supervisor task {supervisor_name!r}")
-        else:
-            detail = (err or "").strip()
-            if "cannot find" not in detail.lower():
-                print(f"⚠ schtasks /Delete supervisor returned code {code}: {detail}")
 
     scheduled_task_removed = False
     if is_task_registered():
@@ -1141,7 +944,6 @@ def uninstall() -> None:
     for path, label in [
         (startup_entry, "Windows login item"),
         (script_path, "Task script"),
-        (supervisor_script, "Supervisor script"),
     ]:
         try:
             path.unlink()
@@ -1339,7 +1141,6 @@ def status(deep: bool = False) -> None:
     task_name = get_task_name()
     task_installed = is_task_registered()
     startup_installed = is_startup_entry_installed()
-    supervisor_installed = is_supervisor_task_registered()
     pids = _gateway_pids()
 
     if task_installed:
@@ -1354,12 +1155,6 @@ def status(deep: bool = False) -> None:
     else:
         print("✗ Gateway service not installed")
 
-    if supervisor_installed:
-        print(f"✓ Supervisor task registered: {get_supervisor_task_name()} (every 1 min)")
-    elif task_installed or startup_installed:
-        print(f"ℹ Supervisor not registered — reinstall to enable auto-respawn:")
-        print(f"  hermes gateway install")
-
     if pids:
         print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})")
     else:
@@ -1370,8 +1165,6 @@ def status(deep: bool = False) -> None:
         print(f"  Task name:        {task_name}")
         print(f"  Task script:      {get_task_script_path()}")
         print(f"  Startup entry:    {get_startup_entry_path()}")
-        print(f"  Supervisor task:  {get_supervisor_task_name()}")
-        print(f"  Supervisor script:{get_supervisor_script_path()}")
         # Surface the per-probe truth so the user can see *which* signal
         # is lying when the high-level summary disagrees with reality.
         _print_deep_probes()

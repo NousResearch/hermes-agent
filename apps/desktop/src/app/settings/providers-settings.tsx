@@ -21,6 +21,34 @@ import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
 
+const KO_PROVIDER_DESCRIPTIONS: Record<string, string> = {
+  'Nous Portal': '호스팅된 Hermes와 Nous 학습 모델',
+  OpenRouter: '수백 개의 프런티어 모델을 연결하는 모델 애그리게이터',
+  Anthropic: 'Claude API 접근(Sonnet, Opus, Haiku)',
+  xAI: 'Grok 모델(SuperGrok / Premium+는 OAuth 사용)',
+  Gemini: 'Google AI Studio(Gemini 1.5 / 2.0 / 2.5)',
+  DeepSeek: 'DeepSeek API 직접 접근(V3.x, R1)',
+  'DashScope (Qwen)': 'Alibaba Cloud DashScope의 Qwen 및 다중 벤더 모델',
+  'GLM / Z.AI': 'Zhipu GLM-4.6 및 Z.AI 호스팅 엔드포인트',
+  'Kimi / Moonshot': 'Moonshot Kimi K2 / 코딩 엔드포인트',
+  'Kimi (China)': 'Moonshot 중국 엔드포인트',
+  MiniMax: 'MiniMax-M2 및 Hailuo 국제 엔드포인트',
+  'MiniMax (China)': 'MiniMax 중국 본토 엔드포인트',
+  'Hugging Face': 'router.huggingface.co를 통한 20개 이상의 오픈 모델 추론 제공자',
+  'OpenCode Zen': '선별된 코딩 모델을 사용량 기반으로 이용',
+  'OpenCode Go': '오픈 코딩 모델용 월 10달러 구독',
+  'NVIDIA NIM': 'build.nvidia.com 또는 자체 로컬 NIM 엔드포인트',
+  'Ollama Cloud': 'ollama.com의 클라우드 호스팅 오픈 모델',
+  'LM Studio': '로컬 LM Studio 서버(OpenAI 호환)',
+  StepFun: 'StepFun Step Plan 코딩 모델',
+  'Xiaomi MiMo': 'MiMo-V2.5 및 Xiaomi 독점 모델',
+  'Arcee AI': 'Arcee 호스팅 소형 및 중형 모델',
+  'GMI Cloud': 'GMI Cloud GPU 및 모델 서빙',
+  'Azure Foundry': 'Azure AI Foundry 사용자 지정 엔드포인트(OpenAI / Anthropic 호환)',
+  'AWS Bedrock': 'AWS 프로필 및 리전으로 인증'
+}
+
+
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
 export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
@@ -169,7 +197,7 @@ function NoProviderKeys() {
 }
 
 export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
@@ -210,7 +238,11 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   // providers there's nothing for the "Accounts" view to show, so fall to keys.
   const showApiKeys = view === 'keys' || !hasOauth
 
-  const keyGroups = buildProviderKeyGroups(vars)
+  const keyGroups = buildProviderKeyGroups(vars).map(group =>
+    locale === 'ko'
+      ? { ...group, description: KO_PROVIDER_DESCRIPTIONS[group.name] ?? group.description }
+      : group
+  )
 
   if (showApiKeys) {
     return (

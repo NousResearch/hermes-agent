@@ -246,36 +246,52 @@ def _apply_picker_hints(rows: list[dict]) -> None:
     Mutates ``rows`` in-place. Rows already from
     ``list_authenticated_providers`` are marked ``authenticated=True``;
     the unconfigured skeleton rows from ``_append_unconfigured_rows`` get
-    the picker's setup-hint shape.
+    the picker's setup-hint shape. ``auth_type`` and ``auth_badge`` are
+    set for ALL rows so the picker can render 🔐 OAuth vs 🔑 API-key
+    badges regardless of auth state.
     """
     from hermes_cli.auth import PROVIDER_REGISTRY
 
     for row in rows:
-        if "authenticated" in row:
-            continue
         # Distinguish authenticated rows (returned by
         # list_authenticated_providers) from skeleton rows (from
         # _append_unconfigured_rows). The skeleton rows have empty
         # `models` AND source="canonical"; authenticated rows have
         # populated `models` OR a non-canonical source.
         is_skeleton = row.get("source") == "canonical" and not row.get("models")
-        row["authenticated"] = not is_skeleton
-        if not is_skeleton or row.get("is_user_defined"):
-            continue
-        cfg = PROVIDER_REGISTRY.get(row["slug"])
-        auth_type = cfg.auth_type if cfg else "api_key"
-        key_env = (
-            cfg.api_key_env_vars[0]
-            if (cfg and cfg.api_key_env_vars)
-            else ""
-        )
-        row["auth_type"] = auth_type
-        row["key_env"] = key_env
-        row["warning"] = (
-            f"paste {key_env} to activate"
-            if auth_type == "api_key" and key_env
-            else f"run `hermes model` to configure ({auth_type})"
-        )
+        if "authenticated" not in row:
+            row["authenticated"] = not is_skeleton
+
+        # Resolve auth_type for every row (authenticated + skeleton) so the
+        # picker can render 🔐 OAuth vs 🔑 API-key badges.
+        if "auth_type" not in row:
+            cfg = PROVIDER_REGISTRY.get(row.get("slug", ""))
+            row["auth_type"] = cfg.auth_type if cfg else "api_key"
+        # Derive a short badge string the picker can render directly.
+        if "auth_badge" not in row:
+            at = row.get("auth_type", "api_key")
+            if at.startswith("oauth"):
+                row["auth_badge"] = "🔐OAuth"
+            elif at == "api_key":
+                row["auth_badge"] = "🔑API"
+            else:
+                row["auth_badge"] = at
+
+        # Setup-hint fields only apply to unconfigured skeleton rows
+        # (not user-defined, not authenticated).
+        if is_skeleton and not row.get("is_user_defined"):
+            cfg = PROVIDER_REGISTRY.get(row.get("slug", ""))
+            key_env = (
+                cfg.api_key_env_vars[0]
+                if (cfg and cfg.api_key_env_vars)
+                else ""
+            )
+            row["key_env"] = key_env
+            row["warning"] = (
+                f"paste {key_env} to activate"
+                if row["auth_type"] == "api_key" and key_env
+                else f"run `hermes model` to configure ({row['auth_type']})"
+            )
 
 
 def _reorder_canonical(rows: list[dict]) -> list[dict]:

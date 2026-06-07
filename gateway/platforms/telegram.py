@@ -2941,6 +2941,9 @@ class TelegramAdapter(BasePlatformAdapter):
         def _provider_button(p):
             count = p.get("total_models", len(p.get("models", [])))
             label = f"{p['name']} ({count})"
+            badge = p.get("auth_badge")
+            if badge:
+                label = f"{label} {badge}"
             if p.get("is_current"):
                 label = f"✓ {label}"
             return InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
@@ -3168,6 +3171,9 @@ class TelegramAdapter(BasePlatformAdapter):
             for p in members:
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count})"
+                badge = p.get("auth_badge")
+                if badge:
+                    label = f"{label} {badge}"
                 if p.get("is_current"):
                     label = f"✓ {label}"
                 buttons.append(

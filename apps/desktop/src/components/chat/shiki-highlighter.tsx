@@ -12,6 +12,7 @@ import {
   CodeCardSubtitle,
   CodeCardTitle
 } from '@/components/chat/code-card'
+import { MermaidBlock } from '@/components/chat/mermaid-block'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
@@ -58,14 +59,18 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
     return null
   }
 
-  if (isLikelyProseCodeBlock(language, trimmed)) {
+  const cleanLanguage = sanitizeLanguageTag(language || '')
+  // An explicit ```mermaid tag is a diagram, never prose — keep it out of the
+  // prose heuristic, which simple flowcharts otherwise trip.
+  const isMermaid = cleanLanguage === 'mermaid'
+
+  if (!isMermaid && isLikelyProseCodeBlock(language, trimmed)) {
     return <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground">{trimmed}</div>
   }
 
-  const cleanLanguage = sanitizeLanguageTag(language || '')
   const label = cleanLanguage && cleanLanguage !== 'unknown' ? cleanLanguage : ''
 
-  return (
+  const card = (
     <CodeCard data-streaming={defer ? 'true' : undefined}>
       <CodeCardHeader>
         <CodeCardTitle>
@@ -104,4 +109,13 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       </CodeCardBody>
     </CodeCard>
   )
+
+  // Render Mermaid live only once streaming settles (`defer` tracks it): the
+  // source card stands in during streaming so partial diagrams never flash
+  // error states, and stays the fallback when the source doesn't parse.
+  if (isMermaid && !defer) {
+    return <MermaidBlock chart={trimmed} fallback={card} />
+  }
+
+  return card
 }

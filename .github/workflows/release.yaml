@@ -1,39 +1,35 @@
 name: 'Hermes Agent: Production'
 
-permissions: write-all
+permissions:
+  contents: write
+  packages: write
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version'
+        description: "Release version (e.g. 0.1.0)"
         type: string
         required: true
 
 env:
-  SERVICE: 'hermes-agent'
-  IMAGE_REPOSITORY: asia.gcr.io/production-476602/hermes-agent
+  REGISTRY: ghcr.io
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
       version_tag: ${{ steps.version_tag.outputs.value }}
-      build_date: ${{ steps.build_date.outputs.value }}
+      version_raw: ${{ steps.version_tag.outputs.raw }}
     steps:
       - name: Format version tag
-        shell: bash
         id: version_tag
         env:
           INPUT_TAG: ${{ inputs.version }}
         run: |
           TAG=${INPUT_TAG#v}
-          echo "value=v$TAG" >> $GITHUB_OUTPUT
-
-      - name: Build date
-        shell: bash
-        id: build_date
-        run: echo "value=$(date +%FT%T%z)" >> $GITHUB_OUTPUT
+          echo "value=v$TAG" >> "$GITHUB_OUTPUT"
+          echo "raw=$TAG" >> "$GITHUB_OUTPUT"
 
   docker:
     needs:
@@ -41,49 +37,44 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION_TAG: ${{ needs.prepare.outputs.version_tag }}
-      BUILD_DATE: ${{ needs.prepare.outputs.build_date }}
+      VERSION_RAW: ${{ needs.prepare.outputs.version_raw }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set image name
+        id: set_image
+        run: |
+          REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          IMAGE_BASE="${{ env.REGISTRY }}/${REPO_LOWER}"
+          echo "IMAGE_BASE=$IMAGE_BASE" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${IMAGE_BASE}:${VERSION_RAW}" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=${IMAGE_BASE}:latest" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Gcloud Auth
-        uses: google-github-actions/auth@v2
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          credentials_json: '${{ secrets.GCR_CREDENTIALS }}'
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Gcloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure docker
-        run: gcloud auth configure-docker
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-${{ env.SERVICE }}-buildx
-          restore-keys: |
-            ${{ runner.os }}-${{ env.SERVICE }}-buildx
-
-      - name: Docker build and push
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.IMAGE_REPOSITORY }}:${{ env.VERSION_TAG }}
+            ${{ env.IMAGE_NAME }}
+            ${{ env.IMAGE_LATEST }}
           build-args: |
-            BUILD_DATE=${{ env.BUILD_DATE }}
+            HERMES_GIT_SHA=${{ github.sha }}
             VERSION=${{ env.VERSION_TAG }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      - name: Move Docker cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          cache-from: type=gha,scope=release
+          cache-to: type=gha,mode=max,scope=release
 
   release:
     needs:
@@ -97,6 +88,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Git
         run: |
@@ -106,8 +98,8 @@ jobs:
       - name: Create tag
         run: |
           git tag -d "$VERSION_TAG" 2> /dev/null || echo "Release tag '$VERSION_TAG' does NOT exist"
-          git tag --annotate --message "${{ env.SERVICE }} $VERSION_TAG" "$VERSION_TAG"
-          git push origin "refs/tags/$VERSION_TAG"
+          git tag --annotate --message "hermes-agent $VERSION_TAG" "$VERSION_TAG"
+          git push --force origin "refs/tags/$VERSION_TAG"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -115,4 +107,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ env.VERSION_TAG }}
           prerelease: false
-          name: '${{ env.SERVICE }} ${{ env.VERSION_TAG }}'
+          name: 'hermes-agent ${{ env.VERSION_TAG }}'

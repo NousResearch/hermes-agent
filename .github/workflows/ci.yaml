@@ -3,14 +3,28 @@ name: 'Hermes Agent: CI'
 on:
   push:
     branches:
+      - main
       - dev
+      - "feature/**"
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - "docker/**"
+      - ".github/workflows/ci.yaml"
   pull_request:
-    branches:
-      - dev
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - "docker/**"
+      - ".github/workflows/ci.yaml"
 
 env:
-  SERVICE: 'hermes-agent'
-  IMAGE_REPOSITORY: asia.gcr.io/develop-430303/hermes-agent
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/hermes-agent
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,29 +49,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    needs: lint
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-${{ env.SERVICE }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ env.SERVICE }}-buildx-
-
-      - name: Docker build
+      - name: Build image (no push)
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile
           push: false
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      - name: Move Docker cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          platforms: linux/amd64
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,mode=max,scope=ci

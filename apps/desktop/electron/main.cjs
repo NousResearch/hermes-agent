@@ -297,6 +297,9 @@ const WINDOW_BUTTON_POSITION = {
 // non-macOS platforms.
 const NATIVE_OVERLAY_BUTTON_WIDTH = 144
 const APP_ICON_PATHS = [
+  // On Windows, use .ico format (PNG doesn't work as window/taskbar icon).
+  // macOS/Linux handle PNG fine.  Issue #41305.
+  ...(IS_WINDOWS ? [path.join(APP_ROOT, 'assets', 'icon.ico')] : []),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')

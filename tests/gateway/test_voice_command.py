@@ -1329,6 +1329,8 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None
+        adapter._voice_require_wake_word = True
+        adapter._voice_wake_words = ("hermes", "sage")
         adapter._allowed_user_ids = set()
         adapter._running = True
         return adapter
@@ -1457,11 +1459,37 @@ class TestDiscordVoiceChannelMethods:
 
         with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
-                   return_value={"success": True, "transcript": "Hello"}), \
+                   return_value={"success": True, "transcript": "Hey Hermes, hello"}), \
              patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
             await adapter._process_voice_input(111, 42, pcm_data)
 
-        callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
+        callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hey Hermes, hello")
+
+    @pytest.mark.asyncio
+    async def test_process_voice_input_requires_wake_word_by_default(self):
+        """Ambient Discord speech must not trigger Hermes without a wake word."""
+        adapter = self._make_adapter()
+        callback = AsyncMock()
+        adapter._voice_input_callback = callback
+
+        with (
+            patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"),
+            patch(
+                "tools.transcription_tools.transcribe_audio",
+                return_value={"success": True, "transcript": "Ambient room phrase."},
+            ),
+            patch("tools.voice_mode.is_whisper_hallucination", return_value=False),
+        ):
+            await adapter._process_voice_input(111, 42, b"\\x00" * 96000)
+
+        callback.assert_not_called()
+
+    def test_voice_wake_word_detection_accepts_configured_names(self):
+        adapter = self._make_adapter()
+
+        assert adapter._voice_transcript_has_wake_word("Hey Hermes, test") is True
+        assert adapter._voice_transcript_has_wake_word("Sage, test") is True
+        assert adapter._voice_transcript_has_wake_word("Ambient room phrase") is False
 
     @pytest.mark.asyncio
     async def test_process_voice_input_hallucination_filtered(self):

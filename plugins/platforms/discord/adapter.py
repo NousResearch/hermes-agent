@@ -629,6 +629,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        self._voice_require_wake_word = self._env_flag(
+            "HERMES_DISCORD_VOICE_REQUIRE_WAKE_WORD", default=True
+        )
+        self._voice_wake_words = self._load_voice_wake_words()
         # Phase 3: continuous voice mixer (ambient idle bed + ducked speech).
         # Installed once per guild on join; lets acks / TTS / the "thinking"
         # loop overlap in one outgoing stream instead of stop-and-swap.
@@ -655,6 +659,30 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+
+    @staticmethod
+    def _env_flag(name: str, *, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None or str(raw).strip() == "":
+            return default
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _load_voice_wake_words() -> tuple[str, ...]:
+        raw = os.getenv("HERMES_DISCORD_VOICE_WAKE_WORDS", "hermes,sage")
+        words = tuple(
+            word.strip().lower()
+            for word in raw.split(",")
+            if word.strip()
+        )
+        return words or ("hermes", "sage")
+
+    def _voice_transcript_has_wake_word(self, transcript: str) -> bool:
+        if not self._voice_require_wake_word:
+            return True
+        normalized = re.sub(r"[^\w\s]", " ", str(transcript or "").lower())
+        tokens = set(normalized.split())
+        return any(word in tokens for word in self._voice_wake_words)
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -2452,6 +2480,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
             transcript = result.get("transcript", "").strip()
             if not transcript or is_whisper_hallucination(transcript):
+                return
+            if not self._voice_transcript_has_wake_word(transcript):
+                logger.info(
+                    "Ignoring Discord voice input without wake word from user %d: %s",
+                    user_id,
+                    transcript[:100],
+                )
                 return
 
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])

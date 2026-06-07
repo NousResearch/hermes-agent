@@ -330,6 +330,14 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
     # echo back; the underscore form is provider-specific enough.
     "content_filter",
     "responsibleaipolicyviolation",
+    # xAI / Grok safety filter — returns HTTP 500 with "new_sensitive"
+    # error code and "image is sensitive" / "text is sensitive" in the
+    # message body.  Without this entry the classifier falls through to
+    # the 5xx → server_error (retryable=True) rule, burning retries on a
+    # deterministic per-prompt rejection. See issue #40206.
+    "new_sensitive",
+    "image is sensitive",
+    "text is sensitive",
 ]
 
 # Auth patterns (non-status-code signals)

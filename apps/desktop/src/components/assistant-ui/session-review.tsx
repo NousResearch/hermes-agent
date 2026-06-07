@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { Codicon } from '@/components/ui/codicon'
 import { DiffLines } from '@/components/chat/diff-lines'
 import { ChevronDown, ChevronRight, FileText } from '@/lib/icons'
-import { $sessionChanges } from '@/store/session-changes'
+import { $sessionChanges, stripAnsi } from '@/store/session-changes'
 
 export function SessionReview() {
   const changes = useStore($sessionChanges)
@@ -66,7 +66,7 @@ export function SessionReview() {
             {/* Expanded diff */}
             {isExpanded && (
               <div className="border-t border-border bg-muted/20">
-                <DiffLines text={change.diff} />
+                <DiffLines text={stripAnsi(change.diff)} />
               </div>
             )}
           </div>

@@ -15,7 +15,7 @@ export const SIDEBAR_DEFAULT_WIDTH = 237
 export const SIDEBAR_MAX_WIDTH = 360
 export const FILE_BROWSER_DEFAULT_WIDTH = '17rem'
 export const FILE_BROWSER_MIN_WIDTH = '14rem'
-export const FILE_BROWSER_MAX_WIDTH = '20rem'
+export const FILE_BROWSER_MAX_WIDTH = '36rem'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 

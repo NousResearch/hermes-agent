@@ -3255,7 +3255,11 @@ def install_from_quarantine(
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
 
-    # Record in lock file
+    # Record in lock file — use bundle_content_hash (not content_hash) so the
+    # stored hash matches what check_for_skill_updates() compares against.
+    # content_hash() hashes ALL files on disk (including __pycache__ etc.),
+    # while bundle_content_hash() hashes only the bundle's declared files.
+    # Using the latter avoids false-positive "update_available" after install.
     lock = HubLockFile()
     lock.record_install(
         name=safe_skill_name,
@@ -3263,7 +3267,7 @@ def install_from_quarantine(
         identifier=bundle.identifier,
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
+        skill_hash=bundle_content_hash(bundle),
         install_path=str(install_dir.relative_to(SKILLS_DIR)),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,

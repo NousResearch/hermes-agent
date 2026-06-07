@@ -196,6 +196,14 @@ _pool = concurrent.futures.ThreadPoolExecutor(
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
+# Keep at most one live slash-worker subprocess per Hermes session key. The
+# TUI session key can rotate after compression, and reconnect/race paths can
+# attempt to construct another worker for the same key before the old session
+# object is torn down. The registry lets the newer worker supersede the older
+# one immediately instead of leaving duplicate idle workers behind.
+_slash_worker_registry_lock = threading.Lock()
+_slash_workers_by_key: dict[str, "_SlashWorker"] = {}
+
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
 # of corrupting the JSON protocol.
@@ -212,8 +220,10 @@ class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str):
+        self.session_key = session_key
         self._lock = threading.Lock()
         self._seq = 0
+        self._closed = False
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
 
@@ -237,8 +247,22 @@ class _SlashWorker:
             cwd=os.getcwd(),
             env=os.environ.copy(),
         )
+        self.pid = getattr(self.proc, "pid", None)
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+        previous: _SlashWorker | None = None
+        with _slash_worker_registry_lock:
+            previous = _slash_workers_by_key.get(session_key)
+            _slash_workers_by_key[session_key] = self
+        if previous is not None and previous is not self:
+            logger.warning(
+                "replacing stale slash_worker session_key=%s old_pid=%s new_pid=%s",
+                session_key,
+                getattr(previous, "pid", None),
+                self.pid,
+            )
+            previous.close()
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
@@ -281,15 +305,44 @@ class _SlashWorker:
             )
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        with _slash_worker_registry_lock:
+            if _slash_workers_by_key.get(self.session_key) is self:
+                _slash_workers_by_key.pop(self.session_key, None)
         try:
             if self.proc.poll() is None:
+                logger.info(
+                    "closing slash_worker session_key=%s pid=%s",
+                    self.session_key,
+                    self.pid,
+                )
                 self.proc.terminate()
-                self.proc.wait(timeout=1)
+                try:
+                    self.proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "slash_worker did not terminate; killing session_key=%s pid=%s",
+                        self.session_key,
+                        self.pid,
+                    )
+                    self.proc.kill()
+                    self.proc.wait(timeout=1)
         except Exception:
             try:
                 self.proc.kill()
+                self.proc.wait(timeout=1)
             except Exception:
                 pass
+        finally:
+            for stream_name in ("stdin", "stdout", "stderr"):
+                try:
+                    stream = getattr(self.proc, stream_name, None)
+                    if stream:
+                        stream.close()
+                except Exception:
+                    pass
 
 
 def _load_busy_input_mode() -> str:

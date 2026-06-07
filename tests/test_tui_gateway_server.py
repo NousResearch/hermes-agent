@@ -986,6 +986,92 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     assert fired["timer"] is False
 
 
+class _FakeSlashProc:
+    _next_pid = 1000
+
+    def __init__(self, *, wait_timeouts: int = 0):
+        type(self)._next_pid += 1
+        self.pid = type(self)._next_pid
+        self.stdin = types.SimpleNamespace(
+            write=lambda *_args, **_kwargs: None,
+            flush=lambda *_args, **_kwargs: None,
+            close=lambda *_args, **_kwargs: None,
+        )
+        self.stdout = []
+        self.stderr = []
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+        self.wait_calls = 0
+        self.wait_timeouts = wait_timeouts
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        if self.wait_calls <= self.wait_timeouts:
+            raise server.subprocess.TimeoutExpired("slash-worker", timeout)
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+
+def test_slash_worker_replaces_existing_worker_for_same_session_key(monkeypatch):
+    """A continuation/reconnect race must not leave duplicate workers alive."""
+    created = []
+
+    def _popen(*_args, **_kwargs):
+        proc = _FakeSlashProc()
+        created.append(proc)
+        return proc
+
+    monkeypatch.setattr(server.subprocess, "Popen", _popen)
+    server._slash_workers_by_key.clear()
+    try:
+        first = server._SlashWorker("same-session", "model")
+        second = server._SlashWorker("same-session", "model")
+
+        assert first._closed is True
+        assert created[0].terminated is True
+        assert server._slash_workers_by_key["same-session"] is second
+    finally:
+        for worker in list(server._slash_workers_by_key.values()):
+            worker.close()
+        server._slash_workers_by_key.clear()
+
+
+def test_slash_worker_close_waits_after_kill_to_reap_process(monkeypatch):
+    """If graceful terminate times out, close() must kill AND wait to avoid zombies."""
+    created = []
+
+    def _popen(*_args, **_kwargs):
+        proc = _FakeSlashProc(wait_timeouts=1)
+        created.append(proc)
+        return proc
+
+    monkeypatch.setattr(server.subprocess, "Popen", _popen)
+    server._slash_workers_by_key.clear()
+    try:
+        worker = server._SlashWorker("kill-session", "model")
+        worker.close()
+
+        proc = created[0]
+        assert proc.terminated is True
+        assert proc.killed is True
+        assert proc.wait_calls == 2
+        assert "kill-session" not in server._slash_workers_by_key
+    finally:
+        server._slash_workers_by_key.clear()
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 

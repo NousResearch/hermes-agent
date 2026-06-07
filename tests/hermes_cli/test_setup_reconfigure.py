@@ -186,7 +186,7 @@ class TestQuickFlag:
 class TestFreshInstall:
     """On a fresh install (no active provider), flags are no-ops."""
 
-    def test_bare_setup_runs_first_time_flow(self, fresh_install):
+    def test_bare_setup_defaults_to_provider_first_flow(self, fresh_install):
         args = _make_setup_args()
 
         with ExitStack() as stack:
@@ -194,12 +194,80 @@ class TestFreshInstall:
                 stack,
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
                 first="hermes_cli.setup._run_first_time_quick_setup",
+                model="hermes_cli.setup.setup_model_provider",
+                terminal="hermes_cli.setup.setup_terminal_backend",
+                defaults="hermes_cli.setup._apply_default_agent_settings",
+                gateway="hermes_cli.setup.setup_gateway",
+                tools="hermes_cli.setup.setup_tools",
+                summary="hermes_cli.setup._print_setup_summary",
             )
             from hermes_cli.setup import run_setup_wizard
             run_setup_wizard(args)
 
-        m["prompt"].assert_called_once()  # quick-vs-full prompt
+        m["prompt"].assert_called_once()
+        choices = m["prompt"].call_args.args[1]
+        assert choices[0].startswith("Choose inference provider")
+        assert choices[1].startswith("Quick Setup (Nous Portal)")
+        assert choices[2].startswith("Skip setup for now")
+        assert m["prompt"].call_args.args[2] == 0
+        m["first"].assert_not_called()
+        m["model"].assert_called_once()
+        m["terminal"].assert_called_once()
+        m["defaults"].assert_called_once()
+        m["gateway"].assert_called_once()
+        m["tools"].assert_called_once()
+        m["summary"].assert_called_once()
+
+    def test_bare_setup_quick_choice_runs_nous_portal_flow(self, fresh_install):
+        args = _make_setup_args()
+
+        with ExitStack() as stack:
+            m = _enter_fresh_install_patches(
+                stack,
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 1}),
+                first="hermes_cli.setup._run_first_time_quick_setup",
+                model="hermes_cli.setup.setup_model_provider",
+                terminal="hermes_cli.setup.setup_terminal_backend",
+                gateway="hermes_cli.setup.setup_gateway",
+                tools="hermes_cli.setup.setup_tools",
+            )
+            from hermes_cli.setup import run_setup_wizard
+            run_setup_wizard(args)
+
+        m["prompt"].assert_called_once()
         m["first"].assert_called_once()
+        m["model"].assert_not_called()
+        m["terminal"].assert_not_called()
+        m["gateway"].assert_not_called()
+        m["tools"].assert_not_called()
+
+    def test_bare_setup_skip_choice_exits_without_portal(self, fresh_install, capsys):
+        args = _make_setup_args()
+
+        with ExitStack() as stack:
+            m = _enter_fresh_install_patches(
+                stack,
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
+                first="hermes_cli.setup._run_first_time_quick_setup",
+                model="hermes_cli.setup.setup_model_provider",
+                terminal="hermes_cli.setup.setup_terminal_backend",
+                defaults="hermes_cli.setup._apply_default_agent_settings",
+                gateway="hermes_cli.setup.setup_gateway",
+                tools="hermes_cli.setup.setup_tools",
+            )
+            from hermes_cli.setup import run_setup_wizard
+            run_setup_wizard(args)
+
+        m["prompt"].assert_called_once()
+        m["first"].assert_not_called()
+        m["model"].assert_not_called()
+        m["terminal"].assert_not_called()
+        m["defaults"].assert_not_called()
+        m["gateway"].assert_not_called()
+        m["tools"].assert_not_called()
+        out = capsys.readouterr().out
+        assert "Skipping setup for now." in out
+        assert "hermes setup model" in out
 
     def test_reconfigure_on_fresh_install_falls_through(self, fresh_install):
         args = _make_setup_args(reconfigure=True)
@@ -207,7 +275,7 @@ class TestFreshInstall:
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
-                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 1}),
                 first="hermes_cli.setup._run_first_time_quick_setup",
             )
             from hermes_cli.setup import run_setup_wizard
@@ -222,7 +290,7 @@ class TestFreshInstall:
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
-                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 1}),
                 first="hermes_cli.setup._run_first_time_quick_setup",
             )
             from hermes_cli.setup import run_setup_wizard

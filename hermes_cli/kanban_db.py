@@ -2878,6 +2878,60 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+def _recompute_ready_candidate_rows(
+    conn: sqlite3.Connection, failure_limit: Optional[int] = None,
+) -> list[sqlite3.Row]:
+    """Return rows that ``recompute_ready`` would promote.
+
+    This helper is intentionally side-effect free so dispatcher dry-runs can
+    preview promotion without flipping task status or emitting ``promoted``
+    events.
+    """
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
+    candidates: list[sqlite3.Row] = []
+    todo_rows = conn.execute(
+        "SELECT id, status, consecutive_failures, max_retries "
+        "FROM tasks WHERE status IN ('todo', 'blocked')"
+    ).fetchall()
+    for row in todo_rows:
+        task_id = row["id"]
+        cur_status = row["status"]
+        if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+            # Worker / operator asked for human review — do not
+            # silently auto-recover.  ``unblock_task`` is the only
+            # legitimate exit (it emits ``"unblocked"`` which flips
+            # this predicate back).
+            continue
+        parents = conn.execute(
+            "SELECT t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        if not all(p["status"] in ("done", "archived") for p in parents):
+            continue
+        if cur_status == "blocked":
+            # Don't auto-recover tasks that have hit the
+            # circuit-breaker failure limit.  Without this
+            # guard, a task that repeatedly exhausts its
+            # iteration budget would cycle forever:
+            # block → auto-recover → respawn → budget
+            # exhausted → block → …  The counter must also
+            # be preserved so the breaker can accumulate
+            # across recovery cycles.
+            failures = int(row["consecutive_failures"] or 0)
+            task_limit = row["max_retries"]
+            effective_limit = (
+                int(task_limit) if task_limit is not None
+                else int(failure_limit)
+            )
+            if failures >= effective_limit:
+                continue
+        candidates.append(row)
+    return candidates
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
@@ -2909,59 +2963,24 @@ def recompute_ready(
          ``kanban.failure_limit`` config value through ``dispatch_once``)
       3. ``DEFAULT_FAILURE_LIMIT``
     """
-    if failure_limit is None:
-        failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
-        todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
-        ).fetchall()
-        for row in todo_rows:
+        for row in _recompute_ready_candidate_rows(conn, failure_limit):
             task_id = row["id"]
             cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Worker / operator asked for human review — do not
-                # silently auto-recover.  ``unblock_task`` is the only
-                # legitimate exit (it emits ``"unblocked"`` which flips
-                # this predicate back).
-                continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
-                if cur_status == "blocked":
-                    # Don't auto-recover tasks that have hit the
-                    # circuit-breaker failure limit.  Without this
-                    # guard, a task that repeatedly exhausts its
-                    # iteration budget would cycle forever:
-                    # block → auto-recover → respawn → budget
-                    # exhausted → block → …  The counter must also
-                    # be preserved so the breaker can accumulate
-                    # across recovery cycles.
-                    failures = int(row["consecutive_failures"] or 0)
-                    task_limit = row["max_retries"]
-                    effective_limit = (
-                        int(task_limit) if task_limit is not None
-                        else int(failure_limit)
-                    )
-                    if failures >= effective_limit:
-                        continue
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' "
-                        "WHERE id = ? AND status = 'blocked'",
-                        (task_id,),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
-                        (task_id,),
-                    )
-                _append_event(conn, task_id, "promoted", None)
-                promoted += 1
+            if cur_status == "blocked":
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready' "
+                    "WHERE id = ? AND status = 'blocked'",
+                    (task_id,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
+                    (task_id,),
+                )
+            _append_event(conn, task_id, "promoted", None)
+            promoted += 1
     return promoted
 
 
@@ -6091,7 +6110,16 @@ def dispatch_once(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
-    result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    if dry_run:
+        promoted_preview_ids = [
+            r["id"] for r in _recompute_ready_candidate_rows(
+                conn, failure_limit=failure_limit,
+            )
+        ]
+        result.promoted = len(promoted_preview_ids)
+    else:
+        promoted_preview_ids = []
+        result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -6108,11 +6136,21 @@ def dispatch_once(
             ).fetchone()[0]
         )
 
-    ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    if dry_run and promoted_preview_ids:
+        placeholders = ",".join("?" * len(promoted_preview_ids))
+        ready_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE claim_lock IS NULL "
+            f"AND (status = 'ready' OR id IN ({placeholders})) "
+            "ORDER BY priority DESC, created_at ASC",
+            promoted_preview_ids,
+        ).fetchall()
+    else:
+        ready_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE status = 'ready' AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks

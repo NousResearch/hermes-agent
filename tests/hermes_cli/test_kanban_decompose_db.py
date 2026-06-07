@@ -68,6 +68,107 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_dispatch_dry_run_previews_decomposed_todo_child_without_promoting(kanban_home):
+    """Dispatcher dry-run must preview ready promotion without writing it.
+
+    Manual-review decompositions can intentionally leave parent-free children
+    in ``todo`` via ``auto_promote=False``. A real dispatcher tick may promote
+    those rows, but dry-run should only report that it would promote/spawn; it
+    must not flip status or emit a persistent ``promoted`` event.
+    """
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="manual-review decomposition")
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="default",
+            children=[{"title": "review child", "assignee": "default"}],
+            author="decomposer",
+            auto_promote=False,
+        )
+        assert child_ids is not None
+        child_id = child_ids[0]
+        before = kb.get_task(conn, child_id)
+        assert before is not None
+        assert before.status == "todo"
+        before_events = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (child_id,),
+            )
+        ]
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: 12345,
+            dry_run=True,
+        )
+
+        assert result.promoted == 1
+        assert result.spawned == [(child_id, "default", "")]
+        after = kb.get_task(conn, child_id)
+        assert after is not None
+        assert after.status == "todo"
+        after_events = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (child_id,),
+            )
+        ]
+        assert after_events == before_events
+
+
+def test_dispatch_real_run_promotes_decomposed_todo_child(kanban_home):
+    """Non-dry dispatch still promotes and spawns the same child.
+
+    The dry-run fix must not change real dispatcher behavior: parent-free
+    decomposed children left in ``todo`` are eligible to promote to ``ready``
+    and be claimed on a real dispatcher tick.
+    """
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="real dispatch decomposition")
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="default",
+            children=[{"title": "real child", "assignee": "default"}],
+            author="decomposer",
+            auto_promote=False,
+        )
+        assert child_ids is not None
+        child_id = child_ids[0]
+        before = kb.get_task(conn, child_id)
+        assert before is not None
+        assert before.status == "todo"
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: 12345,
+            dry_run=False,
+        )
+
+        assert result.promoted == 1
+        assert len(result.spawned) == 1
+        assert result.spawned[0][0] == child_id
+        assert result.spawned[0][1] == "default"
+        assert result.spawned[0][2]
+        after = kb.get_task(conn, child_id)
+        assert after is not None
+        assert after.status == "running"
+        after_events = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (child_id,),
+            )
+        ]
+        assert "promoted" in after_events
+        assert "claimed" in after_events
+        assert "spawned" in after_events
+
+
 def test_decompose_returns_none_when_task_missing(kanban_home):
     with kb.connect() as conn:
         result = kb.decompose_triage_task(

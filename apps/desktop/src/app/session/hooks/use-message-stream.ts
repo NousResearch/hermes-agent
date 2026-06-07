@@ -191,6 +191,34 @@ export function useMessageStream({
   refreshSessions,
   updateSessionState
 }: MessageStreamOptions) {
+  // Coalesce the session-list refresh that fires on every message.complete.
+  // refreshSessions() runs the unified cross-profile query (it scans every
+  // profile's state.db); a burst of completions — or several concurrent
+  // background-profile sessions each finishing a turn — would otherwise stack
+  // one cross-DB scan per turn onto the UI-thread → IPC → HTTP chain. Collapse
+  // them to at most one refresh per window. Explicit refreshes elsewhere (boot,
+  // session create/branch) stay immediate.
+  const refreshSessionsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const coalesceRefreshSessions = useCallback(() => {
+    if (refreshSessionsTimerRef.current !== null) {
+      return
+    }
+
+    refreshSessionsTimerRef.current = setTimeout(() => {
+      refreshSessionsTimerRef.current = null
+      void refreshSessions().catch(() => undefined)
+    }, 400)
+  }, [refreshSessions])
+
+  useEffect(
+    () => () => {
+      if (refreshSessionsTimerRef.current !== null) {
+        clearTimeout(refreshSessionsTimerRef.current)
+      }
+    },
+    []
+  )
+
   // Patch the in-flight assistant message (or seed it). Centralises the
   // streamId/groupId bookkeeping every event callback would otherwise repeat.
   const mutateStream = useCallback(
@@ -534,7 +562,7 @@ export function useMessageStream({
         }
       })
 
-      void refreshSessions().catch(() => undefined)
+      coalesceRefreshSessions()
 
       if (shouldHydrate) {
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
@@ -547,7 +575,7 @@ export function useMessageStream({
         })
       }
     },
-    [activeSessionIdRef, hydrateFromStoredSession, refreshSessions, updateSessionState]
+    [activeSessionIdRef, coalesceRefreshSessions, hydrateFromStoredSession, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(

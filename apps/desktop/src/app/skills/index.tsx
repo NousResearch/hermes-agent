@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
@@ -22,6 +22,11 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 const SKILLS_MODES = ['skills', 'toolsets'] as const
 type SkillsMode = (typeof SKILLS_MODES)[number]
+
+// Cap how many tool-name chips a single toolset renders. A few toolsets expose
+// dozens-to-hundreds of tools; rendering them all multiplied the DOM node count
+// on the toolsets tab. Show the first N and summarize the rest.
+const MAX_VISIBLE_TOOL_CHIPS = 24
 
 function categoryFor(skill: SkillInfo): string {
   return asText(skill.category) || 'general'
@@ -76,6 +81,12 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
   const [query, setQuery] = useState('')
+  // Drive filtering off a deferred copy of the query so each keystroke paints
+  // the input immediately and the (un-virtualized, potentially large) filter +
+  // sort + group + re-render runs at a lower priority. Without this, typing in
+  // the search box re-filtered and re-rendered the entire list synchronously
+  // between keystrokes and blocked the UI thread on big skill/toolset sets.
+  const deferredQuery = useDeferredValue(query)
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
@@ -128,18 +139,30 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   }, [skills])
 
   const visibleSkills = useMemo(
-    () => (skills ? filteredSkills(skills, query, mode === 'skills' ? activeCategory : null) : []),
-    [activeCategory, mode, query, skills]
+    () => (skills ? filteredSkills(skills, deferredQuery, mode === 'skills' ? activeCategory : null) : []),
+    [activeCategory, mode, deferredQuery, skills]
   )
 
-  const visibleToolsets = useMemo(() => (toolsets ? filteredToolsets(toolsets, query) : []), [query, toolsets])
+  const visibleToolsets = useMemo(
+    () => (toolsets ? filteredToolsets(toolsets, deferredQuery) : []),
+    [deferredQuery, toolsets]
+  )
 
   const skillGroups = useMemo(() => {
     const groups = new Map<string, SkillInfo[]>()
 
+    // Push into the existing array instead of spreading a fresh copy per insert
+    // (`[...old, skill]`), which was O(n^2) when many skills share a category
+    // (the default 'general' bucket) and re-ran on every keystroke/toggle.
     for (const skill of visibleSkills) {
       const key = categoryFor(skill)
-      groups.set(key, [...(groups.get(key) || []), skill])
+      const bucket = groups.get(key)
+
+      if (bucket) {
+        bucket.push(skill)
+      } else {
+        groups.set(key, [skill])
+      }
     }
 
     return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b))
@@ -321,7 +344,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                       </p>
                       {tools.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
-                          {tools.map(name => (
+                          {tools.slice(0, MAX_VISIBLE_TOOL_CHIPS).map(name => (
                             <span
                               className="rounded-md bg-(--ui-bg-quinary) px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary)"
                               key={name}
@@ -329,6 +352,14 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                               {name}
                             </span>
                           ))}
+                          {tools.length > MAX_VISIBLE_TOOL_CHIPS && (
+                            <span
+                              className="rounded-md bg-(--ui-bg-quinary) px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary)"
+                              title={tools.join(', ')}
+                            >
+                              +{tools.length - MAX_VISIBLE_TOOL_CHIPS}
+                            </span>
+                          )}
                         </div>
                       )}
                       {expanded && <ToolsetConfigPanel onConfiguredChange={refreshToolsets} toolset={toolset.name} />}

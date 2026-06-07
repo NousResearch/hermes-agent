@@ -28,10 +28,11 @@ import logging
 import os
 import tempfile
 import time
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 
@@ -57,6 +58,30 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+VALID_SCOPE_TYPES = {"project", "repo", "topic"}
+_SCOPE_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def normalize_memory_scope(scope: str) -> str:
+    """Return a filesystem-safe scope slug, or empty string for invalid input."""
+    scope = (scope or "").strip().lower()
+    if not scope:
+        return ""
+    scope = _SCOPE_SLUG_RE.sub("-", scope).strip(".-_")
+    return scope[:80]
+
+
+def get_repo_scope_for_cwd(cwd: Optional[str] = None) -> str:
+    """Infer a repo-scoped memory slug from cwd by walking up to a .git marker."""
+    start = Path(cwd or os.getenv("TERMINAL_CWD") or os.getcwd()).expanduser()
+    try:
+        current = start.resolve()
+    except OSError:
+        current = start
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return normalize_memory_scope(candidate.name)
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +153,7 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._scoped_system_prompt_snapshots: Dict[Tuple[str, str], str] = {}
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -168,6 +194,7 @@ class MemoryStore:
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+        self._scoped_system_prompt_snapshots = self._load_scoped_snapshots()
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -243,13 +270,19 @@ class MemoryStore:
             fd.close()
 
     @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(target: str, scope_type: str = None, scope: str = None) -> Path:
         mem_dir = get_memory_dir()
+        if scope_type or scope:
+            scope_type = (scope_type or "").strip().lower()
+            scope_slug = normalize_memory_scope(scope or "")
+            if target != "memory" or scope_type not in VALID_SCOPE_TYPES or not scope_slug:
+                raise ValueError("Scoped memory requires target=memory, scope_type in project/repo/topic, and non-empty scope")
+            return mem_dir / "scopes" / scope_type / f"{scope_slug}.md"
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str) -> Optional[str]:
+    def _reload_target(self, target: str, scope_type: str = None, scope: str = None) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
@@ -260,31 +293,44 @@ class MemoryStore:
         flushing would discard the un-roundtrippable content.
         Returns None on clean reload.
         """
-        path = self._path_for(target)
-        bak = self._detect_external_drift(target)
+        path = self._path_for(target, scope_type, scope)
+        bak = self._detect_external_drift(target, scope_type, scope)
+        if scope_type or scope:
+            # Scoped entries are read directly from their file on demand, so
+            # there is no in-memory list to refresh.  Do not rewrite here: if
+            # drift was detected, rewriting would clobber the evidence before
+            # the caller can refuse the mutation.
+            return bak
         fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
-        self._set_entries(target, fresh)
+        self._set_entries(target, fresh, scope_type, scope)
         return bak
 
-    def save_to_disk(self, target: str):
+    def save_to_disk(self, target: str, scope_type: str = None, scope: str = None):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        path = self._path_for(target, scope_type, scope)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_file(path, self._entries_for(target, scope_type, scope))
 
-    def _entries_for(self, target: str) -> List[str]:
+    def _entries_for(self, target: str, scope_type: str = None, scope: str = None) -> List[str]:
+        if scope_type or scope:
+            return self._read_file(self._path_for(target, scope_type, scope))
         if target == "user":
             return self.user_entries
         return self.memory_entries
 
-    def _set_entries(self, target: str, entries: List[str]):
-        if target == "user":
+    def _set_entries(self, target: str, entries: List[str], scope_type: str = None, scope: str = None):
+        if scope_type or scope:
+            path = self._path_for(target, scope_type, scope)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_file(path, entries)
+        elif target == "user":
             self.user_entries = entries
         else:
             self.memory_entries = entries
 
-    def _char_count(self, target: str) -> int:
-        entries = self._entries_for(target)
+    def _char_count(self, target: str, scope_type: str = None, scope: str = None) -> int:
+        entries = self._entries_for(target, scope_type, scope)
         if not entries:
             return 0
         return len(ENTRY_DELIMITER.join(entries))
@@ -294,7 +340,7 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str, scope_type: str = None, scope: str = None) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
@@ -305,28 +351,33 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
+        with self._file_lock(self._path_for(target, scope_type, scope)):
             # Re-read from disk under lock to pick up writes from other sessions.
             # If external drift was detected, the file was backed up to .bak.<ts>
             # — refuse the mutation so we don't clobber the un-roundtrippable
             # content the patch tool / shell append / sister session wrote.
-            bak = self._reload_target(target)
+            bak = self._reload_target(target, scope_type, scope)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(self._path_for(target, scope_type, scope), bak)
 
-            entries = self._entries_for(target)
+            entries = self._entries_for(target, scope_type, scope)
             limit = self._char_limit(target)
 
             # Reject exact duplicates
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(
+                    target,
+                    "Entry already exists (no duplicate added).",
+                    scope_type,
+                    scope,
+                )
 
             # Calculate what the new total would be
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
             if new_total > limit:
-                current = self._char_count(target)
+                current = self._char_count(target, scope_type, scope)
                 return {
                     "success": False,
                     "error": (
@@ -339,12 +390,12 @@ class MemoryStore:
                 }
 
             entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self._set_entries(target, entries, scope_type, scope)
+            self.save_to_disk(target, scope_type, scope)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(target, "Entry added.", scope_type, scope)
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(self, target: str, old_text: str, new_content: str, scope_type: str = None, scope: str = None) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
         new_content = new_content.strip()
@@ -358,12 +409,12 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
+        with self._file_lock(self._path_for(target, scope_type, scope)):
+            bak = self._reload_target(target, scope_type, scope)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(self._path_for(target, scope_type, scope), bak)
 
-            entries = self._entries_for(target)
+            entries = self._entries_for(target, scope_type, scope)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
@@ -399,23 +450,23 @@ class MemoryStore:
                 }
 
             entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self._set_entries(target, entries, scope_type, scope)
+            self.save_to_disk(target, scope_type, scope)
 
-        return self._success_response(target, "Entry replaced.")
+        return self._success_response(target, "Entry replaced.", scope_type, scope)
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
+    def remove(self, target: str, old_text: str, scope_type: str = None, scope: str = None) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
-        with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
+        with self._file_lock(self._path_for(target, scope_type, scope)):
+            bak = self._reload_target(target, scope_type, scope)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(self._path_for(target, scope_type, scope), bak)
 
-            entries = self._entries_for(target)
+            entries = self._entries_for(target, scope_type, scope)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
@@ -435,12 +486,12 @@ class MemoryStore:
 
             idx = matches[0][0]
             entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self._set_entries(target, entries, scope_type, scope)
+            self.save_to_disk(target, scope_type, scope)
 
-        return self._success_response(target, "Entry removed.")
+        return self._success_response(target, "Entry removed.", scope_type, scope)
 
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
+    def format_for_system_prompt(self, target: str, scope_type: str = None, scope: str = None) -> Optional[str]:
         """
         Return the frozen snapshot for system prompt injection.
 
@@ -450,14 +501,19 @@ class MemoryStore:
 
         Returns None if the snapshot is empty (no entries at load time).
         """
+        if scope_type or scope:
+            scope_type = (scope_type or "").strip().lower()
+            scope_slug = normalize_memory_scope(scope or "")
+            block = self._scoped_system_prompt_snapshots.get((scope_type, scope_slug), "")
+            return block if block else None
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
-        entries = self._entries_for(target)
-        current = self._char_count(target)
+    def _success_response(self, target: str, message: str = None, scope_type: str = None, scope: str = None) -> Dict[str, Any]:
+        entries = self._entries_for(target, scope_type, scope)
+        current = self._char_count(target, scope_type, scope)
         limit = self._char_limit(target)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
@@ -468,11 +524,15 @@ class MemoryStore:
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
         }
+        if scope_type or scope:
+            resp["scope_type"] = scope_type
+            resp["scope"] = normalize_memory_scope(scope or "")
+            resp["path"] = str(self._path_for(target, scope_type, scope))
         if message:
             resp["message"] = message
         return resp
 
-    def _render_block(self, target: str, entries: List[str]) -> str:
+    def _render_block(self, target: str, entries: List[str], scope_type: str = None, scope: str = None) -> str:
         """Render a system prompt block with header and usage indicator."""
         if not entries:
             return ""
@@ -482,13 +542,37 @@ class MemoryStore:
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
-        if target == "user":
+        if scope_type and scope:
+            header = f"SCOPED MEMORY ({scope_type}:{scope}) [{pct}% — {current:,}/{limit:,} chars]"
+        elif target == "user":
             header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
         else:
             header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
+
+
+    def _load_scoped_snapshots(self) -> Dict[Tuple[str, str], str]:
+        """Load all scoped memory files into frozen prompt snapshots."""
+        snapshots: Dict[Tuple[str, str], str] = {}
+        scopes_root = get_memory_dir() / "scopes"
+        if not scopes_root.exists():
+            return snapshots
+        for scope_type in VALID_SCOPE_TYPES:
+            scope_dir = scopes_root / scope_type
+            if not scope_dir.exists():
+                continue
+            for path in sorted(scope_dir.glob("*.md")):
+                scope = normalize_memory_scope(path.stem)
+                if not scope:
+                    continue
+                entries = list(dict.fromkeys(self._read_file(path)))
+                sanitized = self._sanitize_entries_for_snapshot(entries, str(path.name))
+                block = self._render_block("memory", sanitized, scope_type, scope)
+                if block:
+                    snapshots[(scope_type, scope)] = block
+        return snapshots
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
@@ -512,7 +596,7 @@ class MemoryStore:
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
-    def _detect_external_drift(self, target: str) -> Optional[str]:
+    def _detect_external_drift(self, target: str, scope_type: str = None, scope: str = None) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
 
         The memory file is supposed to be a list of small entries the tool
@@ -536,7 +620,7 @@ class MemoryStore:
         Note: this is an INSTANCE method (not static) because we need the
         per-target char_limit for signal #2.
         """
-        path = self._path_for(target)
+        path = self._path_for(target, scope_type, scope)
         if not path.exists():
             return None
         try:
@@ -605,6 +689,8 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    scope_type: str = None,
+    scope: str = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -616,23 +702,32 @@ def memory_tool(
 
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+    if scope_type or scope:
+        scope_type = (scope_type or "").strip().lower()
+        scope = normalize_memory_scope(scope or "")
+        if target != "memory":
+            return tool_error("Scoped memories are only supported for target=memory.", success=False)
+        if scope_type not in VALID_SCOPE_TYPES:
+            return tool_error("scope_type must be one of: project, repo, topic.", success=False)
+        if not scope:
+            return tool_error("scope is required when scope_type is provided.", success=False)
 
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+        result = store.add(target, content, scope_type, scope)
 
     elif action == "replace":
         if not old_text:
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
-        result = store.replace(target, old_text, content)
+        result = store.replace(target, old_text, content, scope_type, scope)
 
     elif action == "remove":
         if not old_text:
             return tool_error("old_text is required for 'remove' action.", success=False)
-        result = store.remove(target, old_text)
+        result = store.remove(target, old_text, scope_type, scope)
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
@@ -667,6 +762,9 @@ MEMORY_SCHEMA = {
         "state to memory; use session_search to recall those from past transcripts.\n"
         "If you've discovered a new way to do something, solved a problem that could be "
         "necessary later, save it as a skill with the skill tool.\n\n"
+        "SCOPED MEMORY: for project/repo/topic-specific notes, pass scope_type "
+        "(project, repo, or topic) and scope (for example drawmyjob). Scoped memories "
+        "are loaded only when relevant instead of every session.\n\n"
         "TWO TARGETS:\n"
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
@@ -695,6 +793,15 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
+            "scope_type": {
+                "type": "string",
+                "enum": ["project", "repo", "topic"],
+                "description": "Optional scope type for project/repo/topic-specific memory. Only valid with target=memory."
+            },
+            "scope": {
+                "type": "string",
+                "description": "Optional scope name, e.g. drawmyjob. Required when scope_type is set."
+            },
         },
         "required": ["action", "target"],
     },
@@ -713,7 +820,9 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        scope_type=args.get("scope_type"),
+        scope=args.get("scope")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

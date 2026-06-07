@@ -9,6 +9,8 @@ from tools.memory_tool import (
     memory_tool,
     _scan_memory_content,
     MEMORY_SCHEMA,
+    get_repo_scope_for_cwd,
+    normalize_memory_scope,
 )
 
 
@@ -375,6 +377,34 @@ class TestMemoryStorePersistence:
         store.load_from_disk()
         assert len(store.memory_entries) == 2
 
+    def test_scoped_memory_persists_separately_from_global(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store1 = MemoryStore()
+        store1.load_from_disk()
+        result = store1.add(
+            "memory",
+            "drawmyjob uses Vercel deploys",
+            scope_type="project",
+            scope="drawmyjob",
+        )
+        assert result["success"] is True
+        assert result["scope_type"] == "project"
+        assert result["scope"] == "drawmyjob"
+        assert "drawmyjob uses Vercel deploys" not in store1.memory_entries
+
+        scoped_file = tmp_path / "scopes" / "project" / "drawmyjob.md"
+        assert scoped_file.exists()
+
+        store2 = MemoryStore()
+        store2.load_from_disk()
+        scoped_block = store2.format_for_system_prompt(
+            "memory", scope_type="project", scope="drawmyjob"
+        )
+        assert scoped_block is not None
+        assert "SCOPED MEMORY (project:drawmyjob)" in scoped_block
+        assert "drawmyjob uses Vercel deploys" in scoped_block
+
 
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
@@ -392,6 +422,30 @@ class TestMemoryStoreSnapshot:
 
     def test_empty_snapshot_returns_none(self, store):
         assert store.format_for_system_prompt("memory") is None
+
+    def test_scoped_snapshot_frozen_at_load(self, store):
+        store.add("memory", "loaded scoped fact", scope_type="topic", scope="household")
+        store.load_from_disk()
+        store.add("memory", "added scoped later", scope_type="topic", scope="household")
+
+        snapshot = store.format_for_system_prompt("memory", scope_type="topic", scope="household")
+        assert isinstance(snapshot, str)
+        assert "loaded scoped fact" in snapshot
+        assert "added scoped later" not in snapshot
+
+
+class TestMemoryScopes:
+    def test_normalize_memory_scope(self):
+        assert normalize_memory_scope("Draw My Job!") == "draw-my-job"
+        assert normalize_memory_scope("../Secrets") == "secrets"
+
+    def test_repo_scope_infers_git_root_name(self, tmp_path):
+        repo = tmp_path / "Example Repo"
+        nested = repo / "src" / "pkg"
+        nested.mkdir(parents=True)
+        (repo / ".git").mkdir()
+
+        assert get_repo_scope_for_cwd(str(nested)) == "example-repo"
 
 
 # =========================================================================
@@ -415,6 +469,32 @@ class TestMemoryToolDispatcher:
     def test_add_via_tool(self, store):
         result = json.loads(memory_tool(action="add", target="memory", content="via tool", store=store))
         assert result["success"] is True
+
+    def test_add_scoped_via_tool(self, store):
+        result = json.loads(memory_tool(
+            action="add",
+            target="memory",
+            content="repo-specific convention",
+            scope_type="repo",
+            scope="drawmyjob",
+            store=store,
+        ))
+        assert result["success"] is True
+        assert result["scope_type"] == "repo"
+        assert result["scope"] == "drawmyjob"
+        assert result["path"].endswith("scopes/repo/drawmyjob.md")
+
+    def test_scoped_user_target_rejected(self, store):
+        result = json.loads(memory_tool(
+            action="add",
+            target="user",
+            content="scoped user fact",
+            scope_type="project",
+            scope="drawmyjob",
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "target=memory" in result["error"]
 
     def test_replace_requires_old_text(self, store):
         result = json.loads(memory_tool(action="replace", content="new", store=store))

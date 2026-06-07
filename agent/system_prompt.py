@@ -311,6 +311,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             mem_block = agent._memory_store.format_for_system_prompt("memory")
             if mem_block:
                 volatile_parts.append(mem_block)
+            try:
+                from tools.memory_tool import get_repo_scope_for_cwd
+
+                repo_scope = get_repo_scope_for_cwd(os.getenv("TERMINAL_CWD") or None)
+                if repo_scope:
+                    scoped_block = agent._memory_store.format_for_system_prompt(
+                        "memory", scope_type="repo", scope=repo_scope
+                    )
+                    if scoped_block:
+                        volatile_parts.append(scoped_block)
+            except Exception:
+                pass
         # USER.md is always included when enabled.
         if agent._user_profile_enabled:
             user_block = agent._memory_store.format_for_system_prompt("user")

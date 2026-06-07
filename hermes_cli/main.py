@@ -1164,6 +1164,25 @@ def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
         return None
 
 
+def _tui_resume_command_prefix() -> str:
+    """Return the command prefix for profile-aware TUI resume hints."""
+    try:
+        from hermes_cli.profiles import (
+            find_alias_for_profile,
+            get_active_profile_name,
+        )
+
+        active_profile = get_active_profile_name()
+        if active_profile in ("default", "custom"):
+            return "hermes"
+        alias = find_alias_for_profile(active_profile)
+        if alias:
+            return alias
+        return f"hermes -p {active_profile}"
+    except Exception:
+        return "hermes"
+
+
 def _print_tui_exit_summary(
     session_id: Optional[str], active_session_file: Optional[str] = None
 ) -> None:
@@ -1209,9 +1228,10 @@ def _print_tui_exit_summary(
 
     print()
     print("Resume this session with:")
-    print(f"  hermes --tui --resume {target}")
+    resume_prefix = _tui_resume_command_prefix()
+    print(f"  {resume_prefix} --tui --resume {target}")
     if title:
-        print(f'  hermes --tui -c "{title}"')
+        print(f'  {resume_prefix} --tui -c "{title}"')
     print()
     print(f"Session:        {target}")
     if title:

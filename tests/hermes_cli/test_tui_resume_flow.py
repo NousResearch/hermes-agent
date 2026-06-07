@@ -1018,6 +1018,68 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
     assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
 
 
+def test_print_tui_exit_summary_uses_profile_alias(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+
+    class _FakeDB:
+        def get_session(self, session_id):
+            assert session_id == "20260409_000001_abc123"
+            return {"message_count": 1}
+
+        def get_session_title(self, _session_id):
+            return "profile session"
+
+        def close(self):
+            return None
+
+    monkeypatch.setitem(
+        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "work"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.find_alias_for_profile", lambda _profile: "mywork"
+    )
+
+    main_mod._print_tui_exit_summary("20260409_000001_abc123")
+    out = capsys.readouterr().out
+
+    assert "mywork --tui --resume 20260409_000001_abc123" in out
+    assert 'mywork --tui -c "profile session"' in out
+    assert "hermes --tui --resume" not in out
+
+
+def test_print_tui_exit_summary_falls_back_to_profile_flag(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+
+    class _FakeDB:
+        def get_session(self, session_id):
+            assert session_id == "20260409_000001_abc123"
+            return {"message_count": 1}
+
+        def get_session_title(self, _session_id):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setitem(
+        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "work"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.find_alias_for_profile", lambda _profile: None
+    )
+
+    main_mod._print_tui_exit_summary("20260409_000001_abc123")
+    out = capsys.readouterr().out
+
+    assert "hermes -p work --tui --resume 20260409_000001_abc123" in out
+
+
 def test_print_tui_exit_summary_prefers_actual_active_session_file(
     monkeypatch, capsys, tmp_path
 ):

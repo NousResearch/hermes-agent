@@ -4065,9 +4065,19 @@ def run_conversation(
                     # reasoning_content), so _has_structured below would
                     # miss it.  We check here so thinking-only responses
                     # after tool calls route to prefill instead of nudge.
+                    #
+                    # Match BOTH opening and closing tags (``</?``): MiniMax
+                    # M2 is an interleaved-thinking model whose chat template
+                    # prefills the opening ``<think>`` so the model emits only
+                    # the closing ``</think>``. When the upstream parser fails
+                    # to split that out (the documented MiniMax-on-Ollama
+                    # ambiguity), content can arrive as a bare ``</think>``
+                    # with no opener — an opener-only regex would miss it and
+                    # let the nudge fire (issue #21811 residual). Tag variants
+                    # kept in sync with _strip_think_blocks().
                     _has_inline_thinking = bool(
                         re.search(
-                            r'<think>|<thinking>|<reasoning>',
+                            r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b',
                             final_response or "",
                             re.IGNORECASE,
                         )

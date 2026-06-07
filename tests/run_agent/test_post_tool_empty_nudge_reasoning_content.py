@@ -58,6 +58,59 @@ def test_has_separate_reasoning_attr_reasoning():
     assert _has_separate_reasoning(msg) is True
 
 
+def test_has_separate_reasoning_attr_reasoning_details():
+    """OpenRouter unified format and MiniMax M2's native OpenAI-compatible
+    API return chain-of-thought as a structured ``reasoning_details`` array.
+    This channel was previously omitted from the guard, which let the nudge
+    fire on MiniMax M2 (issue #21811 residual reported on Ollama cloud)."""
+    msg = _PydanticLikeMessage(
+        content="",
+        reasoning_content=None,
+        reasoning=None,
+        reasoning_details=[{"type": "reasoning.text", "text": "step-by-step"}],
+    )
+    assert _has_separate_reasoning(msg) is True
+
+
+def test_has_separate_reasoning_empty_reasoning_details_is_falsy():
+    """An empty ``reasoning_details`` list carries no reasoning — must not
+    suppress the nudge (matches ``extract_reasoning``'s truthiness guard)."""
+    msg = _PydanticLikeMessage(
+        content="",
+        reasoning_content=None,
+        reasoning=None,
+        reasoning_details=[],
+    )
+    assert _has_separate_reasoning(msg) is False
+
+
+def test_has_separate_reasoning_attr_thinking():
+    """Ollama's native /api/chat field and some OpenAI-compat proxies expose
+    reasoning under a top-level ``thinking`` key."""
+    msg = _PydanticLikeMessage(
+        content="",
+        reasoning_content=None,
+        reasoning=None,
+        thinking="let me work through this",
+    )
+    assert _has_separate_reasoning(msg) is True
+
+
+def test_has_separate_reasoning_reasoning_details_via_model_extra():
+    """``reasoning_details`` hidden under the OpenAI SDK's ``model_extra``
+    must still be detected."""
+    msg = SimpleNamespace(
+        content="",
+        model_extra={"reasoning_details": [{"text": "hidden array"}]},
+    )
+    assert _has_separate_reasoning(msg) is True
+
+
+def test_has_separate_reasoning_dict_reasoning_details():
+    msg = {"content": "", "reasoning_details": [{"text": "raw dict array"}]}
+    assert _has_separate_reasoning(msg) is True
+
+
 def test_has_separate_reasoning_model_extra_fallback():
     """OpenAI SDK hides unknown provider fields under ``model_extra`` —
     we still need to detect them."""
@@ -159,6 +212,27 @@ def test_nudge_guard_keeps_inline_thinking_check():
     src = _read_agent_source()
     assert "_has_inline_thinking = bool(" in src
     assert "and not _has_inline_thinking" in src
+
+
+def test_inline_thinking_regex_matches_orphan_closing_tag():
+    """MiniMax M2 prefills the opening ``<think>`` and emits only the closing
+    ``</think>``. The inline-thinking guard must match a bare closing tag so
+    the nudge is skipped when the parser leaves an orphan ``</think>`` in
+    content (issue #21811 residual)."""
+    import re
+
+    src = _read_agent_source()
+    # Pull the regex the loop uses for inline-thinking detection.
+    m = re.search(
+        r"_has_inline_thinking = bool\(\s*re\.search\(\s*r'([^']+)'",
+        src,
+    )
+    assert m, "could not locate the _has_inline_thinking regex in source"
+    pattern = m.group(1)
+    # The broadened pattern must match an orphan closing tag...
+    assert re.search(pattern, "</think>", re.IGNORECASE)
+    # ...while still matching the classic opening-tag form.
+    assert re.search(pattern, "<think>reasoning", re.IGNORECASE)
 
 
 def test_nudge_guard_emits_status_string_unchanged():

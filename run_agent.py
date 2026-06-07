@@ -295,17 +295,34 @@ def _has_separate_reasoning(assistant_message) -> bool:
     """Detect whether an assistant message carries reasoning in a separate
     channel (i.e. parser-split output) rather than inline in ``content``.
 
-    When upstream providers split chain-of-thought into ``reasoning_content``
-    or ``reasoning`` (Ollama qwen3.x PARSER, DeepSeek-R1, Moonshot, Novita,
-    etc.), ``content`` may legitimately come back empty even though the model
-    produced complete reasoning. The post-tool empty-response nudge
-    (issue #21811) must skip the nudge in that case so the prefill path can
-    take over instead of triggering a wasteful retry round-trip.
+    When upstream providers split chain-of-thought into a dedicated channel
+    instead of inline ``<think>`` tags, ``content`` may legitimately come
+    back empty even though the model produced complete reasoning. The
+    post-tool empty-response nudge (issue #21811) must skip the nudge in
+    that case so the prefill path can take over instead of triggering a
+    wasteful retry round-trip.
 
-    Accepts any object exposing ``reasoning_content`` / ``reasoning`` as
-    attributes (OpenAI SDK pydantic message) or as dict keys (raw payload).
-    Truthy values (non-empty strings, lists, dicts) mean reasoning is
-    present; ``None`` / empty values mean it isn't.
+    Recognised channels (must stay in sync with ``extract_reasoning`` and
+    the ``_has_structured`` prefill guard in ``conversation_loop`` — both of
+    which already treat ``reasoning_details`` as reasoning):
+
+      * ``reasoning_content`` — Ollama qwen3.x PARSER, DeepSeek-R1,
+        Moonshot, Novita, DeepSeek/MiMo thinking modes.
+      * ``reasoning`` — Ollama's OpenAI-compatible endpoint maps its
+        internal thinking field here (see ollama/ollama#15288); also
+        OpenRouter's flat reasoning field.
+      * ``reasoning_details`` — OpenRouter unified format and MiniMax M2's
+        native OpenAI-compatible API return the chain-of-thought as a
+        structured array here. Previously omitted, which let the nudge
+        fire on MiniMax M2 (issue #21811 residual, reported on Ollama
+        cloud) even though the model had reasoned in full.
+      * ``thinking`` — Ollama's native ``/api/chat`` field and some
+        OpenAI-compat proxies surface it as a top-level message key.
+
+    Accepts any object exposing these as attributes (OpenAI SDK pydantic
+    message, including provider-extra fields hidden under ``model_extra``)
+    or as dict keys (raw payload). Truthy values (non-empty strings, lists,
+    dicts) mean reasoning is present; ``None`` / empty values mean it isn't.
     """
     if assistant_message is None:
         return False
@@ -321,7 +338,12 @@ def _has_separate_reasoning(assistant_message) -> bool:
                 value = model_extra.get(name)
         return value
 
-    return bool(_get("reasoning_content") or _get("reasoning"))
+    return bool(
+        _get("reasoning_content")
+        or _get("reasoning")
+        or _get("reasoning_details")
+        or _get("thinking")
+    )
 
 
 class AIAgent:

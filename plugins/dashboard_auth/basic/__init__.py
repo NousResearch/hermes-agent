@@ -174,14 +174,14 @@ _DUMMY_HASH = hash_password("dummy-password-for-constant-time-verify")
 
 
 def _sign(payload: dict, secret: bytes) -> str:
-    raw = json.dumps(payload, separators=(",", ":")).encode()
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     sig = hmac.new(secret, raw, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(raw + sig).decode()
 
 
 def _unsign(token: str, secret: bytes) -> Optional[dict]:
     try:
-        blob = base64.urlsafe_b64decode(token.encode())
+        blob = base64.urlsafe_b64decode(token.encode("utf-8"))
         if len(blob) <= _SIG_LEN:
             return None
         raw, sig = blob[:-_SIG_LEN], blob[-_SIG_LEN:]

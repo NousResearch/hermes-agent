@@ -384,7 +384,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(body.encode())
+            self.wfile.write(body.encode("utf-8"))
 
         def log_message(self, fmt: str, *args: Any) -> None:
             logger.debug("OAuth callback: %s", fmt % args)

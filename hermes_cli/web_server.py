@@ -198,7 +198,7 @@ def _has_valid_session_token(request: Request) -> bool:
 
     auth = request.headers.get("authorization", "")
     expected = f"Bearer {_SESSION_TOKEN}"
-    return hmac.compare_digest(auth.encode(), expected.encode())
+    return hmac.compare_digest(auth.encode("utf-8"), expected.encode("utf-8"))
 
 
 def _require_token(request: Request) -> None:
@@ -8239,7 +8239,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     token = ws.query_params.get("token", "")
     if not token:
         return "no_credential", "none"
-    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if hmac.compare_digest(token.encode("utf-8"), _SESSION_TOKEN.encode("utf-8")):
         return None, "token"
     return "token_mismatch", "token"
 

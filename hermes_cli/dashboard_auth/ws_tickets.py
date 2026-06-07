@@ -145,7 +145,7 @@ def consume_internal_credential(value: str) -> Dict[str, Any]:
         expected = _internal_credential
     if not value or expected is None:
         raise TicketInvalid("no internal credential")
-    if not secrets.compare_digest(value.encode(), expected.encode()):
+    if not secrets.compare_digest(value.encode("utf-8"), expected.encode("utf-8")):
         raise TicketInvalid("internal credential mismatch")
     return {
         "user_id": INTERNAL_USER_ID,

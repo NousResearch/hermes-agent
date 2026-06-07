@@ -753,7 +753,7 @@ class LineAdapter(BasePlatformAdapter):
         try:
             from gateway.status import acquire_scoped_lock
             # Use a hash of the token so we don't write the secret to disk.
-            tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
+            tok_hash = hashlib.sha256(self.channel_access_token.encode("utf-8")).hexdigest()[:16]
             if not acquire_scoped_lock("line", tok_hash):
                 self._set_fatal_error(
                     "lock_conflict",

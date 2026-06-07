@@ -814,6 +814,31 @@ class _CuaDriverSession:
             or isinstance(exc, (BrokenPipeError, EOFError))
         )
 
+    @staticmethod
+    def _is_transient_daemon_error(exc: Exception) -> bool:
+        """Return True for the cua-driver daemon-proxy EAGAIN congestion error.
+
+        On macOS the ``cua-driver mcp`` bridge forwards calls to the CuaDriver
+        daemon over a non-blocking unix socket. Heavier ops (notably
+        ``get_window_state``, which walks the AX tree and captures a PNG) can
+        come back as an ``McpError`` carrying ``Resource temporarily
+        unavailable (os error 35)`` — POSIX EAGAIN — when the socket buffer is
+        momentarily full. This is transient by definition: the same call
+        succeeds when retried after a short pause (which is why spaced-out
+        single calls work while rapid/large ones intermittently fail). Detect
+        it by message so we can retry with backoff rather than surfacing an
+        empty 0x0 capture to the model. See the EAGAIN diagnosis in
+        references/catalog-add-troubleshooting (apple-music skill) and the
+        cua-driver daemon-proxy note.
+        """
+        msg = str(exc)
+        return (
+            "Resource temporarily unavailable" in msg
+            or "os error 35" in msg
+            or "daemon transport error" in msg
+            or "daemon proxy" in msg
+        )
+
     def _restart_session_locked(self) -> None:
         """Recreate the MCP session after the daemon/stdin transport was closed.
         Caller must hold self._lock (the reconnect-once retry path holds it)."""
@@ -829,11 +854,130 @@ class _CuaDriverSession:
         self._start_lifecycle_locked()
         self._started = True
 
+    def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        """Fallback transport: invoke ``cua-driver call <tool> <json>`` as a
+        subprocess instead of going through the stdio MCP bridge.
+
+        The ``cua-driver mcp`` stdio bridge can persistently fail to forward
+        heavier calls (notably ``get_window_state``) to the daemon with POSIX
+        EAGAIN, while the plain ``cua-driver call`` path — which talks to the
+        daemon over its own socket — keeps working. When the MCP path gives up,
+        we retry over the CLI and remap the JSON into the same dict shape that
+        ``_extract_tool_result`` produces, so callers (capture(), _action(),
+        list_windows parsing) are transport-agnostic.
+
+        For ``get_window_state`` we route the screenshot to a temp file via
+        ``screenshot_out_file`` so the daemon returns a tiny JSON body (a path)
+        instead of a multi-megabyte base64 blob — the large payload is what
+        congests the daemon socket and triggers EAGAIN in the first place. We
+        read the PNG back from disk and base64-encode it ourselves. The CLI
+        call is itself retried a few times with backoff, since the underlying
+        daemon socket can still be momentarily busy.
+        """
+        import subprocess as _subprocess
+        import tempfile as _tempfile
+        import time as _time
+
+        call_args = dict(args)
+        shot_file: Optional[str] = None
+        if name == "get_window_state" and "screenshot_out_file" not in call_args:
+            fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
+            os.close(fd)
+            call_args["screenshot_out_file"] = shot_file
+
+        cmd = [_CUA_DRIVER_CMD, "call", name, json.dumps(call_args)]
+        attempts = 4
+        backoff = 0.5
+        parsed: Any = None
+        last_err = ""
+        try:
+            for attempt in range(attempts):
+                try:
+                    proc = _subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=max(15.0, timeout)
+                    )
+                except Exception as e:  # pragma: no cover - subprocess spawn failure
+                    raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
+
+                out = (proc.stdout or "").strip()
+                last_err = out[:200] or (proc.stderr or "")[:200]
+                start = min(
+                    (i for i in (out.find("{"), out.find("[")) if i != -1),
+                    default=-1,
+                )
+                if start != -1:
+                    try:
+                        candidate = json.loads(out[start:])
+                    except json.JSONDecodeError:
+                        candidate = None
+                    if candidate is not None:
+                        parsed = candidate
+                        break
+                # No JSON (EAGAIN warning / empty) — retry with backoff.
+                if attempt < attempts - 1:
+                    logger.warning(
+                        "cua-driver CLI fallback for %s got no JSON "
+                        "(attempt %d/%d); retrying in %.1fs",
+                        name, attempt + 1, attempts, backoff,
+                    )
+                    _time.sleep(backoff)
+                    backoff *= 2
+
+            if parsed is None:
+                raise RuntimeError(
+                    f"cua-driver CLI fallback for {name} returned no JSON after "
+                    f"{attempts} attempts: {last_err}"
+                )
+
+            # Remap structured JSON into {data, images, structuredContent, isError}.
+            images: List[str] = []
+            data: Any = None
+            structured: Optional[Dict] = parsed if isinstance(parsed, dict) else None
+            if isinstance(parsed, dict):
+                shot = parsed.get("screenshot_png_b64")
+                if not shot:
+                    # Screenshot was routed to a file (ours or the daemon's choice).
+                    fpath = parsed.get("screenshot_file_path") or shot_file
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            with open(fpath, "rb") as fh:
+                                shot = base64.b64encode(fh.read()).decode("ascii")
+                        except Exception as e:
+                            logger.debug("cua-driver CLI fallback: failed reading %s: %s", fpath, e)
+                if shot:
+                    images.append(shot)
+                tree = parsed.get("tree_markdown")
+                if tree is not None:
+                    ec = parsed.get("element_count")
+                    summary = f"{ec} elements" if ec is not None else ""
+                    data = f"{summary}\n{tree}" if summary else tree
+            return {"data": data, "images": images, "structuredContent": structured, "isError": False}
+        finally:
+            if shot_file and os.path.exists(shot_file):
+                try:
+                    os.remove(shot_file)
+                except OSError:
+                    pass
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
+        # The cua-driver daemon proxy returns POSIX EAGAIN ("Resource
+        # temporarily unavailable") for heavier calls like get_window_state when
+        # its non-blocking socket buffer is full. On some machines/builds this
+        # is persistent for get_window_state over the MCP stdio bridge, while
+        # the direct CLI transport keeps working. So: try the MCP path ONCE,
+        # and on the transient/transport error fall straight through to the CLI
+        # transport (which has its own retry + screenshot-to-file mitigation)
+        # rather than burning a long backoff chain on a path that won't recover.
         try:
             return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         except Exception as e:
+            if self._is_transient_daemon_error(e):
+                logger.warning(
+                    "cua-driver MCP transport failed on %s (%s); "
+                    "falling back to CLI transport", name, e,
+                )
+                return self._call_tool_via_cli(name, args, timeout)
             if not self._is_closed_session_error(e):
                 raise
             # Daemon restart closes the cached stdio channel. Reconnect once and

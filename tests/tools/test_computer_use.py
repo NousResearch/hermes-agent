@@ -1468,6 +1468,103 @@ class TestCuaDriverSessionReconnect:
         # Exactly one attempt, no reconnect.
         assert len(bridge.calls) == 1
 
+    def test_is_transient_daemon_error_matches_eagain(self):
+        """The EAGAIN daemon-proxy error must be classified as transient."""
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        msg = ("daemon transport error forwarding `get_window_state`: "
+               "Resource temporarily unavailable (os error 35)")
+        assert _CuaDriverSession._is_transient_daemon_error(RuntimeError(msg)) is True
+        assert _CuaDriverSession._is_transient_daemon_error(
+            RuntimeError("daemon proxy to /tmp/sock not ready")) is True
+        # Unrelated errors must NOT be treated as transient.
+        assert _CuaDriverSession._is_transient_daemon_error(ValueError("boom")) is False
+
+    def test_call_tool_falls_back_to_cli_on_transient_error(self):
+        """When the MCP bridge throws EAGAIN, call_tool routes to the CLI transport."""
+        import threading
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        eagain = RuntimeError(
+            "daemon transport error forwarding `get_window_state`: "
+            "Resource temporarily unavailable (os error 35)"
+        )
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise eagain
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+
+        cli_calls = []
+
+        def fake_cli(name, args, timeout):
+            cli_calls.append((name, args))
+            return {"data": "42 elements\ntree", "images": ["B64PNG"],
+                    "structuredContent": {"element_count": 42}, "isError": False}
+
+        session._call_tool_via_cli = fake_cli
+
+        result = session.call_tool("get_window_state", {"pid": 1, "window_id": 2})
+        # MCP path attempted exactly once, then CLI fallback used.
+        assert len(bridge.calls) == 1
+        assert cli_calls == [("get_window_state", {"pid": 1, "window_id": 2})]
+        assert result["images"] == ["B64PNG"]
+
+    def test_cli_fallback_reads_screenshot_from_file(self, tmp_path):
+        """_call_tool_via_cli must base64-read a screenshot written to disk
+        (screenshot_out_file path) when no inline base64 is present."""
+        import base64 as _b64
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        png_bytes = b"\x89PNG\r\n\x1a\nFAKEDATA"
+        shot = tmp_path / "shot.png"
+        shot.write_bytes(png_bytes)
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+
+        captured_cmd = {}
+
+        class FakeProc:
+            returncode = 0
+            stderr = ""
+            # Daemon returns a path, not inline base64.
+            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
+                      ' "screenshot_file_path": "%s"}' % str(shot))
+
+        import subprocess as _sp
+        orig_run = _sp.run
+
+        def fake_run(cmd, **kw):
+            captured_cmd["cmd"] = cmd
+            return FakeProc()
+
+        _sp.run = fake_run
+        try:
+            out = session._call_tool_via_cli("get_window_state",
+                                             {"pid": 1, "window_id": 2}, 30.0)
+        finally:
+            _sp.run = orig_run
+
+        # Screenshot read from disk and base64-encoded.
+        assert out["images"] == [_b64.b64encode(png_bytes).decode("ascii")]
+        # tree_markdown surfaced as the data text blob with the element-count summary.
+        assert "AXButton" in out["data"]
+        assert "7 elements" in out["data"]
+
 
 class TestCaptureAppFilterNoMatch:
     """capture(app=X) must not silently fall back to the frontmost window

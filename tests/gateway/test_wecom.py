@@ -1212,12 +1212,15 @@ class TestSendStreamFrame:
         turn._intermediate_frames_sent = MAX_INTERMEDIATE_FRAMES
         turn._last_frame_sent_at = 0  # clear time throttle
 
+        # Record count BEFORE the overflow frame to assert it was truly skipped.
+        before_overflow = adapter._send_json.await_count
+
         # Next intermediate frame should be dropped.
         ok = await adapter.send_stream_frame("overflow", chat_id="chat-1", turn_id=turn_id)
         assert ok is True
         assert turn.accumulated_text == "overflow"
-        # No additional _send_json call beyond the initial seed + content.
-        initial_count = adapter._send_json.await_count
+        # No additional _send_json call — overflow was dropped.
+        assert adapter._send_json.await_count == before_overflow
 
         # Finalize still goes through unconditionally.
         ok = await adapter.send_stream_frame("final", chat_id="chat-1", finalize=True, turn_id=turn_id)

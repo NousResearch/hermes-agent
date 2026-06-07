@@ -3610,9 +3610,24 @@ def resolve_provider_client(
         if custom_entry:
             custom_base = custom_entry.get("base_url", "").strip()
             custom_key = custom_entry.get("api_key", "").strip()
+            # Treat config sentinels ("none"/"null"/"no-key-required") as
+            # *unset* so the key_env / openrouter env-var fallbacks can win.
+            # A literal ``api_key: none`` in a named-provider config (parsed by
+            # YAML as the string "none", NOT null) must never be sent as the
+            # bearer token — it 401s. Mirrors the explicit_base_url branch.
+            if custom_key.lower() in _CUSTOM_KEY_SENTINELS:
+                custom_key = ""
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
+            # Symmetry with the explicit_base_url branch: when the named
+            # provider points at OpenRouter and no key resolved (sentinel
+            # stripped, no key_env), fall back to OPENROUTER_API_KEY so
+            # OpenRouter-custom named providers authenticate correctly. Does
+            # NOT touch non-OpenRouter named providers or local/keyless
+            # servers (their key stays empty → "no-key-required").
+            if not custom_key and base_url_host_matches(custom_base, "openrouter.ai"):
+                custom_key = os.getenv("OPENROUTER_API_KEY", "").strip()
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

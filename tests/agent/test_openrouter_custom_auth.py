@@ -200,6 +200,90 @@ class TestDescribePathResolvesOpenRouterKey:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Named custom-provider path: providers/custom_providers entry with api_key: none
+# ---------------------------------------------------------------------------
+
+
+class TestNamedCustomProviderResolvesOpenRouterKey:
+    """The named-custom-provider branch (~L3610-3691 of auxiliary_client.py).
+
+    This branch is reached when the requested provider name matches a
+    config.yaml ``providers`` / ``custom_providers`` entry (resolved via
+    ``hermes_cli.runtime_provider._get_named_custom_provider``). Before the
+    hardening fix it lacked the sentinel strip the explicit_base_url branch
+    has, so a named provider with ``api_key: none`` resolved ``custom_key=
+    "none"`` and sent it verbatim as the bearer token → 401. After the fix the
+    sentinel is stripped and, for an OpenRouter host, OPENROUTER_API_KEY wins.
+    """
+
+    def test_named_openrouter_provider_with_none_key_strips_sentinel(self, monkeypatch):
+        """Named OpenRouter provider, api_key: none → OPENROUTER_API_KEY wins."""
+        from agent.auxiliary_client import resolve_provider_client
+        from hermes_cli import runtime_provider
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", _OPENROUTER_SENTINEL_KEY)
+        monkeypatch.setenv("OPENAI_API_KEY", _OPENAI_DECOY_KEY)
+
+        entry = {
+            "name": "my-openrouter",
+            "base_url": OPENROUTER_BASE_URL,
+            "api_key": "none",  # literal YAML string "none"
+            "model": "qwen/qwen3-vl-32b-instruct",
+        }
+        monkeypatch.setattr(
+            runtime_provider, "_get_named_custom_provider",
+            lambda name: entry if name == "my-openrouter" else None,
+        )
+
+        client, _model = resolve_provider_client(
+            "my-openrouter",
+            model="qwen/qwen3-vl-32b-instruct",
+            is_vision=True,
+        )
+
+        assert client is not None
+        key = _resolved_api_key(client)
+        assert key == _OPENROUTER_SENTINEL_KEY
+        assert key != "none"
+        assert key != "no-key-required"
+        assert key != _OPENAI_DECOY_KEY  # OpenAI key must NOT win for OR host
+
+    def test_named_non_openrouter_provider_does_not_get_openrouter_key(self, monkeypatch):
+        """Named non-OpenRouter provider must NOT pick up OPENROUTER_API_KEY.
+
+        With api_key: none stripped and no key_env, a non-OpenRouter named host
+        falls through to the "no-key-required" placeholder — it must never
+        receive OPENROUTER_API_KEY (or be sent the literal "none").
+        """
+        from agent.auxiliary_client import resolve_provider_client
+        from hermes_cli import runtime_provider
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", _OPENROUTER_SENTINEL_KEY)
+
+        entry = {
+            "name": "my-local",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "none",
+            "model": "local-model",
+        }
+        monkeypatch.setattr(
+            runtime_provider, "_get_named_custom_provider",
+            lambda name: entry if name == "my-local" else None,
+        )
+
+        client, _model = resolve_provider_client(
+            "my-local",
+            model="local-model",
+        )
+
+        assert client is not None
+        key = _resolved_api_key(client)
+        assert key != _OPENROUTER_SENTINEL_KEY  # OR key must NOT leak here
+        assert key != "none"
+        assert key == "no-key-required"
+
+
 class TestNonOpenRouterUnaffected:
     def test_non_openrouter_custom_still_uses_openai_key(self, monkeypatch):
         """A non-OpenRouter custom host must NOT pick up OPENROUTER_API_KEY."""

@@ -364,3 +364,29 @@ export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 
 export const isPasteBackedText = (text: string) =>
   /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)(?:[^\n]*?)\]/.test(text)
+
+/**
+ * First-strong-character RTL detection (matches CSS direction: auto behaviour).
+ * Returns true when the first non-whitespace code point falls in an RTL
+ * script range: Hebrew (0590–05FF), Arabic/Persian (0600–06FF),
+ * Arabic Supplement (0750–077F), Arabic Extended-A (08A0–08FF),
+ * Arabic Presentation Forms (FB50–FDFF, FE70–FEFF).
+ */
+export const isRtl = (text: string): boolean => {
+  if (!text) return false
+  const clean = stripAnsi(text)
+  for (let i = 0; i < clean.length; i++) {
+    const cp = clean.codePointAt(i)!
+    // Skip whitespace / control chars
+    if (cp <= 0x20 || (cp >= 0x09 && cp <= 0x0D)) continue
+    return (
+      (cp >= 0x0590 && cp <= 0x05FF) ||
+      (cp >= 0x0600 && cp <= 0x06FF) ||
+      (cp >= 0x0750 && cp <= 0x077F) ||
+      (cp >= 0x08A0 && cp <= 0x08FF) ||
+      (cp >= 0xFB50 && cp <= 0xFDFF) ||
+      (cp >= 0xFE70 && cp <= 0xFEFF)
+    )
+  }
+  return false
+}

@@ -13,6 +13,7 @@ import {
   compactPreview,
   hasAnsi,
   isPasteBackedText,
+  isRtl,
   sanitizeAnsiForRender,
   stripAnsi
 } from '../lib/text.js'
@@ -193,6 +194,7 @@ export const MessageLine = memo(function MessageLine({
   // segments) keep a blank line on both sides so the patch doesn't butt up
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
+  const rtl = isRtl(msg.text)
 
   return (
     <Box
@@ -226,14 +228,23 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
-      <Box>
-        <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
+      <Box flexDirection={rtl ? 'row-reverse' : 'row'}>
+        <NoSelect
+          flexShrink={0}
+          {...(rtl ? {} : { fromLeftEdge: true })}
+          width={gutterWidth}
+        >
           <Text bold={msg.role === 'user'} color={prefix}>
             {glyph}{' '}
           </Text>
         </NoSelect>
 
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
+        <Box
+          width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
+          alignItems={rtl ? 'flex-end' : 'flex-start'}
+        >
+          {content}
+        </Box>
       </Box>
     </Box>
   )

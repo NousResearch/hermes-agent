@@ -1205,6 +1205,23 @@ display:
   # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
   busy_ack_detail: true
 
+  # Per-turn credit notices (CLI and gateway): the "• Grant spent · $X top-up
+  # left" footer and usage-band warnings ("⚠ Credits 90% used · $20 cap").
+  # Useful as a glanceable balance cue on rich platforms; pure footer noise on
+  # per-message-cost transports (SMS/iMessage). Depletion ("✕ Credit access
+  # paused") and restored notices ALWAYS deliver regardless of this setting.
+  # The agent stops or resumes responding on those, so a muted platform still
+  # needs them.
+  # Default: true for edit-capable tiers (telegram, discord, slack, …); false
+  # for no-edit / batch tiers (signal, bluebubbles, email, sms, webhook).
+  # Per-platform override: display.platforms.<platform>.show_credits
+  # Example:
+  #   display:
+  #     platforms:
+  #       sendblue:
+  #         show_credits: false
+  show_credits: true
+
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn

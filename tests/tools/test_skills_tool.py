@@ -357,6 +357,42 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_query_search_finds_hyphenated_skill_name(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "system-prompt-skill-governance",
+                category="autonomous-ai-agents",
+                body="Govern system prompts and skill placement.",
+            )
+            _make_skill(tmp_path, "unrelated", category="creative")
+            raw = skills_list(query="system prompt governance")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["query"] == "system prompt governance"
+        assert result["count"] >= 1
+        assert result["skills"][0]["name"] == "system-prompt-skill-governance"
+
+    def test_query_search_matches_tags_and_limit(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "llm-training-operations",
+                frontmatter_extra="metadata:\n  hermes:\n    tags: [fine-tuning, llm]\n",
+                category="mlops",
+            )
+            _make_skill(tmp_path, "fine-tuning-with-trl", category="mlops")
+            raw = skills_list(query="fine tuning", limit=1)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["skills"][0]["name"] in {
+            "fine-tuning-with-trl",
+            "llm-training-operations",
+        }
+
 
 # ---------------------------------------------------------------------------
 # skill_view

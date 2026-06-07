@@ -63,3 +63,7 @@ optional_env:
     description: "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)"
     prompt: "Slow response threshold (seconds)"
     password: false
+  - name: LINE_SMART_MODALITY
+    description: "Opt in to LINE reply modality routing: text replies to text, voice replies to audio/voice, and photo replies inherit the last text/voice modality for that chat participant."
+    prompt: "Enable smart reply modality? (true/false)"
+    password: false

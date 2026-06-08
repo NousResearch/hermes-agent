@@ -233,6 +233,10 @@ export function Pane({
   const polled = useRef({ x: 0, y: 0 }) // pos at the previous poll
   const pollId = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resizingUntil = useRef(0)
+  // True while the current reveal was opened by keyboard and the pointer hasn't
+  // entered the panel yet — suppresses geometry-close so a stray move (or hotkey
+  // spam) doesn't immediately shut it.
+  const keyboardHeld = useRef(false)
   const [hoverRevealed, setHoverRevealed] = useState(false)
   // True once the slide-in has had time to finish; gates the panel inert until
   // then so the cursor never flips or lands on a row before it's in view.
@@ -316,6 +320,9 @@ export function Pane({
 
   // Keyboard toggle (mod+b / mod+j) routes here when the track is force-collapsed
   // (narrow window) so the shortcut still does something — it flips the reveal.
+  // Mark keyboard-opened so the geometry watcher doesn't slam it shut on the
+  // first stray pointermove (lets you spam the hotkey; mouse takes over once it
+  // actually enters the panel).
   useEffect(() => {
     if (typeof window === 'undefined' || !overlayActive) {
       return
@@ -324,6 +331,7 @@ export function Pane({
     const onToggle = (e: Event) => {
       if ((e as CustomEvent<{ id: string }>).detail?.id === id) {
         stopPoll()
+        keyboardHeld.current = true
         setHoverRevealed(v => !v)
       }
     }
@@ -356,6 +364,16 @@ export function Pane({
         e.clientY < rect.top - HOVER_REVEAL_GRACE ||
         e.clientY > rect.bottom + HOVER_REVEAL_GRACE
 
+      // Keyboard-opened: ignore geometry until the cursor actually reaches the
+      // panel, then hand control to the mouse (close when it leaves).
+      if (keyboardHeld.current) {
+        if (!out) {
+          keyboardHeld.current = false
+        }
+
+        return
+      }
+
       if (out) {
         setHoverRevealed(false)
       }
@@ -370,6 +388,7 @@ export function Pane({
   useEffect(() => {
     if (!hoverRevealed) {
       setInteractive(false)
+      keyboardHeld.current = false
 
       return
     }

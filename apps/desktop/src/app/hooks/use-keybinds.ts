@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { setRightSidebarTab } from '@/app/right-sidebar/store'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { matchesQuery } from '@/hooks/use-media-query'
 import { PROFILE_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { toggleCommandPalette } from '@/store/command-palette'
@@ -27,6 +28,7 @@ import { $activeSessionId, $sessions, setModelPickerOpen } from '@/store/session
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus } from '../chat/composer/focus'
+import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
@@ -113,12 +115,18 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.togglePin': deps.toggleSelectedPin,
 
     'view.toggleSidebar': () => {
-      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: CHAT_SIDEBAR_PANE_ID } }))
-      toggleSidebarOpen()
+      if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
+        window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: CHAT_SIDEBAR_PANE_ID } }))
+      } else {
+        toggleSidebarOpen()
+      }
     },
     'view.toggleRightSidebar': () => {
-      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: FILE_BROWSER_PANE_ID } }))
-      toggleFileBrowserOpen()
+      if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
+        window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: FILE_BROWSER_PANE_ID } }))
+      } else {
+        toggleFileBrowserOpen()
+      }
     },
     'view.showFiles': () => showRightSidebarTab('files'),
     'view.showTerminal': () => showRightSidebarTab('terminal'),

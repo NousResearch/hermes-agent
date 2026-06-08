@@ -12,6 +12,9 @@ import type {
   CronJob,
   CronJobCreatePayload,
   CronJobUpdates,
+  CustomEndpointsResponse,
+  CustomEndpointUpdate,
+  CustomEndpointValidationResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
   HermesConfig,
@@ -54,16 +57,20 @@ export type {
   AnalyticsSkillEntry,
   AnalyticsSkillsSummary,
   AnalyticsTotals,
-  BackendUpdateCheckResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
   CronJobSchedule,
   CronJobUpdates,
+  CustomEndpoint,
+  CustomEndpointsResponse,
+  CustomEndpointUpdate,
+  CustomEndpointValidationResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -350,6 +357,42 @@ export function validateProviderCredential(
     path: '/api/providers/validate',
     method: 'POST',
     body: { key, value }
+  })
+}
+
+export function getCustomEndpoints(): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: '/api/providers/custom-endpoints'
+  })
+}
+
+export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: '/api/providers/custom-endpoints',
+    method: 'POST',
+    body: endpoint
+  })
+}
+
+export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointValidationResponse> {
+  return window.hermesDesktop.api<CustomEndpointValidationResponse>({
+    path: '/api/providers/custom-endpoints/validate',
+    method: 'POST',
+    body: endpoint
+  })
+}
+
+export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provider: string; model: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; provider: string; model: string }>({
+    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
+    method: 'POST'
+  })
+}
+
+export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
+    method: 'DELETE'
   })
 }
 

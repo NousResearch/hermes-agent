@@ -17,12 +17,13 @@ import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
+import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
+export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -168,7 +169,12 @@ function NoProviderKeys() {
   )
 }
 
-export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
+export function ProvidersSettings({
+  onConfigSaved,
+  onMainModelChanged,
+  onViewChange,
+  view
+}: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
@@ -208,7 +214,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   const hasOauth = oauthProviders.length > 0
   // The sidebar subnav owns the Accounts/API-keys split now; with no OAuth
   // providers there's nothing for the "Accounts" view to show, so fall to keys.
-  const showApiKeys = view === 'keys' || !hasOauth
+  const showApiKeys = view === 'keys' || (!hasOauth && view !== 'custom-endpoints')
 
   const keyGroups = buildProviderKeyGroups(vars)
 
@@ -235,6 +241,15 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
     )
   }
 
+  if (view === 'custom-endpoints') {
+    return (
+      <CustomEndpointsSettings
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+      />
+    )
+  }
+
   return (
     <SettingsContent>
       <OAuthPicker onWantApiKey={() => onViewChange('keys')} providers={oauthProviders} />
@@ -253,6 +268,8 @@ interface ProviderKeyGroup {
 }
 
 interface ProvidersSettingsProps {
+  onConfigSaved?: () => void
+  onMainModelChanged?: (provider: string, model: string) => void
   onViewChange: (view: ProviderView) => void
   view: ProviderView
 }

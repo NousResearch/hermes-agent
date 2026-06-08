@@ -88,20 +88,6 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 # does not expose a client-side limit, so this is a fixed cap that clients
 # paginate against using `cursor` / `next_cursor`.
 _LIST_SESSIONS_PAGE_SIZE = 50
-_INTERRUPT_WAITING_FOR_MODEL_PREFIX = (
-    "Operation interrupted: waiting for model response ("
-)
-_INTERRUPT_WAITING_FOR_MODEL_SUFFIX = " elapsed)."
-
-
-def _is_interrupt_waiting_for_model_response(text: Any) -> bool:
-    """Return True for Hermes' local API-wait interruption status string."""
-    response = str(text or "").strip()
-    return (
-        response.startswith(_INTERRUPT_WAITING_FOR_MODEL_PREFIX)
-        and response.endswith(_INTERRUPT_WAITING_FOR_MODEL_SUFFIX)
-    )
-
 _MAX_ACP_RESOURCE_BYTES = 512 * 1024
 _TEXT_RESOURCE_MIME_PREFIXES = ("text/",)
 _TEXT_RESOURCE_MIME_TYPES = {
@@ -1529,8 +1515,12 @@ class HermesACPAgent(acp.Agent):
         final_response = result.get("final_response", "")
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         interrupted = bool(result.get("interrupted")) or cancelled
-        suppress_interrupt_response = (
-            interrupted and _is_interrupt_waiting_for_model_response(final_response)
+        # Hermes' local "waiting for model response" interrupt status is metadata,
+        # not assistant prose — clients get cancellation from stop_reason instead.
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        suppress_interrupt_response = interrupted and final_response.startswith(
+            INTERRUPT_WAITING_FOR_MODEL_PREFIX
         )
         if final_response and not suppress_interrupt_response:
             try:

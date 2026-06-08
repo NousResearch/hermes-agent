@@ -1986,6 +1986,58 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "(possible upstream error or malformed SSE response)."
             )
 
+        # A stream that delivered a tool call but only partial/unparseable
+        # JSON args splits into two very different cases:
+        #
+        #   1. Provider sent finish_reason="length" → a genuine output-cap
+        #      truncation.  Boosting max_tokens on retry is the right move.
+        #
+        #   2. Provider sent NO finish_reason (the SSE simply stopped after
+        #      the opening "{" with no terminator and no [DONE]) → the
+        #      upstream dropped/stalled the connection mid tool-call.  This
+        #      is NOT an output cap — the model never reported hitting one.
+        #      Some dedicated endpoints (e.g. NVIDIA Nemotron Ultra on the
+        #      Nous dedicated endpoint) stall for minutes during large
+        #      tool-arg generation, then close the stream cleanly without a
+        #      finish_reason.  Stamping "length" here sends it down the
+        #      max_tokens-boost truncation path, which retries 3× to no
+        #      effect and finally reports the misleading "Response truncated
+        #      due to output length limit" — the red herring this guards
+        #      against.  Route it through the partial-stream-stub path
+        #      instead so the loop reports an honest mid-tool-call stream
+        #      drop and fails fast rather than escalating output budget.
+        _tool_args_dropped_no_finish = has_truncated_tool_args and finish_reason is None
+        if _tool_args_dropped_no_finish:
+            _dropped_names = [
+                (tool_calls_acc[idx]["function"]["name"] or "?")
+                for idx in sorted(tool_calls_acc)
+            ]
+            logger.warning(
+                "Stream ended with no finish_reason while a tool call's "
+                "arguments were still incomplete (tools=%s); treating as a "
+                "mid-tool-call stream drop, not an output-length truncation.",
+                _dropped_names,
+            )
+            full_reasoning = "".join(reasoning_parts) or None
+            mock_message = SimpleNamespace(
+                role=role,
+                content=full_content,
+                tool_calls=None,
+                reasoning_content=full_reasoning,
+            )
+            mock_choice = SimpleNamespace(
+                index=0,
+                message=mock_message,
+                finish_reason=FINISH_REASON_LENGTH,
+            )
+            return SimpleNamespace(
+                id=PARTIAL_STREAM_STUB_ID,
+                model=model_name,
+                choices=[mock_choice],
+                usage=usage_obj,
+                _dropped_tool_names=_dropped_names or None,
+            )
+
         effective_finish_reason = finish_reason or "stop"
         if has_truncated_tool_args:
             effective_finish_reason = "length"

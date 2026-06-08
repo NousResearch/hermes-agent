@@ -1794,6 +1794,108 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class TestTransientTransportRetry:
+    """call_llm retries ONCE on the same provider for a transient transport
+    blip before escalating to the fallback chain.
+
+    Salvaged from PR #16587 (@ARegalado1). The original fixed only the
+    context-compression caller; this lives in call_llm so every auxiliary
+    task (compression, memory flush, title-gen, session-search, vision)
+    gets the same same-target retry, and the gate reuses the canonical
+    _is_connection_error detector.
+    """
+
+    def _patches(self, client):
+        return (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openrouter", "some-model", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task: resp,
+            ),
+        )
+
+    def test_retries_streaming_close_once_same_provider(self):
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [
+            Exception(
+                "peer closed connection without sending complete message body "
+                "(incomplete chunked read)"
+            ),
+            {"ok": True},
+        ]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        # Same client called twice — no provider fallback needed.
+        assert client.chat.completions.create.call_count == 2
+
+    def test_retries_5xx_once_same_provider(self):
+        class _Err503(Exception):
+            status_code = 503
+
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [_Err503("upstream"), {"ok": True}]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+
+    def test_does_not_retry_non_transient_400(self):
+        class _Err400(Exception):
+            status_code = 400
+
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = _Err400("bad request")
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3, pytest.raises(_Err400):
+            call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        # Non-transient: single attempt, no same-target retry.
+        assert client.chat.completions.create.call_count == 1
+
+    def test_second_transient_failure_escalates_to_fallback(self):
+        """Two transient failures in a row exhaust the same-target retry and
+        fall through to the existing connection-error provider fallback."""
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = Exception(
+            "peer closed connection without sending complete message body"
+        )
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://api.openai.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(fb_client, "fb-model", "openai"),
+            ),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        # Primary tried twice (initial + same-target retry), then fallback.
+        assert primary.chat.completions.create.call_count == 2
+        assert fb_client.chat.completions.create.call_count == 1
+
+
 class TestIsConnectionError:
     """Tests for _is_connection_error detection."""
 

@@ -111,5 +111,5 @@ Kanban coding cards should request `workspace_kind=worktree` with a stable `work
 
 ## Remaining notes
 
-- The branch was created from the local `main` checkout, which was already behind `origin/main` by 3 commits before this work was committed. Rebase/merge with `origin/main` should be done before opening or finalizing the PR if GitHub reports drift.
+- Branch `fix/e2e-agentic-workflow-hardening` was rebased onto `origin/main` after both local commits, then re-verified.
 - No production/staging secrets, deployments, releases, registry pushes, auto-merges, or destructive cleanup were performed.

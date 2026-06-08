@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -139,6 +140,7 @@ async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monk
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+    monkeypatch.setattr("gateway.run.sys.platform", "linux")
     runner._launch_systemd_restart_shortcut = MagicMock()
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
@@ -147,6 +149,56 @@ async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monk
     runner._launch_systemd_restart_shortcut.assert_called_once_with()
     assert runner._exit_code == 0
     assert (tmp_path / ".restart_pending.json").exists()
+
+
+def test_systemd_restart_shortcut_skips_units_without_restart_steps(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen = MagicMock()
+
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+    monkeypatch.setattr("gateway.run.sys.platform", "linux")
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 321)
+    monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    def _fake_run(cmd, capture_output, text, timeout):
+        if "--property=RestartSteps" in cmd:
+            return MagicMock(stdout="0\n")
+        raise AssertionError(f"unexpected systemctl show call: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    runner._launch_systemd_restart_shortcut()
+
+    popen.assert_not_called()
+
+
+def test_systemd_restart_shortcut_launches_only_for_stepped_units(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen = MagicMock()
+    show_calls = []
+
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+    monkeypatch.setattr("gateway.run.sys.platform", "linux")
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 321)
+    monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    def _fake_run(cmd, capture_output, text, timeout):
+        show_calls.append(cmd)
+        if "--property=RestartSteps" in cmd:
+            return MagicMock(stdout="5\n")
+        if "--property=MainPID" in cmd:
+            return MagicMock(stdout="321\n")
+        raise AssertionError(f"unexpected systemctl show call: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    runner._launch_systemd_restart_shortcut()
+
+    assert any("--property=RestartSteps" in call for call in show_calls)
+    assert any("--property=MainPID" in call for call in show_calls)
+    popen.assert_called_once()
 
 
 @pytest.mark.asyncio

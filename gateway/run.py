@@ -4220,21 +4220,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 service_name = "hermes-gateway"
 
+            def _systemctl_show_value(prop: str) -> str:
+                result = subprocess.run(
+                    [
+                        systemctl,
+                        "--user",
+                        "show",
+                        service_name,
+                        f"--property={prop}",
+                        "--value",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                return (result.stdout or "").strip()
+
+            # The shortcut is only needed for stepped-restart units. On the
+            # default Restart=always user service, clean exit already causes
+            # an immediate relaunch; injecting an extra `systemctl restart`
+            # job can flap the freshly-started replacement.
+            try:
+                restart_steps = int(_systemctl_show_value("RestartSteps") or "0")
+            except ValueError:
+                restart_steps = 0
+            if restart_steps <= 0:
+                return
+
             current_pid = os.getpid()
-            show = subprocess.run(
-                [
-                    systemctl,
-                    "--user",
-                    "show",
-                    service_name,
-                    "--property=MainPID",
-                    "--value",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if (show.stdout or "").strip() != str(current_pid):
+            if _systemctl_show_value("MainPID") != str(current_pid):
                 return
 
             systemctl_user = "systemctl --user"

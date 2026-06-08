@@ -182,5 +182,18 @@ describe('applyBackendUpdate recovery', () => {
     expect($backendUpdateApply.get().stage).toBe('idle')
     expect($backendUpdateApply.get().applying).toBe(false)
   })
+
+  it('surfaces an error when the backend never comes back after the restart', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+    checkHermesUpdateSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(70000)
+    const result = await promise
+
+    expect(result.ok).toBe(false)
+    expect($backendUpdateApply.get().stage).toBe('error')
+  })
 })
 

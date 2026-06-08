@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
+from hermes_cli.agents_os_idea_factory import draft_idea, idea_factory_schema
 
 DEFAULT_VAULT_DIRNAME = "vault_mirror"
 SAFE_WORKFLOWS = {
@@ -1439,6 +1440,33 @@ def service_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def idea_schema_cmd(args: argparse.Namespace) -> int:
+    payload = idea_factory_schema()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("Idea Factory v0 schema")
+        print("input_fields: " + ", ".join(payload["input_fields"]))
+        print("output_fields: " + ", ".join(payload["output_fields"]))
+    return 0
+
+
+def idea_draft_cmd(args: argparse.Namespace) -> int:
+    source_links = args.source_link or []
+    payload = draft_idea(
+        args.idea_text,
+        context=args.context,
+        desired_output=args.desired_output,
+        urgency=args.urgency,
+        source_links=source_links,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"{payload['idea_id']} {payload['classification']} risk={payload['risk_class']} approval_required={payload['approval_required']}")
+    return 0
+
+
 def docs_cmd(args: argparse.Namespace) -> int:
     paths = resolve_paths(args)
     service = AgentsOSService(paths)
@@ -1718,6 +1746,20 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     p = service_sub.add_parser("status", help="Show service adapter status payload")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=service_status)
+
+    idea = sub.add_parser("idea", help="Draft local Idea Factory plans")
+    idea_sub = idea.add_subparsers(dest="idea_command")
+    p = idea_sub.add_parser("schema", help="Show Idea Factory v0 schema")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=idea_schema_cmd)
+    p = idea_sub.add_parser("draft", help="Draft and classify an idea without executing it")
+    p.add_argument("idea_text")
+    p.add_argument("--context")
+    p.add_argument("--desired-output")
+    p.add_argument("--urgency", default="normal", choices=["low", "normal", "high"])
+    p.add_argument("--source-link", action="append")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=idea_draft_cmd)
 
     p = sub.add_parser("docs", help="Generate local Agents OS runtime docs")
     p.add_argument("--json", action="store_true")

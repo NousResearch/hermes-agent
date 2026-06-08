@@ -1614,7 +1614,7 @@ class PluginManager:
 
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
-        return bool(self._middleware.get(kind))
+        return bool(getattr(self, "_middleware", {}).get(kind))
 
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call registered middleware callbacks for *kind*.
@@ -1623,7 +1623,7 @@ class PluginManager:
         path. Middleware that wants to change behavior must return the shape
         documented by the caller-specific contract.
         """
-        callbacks = self._middleware.get(kind, [])
+        callbacks = getattr(self, "_middleware", {}).get(kind, [])
         results: List[Any] = []
         for cb in callbacks:
             try:
@@ -1725,7 +1725,28 @@ def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
 
     Returns a list of non-``None`` return values from middleware callbacks.
     """
-    return get_plugin_manager().invoke_middleware(kind, **kwargs)
+    manager = get_plugin_manager()
+    method = getattr(manager, "invoke_middleware", None)
+    if callable(method):
+        return method(kind, **kwargs)
+    middleware: dict[str, List[Callable]] | None = getattr(manager, "_middleware", None)
+    if middleware is None:
+        return []
+    callbacks = middleware.get(kind, [])
+    results: List[Any] = []
+    for cb in callbacks:
+        try:
+            ret = cb(**kwargs)
+            if ret is not None:
+                results.append(ret)
+        except Exception as exc:
+            logger.warning(
+                "Middleware '%s' callback %s raised: %s",
+                kind,
+                getattr(cb, "__name__", repr(cb)),
+                exc,
+            )
+    return results
 
 
 def has_middleware(kind: str) -> bool:
@@ -1734,7 +1755,10 @@ def has_middleware(kind: str) -> bool:
     method = getattr(manager, "has_middleware", None)
     if callable(method):
         return bool(method(kind))
-    return bool(getattr(manager, "_middleware", {}).get(kind))
+    middleware = getattr(manager, "_middleware", None)
+    if middleware is None:
+        return False
+    return bool(middleware.get(kind))
 
 
 def has_hook(hook_name: str) -> bool:

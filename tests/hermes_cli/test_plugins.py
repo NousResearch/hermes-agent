@@ -19,6 +19,7 @@ from hermes_cli.plugins import (
     get_plugin_commands,
     get_pre_tool_call_block_message,
     has_middleware,
+    invoke_middleware,
     resolve_plugin_command_result,
 )
 from hermes_cli.middleware import (
@@ -26,6 +27,8 @@ from hermes_cli.middleware import (
     apply_llm_request_middleware,
     apply_tool_request_middleware,
     run_tool_execution_middleware,
+    _has_middleware,
+    _get_middleware_callbacks,
 )
 
 
@@ -169,6 +172,33 @@ class TestPluginDiscovery:
         assert tool_result.trace == []
         assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
         assert has_middleware("tool_request") is False
+
+    def test_middleware_defensive_access_missing_attribute(self, monkeypatch):
+        """Middleware helpers should not crash when PluginManager lacks _middleware attr.
+
+        This guards against the race condition in cron jobs where the plugin
+        manager singleton may be accessed before full initialization (or in a
+        subprocess where the module is re-imported). See issue #42197.
+        """
+        # Manager without _middleware attribute at all
+        manager_missing = types.SimpleNamespace()
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager_missing)
+
+        assert has_middleware("llm_request") is False
+        assert _has_middleware("llm_request") is False
+        assert _get_middleware_callbacks("llm_request") == []
+        assert invoke_middleware("llm_request", request={}) == []
+        result = apply_llm_request_middleware({"messages": []})
+        assert result.changed is False
+        assert result.trace == []
+
+        # Manager with _middleware = None
+        manager_none = types.SimpleNamespace(_middleware=None)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager_none)
+
+        assert has_middleware("llm_request") is False
+        assert _get_middleware_callbacks("llm_request") == []
+        assert invoke_middleware("llm_request", request={}) == []
 
     def test_request_middleware_changed_tracks_trace_not_deep_equality(self, monkeypatch):
         def same_payload_middleware(**kwargs):

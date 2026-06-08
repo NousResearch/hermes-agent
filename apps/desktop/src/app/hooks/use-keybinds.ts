@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { $terminalTakeover, setRightSidebarTab, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { activateTreeTabSlot, cycleTreeTabInFocusedZone, layoutHasRootSide } from '@/components/pane-shell/tree/store'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
@@ -118,6 +118,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const showFiles = () => {
     setFileBrowserOpen(true)
     setTerminalTakeover(false)
+    setRightSidebarTab('files')
   }
 
   handlersRef.current = {

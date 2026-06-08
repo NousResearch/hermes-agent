@@ -2187,7 +2187,26 @@ export const zhHant = defineLocale({
     terminalNew: '新增終端機',
     terminalCloseOthers: '關閉其他',
     terminalCloseAll: '全部關閉',
-    addToChat: '新增至聊天'
+    addToChat: '新增至聊天',
+    kanbanPanel: {
+      title: '看板',
+      refresh: '重新整理看板',
+      loading: '正在載入看板',
+      loadFailed: '看板不可用',
+      noBoardsTitle: '沒有看板',
+      noBoardsBody: '使用 `hermes kanban boards create <slug>` 建立看板後即可在這裡查看。',
+      noTasksTitle: '沒有任務',
+      noTasksBody: '目前看板還沒有可見任務。',
+      emptyBadge: '暫無任務',
+      details: '任務詳情',
+      workspace: '工作區',
+      created: '建立時間',
+      branch: '分支',
+      workflow: '工作流程',
+      notSet: '未設定',
+      unknownStatus: '未知',
+      statusCount: (status: string, count: number) => `${count} ${status}`
+    }
   },
 
   preview: {

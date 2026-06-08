@@ -5,6 +5,7 @@ import type { HermesReadDirResult } from '@/global'
 import { $connection, setCurrentCwd } from '@/store/session'
 
 import { resetProjectTreeState } from './files/use-project-tree'
+import { $rightSidebarTab } from './store'
 
 import { RightSidebarPane } from './index'
 
@@ -17,6 +18,7 @@ function installBridge() {
 describe('RightSidebarPane', () => {
   beforeEach(() => {
     $connection.set(null)
+    $rightSidebarTab.set('files')
     resetProjectTreeState()
     readDir.mockReset()
     readDir.mockResolvedValue({ entries: [{ isDirectory: false, name: 'README.md', path: '/repo/README.md' }] })
@@ -34,7 +36,7 @@ describe('RightSidebarPane', () => {
   it('renders the tree whenever the session has a working dir (repo or not) — no picker', async () => {
     setCurrentCwd('/repo')
 
-    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} requestGateway={vi.fn()} />)
 
     const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
 
@@ -49,7 +51,7 @@ describe('RightSidebarPane', () => {
   it('shows no tree for a detached chat (no working dir)', async () => {
     setCurrentCwd('')
 
-    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} requestGateway={vi.fn()} />)
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()

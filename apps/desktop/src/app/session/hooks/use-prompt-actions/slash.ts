@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { setRightSidebarTab, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
@@ -17,6 +18,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
+import { setFileBrowserOpen } from '@/store/layout'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
@@ -642,6 +644,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // Args are ignored, matching the TUI overlay behavior.
         journey: async () => {
           openMemoryGraph()
+        },
+        // Keep the command's textual output in chat while revealing the richer
+        // read-only board view in the existing right-side pane.
+        kanban: async ctx => {
+          setFileBrowserOpen(true)
+          setTerminalTakeover(false)
+          setRightSidebarTab('kanban')
+          await runExec(ctx)
         },
         // /hatch opens the pet generator overlay (the desktop's rich, multi-step
         // generate→pick→hatch→adopt flow). A typed description seeds the prompt

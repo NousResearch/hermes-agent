@@ -14,6 +14,7 @@ import { atom } from 'nanostores'
 import type { CSSProperties } from 'react'
 
 import { ChatPreviewRail } from '@/app/chat/right-rail/preview'
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
 import type { GroupSetter } from '@/app/shell/group-setter'
@@ -121,9 +122,15 @@ function previewFile(path: string) {
 const ZONE_CONTENT = 'h-full [&>aside]:h-full [&>aside]:w-full [&>aside]:pt-0'
 
 export function FilesPane() {
+  const { requestGateway } = useGatewayRequest()
+
   return (
     <div className={ZONE_CONTENT}>
-      <RightSidebarPane onActivateFile={previewFile} onActivateFolder={previewFile} />
+      <RightSidebarPane
+        onActivateFile={previewFile}
+        onActivateFolder={previewFile}
+        requestGateway={requestGateway}
+      />
     </div>
   )
 }

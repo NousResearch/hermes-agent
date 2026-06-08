@@ -36,6 +36,7 @@ export type DesktopActionId =
   | 'hatch'
   | 'help'
   | 'journey'
+  | 'kanban'
   | 'new'
   | 'pet'
   | 'profile'
@@ -169,6 +170,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     aliases: ['/learning', '/memory-graph'],
     surface: action('journey')
   },
+  {
+    name: '/kanban',
+    description: 'Use the Kanban board from desktop chat',
+    surface: action('kanban'),
+    args: true
+  },
 
   // Overlay pickers
   { name: '/model', description: 'Switch the model for this session', surface: picker('model'), hidden: true },
@@ -286,7 +293,7 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   ],
   messaging: ['/approve', '/deny'],
   settings: ['/skills', '/pets'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
+  advanced: ['/curator', '/fast', '/insights', '/reasoning', '/voice']
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [

@@ -2256,7 +2256,26 @@ export const ja = defineLocale({
     terminalNew: '新しいターミナル',
     terminalCloseOthers: '他を閉じる',
     terminalCloseAll: 'すべて閉じる',
-    addToChat: 'チャットに追加'
+    addToChat: 'チャットに追加',
+    kanbanPanel: {
+      title: 'カンバン',
+      refresh: 'ボードを更新',
+      loading: 'カンバンボードを読み込み中',
+      loadFailed: 'カンバンは利用できません',
+      noBoardsTitle: 'ボードがありません',
+      noBoardsBody: '`hermes kanban boards create <slug>` でボードを作成すると、ここに表示されます。',
+      noTasksTitle: 'タスクがありません',
+      noTasksBody: 'このボードにはまだ表示できるタスクがありません。',
+      emptyBadge: 'タスクなし',
+      details: 'タスク詳細',
+      workspace: 'ワークスペース',
+      created: '作成日時',
+      branch: 'ブランチ',
+      workflow: 'ワークフロー',
+      notSet: '未設定',
+      unknownStatus: '不明',
+      statusCount: (status: string, count: number) => `${count} ${status}`
+    }
   },
 
   preview: {

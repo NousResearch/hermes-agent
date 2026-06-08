@@ -3,8 +3,10 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $rightSidebarTab } from '@/app/right-sidebar/store'
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
@@ -2724,5 +2726,41 @@ describe('uploadComposerAttachment remote read failures', () => {
         { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
       )
     ).rejects.toThrow('ENOENT: no such file')
+  })
+})
+
+describe('usePromptActions /kanban', () => {
+  beforeEach(() => {
+    setFileBrowserOpen(false)
+    $rightSidebarTab.set('files')
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('routes /kanban through the slash worker and reveals the Kanban sidebar', async () => {
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'slash.exec' ? { output: 'todo 3\nrunning 1' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/kanban list')
+
+    expect(requestGateway).toHaveBeenCalledWith('slash.exec', {
+      session_id: RUNTIME_SESSION_ID,
+      command: 'kanban list'
+    })
+    expect($fileBrowserOpen.get()).toBe(true)
+    expect($rightSidebarTab.get()).toBe('kanban')
   })
 })

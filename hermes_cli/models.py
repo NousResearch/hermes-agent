@@ -3295,6 +3295,8 @@ def fetch_api_models(
 
 
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
+_OLLAMA_CLOUD_NEMOTRON_ANCHORS = ("nemotron-3-nano:30b", "nemotron-3-super")
+_OLLAMA_CLOUD_NEMOTRON_ULTRA = "nemotron-3-ultra"
 
 
 def _strip_ollama_cloud_suffix(model_id: str) -> str:
@@ -3409,6 +3411,13 @@ def fetch_ollama_cloud_models(
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 merged.append(normalized)
+        if _OLLAMA_CLOUD_NEMOTRON_ULTRA not in seen:
+            anchor_indexes = [
+                idx for idx, model in enumerate(merged)
+                if model in _OLLAMA_CLOUD_NEMOTRON_ANCHORS
+            ]
+            if anchor_indexes:
+                merged.insert(max(anchor_indexes) + 1, _OLLAMA_CLOUD_NEMOTRON_ULTRA)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged

@@ -41,7 +41,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -72,6 +72,11 @@ _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
+_DEFAULT_RECALL_LIMIT = 6
+_DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
+_DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
+_RECALL_QUERY_MIN_CHARS = 5
+_RECALL_TARGET_URIS = ("viking://user/memories", "viking://agent/memories")
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -1768,6 +1773,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._client: Optional[_VikingClient] = None
         self._endpoint = ""
         self._api_key = ""
+        self._account = ""
+        self._user = ""
+        self._agent = ""
         self._session_id = ""
         self._turn_count = 0
         # Guards the (_session_id, _turn_count) pair. sync_turn runs on the
@@ -1788,6 +1796,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._committed_session_ids: Set[str] = set()
         self._committed_session_lock = threading.Lock()
         self._prefetch_result = ""
+        self._prefetch_results: Dict[Tuple[str, str], str] = {}
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._runtime_start_lock = threading.Lock()
@@ -1854,6 +1863,36 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 ),
                 "default": "hermes",
                 "env_var": "OPENVIKING_AGENT",
+            },
+            {
+                "key": "recall_limit",
+                "description": "Maximum OpenViking memories injected by automatic prefetch recall",
+                "default": _DEFAULT_RECALL_LIMIT,
+                "env_var": "OPENVIKING_RECALL_LIMIT",
+            },
+            {
+                "key": "recall_score_threshold",
+                "description": "Minimum local relevance score for automatic prefetch recall",
+                "default": _DEFAULT_RECALL_SCORE_THRESHOLD,
+                "env_var": "OPENVIKING_RECALL_SCORE_THRESHOLD",
+            },
+            {
+                "key": "recall_max_injected_chars",
+                "description": "Maximum total characters injected by automatic prefetch recall",
+                "default": _DEFAULT_RECALL_MAX_INJECTED_CHARS,
+                "env_var": "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
+            },
+            {
+                "key": "recall_prefer_abstract",
+                "description": "Use abstracts instead of reading full L2 memory content during automatic prefetch recall",
+                "default": False,
+                "env_var": "OPENVIKING_RECALL_PREFER_ABSTRACT",
+            },
+            {
+                "key": "recall_resources",
+                "description": "Include viking://resources in automatic prefetch recall",
+                "default": False,
+                "env_var": "OPENVIKING_RECALL_RESOURCES",
             },
         ]
 
@@ -2135,20 +2174,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched results from the background thread."""
+        """Return recall context for this query/session."""
+        query_text = _derive_openviking_user_text(query).strip()
+        if not self._client or len(query_text) < _RECALL_QUERY_MIN_CHARS:
+            return ""
+
+        key = self._prefetch_key(query_text, session_id)
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
-            result = self._prefetch_result
-            self._prefetch_result = ""
+            result = self._prefetch_results.pop(key, "")
+        if not result:
+            result = self._search_prefetch_context(query_text)
         if not result:
             return ""
         return f"## OpenViking Context\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""
-        query = _derive_openviking_user_text(query)
-        if not self._client or not query:
+        query_text = _derive_openviking_user_text(query).strip()
+        if not self._client or len(query_text) < _RECALL_QUERY_MIN_CHARS:
             return
 
         # Drop prefetch results from older switch generations.
@@ -2159,29 +2204,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                client = _VikingClient(
-                    self._endpoint, self._api_key,
-                    account=self._account, user=self._user, agent=self._agent,
-                )
-                resp = client.post("/api/v1/search/find", {
-                    "query": query,
-                    "limit": 5,
-                })
-                result = resp.get("result", {})
-                parts = []
-                for ctx_type in ("memories", "resources"):
-                    items = result.get(ctx_type, [])
-                    for item in items[:3]:
-                        uri = item.get("uri", "")
-                        abstract = item.get("abstract", "")
-                        score = item.get("score", 0)
-                        if abstract:
-                            parts.append(f"- [{score:.2f}] {abstract} ({uri})")
-                if parts:
+                key = self._prefetch_key(query_text, session_id)
+                result = self._search_prefetch_context(query_text)
+                if result:
                     with self._prefetch_lock:
                         if gen != self._prefetch_generation:
                             return
-                        self._prefetch_result = "\n".join(parts)
+                        self._prefetch_results[key] = result
             except Exception as e:
                 logger.debug("OpenViking prefetch failed: %s", e)
             finally:
@@ -2409,6 +2438,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             self._prefetch_generation += 1
             self._prefetch_result = ""
+            self._prefetch_results.clear()
             # Join EVERY tracked prefetch thread, not just the latest slot — a
             # rapid re-queue can leave an older thread for the abandoned session
             # still running (consistent with shutdown()).
@@ -2417,6 +2447,256 @@ class OpenVikingMemoryProvider(MemoryProvider):
             t.join(timeout=3.0)
         with self._prefetch_lock:
             self._prefetch_result = ""
+            self._prefetch_results.clear()
+
+    def _prefetch_key(self, query: str, session_id: str = "") -> Tuple[str, str]:
+        return ((session_id or self._session_id).strip(), query.strip())
+
+    def _search_prefetch_context(self, query: str) -> str:
+        query_text = (query or "").strip()
+        if not self._client or len(query_text) < _RECALL_QUERY_MIN_CHARS:
+            return ""
+
+        try:
+            client = _VikingClient(
+                self._endpoint, self._api_key,
+                account=self._account, user=self._user, agent=self._agent,
+            )
+            cfg = self._recall_config()
+            candidate_limit = max(cfg["limit"] * 4, 20)
+            candidates: List[Dict[str, Any]] = []
+            target_uris = list(_RECALL_TARGET_URIS)
+            if cfg["resources"]:
+                target_uris.append("viking://resources")
+
+            for target_uri in target_uris:
+                try:
+                    resp = client.post("/api/v1/search/find", {
+                        "query": query_text,
+                        "target_uri": target_uri,
+                        "limit": candidate_limit,
+                        "score_threshold": 0,
+                    })
+                except Exception as e:
+                    logger.debug("OpenViking prefetch search failed for %s: %s", target_uri, e)
+                    continue
+                result = self._unwrap_result(resp)
+                if not isinstance(result, dict):
+                    continue
+                for ctx_type in ("memories", "resources"):
+                    for item in result.get(ctx_type, []) or []:
+                        if isinstance(item, dict):
+                            candidates.append(item)
+
+            selected = self._select_recall_candidates(
+                candidates,
+                query_text,
+                limit=cfg["limit"],
+                score_threshold=cfg["score_threshold"],
+            )
+            parts = self._build_prefetch_entries(
+                client,
+                selected,
+                prefer_abstract=cfg["prefer_abstract"],
+                max_injected_chars=cfg["max_injected_chars"],
+            )
+            return "\n".join(parts)
+        except Exception as e:
+            logger.debug("OpenViking context search failed: %s", e)
+            return ""
+
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        raw = os.environ.get(name)
+        if raw is None or raw == "":
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+        raw = os.environ.get(name)
+        try:
+            value = int(float(raw)) if raw not in {None, ""} else default
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    @staticmethod
+    def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+        raw = os.environ.get(name)
+        try:
+            value = float(raw) if raw not in {None, ""} else default
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _recall_config(self) -> Dict[str, Any]:
+        return {
+            "limit": self._env_int(
+                "OPENVIKING_RECALL_LIMIT",
+                _DEFAULT_RECALL_LIMIT,
+                minimum=1,
+                maximum=100,
+            ),
+            "score_threshold": self._env_float(
+                "OPENVIKING_RECALL_SCORE_THRESHOLD",
+                _DEFAULT_RECALL_SCORE_THRESHOLD,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            "max_injected_chars": self._env_int(
+                "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
+                _DEFAULT_RECALL_MAX_INJECTED_CHARS,
+                minimum=100,
+                maximum=50000,
+            ),
+            "prefer_abstract": self._env_bool("OPENVIKING_RECALL_PREFER_ABSTRACT", False),
+            "resources": self._env_bool("OPENVIKING_RECALL_RESOURCES", False),
+        }
+
+    @staticmethod
+    def _clamp_score(value: Any) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _recall_category(item: Dict[str, Any]) -> str:
+        category = str(item.get("category") or "").strip()
+        return category or "memory"
+
+    @staticmethod
+    def _recall_abstract(item: Dict[str, Any]) -> str:
+        for key in ("abstract", "overview", "text", "content"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        uri = item.get("uri")
+        return str(uri or "").strip()
+
+    @staticmethod
+    def _dedupe_key(item: Dict[str, Any]) -> str:
+        uri = str(item.get("uri") or "").strip()
+        category = str(item.get("category") or "").strip().lower() or "unknown"
+        abstract = OpenVikingMemoryProvider._recall_abstract(item).lower()
+        abstract = " ".join(abstract.split())
+        uri_lower = uri.lower()
+        if abstract and "/events/" not in uri_lower and "/cases/" not in uri_lower:
+            return f"abstract:{category}:{abstract}"
+        return f"uri:{uri}"
+
+    @staticmethod
+    def _query_tokens(query: str) -> List[str]:
+        tokens = []
+        for raw in query.lower().replace("_", " ").split():
+            token = "".join(ch for ch in raw if ch.isalnum())
+            if len(token) >= 2:
+                tokens.append(token)
+        return tokens[:8]
+
+    @classmethod
+    def _recall_rank(cls, item: Dict[str, Any], query_tokens: List[str]) -> float:
+        text = f"{item.get('uri', '')} {cls._recall_abstract(item)}".lower()
+        overlap = sum(1 for token in query_tokens if token in text)
+        overlap_boost = min(0.2, overlap * 0.05)
+        leaf_boost = 0.12 if item.get("level") == 2 else 0.0
+        return cls._clamp_score(item.get("score")) + leaf_boost + overlap_boost
+
+    @classmethod
+    def _select_recall_candidates(
+        cls,
+        items: List[Dict[str, Any]],
+        query: str,
+        *,
+        limit: int,
+        score_threshold: float,
+    ) -> List[Dict[str, Any]]:
+        seen_uri = set()
+        seen_key = set()
+        filtered: List[Dict[str, Any]] = []
+        for item in items:
+            uri = str(item.get("uri") or "").strip()
+            if not uri or uri in seen_uri:
+                continue
+            if cls._clamp_score(item.get("score")) < score_threshold:
+                continue
+            key = cls._dedupe_key(item)
+            if key in seen_key:
+                continue
+            seen_uri.add(uri)
+            seen_key.add(key)
+            filtered.append(item)
+
+        tokens = cls._query_tokens(query)
+        filtered.sort(key=lambda item: cls._recall_rank(item, tokens), reverse=True)
+        return filtered[:limit]
+
+    @staticmethod
+    def _extract_read_content(resp: Any) -> str:
+        result = OpenVikingMemoryProvider._unwrap_result(resp)
+        if isinstance(result, str):
+            return result.strip()
+        if isinstance(result, dict):
+            for key in ("content", "text"):
+                value = result.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    def _resolve_recall_content(
+        self,
+        client: _VikingClient,
+        item: Dict[str, Any],
+        *,
+        prefer_abstract: bool,
+    ) -> str:
+        abstract = self._recall_abstract(item)
+        if prefer_abstract and abstract:
+            return abstract
+        if item.get("level") == 2:
+            uri = str(item.get("uri") or "")
+            try:
+                content = self._extract_read_content(
+                    client.get("/api/v1/content/read", params={"uri": uri})
+                )
+                if content:
+                    return content
+            except Exception as e:
+                logger.debug("OpenViking prefetch full read failed for %s: %s", uri, e)
+        return abstract
+
+    def _build_prefetch_entries(
+        self,
+        client: _VikingClient,
+        items: List[Dict[str, Any]],
+        *,
+        prefer_abstract: bool,
+        max_injected_chars: int,
+    ) -> List[str]:
+        entries: List[str] = []
+        total_chars = 0
+        for item in items:
+            content = self._resolve_recall_content(
+                client,
+                item,
+                prefer_abstract=prefer_abstract,
+            )
+            if not content:
+                continue
+            entry = "\n".join([
+                f"- [{self._recall_category(item)}]",
+                f"  <uri>{item.get('uri', '')}</uri>",
+                *[f"  {line}" for line in content.splitlines()],
+            ])
+            separator_chars = 1 if entries else 0
+            projected_chars = total_chars + separator_chars + len(entry)
+            if projected_chars > max_injected_chars:
+                continue
+            entries.append(entry)
+            total_chars = projected_chars
+        return entries
 
     @staticmethod
     def _message_text(content: Any) -> str:

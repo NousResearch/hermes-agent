@@ -2916,7 +2916,7 @@ def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
     assert provider._prefetch_result == ""
 
 
-def test_queue_prefetch_sends_limit_not_legacy_top_k():
+def test_queue_prefetch_sends_scoped_l2_recall_payloads():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
     provider._endpoint = "http://test"
@@ -2945,5 +2945,17 @@ def test_queue_prefetch_sends_limit_not_legacy_top_k():
     finally:
         _mod._VikingClient = real_client_cls
 
-    assert captured_payloads == [{"query": "anything", "limit": 5}]
-    assert "top_k" not in captured_payloads[0]
+    assert captured_payloads == [
+        {
+            "query": "anything",
+            "target_uri": "viking://user/memories",
+            "limit": 24,
+            "score_threshold": 0,
+        },
+        {
+            "query": "anything",
+            "target_uri": "viking://agent/memories",
+            "limit": 24,
+            "score_threshold": 0,
+        },
+    ]

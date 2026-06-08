@@ -1601,7 +1601,11 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
+        "provider": "local",  # "local" (faster-whisper) | "mlx" (Apple Silicon GPU) | "groq" | "openai" | "mistral" | "xai" | "elevenlabs"
+        "mlx": {
+            "model": "mlx-community/whisper-large-v3-turbo",  # any mlx-community/whisper-* model
+            "language": "",  # auto-detect by default; set to "en", "zh", etc. to force
+        },
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force

@@ -2,10 +2,12 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
+  - **mlx** (Apple Silicon, free) — mlx-whisper via Apple MLX framework, GPU-accelerated.
+    Ideal for Apple Silicon Macs (M1–M5). Auto-downloads model on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
@@ -76,6 +78,7 @@ def _safe_find_spec(module_name: str) -> bool:
 
 
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+_HAS_MLX_WHISPER = _safe_find_spec("mlx_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 
@@ -90,6 +93,7 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+DEFAULT_MLX_MODEL = os.getenv("STT_MLX_MODEL", "mlx-community/whisper-large-v3-turbo")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -110,6 +114,10 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+
+# Singleton for the mlx model — loaded once, reused across calls
+_mlx_model: Optional[object] = None
+_mlx_model_name: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -237,6 +245,7 @@ def _try_lazy_install_stt() -> bool:
 BUILTIN_STT_PROVIDERS = frozenset({
     "local",
     "local_command",
+    "mlx",
     "groq",
     "openai",
     "mistral",
@@ -771,6 +780,15 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "mlx":
+            if _HAS_MLX_WHISPER:
+                return "mlx"
+            logger.warning(
+                "STT provider 'mlx' configured but mlx-whisper not installed "
+                "(uv pip install mlx-whisper — `pip install mlx-whisper` also works)"
+            )
+            return "none"
+
         if provider == "local_command":
             if _has_local_command():
                 return "local_command"
@@ -838,6 +856,9 @@ def _get_provider(stt_config: dict) -> str:
     # Try lazy-install before falling through to cloud providers
     if _try_lazy_install_stt():
         return "local"
+    # mlx-whisper is local, free, and GPU-accelerated on Apple Silicon
+    if _HAS_MLX_WHISPER:
+        return "mlx"
     if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
@@ -1170,6 +1191,71 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+
+
+def _transcribe_mlx(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using mlx-whisper (Apple Silicon, GPU-accelerated)."""
+    global _mlx_model, _mlx_model_name
+
+    if not _HAS_MLX_WHISPER:
+        return {"success": False, "transcript": "", "error": "mlx-whisper not installed (pip install mlx-whisper)"}
+
+    try:
+        from mlx_whisper import transcribe as _mlx_whisper_transcribe
+        from mlx_whisper.load_models import load_model as _mlx_load_model
+
+        # Lazy-load the model (downloads on first use)
+        if _mlx_model is None or _mlx_model_name != model_name:
+            logger.info("Loading mlx-whisper model '%s' (first load downloads the model)...", model_name)
+            _mlx_model = _mlx_load_model(model_name)
+            _mlx_model_name = model_name
+
+        # Language: config.yaml (stt.mlx.language) > env var > auto-detect
+        _forced_lang = (
+            _load_stt_config().get("mlx", {}).get("language")
+            or os.getenv("HERMES_MLX_STT_LANGUAGE")
+            or None
+        )
+        decode_kwargs = {}
+        if _forced_lang:
+            decode_kwargs["language"] = _forced_lang
+
+        try:
+            result = _mlx_whisper_transcribe(
+                file_path,
+                path_or_hf_repo=model_name,
+                verbose=None,
+                **decode_kwargs,
+            )
+        except Exception as exc:
+            # On GPU failure, evict the cached model and retry once
+            logger.warning(
+                "mlx-whisper GPU inference failed (%s) — evicting cached model and retrying.",
+                exc,
+            )
+            _mlx_model = None
+            _mlx_model_name = None
+            _mlx_model = _mlx_load_model(model_name)
+            _mlx_model_name = model_name
+            result = _mlx_whisper_transcribe(
+                file_path,
+                path_or_hf_repo=model_name,
+                verbose=None,
+                **decode_kwargs,
+            )
+
+        transcript = result.get("text", "").strip()
+        detected_lang = result.get("language", "unknown")
+        logger.info(
+            "Transcribed %s via mlx-whisper (%s, lang=%s)",
+            Path(file_path).name, model_name, detected_lang,
+        )
+
+        return {"success": True, "transcript": transcript, "provider": "mlx"}
+
+    except Exception as e:
+        logger.error("mlx-whisper transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"mlx-whisper transcription failed: {e}"}
 
 
 def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
@@ -1660,6 +1746,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local(file_path, model_name)
+
+    if provider == "mlx":
+        mlx_cfg = stt_config.get("mlx", {})
+        model_name = model or mlx_cfg.get("model", DEFAULT_MLX_MODEL)
+        return _transcribe_mlx(file_path, model_name)
 
     if provider == "local_command":
         local_cfg = stt_config.get("local", {})

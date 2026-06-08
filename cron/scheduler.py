@@ -1973,6 +1973,18 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # Title the cron session from the job (name → short prompt → id) so
+            # sidebars/history show a meaningful label instead of the injected
+            # "[IMPORTANT: …]" hint that is the session's first message. Set here
+            # (not at create time) so the agent's own INSERT keeps model /
+            # system_prompt; this only UPDATEs the title column. The run-time
+            # suffix keeps it unique against the sessions.title index across runs.
+            try:
+                _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                _session_db.set_session_title(_cron_session_id, _cron_title)
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:

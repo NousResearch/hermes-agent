@@ -7,7 +7,7 @@ import {
   type SyntaxHighlighterProps
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -17,6 +17,8 @@ import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   filePathFromMediaPath,
+  gatewayMediaDataUrl,
+  isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
@@ -49,6 +51,12 @@ async function mediaSrc(path: string): Promise<string> {
   // load the whole file into memory, which broke playback for larger videos.
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
     return mediaStreamUrl(path)
+  }
+
+  // Remote gateway: the image lives on the gateway machine, so read it over the
+  // authenticated API rather than this machine's disk.
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -224,6 +232,88 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
   )
 }
 
+// Steady character-reveal for streaming text: decouples visible cadence from
+// bursty arrival so text flows instead of popping (cf. assistant-ui's useSmooth,
+// reimplemented for a tunable rate). Proportional drain — each frame reveals a
+// slice of the backlog so the reveal converges within ~REVEAL_DRAIN_MS whatever
+// the size; the per-frame cap stops a huge dump rendering as one slab. The loop
+// is gated on backlog, not isRunning, so a stream that completes mid-reveal
+// keeps draining its tail instead of snapping.
+const REVEAL_DRAIN_MS = 500
+const REVEAL_MAX_CHARS_PER_FRAME = 30
+
+function useSmoothReveal(text: string, isRunning: boolean): string {
+  const [displayed, setDisplayed] = useState(isRunning ? '' : text)
+  const targetRef = useRef(text)
+  const shownRef = useRef(displayed)
+  const frameRef = useRef<number | null>(null)
+  const lastTickRef = useRef(0)
+
+  shownRef.current = displayed
+  targetRef.current = text
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    // Non-extending change (regenerate / branch / history swap): restart from
+    // empty while streaming, else snap to the replacement.
+    if (!text.startsWith(shownRef.current)) {
+      shownRef.current = isRunning ? '' : text
+      setDisplayed(shownRef.current)
+    }
+
+    if (shownRef.current.length >= text.length || frameRef.current !== null) {
+      return
+    }
+
+    lastTickRef.current = performance.now()
+
+    const tick = () => {
+      const now = performance.now()
+      const dt = now - lastTickRef.current
+      lastTickRef.current = now
+
+      const remaining = targetRef.current.length - shownRef.current.length
+      const add = Math.min(remaining, REVEAL_MAX_CHARS_PER_FRAME, Math.max(1, Math.ceil((remaining * dt) / REVEAL_DRAIN_MS)))
+      shownRef.current = targetRef.current.slice(0, shownRef.current.length + add)
+      setDisplayed(shownRef.current)
+
+      frameRef.current = shownRef.current.length < targetRef.current.length ? requestAnimationFrame(tick) : null
+    }
+
+    frameRef.current = requestAnimationFrame(tick)
+  }, [text, isRunning])
+
+  useEffect(
+    () => () => {
+      if (frameRef.current !== null && typeof window !== 'undefined') {
+        cancelAnimationFrame(frameRef.current)
+      }
+    },
+    []
+  )
+
+  return displayed
+}
+
+// Re-publish the part context with a smooth character-reveal, above
+// DeferStreamingText so the reveal feeds the deferred markdown pipeline. Status
+// stays running while revealing so the caret persists past the underlying part
+// settling.
+function SmoothStreamingText({ children }: { children: ReactNode }) {
+  const { text, status } = useMessagePartText()
+  const isRunning = status.type === 'running'
+  const revealed = useSmoothReveal(text, isRunning)
+
+  return (
+    <TextMessagePartProvider isRunning={isRunning || revealed !== text} text={revealed}>
+      {children}
+    </TextMessagePartProvider>
+  )
+}
+
 /**
  * Re-publish the active message-part context with React's `useDeferredValue`
  * applied to the streaming text and status. The outer wrapper still re-renders
@@ -280,7 +370,7 @@ const MARKDOWN_CONTAINER_CLASS_NAME = cn(
   'prose-a:break-words prose-p:[overflow-wrap:anywhere]',
   'prose-li:marker:text-muted-foreground/70',
   'prose-code:rounded-[0.25rem] prose-code:px-[0.1875rem] prose-code:py-px prose-code:font-mono prose-code:text-[0.9em] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none',
-  '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>*+*]:mt-1'
+  '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>*+*]:mt-(--paragraph-gap)'
 )
 
 function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTextSurfaceProps) {
@@ -308,12 +398,14 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
         p: ({ className, ...props }: ComponentProps<'p'>) => (
-          <p className={cn('my-1 wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
+          // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
+          // must out-specify Tailwind Typography's `prose` margins — so no
+          // `my-*` here on purpose.
+          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
         ),
         a: MarkdownLink,
-        hr: ({ className, ...props }: ComponentProps<'hr'>) => (
-          <hr className={cn('border-border', className)} {...props} />
-        ),
+        // `---` as quiet spacing, not a heavy full-width rule.
+        hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
         blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (
           <blockquote
             className={cn('border-l-2 border-border pl-3 text-muted-foreground italic', className)}
@@ -391,18 +483,22 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <DeferStreamingText>
-        <MarkdownTextSurface {...surfaceProps} />
-      </DeferStreamingText>
+      <SmoothStreamingText>
+        <DeferStreamingText>
+          <MarkdownTextSurface {...surfaceProps} />
+        </DeferStreamingText>
+      </SmoothStreamingText>
     </TextMessagePartProvider>
   )
 }
 
 const MarkdownTextImpl = () => {
   return (
-    <DeferStreamingText>
-      <MarkdownTextSurface />
-    </DeferStreamingText>
+    <SmoothStreamingText>
+      <DeferStreamingText>
+        <MarkdownTextSurface />
+      </DeferStreamingText>
+    </SmoothStreamingText>
   )
 }
 

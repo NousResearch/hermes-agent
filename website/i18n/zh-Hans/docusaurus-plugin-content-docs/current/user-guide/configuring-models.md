@@ -43,7 +43,7 @@ Hermes 使用两类模型槽位：
 
 ## 设置辅助模型
 
-点击 **Show auxiliary** 展开八个任务槽位：
+点击 **Show auxiliary** 展开 11 个任务槽位：
 
 ![辅助面板展开状态](/img/docs/dashboard-models/auxiliary-expanded.png)
 
@@ -78,7 +78,7 @@ Hermes 使用两类模型槽位：
 下拉菜单包含：
 
 - **Main model** — 与点击主行上的 Change 效果相同。
-- **All auxiliary tasks** — 将此模型分配给全部 8 个辅助槽位。适合将所有边缘任务统一切换到廉价 flash 模型的场景。
+- **All auxiliary tasks** — 将此模型分配给全部 11 个辅助槽位。适合将所有边缘任务统一切换到廉价 flash 模型的场景。
 - **单项任务选项** — Vision、Web Extract、Compression 等。每项任务当前分配的模型标记为 `current`。
 
 当模型卡片当前已分配到某个槽位时，会显示 `main` 或 `aux · <task>` 标签，方便一眼看出历史模型的使用情况。

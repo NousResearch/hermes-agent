@@ -2,6 +2,7 @@ import { type QueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
 import { getGlobalModelInfo, setGlobalModel } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -19,6 +20,8 @@ interface ModelControlsOptions {
 }
 
 export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
+  const { t } = useI18n()
+  const copy = t.desktop
   const updateModelOptionsCache = useCallback(
     (provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
@@ -91,12 +94,12 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         setCurrentModel(prevModel)
         setCurrentProvider(prevProvider)
         updateModelOptionsCache(prevProvider, prevModel, includeGlobal)
-        notifyError(err, 'Model switch failed')
+        notifyError(err, copy.modelSwitchFailed)
 
         return false
       }
     },
-    [activeSessionId, queryClient, refreshCurrentModel, requestGateway, updateModelOptionsCache]
+    [activeSessionId, copy.modelSwitchFailed, queryClient, refreshCurrentModel, requestGateway, updateModelOptionsCache]
   )
 
   return { refreshCurrentModel, selectModel, updateModelOptionsCache }

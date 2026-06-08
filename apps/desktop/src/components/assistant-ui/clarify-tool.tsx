@@ -264,14 +264,16 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       {!typing && hasChoices && (
         <div className="flex justify-end">
-          <button
-            className="bg-transparent text-[0.6875rem] text-muted-foreground/70 underline-offset-4 hover:text-foreground hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          <Button
+            className="-mr-2"
             disabled={!ready || submitting}
             onClick={() => void respond('')}
+            size="xs"
             type="button"
+            variant="text"
           >
-            Skip
-          </button>
+            {copy.skip}
+          </Button>
         </div>
       )}
     </div>

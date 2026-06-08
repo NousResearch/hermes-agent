@@ -2220,3 +2220,35 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+    def test_read_events_raises_on_closing_msg_type(self):
+        """WSMsgType.CLOSING must raise RuntimeError, not spin at 100% CPU.
+
+        When the QQ server disconnects the WebSocket without a clean CLOSE
+        frame, aiohttp returns WSMsgType.CLOSING (value=256).  The elif
+        chain must handle it the same as CLOSED/ERROR so the reconnect
+        path runs instead of busy-looping.  (issue #41872)
+        """
+        from aiohttp import WSMsgType
+
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        # Build a mock ws that returns TEXT once, then CLOSING repeatedly.
+        _responses = [
+            SimpleNamespace(type=WSMsgType.TEXT, data='{"op":10,"d":{"heartbeat_interval":41000}}'),
+        ]
+        _call_count = 0
+
+        async def mock_receive():
+            nonlocal _call_count
+            if _call_count < len(_responses):
+                r = _responses[_call_count]
+                _call_count += 1
+                return r
+            return SimpleNamespace(type=WSMsgType.CLOSING, data=None)
+
+        adapter._ws = SimpleNamespace(closed=False, receive=mock_receive)
+
+        with pytest.raises(RuntimeError, match="WebSocket closed"):
+            asyncio.run(adapter._read_events())

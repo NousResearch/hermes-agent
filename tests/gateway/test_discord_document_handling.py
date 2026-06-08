@@ -529,3 +529,80 @@ class TestAllowAnyAttachment:
         adapter.config.extra["max_attachment_bytes"] = "not-a-number"
         assert adapter._discord_max_attachment_bytes() == 32 * 1024 * 1024
 
+    @pytest.mark.asyncio
+    async def test_unsupported_type_skip_injects_note(self, adapter):
+        """Unsupported attachment type injects a system note into event text."""
+        adapter._text_batch_delay_seconds = 0  # bypass text batching
+        # allow_any_attachment defaults to False → .xyz will be skipped
+        msg = make_message(
+            attachments=[make_attachment(filename="design.xyz", content_type="application/x-custom")],
+            content="look at this",
+        )
+        await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert "Discord skipped 1 attachment" in event.text
+        assert "design.xyz" in event.text
+        assert "type not supported" in event.text
+        assert "allow_any_attachment" in event.text
+
+    @pytest.mark.asyncio
+    async def test_oversized_skip_injects_note(self, adapter):
+        """Oversized attachment injects a system note with size info."""
+        adapter._text_batch_delay_seconds = 0  # bypass text batching
+        adapter.config.extra["allow_any_attachment"] = True
+        adapter.config.extra["max_attachment_bytes"] = 1024  # 1 KiB
+
+        msg = make_message(
+            attachments=[
+                make_attachment(
+                    filename="big_report.pdf",
+                    content_type="application/pdf",
+                    size=5 * 1024 * 1024,  # 5 MiB
+                )
+            ],
+            content="read this",
+        )
+        await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert "Discord skipped 1 attachment" in event.text
+        assert "big_report.pdf" in event.text
+        assert "5.0 MiB" in event.text
+        assert "max_attachment_bytes" in event.text
+
+    @pytest.mark.asyncio
+    async def test_multiple_skips_combine_into_one_note(self, adapter):
+        """Multiple skipped attachments appear in a single system note."""
+        adapter._text_batch_delay_seconds = 0  # bypass text batching
+        # Neither allow_any_attachment nor max_doc_bytes override → both skipped
+        msg = make_message(
+            attachments=[
+                make_attachment(filename="a.xyz", content_type="application/x-custom"),
+                make_attachment(filename="b.abc", content_type="application/x-unknown"),
+            ],
+            content="check these",
+        )
+        await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert "Discord skipped 2 attachments" in event.text
+        assert "a.xyz" in event.text
+        assert "b.abc" in event.text
+
+    @pytest.mark.asyncio
+    async def test_no_skip_means_no_note(self, adapter):
+        """When no attachments are skipped, no note is injected."""
+        adapter.config.extra["allow_any_attachment"] = True
+        adapter.config.extra["max_attachment_bytes"] = 0  # unlimited
+
+        with _mock_aiohttp_download(b"raw bytes"):
+            msg = make_message(
+                attachments=[make_attachment(filename="ok.pdf", content_type="application/pdf")],
+                content="normal message",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert "Discord skipped" not in event.text
+

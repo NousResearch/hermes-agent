@@ -19,8 +19,22 @@ from cli import HermesCLI
 from rich.console import Console
 
 # Env-overridable so the integration test can drive sub-second timing.
-_WATCHDOG_POLL_S = float(os.environ.get("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
-_ORPHAN_GRACE_S = float(os.environ.get("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env knob, falling back to ``default`` on absent/malformed
+    values. A bare ``float(os.environ.get(...))`` would raise ValueError at
+    import time on a typo (e.g. ``HERMES_SLASH_WATCHDOG_POLL_S=2s``) and kill
+    the worker before it can serve a single command."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+_WATCHDOG_POLL_S = max(0.05, _env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
+_ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 
 

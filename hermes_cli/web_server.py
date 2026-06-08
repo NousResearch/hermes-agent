@@ -10142,4 +10142,9 @@ def start_server(
     uvicorn.run(
         app, host=host, port=port, log_level="warning",
         proxy_headers=bool(app.state.auth_required),
+        # Detect half-open WS connections (reverse-proxy 524, dropped tunnels)
+        # within ~20-40s so WebSocketDisconnect fires the disconnect→reap path.
+        # 20s stays under Cloudflare Tunnel's idle timeout, keeping it warm.
+        ws_ping_interval=20.0,
+        ws_ping_timeout=20.0,
     )

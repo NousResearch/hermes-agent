@@ -543,6 +543,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        # Guards _get_client() against the TOCTOU race between the writer
+        # thread (_writer_loop calls _get_client via _run_hindsight_operation)
+        # and the prefetch thread (queue_prefetch._run() does the same).
+        # Without this lock both threads can pass the ``is None`` guard
+        # concurrently on the first turn and each construct a client,
+        # leaking the loser's connection — and for local_embedded mode,
+        # starting two HindsightEmbedded daemon processes.
+        self._client_lock = threading.Lock()
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -883,8 +891,21 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
 
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
-        if self._client is None:
+        """Return the cached Hindsight client (created once, reused).
+
+        Thread-safe: ``_client_lock`` serializes the first build so the
+        writer thread and the prefetch thread can't both pass the
+        ``is None`` guard concurrently and each construct a client,
+        leaking the loser's connection (and, for ``local_embedded`` mode,
+        starting two HindsightEmbedded daemon processes).
+        """
+        # Fast path — already built; no lock needed.
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            # Re-check: a racing thread may have completed init while we waited.
+            if self._client is not None:
+                return self._client
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
                 if not available:

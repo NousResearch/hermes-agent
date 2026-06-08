@@ -370,3 +370,141 @@ class TestIdleSinceLastTurn:
         assert snapshot["idle_since"].startswith("✓ ")
 
 
+
+
+class TestStatusBarFieldConfig:
+    """Tests for display.status_bar.fields config customization (#41909)."""
+
+    def _cli_with_fields(self, fields, width=120):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": fields}}}):
+            text = cli_obj._build_status_bar_text(width=width)
+        return text
+
+    def test_default_fields_show_all(self):
+        """With no config, all default fields appear."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "claude-sonnet-4-20250514" in text
+        assert "12.4K/200K" in text
+        assert "🗜️" in text
+        assert "15m" in text
+
+    def test_only_model_and_duration(self):
+        text = self._cli_with_fields(["model", "duration"])
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" in text
+        assert "12.4K/200K" not in text
+        assert "🗜️" not in text
+        assert "%" not in text
+
+    def test_only_model(self):
+        text = self._cli_with_fields(["model"])
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" not in text
+        assert "12.4K/200K" not in text
+
+    def test_context_pct_only(self):
+        text = self._cli_with_fields(["context_pct"])
+        assert "%" in text
+        assert "claude-sonnet-4-20250514" not in text
+
+    def test_compressions_only(self):
+        text = self._cli_with_fields(["compressions"])
+        assert "🗜️ 7" in text
+        assert "claude-sonnet-4-20250514" not in text
+
+    def test_total_tokens_when_explicitly_requested(self):
+        text = self._cli_with_fields(["model", "total_tokens"])
+        assert "Σ12.4K" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_total_tokens_hidden_by_default(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "Σ" not in text
+
+    def test_narrow_terminal_drops_context_detail(self):
+        """Narrow terminal (<76) ignores context_detail even if configured."""
+        text = self._cli_with_fields(["model", "context_detail", "duration"], width=60)
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" in text
+        assert "12.4K/200K" not in text
+
+    def test_field_config_never_empties_the_bar(self):
+        """A fields list matching nothing still anchors on the model name."""
+        text = self._cli_with_fields(["nonexistent_field"])
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_fragments_respect_field_config(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._status_bar_visible = True
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}), \
+                patch.object(cli_obj, "_get_tui_terminal_width", return_value=120):
+            frags = cli_obj._get_status_bar_fragments()
+        frag_texts = [text for _, text in frags]
+        assert any("claude-sonnet-4-20250514" in t for t in frag_texts)
+        assert any("15m" in t for t in frag_texts)
+        assert not any("🗜️" in t for t in frag_texts)
+        assert not any("12.4K" in t for t in frag_texts)
+
+    def test_field_order_is_fixed(self):
+        """Config controls visibility, not ordering — model stays first."""
+        text = self._cli_with_fields(["duration", "model", "compressions"])
+        model_pos = text.find("claude-sonnet-4-20250514")
+        comp_pos = text.find("🗜️")
+        dur_pos = text.find("15m")
+        assert 0 <= model_pos < comp_pos < dur_pos
+
+    def test_empty_fields_list_uses_defaults(self):
+        text = self._cli_with_fields([])
+        assert "claude-sonnet-4-20250514" in text
+        assert "12.4K/200K" in text
+        assert "🗜️" in text
+
+    def test_field_set_is_cached_per_instance(self):
+        cli_obj = _make_cli()
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
+            first = cli_obj._get_status_bar_field_set()
+        # Cache holds even if config object changes afterwards (per-session semantics).
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["duration"]}}}):
+            second = cli_obj._get_status_bar_field_set()
+        assert first == second == frozenset({"model"})

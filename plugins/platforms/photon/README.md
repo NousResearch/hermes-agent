@@ -46,24 +46,28 @@ plugin stays the same.
 ## First-time setup
 
 ```bash
-# 1. Log in via the device-code flow (opens browser)
-hermes photon login
-
-# 2. Full setup: project, user, sidecar deps
+# 1. One-shot setup: device login (opens browser) + project + user + sidecar deps
 hermes photon setup --phone +15551234567
 
-# 3. Expose your webhook URL to the public internet
+# 2. Expose your webhook URL to the public internet
 #    (cloudflared, ngrok, your gateway's public hostname, etc.)
 #    Then register it with Photon:
 hermes photon webhook register https://your-host.example.com/photon/webhook
 
-# 4. Save the signing secret it prints to ~/.hermes/.env
+# 3. Save the signing secret it prints to ~/.hermes/.env
 #    as PHOTON_WEBHOOK_SECRET=...
 #    Photon only returns it ONCE.
 
-# 5. Start the gateway
+# 4. Start the gateway
 hermes gateway start --platform photon
 ```
+
+`hermes photon setup` runs the RFC 8628 device-code login as its first
+step — it opens `https://app.photon.codes/` for approval, then
+provisions the Spectrum project + iMessage line. There is no separate
+`login` command; like every other Hermes channel, onboarding goes
+through one setup surface. Re-running `setup` reuses an existing token
+and project, so it's safe to run again to finish a partial setup.
 
 ## Credentials
 

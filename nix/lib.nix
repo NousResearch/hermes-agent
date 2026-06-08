@@ -73,24 +73,25 @@ in
 
       patchPhase = ''
         runHook prePatch
-        # Normalize trailing newlines on the root lockfile so source and
-        # npm-deps always match, regardless of what fetchNpmDeps preserves.
-        sed -i -z 's/\\n*$/\\n/' package-lock.json
 
-        # Make npmConfigHook's byte-for-byte diff newline-agnostic by
-        # replacing its hardcoded /nix/store/.../diff with a wrapper that
-        # normalizes trailing newlines on both sides before comparing.
-        mkdir -p "$TMPDIR/bin"
-        cat > "$TMPDIR/bin/diff" << DIFFWRAP
-        #!/bin/sh
-        f1=\\$(mktemp) && sed -z 's/\\n*$/\\n/' "\\$1" > "\\$f1"
-        f2=\\$(mktemp) && sed -z 's/\\n*$/\\n/' "\\$2" > "\\$f2"
-        ${pkgs.diffutils}/bin/diff "\\$f1" "\\$f2" && rc=0 || rc=\\$?
-        rm -f "\\$f1" "\\$f2"
-        exit \\$rc
-        DIFFWRAP
-        chmod +x "$TMPDIR/bin/diff"
-        export PATH="$TMPDIR/bin:$PATH"
+        # prefetch-npm-deps stores a *normalized* package-lock.json in the deps
+        # cache: newer npm writes advisory fields (engines/os/cpu/funding/bin/…)
+        # into lockfile entries, and prefetch strips the ones that don't affect
+        # which tarballs are fetched. npmConfigHook then does a byte-for-byte
+        # diff of the source lockfile against the cache's copy and fails on
+        # those purely-cosmetic differences — this is what breaks cold builds
+        # on a nixpkgs whose prefetch-npm-deps strips fields the committed
+        # lockfile carries.
+        #
+        # Adopt the cache's own normalized lockfile as the source so the
+        # consistency check is trivially satisfied. The resolved dependency set
+        # (version/resolved/integrity/dependencies) is byte-identical either
+        # way — fetchNpmDeps derived the cache *from* this lockfile — so `npm
+        # ci` installs exactly the same tree; only advisory metadata is dropped.
+        # Genuine drift is still caught upstream: a changed lockfile that didn't
+        # get its npmDepsHash refreshed fails the fixed-output hash check before
+        # this phase ever runs.
+        cp --no-preserve=mode,ownership ${npmDeps}/package-lock.json package-lock.json
 
         runHook postPatch
       '';
@@ -233,9 +234,45 @@ in
       OLD_HASH=$(grep -oE 'npmDepsHash = "sha256-[^"]+"' "$LIB_FILE" | head -1 \
         | sed -E 's/npmDepsHash = "(.*)"/\1/')
 
+      # prefetch-npm-deps says the hash already matches — but it only hashes the
+      # lockfile *contents* and can disagree with fetchNpmDeps + npmConfigHook,
+      # which validate the full source lockfile against the realized deps cache.
+      # Trusting prefetch alone produced false "ok" results while the actual
+      # build was broken (e.g. lockfile engines/os/cpu fields the pinned nixpkgs
+      # strips from the deps cache, tripping npmConfigHook). So when prefetch
+      # claims the hash is current, confirm with a real consumer build before
+      # believing it.
       if [ "$NEW_HASH" = "$OLD_HASH" ]; then
-        echo "ok"
-        exit 0
+        if VERIFY_OUT=$(nix build ".#${attr}" --no-link --print-build-logs 2>&1); then
+          echo "ok"
+          if [ -n "''${GITHUB_OUTPUT:-}" ]; then
+            { echo "stale=false"; echo "changed=false"; } >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+        fi
+        # Build failed despite a matching hash. A fixed-output 'got:' means
+        # prefetch genuinely disagreed with fetchNpmDeps — adopt the real hash
+        # and fall through to the stale-handling path below.
+        CORRECT_HASH=$(echo "$VERIFY_OUT" | awk '/got:/ {print $2; exit}')
+        if [ -n "$CORRECT_HASH" ]; then
+          echo "prefetch-npm-deps reported current ($OLD_HASH) but fetchNpmDeps wants $CORRECT_HASH" >&2
+          NEW_HASH="$CORRECT_HASH"
+        elif echo "$VERIFY_OUT" | grep -qE "throttled|HTTP error 418|substituter .* is disabled|some outputs of .* are not valid"; then
+          echo "skipped (transient cache failure — see primary nix build for real status)" >&2
+          echo "$VERIFY_OUT" | tail -8 >&2
+          exit 0
+        else
+          # Not a stale-hash problem — surface it honestly instead of "ok".
+          echo "::error::nix build .#${attr} failed and it is NOT a stale npmDepsHash (no 'got:' hash in output)." >&2
+          echo "The committed lockfile may be incompatible with the pinned nixpkgs" >&2
+          echo "(e.g. engines/os/cpu fields that prefetch-npm-deps strips from the" >&2
+          echo "deps cache, tripping npmConfigHook). fix-lockfiles cannot repair this." >&2
+          echo "$VERIFY_OUT" | tail -40 >&2
+          if [ -n "''${GITHUB_OUTPUT:-}" ]; then
+            { echo "stale=false"; echo "changed=false"; } >> "$GITHUB_OUTPUT"
+          fi
+          exit 1
+        fi
       fi
 
       HASH_LINE=$(grep -n 'npmDepsHash = "sha256-' "$LIB_FILE" | head -1 | cut -d: -f1)

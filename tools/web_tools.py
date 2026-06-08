@@ -133,6 +133,9 @@ def _env_value(name: str) -> str:
 def _has_env(name: str) -> bool:
     return bool(_env_value(name))
 
+def _has_brave_search_key() -> bool:
+    return _has_env("BRAVE_SEARCH_API_KEY") or _has_env("BRAVE_API_KEY")
+
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
     try:
@@ -187,7 +190,7 @@ def _get_backend(capability: str = "search") -> str:
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
         ("searxng", _has_env("SEARXNG_URL")),
-        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("brave-free", _has_brave_search_key()),
         # Keyless Parallel free MCP — always available, the intended no-key
         # default for both search and extract. Ahead of ddgs (search-only, so it
         # can't service web_extract); ddgs stays reachable via web.backend=ddgs.
@@ -266,7 +269,7 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
-        return _has_env("BRAVE_SEARCH_API_KEY")
+        return _has_brave_search_key()
     if backend == "ddgs":
         return _ddgs_package_importable()
     if backend == "xai":

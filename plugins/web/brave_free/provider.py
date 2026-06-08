@@ -15,6 +15,7 @@ Config keys this provider responds to::
 Auth env var::
 
     BRAVE_SEARCH_API_KEY=...    # https://brave.com/search/api/ (free tier)
+    BRAVE_API_KEY=...           # accepted as a legacy alias
 """
 
 from __future__ import annotations
@@ -49,7 +50,10 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
 
     def is_available(self) -> bool:
         """Return True when ``BRAVE_SEARCH_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("BRAVE_SEARCH_API_KEY", "").strip())
+        return bool(
+            os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+            or os.getenv("BRAVE_API_KEY", "").strip()
+        )
 
     def supports_search(self) -> bool:
         return True
@@ -65,7 +69,10 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
         """
         import httpx
 
-        api_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+        api_key = (
+            os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+            or os.getenv("BRAVE_API_KEY", "").strip()
+        )
         if not api_key:
             return {"success": False, "error": "BRAVE_SEARCH_API_KEY is not set"}
 

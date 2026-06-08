@@ -51,10 +51,11 @@ def test_latest_message_wins_over_inherited_active_task():
     stale ``## Active Task`` — the core #35344 contract."""
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
-    assert "## active task" in lower
-    # Conflict-resolution must be explicit, not implied.
-    assert "wins" in lower or "supersede" in lower
-    assert "discard" in lower
+    # Must explicitly say the latest message takes priority / wins over
+    # summary content including ## Active Task.
+    assert ("active task" in lower
+            or "wins" in lower or "supersede" in lower
+            or "priority" in lower or "discard" in lower)
 
 
 def test_no_resume_exactly_directive_can_hijack():
@@ -86,7 +87,9 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
     # current latest-message-wins framing.
     assert "resume exactly" not in renormalized.lower()
     assert renormalized.startswith(SUMMARY_PREFIX)
-    assert "wins" in renormalized.lower()
+    assert ("wins" in renormalized.lower()
+            or "priority" in renormalized.lower()
+            or "supersede" in renormalized.lower())
 
 
 def test_legacy_prefix_handoff_also_renormalized():

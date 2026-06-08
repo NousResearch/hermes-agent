@@ -7,7 +7,7 @@ protecting head and tail context.
 Improvements over v2:
   - Structured summary template with Resolved/Pending question tracking
   - Filter-safe summarizer preamble that treats prior turns as source material
-  - "Remaining Work" replaces "Next Steps" to avoid reading as active instructions
+  - "Historical Work (DO NOT EXECUTE)" replaces "Next Steps" and "Remaining Work" to avoid reading as active instructions
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
   - Token-budget tail protection instead of fixed message count
@@ -43,12 +43,14 @@ SUMMARY_PREFIX = (
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
-    "If the latest user message is consistent with the '## Active Task' "
-    "section, you may use the summary as background. If the latest user "
-    "message contradicts, supersedes, changes topic from, or in any way "
-    "diverges from '## Active Task' / '## In Progress' / '## Pending User "
-    "Asks' / '## Remaining Work', the latest message WINS — discard those "
-    "stale items entirely and do not 'wrap up the old task first'. "
+    "Any topic overlap between the summary and the latest user message does "
+    "NOT mean you should resume the summary's task. The latest user message "
+    "always takes priority, even on similar topics. "
+    "If the latest user message is a new question, request, or instruction "
+    "that relates to a topic also mentioned in the summary, treat ONLY the "
+    "latest message as the active task. Do NOT 'wrap up' or 'finish' any "
+    "work described in the summary unless the latest message explicitly "
+    "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
@@ -1168,13 +1170,13 @@ None recoverable from deterministic fallback.
 ## Resolved Questions
 None recoverable from deterministic fallback.
 
-## Pending User Asks
+## Historical User Asks (DO NOT EXECUTE)
 {active_task}
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
 
-## Remaining Work
+## Historical Work (DO NOT EXECUTE)
 Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
 
 ## Last Dropped Turns
@@ -1355,14 +1357,14 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so it is not repeated]
 
-## Pending User Asks
-[Questions or requests from the user that have NOT yet been answered or fulfilled. If none, write "None."]
+## Historical User Asks (DO NOT EXECUTE)
+[Questions or requests from the user that have NOT yet been answered or fulfilled. These are STALE — they were from the compacted turns. Write them here for reference only. The agent must NOT act on them unless the latest user message explicitly requests it. If none, write "None."]
 
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
 
-## Remaining Work
-[What remains to be done — framed as context, not instructions]
+## Historical Work (DO NOT EXECUTE)
+[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
@@ -1737,7 +1739,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         Context compressor bug (#10896): ``_align_boundary_backward`` can pull
         ``cut_idx`` past a user message when it tries to keep tool_call/result
         groups together.  If the last user message ends up in the *compressed*
-        middle region the LLM summariser writes it into "Pending User Asks",
+        middle region the LLM summariser writes it into "Historical User Asks",
         but ``SUMMARY_PREFIX`` tells the next model to respond only to user
         messages *after* the summary — so the task effectively disappears from
         the active context, causing the agent to stall, repeat completed work,

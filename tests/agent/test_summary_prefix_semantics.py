@@ -31,7 +31,7 @@ def test_latest_message_wins_on_conflict():
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
     # Must have an explicit conflict-resolution rule.
-    assert "wins" in lower or "supersede" in lower or "discard" in lower
+    assert "wins" in lower or "supersede" in lower or "discard" in lower or "priority" in lower
 
 
 def test_reverse_signals_called_out():

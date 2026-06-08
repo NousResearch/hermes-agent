@@ -93,6 +93,17 @@ def test_tool_add_resource_rejects_local_paths(tmp_path):
     provider._client.post.assert_not_called()
 
 
+def test_tool_add_resource_rejects_unsupported_scheme():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+
+    result = json.loads(provider._tool_add_resource({"url": "ftp://example.com/file.txt"}))
+
+    assert result["error"] == EXPECTED_LOCAL_PATH_ERROR
+    provider._client.upload_temp_file.assert_not_called()
+    provider._client.post.assert_not_called()
+
+
 def test_tool_add_resource_sends_remote_url_as_path():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()

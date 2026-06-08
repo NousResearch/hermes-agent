@@ -33,7 +33,6 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -328,7 +327,6 @@ ADD_RESOURCE_SCHEMA = {
 }
 
 
-
 def _is_windows_absolute_path(value: str) -> bool:
     return (
         len(value) >= 3
@@ -345,23 +343,18 @@ def _is_remote_resource_source(value: str) -> bool:
 def _is_local_path_reference(value: str) -> bool:
     if not value or "\n" in value or "\r" in value:
         return False
-    if _is_remote_resource_source(value):
+    if value.startswith(_REMOTE_RESOURCE_PREFIXES):
         return False
     if _is_windows_absolute_path(value):
         return True
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.scheme != "file":
+        return False
     return (
         value.startswith(("/", "./", "../", "~/", ".\\", "..\\", "~\\"))
         or "/" in value
         or "\\" in value
     )
-
-
-def _path_from_file_uri(uri: str) -> Path | str:
-    parsed = urlparse(uri)
-    if parsed.netloc not in ("", "localhost"):
-        return f"Unsupported non-local file URI: {uri}"
-    return Path(url2pathname(parsed.path)).expanduser()
-
 
 
 # ---------------------------------------------------------------------------
@@ -859,26 +852,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
         url = args.get("url", "")
         if not url:
             return tool_error("url is required")
-        local_path_error = (
-            "Local filesystem paths are not allowed for viking_add_resource; "
-            "provide a remote URL instead."
-        )
 
         if args.get("to") and args.get("parent"):
             return tool_error("Cannot specify both 'to' and 'parent'")
+
+        if not _is_remote_resource_source(url):
+            return tool_error(
+                "Local filesystem paths are not allowed for viking_add_resource; "
+                "provide a remote URL instead."
+            )
 
         payload: Dict[str, Any] = {}
         for key in ("reason", "to", "parent", "instruction", "wait", "timeout"):
             if key in args and args[key] not in (None, ""):
                 payload[key] = args[key]
 
-        parsed_url = urlparse(url)
-        if parsed_url.scheme == "file":
-            return tool_error(local_path_error)
-        if parsed_url.scheme and not _is_windows_absolute_path(url) and not _is_remote_resource_source(url):
-            return tool_error(f"Unsupported resource URL scheme: {parsed_url.scheme}")
-        if _is_local_path_reference(url):
-            return tool_error(local_path_error)
         payload["path"] = url
         resp = self._client.post("/api/v1/resources", payload)
         result = resp.get("result", {})

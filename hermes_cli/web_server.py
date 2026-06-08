@@ -5951,9 +5951,18 @@ async def get_price_scraper_results(domain: Optional[str] = None):
 
 @app.get("/api/price-scraper/config")
 async def get_price_scraper_config():
-    """Return Stripe payment link URL from env."""
-    stripe_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
-    return {"stripe_payment_link": stripe_link, "configured": bool(stripe_link)}
+    """Return Stripe payment link URLs from env."""
+    starter_link = os.environ.get("HERMES_STRIPE_STARTER_LINK", "")
+    pro_link = os.environ.get("HERMES_STRIPE_PRO_LINK", "")
+    # Legacy single-link fallback
+    legacy_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
+    if not starter_link and legacy_link:
+        starter_link = legacy_link
+    return {
+        "stripe_starter_link": starter_link,
+        "stripe_pro_link": pro_link,
+        "configured": bool(starter_link or pro_link),
+    }
 
 
 @app.get("/api/price-scraper/export/csv")

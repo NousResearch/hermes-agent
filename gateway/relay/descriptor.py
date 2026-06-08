@@ -75,3 +75,44 @@ class CapabilityDescriptor:
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         filtered = {k: v for k, v in raw.items() if k in known}
         return cls(**filtered)
+
+    @classmethod
+    def from_platform_entry(
+        cls,
+        entry,
+        *,
+        len_unit: str = "chars",
+        supports_draft_streaming: bool = False,
+        supports_edit: bool = True,
+        supports_threads: bool = False,
+        markdown_dialect: str = "plain",
+    ) -> "CapabilityDescriptor":
+        """Project a ``gateway.platform_registry.PlatformEntry`` into a descriptor.
+
+        Demonstrates the descriptor is a *subset/projection* of what
+        ``PlatformEntry`` already encodes, not a parallel concept: ``label``,
+        ``max_message_length``, ``emoji``, ``platform_hint``, ``pii_safe`` and
+        the platform name come straight off the entry. The runtime capability
+        bits that ``PlatformEntry`` does NOT encode (length unit, draft/edit/
+        thread/markdown behavior) are supplied by the caller — in production
+        the connector fills these from the live adapter's capability methods.
+
+        ``max_message_length`` of 0 on a ``PlatformEntry`` means "no limit";
+        we map that to the stream_consumer default of 4096 so the descriptor
+        always carries a concrete chunking bound.
+        """
+        max_len = getattr(entry, "max_message_length", 0) or 4096
+        return cls(
+            contract_version=CONTRACT_VERSION,
+            platform=entry.name,
+            label=entry.label,
+            max_message_length=max_len,
+            supports_draft_streaming=supports_draft_streaming,
+            supports_edit=supports_edit,
+            supports_threads=supports_threads,
+            markdown_dialect=markdown_dialect,
+            len_unit=len_unit,
+            emoji=getattr(entry, "emoji", "\U0001f50c"),
+            platform_hint=getattr(entry, "platform_hint", ""),
+            pii_safe=getattr(entry, "pii_safe", False),
+        )

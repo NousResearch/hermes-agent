@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Client-side remote execution (gated on WebSocket connection via check_fn)
+    "client_terminal", "client_file_push", "client_file_pull",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -194,7 +196,7 @@ TOOLSETS = {
     
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search_files"],
+        "tools": ["read_file", "write_file", "patch", "search_files", "client_file_push", "client_file_pull"],
         "includes": []
     },
     

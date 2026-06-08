@@ -1,7 +1,9 @@
 import atexit
+import base64
 import concurrent.futures
 import contextvars
 import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -126,6 +128,16 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+# Client-operation waiter tables (separate from _pending/_answers to avoid
+# cross-contamination with clarify/sudo/secret prompts).
+_op_pending: dict[str, tuple[str, threading.Event]] = {}
+_op_answers: dict[str, dict] = {}
+_op_lock = threading.Lock()
+# Capability registry keyed by client_id.
+# TODO: scope to connection/transport instead once transport ref is available here.
+_client_capabilities: dict[str, dict] = {}
+_server_file_transfer_expected: dict[str, dict] = {}
+_server_file_transfer_lock = threading.Lock()
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -184,6 +196,20 @@ _LONG_HANDLERS = frozenset(
     }
 )
 
+# Handlers that block waiting for a WS client response.  Routed to
+# _client_op_pool so they never exhaust _pool's limited workers.
+# Responders (terminal.respond, client.pong) must NOT appear here — they
+# must return immediately from the inline dispatch path so the receive loop
+# can process them while a _block_op waiter is parked in _client_op_pool.
+_CLIENT_OP_HANDLERS = frozenset(
+    {
+        "client.file.pull",
+        "client.file.push",
+        "client.ping",
+        "client.terminal.exec",
+    }
+)
+
 try:
     _rpc_pool_workers = max(
         2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
@@ -195,6 +221,12 @@ _pool = concurrent.futures.ThreadPoolExecutor(
     thread_name_prefix="tui-rpc",
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
+
+_client_op_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="client-op",
+)
+atexit.register(lambda: _client_op_pool.shutdown(wait=False, cancel_futures=True))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -620,7 +652,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
 
         _rid, method, _params = normalized
-        if method not in _LONG_HANDLERS:
+        if method not in _LONG_HANDLERS and method not in _CLIENT_OP_HANDLERS:
             return handle_request(req)
 
         # Snapshot the context so the pool worker sees the bound transport.
@@ -634,7 +666,8 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             if resp is not None:
                 t.write(resp)
 
-        _pool.submit(lambda: ctx.run(run))
+        pool = _client_op_pool if method in _CLIENT_OP_HANDLERS else _pool
+        pool.submit(lambda: ctx.run(run))
 
         return None
     finally:
@@ -695,21 +728,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 except Exception:
                     session_db = None
             try:
-                agent = _make_agent(sid, key, session_db=session_db)
-            finally:
-                _clear_session_context(tokens)
-
-            # Session DB row deferred to first run_conversation() call.
-            # pending_title applied post-first-message (see cli.exec handler).
-            current["agent"] = agent
-
-            try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
-                current["slash_worker"] = worker
-            except Exception:
-                pass
-
-            try:
                 from tools.approval import (
                     register_gateway_notify,
                     load_permanent_allowlist,
@@ -723,7 +741,35 @@ def _start_agent_build(sid: str, session: dict) -> None:
             except Exception:
                 pass
 
+            # Wire callbacks BEFORE agent creation so tool check_fn sees them
             _wire_callbacks(sid)
+            try:
+                from tools.registry import invalidate_check_fn_cache
+                invalidate_check_fn_cache()
+            except Exception:
+                pass
+
+            try:
+                agent = _make_agent(sid, key, session_db=session_db)
+            finally:
+                _clear_session_context(tokens)
+
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title applied post-first-message (see cli.exec handler).
+            current["agent"] = agent
+
+            try:
+                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                current["slash_worker"] = worker
+            except Exception:
+                pass
+            # Invalidate tool check_fn cache so freshly-wired callbacks
+            # (client_terminal, client_file_*) are immediately visible.
+            try:
+                from tools.registry import invalidate_check_fn_cache
+                invalidate_check_fn_cache()
+            except Exception:
+                pass
             # Hydrate credits notices at session OPEN (not just on the first
             # message), so depletion / usage-band warnings show at "ready". Runs
             # off the build thread, after the notice_callback is wired. Fail-open.
@@ -1098,6 +1144,246 @@ def _clear_pending(sid: str | None = None) -> None:
             if sid is None or owner_sid == sid:
                 _answers[rid] = ""
                 ev.set()
+
+
+# ── Client-operation waiter (WS bridge) ──────────────────────────────
+
+def _block_op(event: str, sid: str, payload: dict, timeout: float = 60.0) -> tuple[str, dict]:
+    """Emit *event* to the WS client for *sid* and block until a response arrives.
+
+    Returns ``(status, answer)`` where *status* is:
+    - ``'answered'``: the client replied normally; *answer* is the full params dict
+    - ``'timeout'``: no reply within *timeout* seconds
+    - ``'disconnected'``: the WS connection was torn down while waiting
+
+    Must run off the receive loop (i.e. in _client_op_pool), not inline.
+    """
+    payload = dict(payload)
+    rid = payload.get("request_id") or uuid.uuid4().hex
+    payload["request_id"] = rid
+
+    ev = threading.Event()
+    with _op_lock:
+        _op_pending[rid] = (sid, ev)
+    try:
+        _emit(event, sid, payload)
+        signaled = ev.wait(timeout=timeout)
+    finally:
+        with _op_lock:
+            _op_pending.pop(rid, None)
+
+    with _op_lock:
+        answer = _op_answers.pop(rid, None)
+
+    if not signaled or answer is None:
+        return ("timeout", {})
+    if answer.get("_op_status") == "disconnected":
+        return ("disconnected", {})
+    answer.pop("_op_status", None)
+    return ("answered", answer)
+
+
+def _clear_op_pending(sid: str | None = None, status: str = "disconnected") -> None:
+    """Wake all _block_op waiters for *sid* (or all if sid is None) with *status*."""
+    with _op_lock:
+        for rid, (owner_sid, ev) in list(_op_pending.items()):
+            if sid is None or owner_sid == sid:
+                _op_answers[rid] = {"_op_status": status}
+                ev.set()
+
+
+def _run_client_terminal_tool(
+    sid: str,
+    command: str,
+    timeout: int | None = None,
+    persistent: bool = False,
+) -> dict:
+    """Tool callback: execute *command* on the connected WS client for *sid*."""
+    command = str(command or "").strip()
+    if not command:
+        return {"success": False, "error": "command is required"}
+
+    try:
+        timeout_s = int(timeout) if timeout is not None else 30
+    except (TypeError, ValueError):
+        timeout_s = 30
+    timeout_s = max(1, min(timeout_s, 600))
+    timeout_ms = timeout_s * 1000
+
+    status, answer = _block_op(
+        "terminal.execute",
+        sid,
+        {
+            "command": command,
+            "timeout_ms": timeout_ms,
+            "persistent": bool(persistent),
+        },
+        timeout=timeout_s + 5,
+    )
+    if status != "answered":
+        return {"success": False, "status": status, "error": f"client terminal {status}"}
+
+    result = answer.get("result") if isinstance(answer.get("result"), dict) else dict(answer)
+    result.pop("request_id", None)
+    result.pop("_op_status", None)
+    return {"success": True, **result}
+
+
+def _wait_for_client_file_signal(transfer_id: str, sid: str, timeout: float) -> tuple[str, dict]:
+    ev = threading.Event()
+    with _op_lock:
+        _op_pending[transfer_id] = (sid, ev)
+    try:
+        signaled = ev.wait(timeout=timeout)
+    finally:
+        with _op_lock:
+            _op_pending.pop(transfer_id, None)
+    with _op_lock:
+        answer = _op_answers.pop(transfer_id, None)
+    if not signaled or answer is None:
+        return "timeout", {}
+    status = str(answer.get("_op_status") or "answered")
+    return status, answer
+
+
+def _file_timeout(timeout: int | None, default: int = 60) -> int:
+    try:
+        timeout_s = int(timeout) if timeout is not None else default
+    except (TypeError, ValueError):
+        timeout_s = default
+    return max(1, min(timeout_s, 600))
+
+
+def _safe_host_destination(path_value: str) -> Path:
+    path = Path(str(path_value or "").strip()).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
+
+
+def _sha256_file(path: Path) -> tuple[str, int]:
+    h = hashlib.sha256()
+    size = 0
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            h.update(chunk)
+    return h.hexdigest(), size
+
+
+def _run_client_file_push_tool(
+    sid: str,
+    source_path: str,
+    destination_root: str = "downloads",
+    destination_path: str | None = None,
+    timeout: int | None = None,
+) -> dict:
+    """Send a Hermes-host file to the connected WS client."""
+    timeout_s = _file_timeout(timeout)
+    src = Path(str(source_path or "").strip()).expanduser()
+    if not src.is_absolute():
+        src = (Path.cwd() / src).resolve()
+    if not src.exists() or not src.is_file():
+        return {"success": False, "error": f"source file not found: {src}"}
+
+    dest_root = str(destination_root or "downloads").strip() or "downloads"
+    dest_path = str(destination_path or "").strip() or src.name
+    transfer_id = uuid.uuid4().hex
+    digest, size = _sha256_file(src)
+    chunk_size = 262144
+
+    start_payload = {
+        "transfer_id": transfer_id,
+        "direction": "to_client",
+        "source": {"root": "server", "path": str(src)},
+        "destination": {"root": dest_root, "path": dest_path},
+        "size": size,
+        "sha256": digest,
+        "chunk_size": chunk_size,
+    }
+    _emit("file.transfer.start", sid, start_payload)
+    status, answer = _wait_for_client_file_signal(transfer_id, sid, timeout_s)
+    if status != "answered":
+        return {"success": False, "status": status, "error": f"file.transfer.start {status}"}
+    if answer.get("error"):
+        return {"success": False, "error": str(answer.get("error"))}
+
+    accepted = int(answer.get("accepted_chunk_size") or chunk_size)
+    chunk_size = max(1024, min(chunk_size, accepted))
+    offset = int(answer.get("next_offset") or 0)
+    seq = 0
+
+    with src.open("rb") as f:
+        if offset:
+            f.seek(offset)
+        while offset < size:
+            data = f.read(chunk_size)
+            if not data:
+                break
+            payload = {
+                "transfer_id": transfer_id,
+                "seq": seq,
+                "offset": offset,
+                "encoding": "base64",
+                "data": base64.b64encode(data).decode("ascii"),
+            }
+            _emit("file.transfer.chunk", sid, payload)
+            status, answer = _wait_for_client_file_signal(transfer_id, sid, timeout_s)
+            if status != "answered":
+                return {"success": False, "status": status, "error": f"file.transfer.chunk {status}", "offset": offset}
+            if answer.get("error"):
+                return {"success": False, "error": str(answer.get("error")), "offset": offset}
+            next_offset = int(answer.get("next_offset") or (offset + len(data)))
+            if next_offset != offset + len(data):
+                return {"success": False, "error": "client ack offset mismatch", "expected": offset + len(data), "actual": next_offset}
+            offset = next_offset
+            seq += 1
+
+    _emit("file.transfer.finish", sid, {"transfer_id": transfer_id, "size": size, "sha256": digest})
+    status, answer = _wait_for_client_file_signal(transfer_id, sid, timeout_s)
+    if status != "answered":
+        return {"success": False, "status": status, "error": f"file.transfer.finish {status}"}
+    if not bool(answer.get("verified")):
+        return {"success": False, "error": str(answer.get("error") or "client did not verify transfer")}
+    return {"success": True, "transfer_id": transfer_id, "bytes": size, "sha256": digest, "destination_root": dest_root, "destination_path": dest_path}
+
+
+def _run_client_file_pull_tool(
+    sid: str,
+    source_root: str,
+    source_path: str,
+    destination_path: str,
+    timeout: int | None = None,
+) -> dict:
+    """Request a file from the connected WS client and save it on the Hermes host."""
+    timeout_s = _file_timeout(timeout)
+    dest = _safe_host_destination(destination_path)
+    transfer_id = uuid.uuid4().hex
+    with _server_file_transfer_lock:
+        _server_file_transfer_expected[transfer_id] = {"sid": sid, "destination_path": str(dest)}
+
+    _emit(
+        "file.transfer.start",
+        sid,
+        {
+            "transfer_id": transfer_id,
+            "direction": "from_client",
+            "source": {"root": str(source_root or ""), "path": str(source_path or "")},
+            "destination": {"root": "server", "path": str(dest)},
+            "chunk_size": 262144,
+        },
+    )
+    status, answer = _wait_for_client_file_signal(transfer_id, sid, timeout_s)
+    with _server_file_transfer_lock:
+        _server_file_transfer_expected.pop(transfer_id, None)
+    if status != "answered":
+        return {"success": False, "status": status, "error": f"client file pull {status}"}
+    if not bool(answer.get("verified")):
+        return {"success": False, "error": str(answer.get("error") or "server did not verify transfer")}
+    return {"success": True, "transfer_id": transfer_id, "bytes": answer.get("size"), "sha256": answer.get("sha256"), "destination_path": str(dest)}
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -2230,8 +2516,28 @@ def _agent_cbs(sid: str) -> dict:
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
     from tools.skills_tool import set_secret_capture_callback
+    from tools.client_terminal_tool import set_client_terminal_callback
+    from tools.client_file_tool import (
+        set_client_file_pull_callback,
+        set_client_file_push_callback,
+    )
 
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+    set_client_terminal_callback(
+        lambda command, timeout=None, persistent=False: _run_client_terminal_tool(
+            sid, command, timeout=timeout, persistent=persistent
+        )
+    )
+    set_client_file_push_callback(
+        lambda source_path, destination_root="downloads", destination_path=None, timeout=None: _run_client_file_push_tool(
+            sid, source_path, destination_root=destination_root, destination_path=destination_path, timeout=timeout
+        )
+    )
+    set_client_file_pull_callback(
+        lambda source_root, source_path, destination_path, timeout=None: _run_client_file_pull_tool(
+            sid, source_root, source_path, destination_path, timeout=timeout
+        )
+    )
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var}
@@ -2751,6 +3057,11 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # session startup resilient).
         pass
     _wire_callbacks(sid)
+    try:
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+    except Exception:
+        pass
     with _sessions_lock:
         if sid in _sessions:
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
@@ -3405,9 +3716,13 @@ def _(rid, params: dict) -> dict:
 
 @method("session.cwd.set")
 def _(rid, params: dict) -> dict:
+    # Accept inline base64 images from WS clients (neon-companion)
+    inline_images = params.get("images") or []
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    if inline_images:
+        _save_inline_images(session, inline_images)
     if session.get("running"):
         return _err(rid, 4009, "session busy")
     raw = str(params.get("cwd", "") or "").strip()
@@ -4339,6 +4654,45 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+
+def _save_inline_images(session: dict, images: list) -> int:
+    """Save base64-encoded images from prompt.submit to temp files.
+
+    Each item in *images* is ``{"data": "<base64>", "media_type": "image/png"}``.
+    Saved files are added to ``session["attached_images"]`` so the existing
+    ``_enrich_with_attached_images`` pipeline picks them up.
+    Returns the number of images saved.
+    """
+    import base64, tempfile
+    saved = 0
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        b64 = str(img.get("data") or "").strip()
+        media_type = str(img.get("media_type") or "image/png").strip()
+        if not b64:
+            continue
+        # Determine extension from media_type
+        ext_map = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+        }
+        ext = ext_map.get(media_type, ".png")
+        try:
+            raw = base64.b64decode(b64)
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=ext, prefix="neon_img_", dir=tempfile.gettempdir(), delete=False
+            )
+            tmp.write(raw)
+            tmp.close()
+            session.setdefault("attached_images", []).append(tmp.name)
+            saved += 1
+        except Exception as exc:
+            print(f"[tui_gateway] inline image save failed: {exc}", file=sys.stderr)
+    return saved
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
@@ -4626,6 +4980,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
+            try:
+                from tools.registry import invalidate_check_fn_cache
+                invalidate_check_fn_cache()
+            except Exception:
+                pass
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)
@@ -8819,3 +9178,299 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5002, "command timed out (30s)")
     except Exception as e:
         return _err(rid, 5003, str(e))
+
+
+# ── Methods: WS client bridge ─────────────────────────────────────────
+#
+# client.register  — capability negotiation on connect (fast inline)
+# client.pong      — fast responder for client.ping round-trip (fast inline)
+# terminal.respond — fast responder for client.terminal.exec (fast inline)
+# client.ping      — emit ping event, await pong (client-op pool)
+# client.terminal.exec — emit terminal.execute event, await terminal.respond (client-op pool)
+
+
+@method("client.register")
+def _(rid, params: dict) -> dict:
+    client_id = str(params.get("client_id") or "").strip()
+    if client_id:
+        _client_capabilities[client_id] = {
+            "client_id": client_id,
+            "instance_id": str(params.get("instance_id") or ""),
+            "name": str(params.get("name") or ""),
+            "protocol_version": int(params.get("protocol_version") or 1),
+            "platform": params.get("platform") or {},
+            "capabilities": params.get("capabilities") or {},
+        }
+        logger.info("client.register client_id=%s name=%s", client_id, params.get("name"))
+    return _ok(rid, {"accepted": True, "protocol_version": 1})
+
+
+@method("client.pong")
+def _(rid, params: dict) -> dict:
+    """Fast inline responder — wakes a client.ping waiter in _client_op_pool."""
+    request_id = str(params.get("request_id") or "").strip()
+    if request_id:
+        with _op_lock:
+            entry = _op_pending.get(request_id)
+            if entry:
+                _op_answers[request_id] = dict(params)
+                entry[1].set()
+    return _ok(rid, {"ok": True})
+
+
+@method("terminal.respond")
+def _(rid, params: dict) -> dict:
+    """Fast inline responder — wakes a client.terminal.exec waiter in _client_op_pool.
+
+    Accepts params with request_id and either:
+    - top-level stdout, stderr, exit_code, timed_out, duration_ms fields, or
+    - a nested result dict.
+    """
+    request_id = str(params.get("request_id") or "").strip()
+    if request_id:
+        with _op_lock:
+            entry = _op_pending.get(request_id)
+            if entry:
+                _op_answers[request_id] = dict(params)
+                entry[1].set()
+    return _ok(rid, {"ok": True})
+
+
+@method("file.transfer.ack")
+def _(rid, params: dict) -> dict:
+    """Fast responder for outgoing server→client chunks."""
+    transfer_id = str(params.get("transfer_id") or params.get("request_id") or "").strip()
+    if transfer_id:
+        with _op_lock:
+            entry = _op_pending.get(transfer_id)
+            if entry:
+                _op_answers[transfer_id] = dict(params)
+                entry[1].set()
+    return _ok(rid, {"ok": True})
+
+
+@method("file.transfer.complete")
+def _(rid, params: dict) -> dict:
+    """Fast responder for transfer completion in either direction."""
+    transfer_id = str(params.get("transfer_id") or params.get("request_id") or "").strip()
+    if transfer_id:
+        with _op_lock:
+            entry = _op_pending.get(transfer_id)
+            if entry:
+                _op_answers[transfer_id] = dict(params)
+                entry[1].set()
+    return _ok(rid, {"ok": True})
+
+
+@method("file.transfer.start")
+def _(rid, params: dict) -> dict:
+    """Receive client→server transfer start. Destination comes from server-initiated expectation."""
+    transfer_id = str(params.get("transfer_id") or "").strip()
+    if not transfer_id:
+        return _err(rid, 4004, "transfer_id is required")
+    if params.get("direction") != "from_client":
+        return _err(rid, 4004, "only from_client is accepted by this handler")
+
+    with _server_file_transfer_lock:
+        expected = dict(_server_file_transfer_expected.get(transfer_id) or {})
+    dest_value = expected.get("destination_path")
+    if not dest_value:
+        return _err(rid, 4040, "unknown transfer_id")
+
+    try:
+        dest = _safe_host_destination(dest_value)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = Path(str(dest) + ".part")
+        if part.exists():
+            part.unlink()
+        expected_size = int(params.get("size") or 0)
+        expected_sha = str(params.get("sha256") or "").strip().lower()
+        with _server_file_transfer_lock:
+            _server_file_transfer_expected[transfer_id] = {
+                **expected,
+                "destination_path": str(dest),
+                "part_path": str(part),
+                "size": expected_size,
+                "sha256": expected_sha,
+                "bytes": 0,
+                "hasher": hashlib.sha256(),
+            }
+        return _ok(rid, {"transfer_id": transfer_id, "accepted_chunk_size": 262144, "next_offset": 0})
+    except Exception as exc:
+        return _err(rid, 5004, f"failed to start transfer: {exc}")
+
+
+@method("file.transfer.chunk")
+def _(rid, params: dict) -> dict:
+    """Receive one base64 chunk for a client→server transfer."""
+    transfer_id = str(params.get("transfer_id") or "").strip()
+    if not transfer_id:
+        return _err(rid, 4004, "transfer_id is required")
+    with _server_file_transfer_lock:
+        state = _server_file_transfer_expected.get(transfer_id)
+    if not state or not state.get("part_path"):
+        return _err(rid, 4040, "unknown or unstarted transfer_id")
+
+    try:
+        offset = int(params.get("offset") or 0)
+        if offset != int(state.get("bytes") or 0):
+            return _err(rid, 4090, "out-of-order chunk")
+        if (params.get("encoding") or "base64") != "base64":
+            return _err(rid, 4004, "unsupported encoding")
+        data = base64.b64decode(str(params.get("data") or ""), validate=True)
+        declared_size = int(state.get("size") or 0)
+        if declared_size and offset + len(data) > declared_size:
+            return _err(rid, 4091, "chunk exceeds declared size")
+        with open(state["part_path"], "ab") as f:
+            f.write(data)
+        hasher = state.get("hasher")
+        if hasher is not None:
+            hasher.update(data)
+        next_offset = offset + len(data)
+        with _server_file_transfer_lock:
+            if transfer_id in _server_file_transfer_expected:
+                _server_file_transfer_expected[transfer_id]["bytes"] = next_offset
+        return _ok(rid, {"transfer_id": transfer_id, "next_offset": next_offset})
+    except Exception as exc:
+        return _err(rid, 5005, f"failed to write chunk: {exc}")
+
+
+@method("file.transfer.finish")
+def _(rid, params: dict) -> dict:
+    """Finalize a client→server transfer and wake the initiating tool."""
+    transfer_id = str(params.get("transfer_id") or "").strip()
+    if not transfer_id:
+        return _err(rid, 4004, "transfer_id is required")
+    with _server_file_transfer_lock:
+        state = _server_file_transfer_expected.get(transfer_id)
+    if not state or not state.get("part_path"):
+        return _err(rid, 4040, "unknown or unstarted transfer_id")
+
+    verified = False
+    error = ""
+    try:
+        size = int(state.get("bytes") or 0)
+        expected_size = int(params.get("size") or state.get("size") or 0)
+        expected_sha = str(params.get("sha256") or state.get("sha256") or "").strip().lower()
+        hasher = state.get("hasher")
+        actual_sha = hasher.hexdigest() if hasher is not None else ""
+        if expected_size and size != expected_size:
+            error = "size mismatch"
+        elif expected_sha and actual_sha.lower() != expected_sha:
+            error = "sha256 mismatch"
+        else:
+            part = Path(state["part_path"])
+            dest = Path(state["destination_path"])
+            if dest.exists():
+                dest.unlink()
+            part.replace(dest)
+            verified = True
+    except Exception as exc:
+        error = f"finalize failed: {exc}"
+
+    if not verified:
+        try:
+            Path(state.get("part_path", "")).unlink(missing_ok=True)
+        except Exception:
+            pass
+    answer = {
+        "transfer_id": transfer_id,
+        "verified": verified,
+        "error": None if verified else error,
+        "size": int(state.get("bytes") or 0),
+        "sha256": (state.get("hasher").hexdigest() if state.get("hasher") is not None else ""),
+        "path": state.get("destination_path"),
+    }
+    with _op_lock:
+        entry = _op_pending.get(transfer_id)
+        if entry:
+            _op_answers[transfer_id] = answer
+            entry[1].set()
+    return _ok(rid, answer)
+
+
+@method("client.file.push")
+def _(rid, params: dict) -> dict:
+    result = _run_client_file_push_tool(
+        str(params.get("session_id") or ""),
+        str(params.get("source_path") or ""),
+        destination_root=str(params.get("destination_root") or "downloads"),
+        destination_path=params.get("destination_path"),
+        timeout=params.get("timeout"),
+    )
+    if result.get("success"):
+        return _ok(rid, result)
+    return _err(rid, -32000, str(result.get("error") or result))
+
+
+@method("client.file.pull")
+def _(rid, params: dict) -> dict:
+    result = _run_client_file_pull_tool(
+        str(params.get("session_id") or ""),
+        str(params.get("source_root") or ""),
+        str(params.get("source_path") or ""),
+        str(params.get("destination_path") or ""),
+        timeout=params.get("timeout"),
+    )
+    if result.get("success"):
+        return _ok(rid, result)
+    return _err(rid, -32000, str(result.get("error") or result))
+
+
+@method("client.ping")
+def _(rid, params: dict) -> dict:
+    """Emit a client.ping event to the WS client and wait for client.pong.
+
+    Runs in _client_op_pool (listed in _CLIENT_OP_HANDLERS) so it never
+    blocks the receive loop while waiting.
+    """
+    sid = str(params.get("session_id") or "").strip()
+    timeout_ms = params.get("timeout_ms")
+    try:
+        timeout_s = max(1.0, float(timeout_ms) / 1000.0) if timeout_ms is not None else 10.0
+    except (TypeError, ValueError):
+        timeout_s = 10.0
+
+    status, answer = _block_op("client.ping", sid, {}, timeout=timeout_s)
+    if status == "answered":
+        return _ok(rid, {"pong": True, "latency_ms": answer.get("latency_ms")})
+    return _ok(rid, {"pong": False, "status": status})
+
+
+@method("client.terminal.exec")
+def _(rid, params: dict) -> dict:
+    """Emit terminal.execute to the WS client, await terminal.respond.
+
+    Runs in _client_op_pool (listed in _CLIENT_OP_HANDLERS).  The event
+    payload matches what neon-companion expects: request_id, command,
+    timeout_ms, persistent.
+    """
+    sid = str(params.get("session_id") or "").strip()
+    command = str(params.get("command") or "").strip()
+    if not command:
+        return _err(rid, 4004, "command is required")
+
+    timeout_ms = params.get("timeout_ms")
+    try:
+        timeout_ms = max(1000, int(timeout_ms)) if timeout_ms is not None else 30000
+    except (TypeError, ValueError):
+        timeout_ms = 30000
+
+    persistent = bool(params.get("persistent") or False)
+
+    op_payload = {
+        "command": command,
+        "timeout_ms": timeout_ms,
+        "persistent": persistent,
+    }
+    # Wait slightly longer than the client-side timeout so the client can
+    # report timed_out before the gateway gives up.
+    wait_s = timeout_ms / 1000.0 + 5.0
+    status, answer = _block_op("terminal.execute", sid, op_payload, timeout=wait_s)
+
+    if status == "answered":
+        result = answer.get("result") if isinstance(answer.get("result"), dict) else answer
+        result.pop("request_id", None)
+        result.pop("_op_status", None)
+        return _ok(rid, result)
+    return _err(rid, -32000, f"terminal.execute: {status}")

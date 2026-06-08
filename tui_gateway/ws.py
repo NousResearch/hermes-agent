@@ -301,6 +301,20 @@ async def handle_ws(ws: Any) -> None:
                 if sess.get("transport") is transport:
                     sess["transport"] = server._stdio_transport
                     detached_sessions += 1
+                    # Wake any _block() and _block_op() waiters so agent tools
+                    # don't hang until timeout after the client disconnects.
+                    try:
+                        server._clear_pending(_sid)
+                    except Exception:
+                        _log.exception(
+                            "ws clear-pending failed peer=%s sid=%s", peer, _sid
+                        )
+                    try:
+                        server._clear_op_pending(_sid)
+                    except Exception:
+                        _log.exception(
+                            "ws clear-op-pending failed peer=%s sid=%s", peer, _sid
+                        )
                     try:
                         server._schedule_ws_orphan_reap(_sid)
                         reaped_scheduled += 1

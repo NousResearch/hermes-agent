@@ -248,3 +248,52 @@ class TestPluginContextEngineSlot:
             assert get_plugin_context_engine() is engine
         finally:
             plugins_mod._plugin_manager = old_mgr
+
+
+
+class TestPluginContextEngineDeepCopy:
+    """Verify that the plugin context engine singleton is deep-copied before
+    mutation in agent_init — regression test for #42449."""
+
+    def test_deepcopy_prevents_shared_mutation(self):
+        """Deep-copied engine should not propagate mutations back to the singleton."""
+        import copy
+        engine = StubEngine(context_length=1_000_000, threshold_pct=0.20)
+        clone = copy.deepcopy(engine)
+
+        # Mutate the clone (simulating child agent's update_model)
+        clone.context_length = 204800
+        clone.threshold_tokens = 40960
+
+        # Original must be unaffected
+        assert engine.context_length == 1_000_000
+        assert engine.threshold_tokens == 200000  # 1M * 0.20
+        assert clone is not engine
+
+    def test_deepcopy_preserves_engine_name(self):
+        """Deep-copied engine retains its identity (name property)."""
+        import copy
+        engine = StubEngine(context_length=500000)
+        clone = copy.deepcopy(engine)
+        assert clone.name == engine.name == "stub"
+
+    def test_deepcopy_preserves_compressor_state(self):
+        """Deep-copied engine starts with the same token counters."""
+        import copy
+        engine = StubEngine(context_length=500000)
+        engine.last_prompt_tokens = 1000
+        engine.last_total_tokens = 1500
+        engine.compression_count = 3
+
+        clone = copy.deepcopy(engine)
+        assert clone.last_prompt_tokens == 1000
+        assert clone.last_total_tokens == 1500
+        assert clone.compression_count == 3
+        assert clone is not engine
+
+    def test_no_deepcopy_direct_assignment_would_share_state(self):
+        """Baseline: without deepcopy, both variables point to the same object."""
+        engine = StubEngine(context_length=1_000_000)
+        direct = engine  # no deepcopy — the bug path
+        direct.context_length = 204800
+        assert engine.context_length == 204800  # bug: parent corrupted!

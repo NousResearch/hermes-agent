@@ -219,6 +219,12 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      chatLayoutTitle: string
+      chatLayoutDesc: string
+      chatLayoutStacked: string
+      chatLayoutStackedDesc: string
+      chatLayoutBubbles: string
+      chatLayoutBubblesDesc: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>

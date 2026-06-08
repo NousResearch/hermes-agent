@@ -83,6 +83,7 @@ import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { $chatLayout } from '@/store/chat-layout'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
 
@@ -139,6 +140,7 @@ export const Thread: FC<{
   sessionId = null,
   sessionKey
 }) => {
+  const chatLayout = useStore($chatLayout)
   const messageComponents = useMemo(
     () => ({
       AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
@@ -157,7 +159,7 @@ export const Thread: FC<{
 
   return (
     <GeneratedImageProvider>
-      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]" data-chat-layout={chatLayout}>
         <VirtualizedThread
           clampToComposer={clampToComposer}
           components={messageComponents}

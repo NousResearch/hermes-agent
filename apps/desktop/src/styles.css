@@ -1223,3 +1223,41 @@ canvas {
   background: color-mix(in srgb, var(--theme-primary) 9%, var(--ui-bg-elevated));
   box-shadow: none;
 }
+
+/* ── Bubble chat layout ─────────────────────────────────────────────── */
+
+/* Container-level opt-in: [data-chat-layout="bubbles"] */
+[data-chat-layout='bubbles'] [data-slot='aui_thread-content'] {
+  align-items: flex-start;
+}
+
+/* Standalone virtualizer rows: align based on child role */
+[data-chat-layout='bubbles'] .composer-human-ai-pair-container {
+  align-items: flex-end;
+}
+
+/* User messages: right-aligned bubble */
+[data-chat-layout='bubbles'] [data-role='user'] {
+  align-self: flex-end;
+  max-width: 78%;
+}
+
+[data-chat-layout='bubbles'] [data-role='user'] .composer-human-message {
+  border-radius: 1.1rem 1.1rem 0.35rem 1.1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+/* Assistant messages: left-aligned bubble */
+[data-chat-layout='bubbles'] [data-role='assistant'] {
+  align-self: flex-start;
+  max-width: 78%;
+  border-radius: 1.1rem 1.1rem 1.1rem 0.35rem;
+  background: color-mix(in srgb, var(--ui-bg-elevated) 55%, transparent);
+  border: 1px solid var(--ui-stroke-tertiary);
+  padding: 0.625rem 0.875rem;
+}
+
+/* Standalone assistant messages outside a turn pair */
+[data-chat-layout='bubbles'] > div > div > [data-role='assistant'] {
+  align-self: flex-start;
+}

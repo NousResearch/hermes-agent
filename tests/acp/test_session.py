@@ -273,7 +273,7 @@ class TestPersistence:
             manager = SessionManager(db=db)
             manager.create_session(cwd="/work")
 
-        assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-olympus", "mcp-exa"]
+        assert captured["enabled_toolsets"] == ["hermes-acp", "memory", "mcp-olympus", "mcp-exa"]
 
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")

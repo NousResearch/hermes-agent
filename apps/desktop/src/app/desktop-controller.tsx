@@ -47,6 +47,7 @@ import {
   $workingSessionIds,
   CRON_SECTION_LIMIT,
   mergeSessionPage,
+  sessionAliasIds,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -300,6 +301,7 @@ export function DesktopController() {
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page — the empty-history-on-profile-switch bug.
       const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
       const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: ['cron']
       })
@@ -351,7 +353,7 @@ export function DesktopController() {
     }
 
     // Pin on the durable lineage-root id so the pin survives auto-compression.
-    const session = $sessions.get().find(s => s.id === sessionId || s._lineage_root_id === sessionId)
+    const session = $sessions.get().find(s => sessionAliasIds(s).includes(sessionId))
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
@@ -564,6 +566,24 @@ export function DesktopController() {
     [branchCurrentSession, refreshSessions]
   )
 
+  const recoverActiveSession = useCallback(async () => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+
+    if (!storedSessionId) {
+      return null
+    }
+
+    await resumeSession(storedSessionId)
+
+    if (selectedStoredSessionIdRef.current !== storedSessionId) {
+      return null
+    }
+
+    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+    return runtimeId && runtimeId === activeSessionIdRef.current ? runtimeId : null
+  }, [activeSessionIdRef, resumeSession, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef])
+
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
       startFreshSessionDraft()
@@ -604,6 +624,7 @@ export function DesktopController() {
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      recoverActiveSession,
       refreshSessions,
       requestGateway,
       selectedStoredSessionIdRef,

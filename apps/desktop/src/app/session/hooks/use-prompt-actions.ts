@@ -75,6 +75,12 @@ function isProviderSetupError(error: unknown) {
   return isProviderSetupErrorMessage(message)
 }
 
+function isSessionNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /session not found/i.test(message) || /\b4001\b/.test(message)
+}
+
 function inlineErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
 
@@ -110,6 +116,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  recoverActiveSession?: () => Promise<null | string>
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -175,6 +182,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  recoverActiveSession,
   refreshSessions,
   requestGateway,
   selectedStoredSessionIdRef,
@@ -403,7 +411,36 @@ export function usePromptActions({
 
         return true
       } catch (err) {
-        const message = inlineErrorMessage(err, copy.promptFailed)
+        let finalError = err
+
+        if (isSessionNotFoundError(err) && recoverActiveSession) {
+          const recoveredSessionId = await recoverActiveSession().catch(() => null)
+
+          if (recoveredSessionId) {
+            sessionId = recoveredSessionId
+            setMutableRef(busyRef, true)
+            setBusy(true)
+            setAwaitingResponse(true)
+            seedOptimistic(sessionId)
+
+            try {
+              await syncImageAttachmentsForSubmit(sessionId, attachments, {
+                updateComposerAttachments: usingComposerAttachments
+              })
+              await requestGateway('prompt.submit', { session_id: sessionId, text })
+
+              if (usingComposerAttachments) {
+                clearComposerAttachments()
+              }
+
+              return true
+            } catch (retryErr) {
+              finalError = retryErr
+            }
+          }
+        }
+
+        const message = inlineErrorMessage(finalError, copy.promptFailed)
 
         releaseBusy()
         updateSessionState(sessionId, state => ({
@@ -424,13 +461,13 @@ export function usePromptActions({
           sawAssistantPayload: true
         }))
 
-        if (isProviderSetupError(err)) {
+        if (isProviderSetupError(finalError)) {
           requestDesktopOnboarding(copy.providerCredentialRequired)
 
           return false
         }
 
-        notifyError(err, copy.promptFailed)
+        notifyError(finalError, copy.promptFailed)
 
         return false
       }
@@ -440,6 +477,7 @@ export function usePromptActions({
       busyRef,
       copy,
       createBackendSessionForSend,
+      recoverActiveSession,
       requestGateway,
       selectedStoredSessionIdRef,
       syncImageAttachmentsForSubmit,

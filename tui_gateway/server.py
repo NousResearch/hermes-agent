@@ -3305,6 +3305,14 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+
+    try:
+        tip = db.get_compression_tip(target)
+    except Exception:
+        tip = None
+    if tip and tip != target:
+        target = tip
+        found = db.get_session(target) or found
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)

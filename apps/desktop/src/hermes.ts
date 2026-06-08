@@ -108,6 +108,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
+      diagnosticLogger: (event, context) => console.warn(`[hermes] ${event}`, context),
       notConnectedErrorMessage: 'Hermes gateway is not connected',
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })

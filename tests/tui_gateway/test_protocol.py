@@ -336,6 +336,49 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     ]
 
 
+def test_session_resume_follows_compression_alias_to_live_tip(server, monkeypatch):
+    seen: list[tuple[str, str]] = []
+
+    class _DB:
+        def get_session(self, sid):
+            if sid in {"root", "tip"}:
+                return {"id": sid}
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def get_compression_tip(self, sid):
+            return "tip" if sid == "root" else sid
+
+        def reopen_session(self, sid):
+            seen.append(("reopen", sid))
+
+        def get_messages_as_conversation(self, sid, include_ancestors=False):
+            seen.append(("history", sid))
+            return [{"role": "user", "content": f"loaded {sid}"}]
+
+    def make_agent(sid, key, session_id=None, session_db=None):
+        seen.append(("agent", session_id or key))
+        return object()
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {"id": "r1", "method": "session.resume", "params": {"session_id": "root"}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["resumed"] == "tip"
+    assert resp["result"]["session_key"] == "tip"
+    assert ("reopen", "tip") in seen
+    assert ("history", "tip") in seen
+    assert ("agent", "tip") in seen
+
+
 def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     """A user message persisted with list-shaped multimodal content used to
     crash session resume with ``'list' object has no attribute 'strip'``."""

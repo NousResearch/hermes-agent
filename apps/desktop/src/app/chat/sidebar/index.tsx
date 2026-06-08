@@ -75,6 +75,8 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
+  normalizePinnedSessionIds,
+  sessionAliasIds,
   sessionPinId
 } from '@/store/session'
 
@@ -330,8 +332,8 @@ export function ChatSidebar({
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
-  // Index sessions by both their live id and their lineage-root id so a pin
-  // stored as the pre-compression root resolves to the live continuation tip.
+  // Index sessions by live id, lineage-root id, and every known compression
+  // segment id so stale pre-normalization pins still resolve to the latest tip.
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
@@ -339,15 +341,24 @@ export function ChatSidebar({
     // them too — otherwise a pinned cron job can't resolve into the Pinned
     // section. Recents take precedence on id collisions (set last).
     for (const s of [...cronSessions, ...visibleSessions]) {
-      map.set(s.id, s)
-
-      if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
-        map.set(s._lineage_root_id, s)
+      for (const alias of sessionAliasIds(s)) {
+        if (!map.has(alias) || visibleSessions.includes(s)) {
+          map.set(alias, s)
+        }
       }
     }
 
     return map
   }, [visibleSessions, cronSessions])
+
+  useEffect(() => {
+    const normalized = normalizePinnedSessionIds(pinnedSessionIds, [...cronSessions, ...visibleSessions])
+    const changed = normalized.length !== pinnedSessionIds.length || normalized.some((id, index) => id !== pinnedSessionIds[index])
+
+    if (changed) {
+      $pinnedSessionIds.set(normalized)
+    }
+  }, [pinnedSessionIds, visibleSessions, cronSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()

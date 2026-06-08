@@ -41,16 +41,37 @@ export interface JsonRpcFrame {
 export type WebSocketLike = WebSocket
 
 type PendingCall = {
+  method: string
   reject: (error: Error) => void
   resolve: (value: unknown) => void
+  startedAt: number
   timer?: ReturnType<typeof setTimeout>
 }
+
+export interface PendingRequestDiagnostic {
+  ageMs: number
+  id: GatewayRequestId
+  method: string
+}
+
+export interface GatewayDiagnosticContext {
+  closeCode?: number
+  closeReason?: string
+  errorMessage?: string
+  event: string
+  pendingCount: number
+  pendingRequests: PendingRequestDiagnostic[]
+  state: ConnectionState
+}
+
+export type GatewayDiagnosticLogger = (event: string, context: GatewayDiagnosticContext) => void
 
 export interface GatewayClientOptions {
   closedErrorMessage?: string
   connectErrorMessage?: string
   connectTimeoutMs?: number
   createRequestId?: (nextId: number) => GatewayRequestId
+  diagnosticLogger?: GatewayDiagnosticLogger
   requestIdPrefix?: string
   requestTimeoutMs?: number
   socketFactory?: (url: string) => WebSocketLike
@@ -81,6 +102,7 @@ export class JsonRpcGatewayClient {
       connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       createRequestId:
         options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
+      diagnosticLogger: options.diagnosticLogger ?? (() => undefined),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -110,11 +132,17 @@ export class JsonRpcGatewayClient {
       this.handleMessage(message.data)
     })
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
       if (this.socket !== socket) {
         return
       }
 
+      const close = event as CloseEvent
+      this.emitDiagnostic('gateway.websocket.closed', {
+        closeCode: close.code,
+        closeReason: close.reason,
+        state: this.state
+      })
       this.socket = null
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
@@ -151,6 +179,10 @@ export class JsonRpcGatewayClient {
 
         settled = true
         cleanup()
+        this.emitDiagnostic('gateway.websocket.error', {
+          errorMessage: this.options.connectErrorMessage,
+          state: this.state
+        })
         this.setState('error')
         reject(new Error(this.options.connectErrorMessage))
       }
@@ -177,6 +209,10 @@ export class JsonRpcGatewayClient {
 
             this.socket = null
           }
+          this.emitDiagnostic('gateway.websocket.connect_timeout', {
+            errorMessage: this.options.connectErrorMessage,
+            state: this.state
+          })
           this.setState('error')
           reject(new Error(this.options.connectErrorMessage))
         }, this.options.connectTimeoutMs)
@@ -228,13 +264,20 @@ export class JsonRpcGatewayClient {
 
     return new Promise<T>((resolve, reject) => {
       const pending: PendingCall = {
+        method,
         reject,
-        resolve: value => resolve(value as T)
+        resolve: value => resolve(value as T),
+        startedAt: Date.now()
       }
 
       if (timeoutMs > 0) {
         pending.timer = setTimeout(() => {
-          if (this.pending.delete(id)) {
+          if (this.pending.has(id)) {
+            this.emitDiagnostic('gateway.request.timeout', {
+              errorMessage: `request timed out: ${method}`,
+              state: this.state
+            })
+            this.pending.delete(id)
             reject(new Error(`request timed out: ${method}`))
           }
         }, timeoutMs)
@@ -252,10 +295,44 @@ export class JsonRpcGatewayClient {
           })
         )
       } catch (error) {
+        this.emitDiagnostic('gateway.request.send_error', {
+          errorMessage: error instanceof Error ? error.message : String(error),
+          state: this.state
+        })
         this.clearPending(id)
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     })
+  }
+
+  private emitDiagnostic(
+    event: string,
+    context: Pick<GatewayDiagnosticContext, 'state'> &
+      Partial<Omit<GatewayDiagnosticContext, 'event' | 'pendingCount' | 'pendingRequests' | 'state'>>
+  ): void {
+    const pendingRequests = this.pendingDiagnostics()
+
+    try {
+      this.options.diagnosticLogger(event, {
+        ...context,
+        event,
+        pendingCount: pendingRequests.length,
+        pendingRequests
+      })
+    } catch {
+      // Diagnostics are best-effort only; a logger failure must never change
+      // gateway connection, cleanup, or request-settlement behavior.
+    }
+  }
+
+  private pendingDiagnostics(): PendingRequestDiagnostic[] {
+    const now = Date.now()
+
+    return [...this.pending.entries()].map(([id, call]) => ({
+      ageMs: Math.max(0, now - call.startedAt),
+      id,
+      method: call.method
+    }))
   }
 
   private handleMessage(raw: unknown): void {

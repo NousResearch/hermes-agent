@@ -2936,6 +2936,123 @@ class TestCompressionChainProjection:
         assert tip_row["_lineage_root_id"] == "root1"
         assert tip_row["cwd"] == "/tmp/workspaces/tip"
 
+    def test_list_projection_falls_back_to_root_cwd_when_new_tip_has_none(self, db):
+        """A just-created compression child should not jump to No workspace.
+
+        The new child can have no cwd until the next Desktop metadata refresh;
+        keep the root cwd for sidebar grouping in that window.
+        """
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.update_session_cwd("root1", "/tmp/workspaces/root")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["cwd"] == "/tmp/workspaces/root"
+
+    def test_list_projection_uses_nearest_lineage_cwd_when_tip_has_none(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.update_session_cwd("mid1", "/tmp/workspaces/mid")
+        db.update_session_cwd("root1", "/tmp/workspaces/root")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["cwd"] == "/tmp/workspaces/mid"
+
+    def test_projection_exposes_all_lineage_ids_for_pin_alias_resolution(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["_lineage_session_ids"] == ["root1", "mid1", "tip1"]
+
+    def test_get_compression_tip_prefers_explicit_marker_over_newer_empty_child(self, db):
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?", (t0, t0 + 10, "compression", "root"))
+
+        # A misleading child created later should not win when a real
+        # compression edge is explicitly marked.
+        db.create_session("real", "cli", parent_session_id="root", model_config={"_compression_from": "root"})
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 11, "real"))
+        db.append_message("real", "user", "real continuation")
+        db.create_session("empty-newer", "cli", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 99, "empty-newer"))
+        db._conn.commit()
+
+        assert db.get_compression_tip("root") == "real"
+
+    def test_get_compression_tip_prefers_nonempty_duplicate_explicit_marker(self, db):
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?", (t0, t0 + 10, "compression", "root"))
+        db.create_session("real", "cli", parent_session_id="root", model_config={"_compression_from": "root"})
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 11, "real"))
+        db.append_message("real", "user", "real continuation")
+        db.create_session("empty-marked-newer", "cli", parent_session_id="root", model_config={"_compression_from": "root"})
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 99, "empty-marked-newer"))
+        db._conn.commit()
+
+        assert db.get_compression_tip("root") == "real"
+
+    def test_order_by_last_active_uses_selected_compression_child_only(self, db):
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?", (t0, t0 + 10, "compression", "root"))
+        db.create_session("real", "cli", parent_session_id="root", model_config={"_compression_from": "root"})
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 11, "real"))
+        db.append_message("real", "user", "real continuation")
+        db.create_session("empty-newer", "cli", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 99, "empty-newer"))
+        db.append_message("empty-newer", "user", "not the continuation")
+        db.create_session("standalone", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 50, "standalone"))
+        db.append_message("standalone", "user", "standalone")
+        db._conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (t0 + 100, "real"))
+        db._conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (t0 + 1_000, "empty-newer"))
+        db._conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (t0 + 500, "standalone"))
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(limit=10, order_by_last_active=True)
+        ids = [s["id"] for s in sessions]
+
+        assert "empty-newer" not in ids
+        assert ids.index("standalone") < ids.index("real")
+
+    def test_get_compression_tip_fallback_prefers_nonempty_child_over_newer_empty_child(self, db):
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?", (t0, t0 + 10, "compression", "root"))
+        db.create_session("real", "cli", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 11, "real"))
+        db.append_message("real", "user", "real continuation")
+        db.create_session("empty-newer", "cli", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 99, "empty-newer"))
+        db._conn.commit()
+
+        assert db.get_compression_tip("root") == "real"
+
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root
         rows — useful for admin/debug UIs.
@@ -3903,6 +4020,26 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
+
+    def test_search_sessions_by_id_prioritizes_exact_intermediate_lineage_id(self, db):
+        root = "root"
+        mid = "abc"
+        tip = "tip"
+        db.create_session(session_id="abc2", source="cli")
+        db.append_message("abc2", role="user", content="standalone prefix")
+        db.create_session(session_id=root, source="cli")
+        db.append_message(root, role="user", content="root conversation")
+        db.end_session(root, "compression")
+        db.create_session(session_id=mid, source="cli", parent_session_id=root)
+        db.append_message(mid, role="user", content="middle continuation")
+        db.end_session(mid, "compression")
+        db.create_session(session_id=tip, source="cli", parent_session_id=mid)
+        db.append_message(tip, role="user", content="tip continuation")
+
+        matches = db.search_sessions_by_id(mid, limit=2)
+
+        assert matches[0]["id"] == tip
+        assert matches[0]["_lineage_session_ids"] == [root, mid, tip]
 
 
 class TestListCronJobRuns:

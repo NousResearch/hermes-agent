@@ -80,6 +80,7 @@ class WSTransport:
             return False
 
         line = json.dumps(obj, ensure_ascii=False)
+        diagnostics = _ws_frame_diagnostics(obj, line)
 
         try:
             on_loop = asyncio.get_running_loop() is self._loop
@@ -88,12 +89,12 @@ class WSTransport:
 
         if on_loop:
             # Fire-and-forget — don't block the loop waiting on itself.
-            self._loop.create_task(self._safe_send(line))
+            self._loop.create_task(self._safe_send(line, diagnostics))
             return True
 
         try:
             from agent.async_utils import safe_schedule_threadsafe
-            fut = safe_schedule_threadsafe(self._safe_send(line), self._loop)
+            fut = safe_schedule_threadsafe(self._safe_send(line, diagnostics), self._loop)
             if fut is None:
                 self._closed = True
                 return False
@@ -102,8 +103,8 @@ class WSTransport:
         except Exception as exc:
             self._closed = True
             _log.warning(
-                "ws write failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
+                "ws write failed peer=%s error_type=%s error=%s frame=%s",
+                self._peer, type(exc).__name__, exc, diagnostics,
             )
             return False
 
@@ -111,17 +112,18 @@ class WSTransport:
         """Send from the owning event loop. Awaits until the frame is on the wire."""
         if self._closed:
             return False
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
+        line = json.dumps(obj, ensure_ascii=False)
+        await self._safe_send(line, _ws_frame_diagnostics(obj, line))
         return not self._closed
 
-    async def _safe_send(self, line: str) -> None:
+    async def _safe_send(self, line: str, diagnostics: dict[str, Any]) -> None:
         try:
             await self._ws.send_text(line)
         except Exception as exc:
             self._closed = True
             _log.warning(
-                "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
+                "ws send failed peer=%s error_type=%s error=%s frame=%s",
+                self._peer, type(exc).__name__, exc, diagnostics,
             )
 
     def close(self) -> None:
@@ -136,6 +138,61 @@ def _ws_peer_label(ws: Any) -> str:
     host = getattr(client, "host", None) or "unknown"
     port = getattr(client, "port", None)
     return f"{host}:{port}" if port is not None else host
+
+
+def _ws_diagnostic_scalar(value: Any, *, max_len: int = 128) -> Any:
+    """Return a bounded primitive safe for metadata-only logs."""
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= max_len else f"{value[:max_len]}…"
+    return f"<{type(value).__name__}>"
+
+
+def _ws_frame_diagnostics(obj: dict, line: str) -> dict[str, Any]:
+    """Return safe frame metadata for WS failure logs.
+
+    Never include ``params``, ``payload``, ``result``, or ``error`` bodies here:
+    WebSocket failures are often caused by large or sensitive streaming frames,
+    and diagnostics only need routing metadata to correlate the failed boundary.
+    """
+    frame_type = "unknown"
+    event_type = None
+    session_id = None
+    frame_id = _ws_diagnostic_scalar(obj.get("id")) if isinstance(obj, dict) else None
+
+    if isinstance(obj, dict):
+        if obj.get("method") == "event":
+            frame_type = "event"
+            raw_params = obj.get("params")
+            params = raw_params if isinstance(raw_params, dict) else {}
+            event_type = _ws_diagnostic_scalar(params.get("type"))
+            session_id = _ws_diagnostic_scalar(params.get("session_id"))
+        elif frame_id is not None and ("result" in obj or "error" in obj):
+            frame_type = "response"
+        elif obj.get("method"):
+            frame_type = "request"
+
+    return {
+        "frame_type": frame_type,
+        "event_type": event_type,
+        "frame_id": frame_id,
+        "session_id": session_id,
+        "byte_len": len(line.encode("utf-8")),
+    }
+
+
+def _ws_parse_error_diagnostics(line: str, exc: json.JSONDecodeError) -> dict[str, Any]:
+    """Return metadata-only parse-error diagnostics.
+
+    Invalid JSON can still contain secrets in partial params/payload fields, so
+    do not log a raw preview of the inbound frame.
+    """
+    return {
+        "byte_len": len(line.encode("utf-8")),
+        "error": exc.msg,
+        "pos": exc.pos,
+    }
 
 
 def _disable_nagle(ws: Any) -> None:
@@ -216,12 +273,14 @@ async def handle_ws(ws: Any) -> None:
                 req = json.loads(line)
             except json.JSONDecodeError as exc:
                 parse_errors += 1
+                diag = _ws_parse_error_diagnostics(line, exc)
                 _log.warning(
-                    "ws parse error peer=%s index=%d error=%s payload=%r",
+                    "ws parse error peer=%s index=%d error=%s pos=%d byte_len=%d",
                     peer,
                     messages,
-                    exc,
-                    line[:_WS_LOG_PAYLOAD_PREVIEW],
+                    diag["error"],
+                    diag["pos"],
+                    diag["byte_len"],
                 )
                 ok = await transport.write_async(
                     {

@@ -21,11 +21,63 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
   store.set(typeof next === 'function' ? (next as (current: T) => T)(store.get()) : next)
 }
 
+type SessionPinShape = Pick<SessionInfo, '_lineage_root_id' | '_lineage_session_ids' | 'id'>
+
+function uniqueIds(ids: Iterable<null | string | undefined>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+
+  for (const raw of ids) {
+    const id = raw?.trim()
+
+    if (id && !seen.has(id)) {
+      seen.add(id)
+      out.push(id)
+    }
+  }
+
+  return out
+}
+
+/** Every persisted id that may refer to this logical session. */
+export const sessionAliasIds = (session: SessionPinShape): string[] =>
+  uniqueIds([session.id, session._lineage_root_id, ...(session._lineage_session_ids ?? [])])
+
 /** Durable id for pinning. Auto-compression rotates a conversation's session
  *  id (root -> continuation tip), so pins keyed on the live id evaporate. The
  *  lineage root is stable across every compression, so we pin on that. */
-export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
-  session._lineage_root_id ?? session.id
+export const sessionPinId = (session: SessionPinShape): string =>
+  session._lineage_root_id ?? session._lineage_session_ids?.[0] ?? session.id
+
+export function normalizePinnedSessionIds(pinIds: readonly string[], sessions: readonly SessionPinShape[]): string[] {
+  const byAlias = new Map<string, SessionPinShape>()
+
+  for (const session of sessions) {
+    for (const alias of sessionAliasIds(session)) {
+      if (!byAlias.has(alias)) {
+        byAlias.set(alias, session)
+      }
+    }
+  }
+
+  const out: string[] = []
+  const seen = new Set<string>()
+
+  for (const pinId of pinIds) {
+    const normalized = sessionPinId(byAlias.get(pinId) ?? { id: pinId })
+
+    if (!seen.has(normalized)) {
+      seen.add(normalized)
+      out.push(normalized)
+    }
+  }
+
+  return out
+}
+
+function sessionHasAlias(session: SessionPinShape, ids: Set<string>): boolean {
+  return sessionAliasIds(session).some(id => ids.has(id))
+}
 
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
@@ -61,12 +113,10 @@ export function mergeSessionPage(
     return incoming
   }
 
-  const incomingIds = new Set(incoming.map(session => session.id))
+  const incomingAliases = new Set(incoming.flatMap(sessionAliasIds))
 
   const survivors = previous.filter(
-    session =>
-      !incomingIds.has(session.id) &&
-      (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
+    session => !sessionHasAlias(session, incomingAliases) && sessionHasAlias(session, keep)
   )
 
   return survivors.length ? [...survivors, ...incoming] : incoming

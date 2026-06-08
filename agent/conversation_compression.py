@@ -502,6 +502,8 @@ def compress_context(
         try:
             # Propagate title to the new session with auto-numbering
             old_title = agent._session_db.get_session_title(agent.session_id)
+            old_session = agent._session_db.get_session(agent.session_id) or {}
+            old_cwd = (old_session.get("cwd") or "").strip() or None
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
             agent._session_db.end_session(agent.session_id, "compression")
@@ -514,12 +516,15 @@ def compress_context(
             except Exception:
                 os.environ["HERMES_SESSION_ID"] = agent.session_id
             agent._session_db_created = False
+            session_model_config = dict(agent._session_init_model_config or {})
+            session_model_config["_compression_from"] = old_session_id
             agent._session_db.create_session(
                 session_id=agent.session_id,
                 source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=agent.model,
-                model_config=agent._session_init_model_config,
+                model_config=session_model_config,
                 parent_session_id=old_session_id,
+                cwd=old_cwd,
             )
             agent._session_db_created = True
             # Auto-number the title for the continuation session

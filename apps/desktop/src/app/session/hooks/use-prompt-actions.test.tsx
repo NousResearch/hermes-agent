@@ -49,12 +49,14 @@ function Harness({
   busyRef,
   onReady,
   onSeedState,
+  recoverActiveSession,
   refreshSessions,
   requestGateway
 }: {
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
+  recoverActiveSession?: () => Promise<null | string>
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
@@ -69,6 +71,7 @@ function Harness({
     busyRef: localBusyRef,
     createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
     handleSkinCommand: () => '',
+    recoverActiveSession,
     refreshSessions,
     requestGateway,
     selectedStoredSessionIdRef,
@@ -82,6 +85,7 @@ function Harness({
         awaitingResponse: false,
         interrupted: true
       } as never) as unknown as Record<string, unknown>
+
       onSeedState?.(next)
 
       return next as never
@@ -107,6 +111,7 @@ describe('usePromptActions /title', () => {
 
   it('renames via the session.title RPC (with the runtime id), updates the sidebar store, and refreshes', async () => {
     const refreshSessions = vi.fn(async () => undefined)
+
     const requestGateway = vi.fn(async (method: string) =>
       (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
     )
@@ -130,6 +135,7 @@ describe('usePromptActions /title', () => {
 
   it('reports the queued state when the session row is not persisted yet', async () => {
     const refreshSessions = vi.fn(async () => undefined)
+
     const requestGateway = vi.fn(async (method: string) =>
       (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
     )
@@ -163,6 +169,7 @@ describe('usePromptActions /title', () => {
 
   it('surfaces a rename error without touching the sidebar store', async () => {
     const refreshSessions = vi.fn(async () => undefined)
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.title') {
         throw new Error('Title too long')
@@ -238,6 +245,70 @@ describe('usePromptActions submit / queue drain semantics', () => {
       session_id: RUNTIME_SESSION_ID,
       text: 'queued message'
     })
+  })
+
+  it('rebinding and retries once when the cached runtime session was reaped', async () => {
+    const recoveredRuntimeId = 'rt-recovered'
+    const recoverActiveSession = vi.fn(async () => recoveredRuntimeId)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit' && params?.session_id === RUNTIME_SESSION_ID) {
+        throw new Error('4001 session not found')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        recoverActiveSession={recoverActiveSession}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('hello after reconnect')
+
+    expect(accepted).toBe(true)
+    expect(recoverActiveSession).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'hello after reconnect'
+    })
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: recoveredRuntimeId,
+      text: 'hello after reconnect'
+    })
+  })
+
+  it('does not retry a stale-runtime submit when recovery cannot rebind the selected session', async () => {
+    const recoverActiveSession = vi.fn(async () => null)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit' && params?.session_id === RUNTIME_SESSION_ID) {
+        throw new Error('4001 session not found')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        recoverActiveSession={recoverActiveSession}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('hello after navigation')
+
+    expect(accepted).toBe(false)
+    expect(recoverActiveSession).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
   })
 
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {

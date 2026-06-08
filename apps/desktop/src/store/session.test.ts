@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { $attentionSessionIds, mergeSessionPage, sessionPinId, setSessionAttention } from './session'
+import {
+  $attentionSessionIds,
+  mergeSessionPage,
+  normalizePinnedSessionIds,
+  sessionAliasIds,
+  sessionPinId,
+  setSessionAttention
+} from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -60,6 +67,34 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+
+  it('falls back to the first lineage id when only alias metadata is present', () => {
+    expect(sessionPinId(session({ id: 'tip', _lineage_session_ids: ['root', 'mid', 'tip'] }))).toBe('root')
+  })
+})
+
+describe('sessionAliasIds', () => {
+  it('indexes live id, root id, and intermediate compression aliases once', () => {
+    expect(
+      sessionAliasIds(
+        session({ id: 'tip', _lineage_root_id: 'root', _lineage_session_ids: ['root', 'mid', 'tip'] })
+      )
+    ).toEqual(['tip', 'root', 'mid'])
+  })
+})
+
+describe('normalizePinnedSessionIds', () => {
+  it('rewrites stale compression-tip pins to the durable root id', () => {
+    const sessions = [session({ id: 'tip2', _lineage_root_id: 'root', _lineage_session_ids: ['root', 'tip1', 'tip2'] })]
+
+    expect(normalizePinnedSessionIds(['tip1'], sessions)).toEqual(['root'])
+  })
+
+  it('deduplicates pins that resolve to the same lineage', () => {
+    const sessions = [session({ id: 'tip2', _lineage_root_id: 'root', _lineage_session_ids: ['root', 'tip1', 'tip2'] })]
+
+    expect(normalizePinnedSessionIds(['tip1', 'root', 'missing'], sessions)).toEqual(['root', 'missing'])
   })
 })
 
@@ -127,5 +162,14 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+
+  it('does not keep a stale pinned tip when the incoming page has the newer lineage tip', () => {
+    const previous = [session({ id: 'tip1', _lineage_root_id: 'root', _lineage_session_ids: ['root', 'tip1'] })]
+    const incoming = [session({ id: 'tip2', _lineage_root_id: 'root', _lineage_session_ids: ['root', 'tip1', 'tip2'] })]
+
+    const merged = mergeSessionPage(previous, incoming, ['tip1'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip2'])
   })
 })

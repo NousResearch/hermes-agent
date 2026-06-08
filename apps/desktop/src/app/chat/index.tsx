@@ -38,6 +38,7 @@ import {
   $messages,
   $selectedStoredSessionId,
   $sessions,
+  sessionAliasIds,
   sessionPinId
 } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -102,7 +103,7 @@ function ChatHeader({
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
   const activeStoredSession =
-    sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
+    sessions.find(session => selectedSessionId != null && sessionAliasIds(session).includes(selectedSessionId)) || null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
 
@@ -110,7 +111,8 @@ function ChatHeader({
   // (tip) id — resolve through the loaded row so the menu reflects the pin
   // state after auto-compression rotates the id.
   const selectedIsPinned = activeStoredSession
-    ? pinnedSessionIds.includes(sessionPinId(activeStoredSession))
+    ? pinnedSessionIds.includes(sessionPinId(activeStoredSession)) ||
+      sessionAliasIds(activeStoredSession).some(id => pinnedSessionIds.includes(id))
     : selectedSessionId
       ? pinnedSessionIds.includes(selectedSessionId)
       : false

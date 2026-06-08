@@ -1566,41 +1566,81 @@ class SessionDB:
 
         return f"{base} #{max_num + 1}"
 
+    def _compression_child_id(self, session_id: str) -> Optional[str]:
+        """Return the next compression-continuation child for ``session_id``.
+
+        New compression splits persist an explicit ``_compression_from`` marker
+        in ``model_config``. Prefer that durable edge because timing-only child
+        detection can confuse unrelated children created shortly after a
+        compression boundary with the real continuation. For older databases,
+        fall back to the historic ``parent.end_reason='compression'`` plus
+        ``child.started_at >= parent.ended_at`` heuristic, but prefer children
+        that already have messages or a cwd over empty siblings.
+        """
+        if not session_id:
+            return None
+
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions "
+                "WHERE parent_session_id = ? "
+                "  AND json_extract(model_config, '$._compression_from') = ? "
+                "ORDER BY (message_count > 0) DESC, "
+                "         (cwd IS NOT NULL AND TRIM(cwd) != '') DESC, "
+                "         started_at DESC, id DESC LIMIT 1",
+                (session_id, session_id),
+            )
+            row = cursor.fetchone()
+            if row is not None:
+                return row["id"]
+
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions "
+                "WHERE parent_session_id = ? "
+                "  AND started_at >= ("
+                "      SELECT ended_at FROM sessions "
+                "      WHERE id = ? AND end_reason = 'compression'"
+                "  ) "
+                "ORDER BY (message_count > 0) DESC, "
+                "         (cwd IS NOT NULL AND TRIM(cwd) != '') DESC, "
+                "         started_at DESC, id DESC LIMIT 1",
+                (session_id, session_id),
+            )
+            row = cursor.fetchone()
+        return row["id"] if row is not None else None
+
+    def get_compression_lineage_ids(self, session_id: str) -> List[str]:
+        """Return ``session_id`` plus every forward compression continuation id.
+
+        The first element is always the input id. The list is bounded and
+        cycle-safe so corrupted parent chains cannot hang callers.
+        """
+        if not session_id:
+            return []
+
+        lineage = [session_id]
+        seen = {session_id}
+        current = session_id
+        # Bound the walk defensively — compression chains this deep are
+        # pathological and shouldn't happen in practice. 100 = plenty.
+        for _ in range(100):
+            child = self._compression_child_id(current)
+            if child is None or child in seen:
+                break
+            lineage.append(child)
+            seen.add(child)
+            current = child
+        return lineage
+
     def get_compression_tip(self, session_id: str) -> Optional[str]:
         """Walk the compression-continuation chain forward and return the tip.
-
-        A compression continuation is a child session where:
-        1. The parent's ``end_reason = 'compression'``
-        2. The child was created AFTER the parent was ended (started_at >= ended_at)
-
-        The second condition distinguishes compression continuations from
-        delegate subagents or branch children, which can also have a
-        ``parent_session_id`` but were created while the parent was still live.
 
         Returns the session_id of the latest continuation in the chain, or the
         input ``session_id`` if it isn't part of a compression chain (or if the
         input itself doesn't exist).
         """
-        current = session_id
-        # Bound the walk defensively — compression chains this deep are
-        # pathological and shouldn't happen in practice. 100 = plenty.
-        for _ in range(100):
-            with self._lock:
-                cursor = self._conn.execute(
-                    "SELECT id FROM sessions "
-                    "WHERE parent_session_id = ? "
-                    "  AND started_at >= ("
-                    "      SELECT ended_at FROM sessions "
-                    "      WHERE id = ? AND end_reason = 'compression'"
-                    "  ) "
-                    "ORDER BY started_at DESC LIMIT 1",
-                    (current, current),
-                )
-                row = cursor.fetchone()
-            if row is None:
-                return current
-            current = row["id"]
-        return current
+        lineage = self.get_compression_lineage_ids(session_id)
+        return lineage[-1] if lineage else session_id
 
     def list_sessions_rich(
         self,
@@ -1731,15 +1771,37 @@ class SessionDB:
                     f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
                 )
             query = f"""
-                WITH RECURSIVE chain(root_id, cur_id) AS (
+                WITH RECURSIVE candidate_children(parent_id, child_id, child_rank) AS (
+                    SELECT
+                        parent.id,
+                        child.id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                (json_extract(child.model_config, '$._compression_from') = parent.id) DESC,
+                                (child.message_count > 0) DESC,
+                                (child.cwd IS NOT NULL AND TRIM(child.cwd) != '') DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS child_rank
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND (
+                        json_extract(child.model_config, '$._compression_from') = parent.id
+                        OR (
+                          json_extract(child.model_config, '$._compression_from') IS NULL
+                          AND child.started_at >= parent.ended_at
+                        )
+                      )
+                ),
+                chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
                     UNION ALL
-                    SELECT c.root_id, child.id
+                    SELECT c.root_id, cc.child_id
                     FROM chain c
-                    JOIN sessions parent ON parent.id = c.cur_id
-                    JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE parent.end_reason = 'compression'
-                      AND child.started_at >= parent.ended_at
+                    JOIN candidate_children cc ON cc.parent_id = c.cur_id
+                    WHERE cc.child_rank = 1
                 ),
                 chain_max AS (
                     SELECT
@@ -1822,7 +1884,8 @@ class SessionDB:
                 if s.get("end_reason") != "compression":
                     projected.append(s)
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                lineage_ids = self.get_compression_lineage_ids(s["id"])
+                tip_id = lineage_ids[-1] if lineage_ids else s["id"]
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
@@ -1836,11 +1899,24 @@ class SessionDB:
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt", "cwd",
+                    "model", "system_prompt",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
+                # A newly minted compression child may not have persisted its
+                # cwd yet. Keep the root workspace in that case so the logical
+                # conversation does not jump into "No workspace" between
+                # compaction and the next Desktop metadata refresh.
+                if tip_row.get("cwd"):
+                    merged["cwd"] = tip_row["cwd"]
+                else:
+                    for lineage_id in reversed(lineage_ids[:-1]):
+                        lineage_row = self.get_session(lineage_id) or {}
+                        if lineage_row.get("cwd"):
+                            merged["cwd"] = lineage_row["cwd"]
+                            break
                 merged["_lineage_root_id"] = s["id"]
+                merged["_lineage_session_ids"] = lineage_ids
                 projected.append(merged)
             sessions = projected
 
@@ -3205,6 +3281,7 @@ class SessionDB:
 
         def score(row: Dict[str, Any]) -> int:
             ids = [str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")]
+            ids.extend(str(value or "") for value in row.get("_lineage_session_ids") or [])
             normalized = [value.lower() for value in ids if value]
             if any(value == needle for value in normalized):
                 return 0

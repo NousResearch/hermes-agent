@@ -121,6 +121,12 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
 
+// Gateway-created sessions (Discord, Telegram, cron, etc.) are invisible to
+// the Desktop sidebar until the next user-triggered refresh.  Poll the session
+// list on the same cadence as the cron-jobs section so new gateway sessions
+// surface automatically without manual profile-switch or app restart.
+const SESSION_POLL_INTERVAL_MS = 30_000
+
 // Cheap signature compare so the poll only swaps the atom (and re-renders the
 // sidebar) when the visible cron rows actually changed.
 function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
@@ -658,6 +664,28 @@ export function DesktopController() {
       document.removeEventListener('visibilitychange', tick)
     }
   }, [gatewayState, refreshCronJobs])
+
+  // Gateway-created sessions (Discord, Telegram, etc.) only appear in
+  // state.db after the gateway persists a turn.  Without polling, the
+  // Desktop sidebar stays stale until the user manually switches profiles
+  // or restarts the app.  Mirror the cron-jobs poll pattern: refresh on an
+  // interval while the window is visible, and immediately on tab re-focus
+  // so the user sees new sessions within one poll cycle of switching back.
+  useEffect(() => {
+    if (gatewayState !== 'open') {return}
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {void refreshSessions()}
+    }
+
+    const intervalId = window.setInterval(tick, SESSION_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshSessions])
 
   useRouteResume({
     activeSessionId,

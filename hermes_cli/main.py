@@ -89,7 +89,14 @@ def _set_process_title() -> None:
         pass
 
     # Strategy 2/3: platform-specific ctypes fallback
-    import ctypes
+    try:
+        import ctypes
+    except ImportError:
+        # _ctypes is a C extension that requires libffi-dev at build time.
+        # When Python is built without it (e.g. some pyenv installs on
+        # Ubuntu), ctypes cannot be imported — silently skip since this is
+        # purely cosmetic.  See #42074.
+        return
     import platform
 
     try:

@@ -6779,6 +6779,53 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
+# Cron Recipes — parameterized automation templates. The dashboard renders the
+# slot schema as a form; submitting instantiates a real cron job via the same
+# create_job path. See cron/recipe_catalog.py for the single source of truth.
+# ---------------------------------------------------------------------------
+class CronRecipeInstantiate(BaseModel):
+    recipe: str                      # recipe key, e.g. "morning-brief"
+    values: Dict[str, Any] = {}      # filled slot values from the form
+
+
+@app.get("/api/cron/recipes")
+async def list_cron_recipes():
+    """Return the recipe catalog as form schemas for the dashboard gallery."""
+    try:
+        from cron.recipe_catalog import CATALOG, recipe_catalog_entry
+
+        return {"recipes": [recipe_catalog_entry(r) for r in CATALOG]}
+    except Exception as e:
+        _log.exception("GET /api/cron/recipes failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cron/recipes/instantiate")
+async def instantiate_cron_recipe(body: CronRecipeInstantiate, profile: str = "default"):
+    """Fill a recipe's slots and create the cron job (form-submit path)."""
+    try:
+        from cron.recipe_catalog import fill_recipe, get_recipe, RecipeFillError
+
+        recipe = get_recipe(body.recipe)
+        if recipe is None:
+            raise HTTPException(status_code=404, detail=f"Unknown recipe: {body.recipe}")
+        try:
+            spec = fill_recipe(recipe, body.values)
+        except RecipeFillError as exc:
+            # Field-level validation error — 422 so the form can show it inline.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Recipe-created jobs deliver to the dashboard's configured target by
+        # default; the form's deliver slot overrides via spec["deliver"].
+        spec.pop("origin", None)
+        return _call_cron_for_profile(profile, "create_job", **spec)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.exception("POST /api/cron/recipes/instantiate failed")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # MCP server endpoints — list / add / remove / test.
 #
 # Wraps the same config data layer the CLI uses (hermes_cli.mcp_config), so

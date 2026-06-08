@@ -132,6 +132,14 @@
     "appId": "com.nousresearch.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",
+    "protocols": [
+      {
+        "name": "Hermes Protocol",
+        "schemes": [
+          "hermes"
+        ]
+      }
+    ],
     "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {

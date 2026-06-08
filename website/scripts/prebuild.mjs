@@ -31,6 +31,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
+const cronRecipesScript = join(scriptDir, "extract-cron-recipes.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
 const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
@@ -138,3 +139,7 @@ if (!existsSync(extractScript)) {
 
 // 2) llms.txt + llms-full.txt — agent-friendly docs entrypoints. Non-fatal.
 runPython(llmsScript, "generate-llms-txt.py");
+
+// 3) cron-recipes-index.json — Cron Recipes catalog page. Non-fatal; the page
+//    renders an empty state if the generator can't run.
+runPython(cronRecipesScript, "extract-cron-recipes.py");

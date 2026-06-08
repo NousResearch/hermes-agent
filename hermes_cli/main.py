@@ -5442,6 +5442,46 @@ def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
     return True
 
 
+def _desktop_linux_needs_no_sandbox() -> bool:
+    """Return True when Chromium/Electron should bypass the Linux sandbox.
+
+    Ubuntu 23.10+ can enable AppArmor's
+    ``apparmor_restrict_unprivileged_userns`` hardening, which breaks
+    Chromium/Electron's user-namespace sandbox for normal users unless the app
+    ships a working root-owned 4755 ``chrome-sandbox`` helper. In headless or
+    non-interactive CLI contexts we may be unable to ``sudo chown/chmod`` that
+    helper, so detect the host restriction and fall back to ``--no-sandbox``
+    rather than hard-failing the launcher.
+
+    We intentionally do NOT return True for root users here: running Electron as
+    root without a sandbox is a qualitatively riskier path than launching as an
+    unprivileged desktop user on an AppArmor-restricted host. The root case
+    should remain an explicit user choice.
+    """
+    if sys.platform != "linux":
+        return False
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return False
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
+    """Return True when ``chrome-sandbox`` exists as a regular file."""
+    if sys.platform != "linux":
+        return False
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(sandbox_lstat.st_mode)
+
+
+
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
     if sys.platform != "linux":
@@ -5678,11 +5718,16 @@ def cmd_gui(args: argparse.Namespace):
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)
 
+    launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
-        sys.exit(1)
+        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
+            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            launch_command.append("--no-sandbox")
+        else:
+            sys.exit(1)
 
-    print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
-    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
+    print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 
 

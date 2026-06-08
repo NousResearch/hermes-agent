@@ -2872,6 +2872,109 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert time.monotonic() - started < 0.14
 
 
+class TestCodexAuxiliaryToolMessageConversion:
+    """Regression for issue #5709.
+
+    The auxiliary Codex adapter used to maintain its own chat->Responses
+    conversion loop that forwarded every non-system message's ``role``
+    verbatim into Responses ``input[]``. When ``flush_memories()`` /
+    compression replayed real session history containing assistant
+    ``tool_calls`` and ``role="tool"`` results, the tool messages leaked
+    into the request and the Responses API rejected them with
+    ``HTTP 400: Invalid value: 'tool'. Supported values are: 'assistant',
+    'system', 'developer', and 'user'.``
+
+    The fix routes the auxiliary path through the SAME shared converter the
+    main agent transport uses (``_chat_messages_to_responses_input``), so
+    no Responses request ever includes a raw ``role="tool"`` input item.
+    """
+
+    def _capture_input(self, messages):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        item=SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        ),
+                    ),
+                    SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                        status="completed", id="r1", usage=None,
+                    )),
+                ])
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+        adapter.create(messages=messages, model="gpt-5.5")
+        return fake_client.responses.kwargs
+
+    def test_tool_history_never_leaks_role_tool(self):
+        messages = [
+            {"role": "system", "content": "You are a memory summarizer."},
+            {"role": "user", "content": "What files did I touch?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {"name": "search_files", "arguments": '{"pattern":"foo"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_abc123", "content": "Found 3 matches"},
+            {"role": "assistant", "content": "You touched bar.py."},
+        ]
+        kwargs = self._capture_input(messages)
+        input_items = kwargs["input"]
+
+        # No raw role="tool" item reaches the Responses API (the 400 trigger).
+        assert not any(it.get("role") == "tool" for it in input_items)
+
+        # Assistant tool call -> function_call item with a call_id.
+        function_calls = [it for it in input_items if it.get("type") == "function_call"]
+        assert function_calls, "assistant tool_call must become a function_call item"
+        assert function_calls[0]["call_id"] == "call_abc123"
+        assert function_calls[0]["name"] == "search_files"
+
+        # Tool result -> function_call_output with the matching call_id.
+        outputs = [it for it in input_items if it.get("type") == "function_call_output"]
+        assert outputs, "tool result must become a function_call_output item"
+        assert outputs[0]["call_id"] == "call_abc123"
+
+        # System message is hoisted to instructions, not left in input[].
+        assert kwargs["instructions"] == "You are a memory summarizer."
+        assert not any(it.get("role") == "system" for it in input_items)
+
+    def test_plain_text_history_still_works(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        kwargs = self._capture_input(messages)
+        input_items = kwargs["input"]
+        roles = [it.get("role") for it in input_items]
+        assert "user" in roles and "assistant" in roles
+        assert not any(it.get("role") == "tool" for it in input_items)
+        assert kwargs["instructions"] == "sys"
+
+
 class TestCodexAuxiliaryAdapterNullOutputRecovery:
     def test_recovers_output_item_when_terminal_event_has_null_output(self):
         """Regression for #11179 in auxiliary calls.

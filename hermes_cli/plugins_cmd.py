@@ -649,29 +649,62 @@ def _save_enabled_set(enabled: set) -> None:
     save_config(config)
 
 
+def _resolve_plugin_key(name: str) -> Optional[str]:
+    """Resolve a user-supplied plugin identifier to its canonical registry key.
+
+    Accepts either the bare manifest name (``nemo_relay``), the directory
+    name, or the full path-derived key (``observability/nemo_relay``) and
+    returns the canonical key the loader gates on (``manifest.key`` or, for a
+    flat plugin, the bare name). Returns ``None`` when no plugin matches.
+
+    This is the single normalization point so ``hermes plugins enable`` /
+    ``disable`` write the same key that ``PluginManager`` matches against —
+    nested category plugins (e.g. ``observability/nemo_relay``) included.
+    """
+    entries = _discover_all_plugins()
+    # 1. Exact match on canonical key or manifest name — always unambiguous.
+    for entry in entries:
+        # entry = (name, version, description, source, dir_path, key)
+        if name == entry[5] or name == entry[0]:
+            return entry[5]
+    # 2. Fall back to a bare leaf-name match (e.g. "nemo_relay" ->
+    #    "observability/nemo_relay"), but only when it resolves to exactly one
+    #    plugin so we never silently pick the wrong same-named nested plugin.
+    leaf_matches = [entry[5] for entry in entries if name == entry[5].split("/")[-1]]
+    if len(leaf_matches) == 1:
+        return leaf_matches[0]
+    return None
+
+
 def cmd_enable(name: str) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled)."""
     from rich.console import Console
 
     console = Console()
-    # Discover the plugin — check installed (user) AND bundled.
-    if not _plugin_exists(name):
+    # Discover the plugin — check installed (user) AND bundled, including
+    # nested category plugins — and normalize to its canonical registry key.
+    key = _resolve_plugin_key(name)
+    if key is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    if name in enabled and name not in disabled:
-        console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
+    if key in enabled and key not in disabled:
+        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
         return
 
-    enabled.add(name)
-    disabled.discard(name)
+    enabled.add(key)
+    disabled.discard(key)
+    # Drop any legacy bare-name entry so the two don't drift out of sync.
+    bare = key.split("/")[-1]
+    if bare != key:
+        disabled.discard(bare)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. "
+        f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. "
         "Takes effect on next session."
     )
 
@@ -681,51 +714,36 @@ def cmd_disable(name: str) -> None:
     from rich.console import Console
 
     console = Console()
-    if not _plugin_exists(name):
+    key = _resolve_plugin_key(name)
+    if key is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    if name not in enabled and name in disabled:
-        console.print(f"[dim]Plugin '{name}' is already disabled.[/dim]")
+    if key not in enabled and key in disabled:
+        console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
 
-    enabled.discard(name)
-    disabled.add(name)
+    enabled.discard(key)
+    # Drop any legacy bare-name entry from the allow-list too, so a stale
+    # bare name can't keep a nested plugin loading after an explicit disable.
+    bare = key.split("/")[-1]
+    if bare != key:
+        enabled.discard(bare)
+    disabled.add(key)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. "
+        f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. "
         "Takes effect on next session."
     )
 
 
 def _plugin_exists(name: str) -> bool:
-    """Return True if a plugin with *name* is installed (user) or bundled."""
-    # Installed: directory name or manifest name match in user plugins dir
-    user_dir = _plugins_dir()
-    if user_dir.is_dir():
-        if (user_dir / name).is_dir():
-            return True
-        for child in user_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest = _read_manifest(child)
-            if manifest.get("name") == name:
-                return True
-    # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
-    from hermes_cli.plugins import get_bundled_plugins_dir
-    repo_plugins = get_bundled_plugins_dir()
-    if repo_plugins.is_dir():
-        candidate = repo_plugins / name
-        if candidate.is_dir() and (
-            (candidate / "plugin.yaml").exists()
-            or (candidate / "plugin.yml").exists()
-        ):
-            return True
-    return False
+    """Return True if a plugin with *name* (bare name or key) exists."""
+    return _resolve_plugin_key(name) is not None
 
 
 def _read_manifest_info(d: Path, prefix: str):

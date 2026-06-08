@@ -134,6 +134,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         triggerHaptic('open')
         onOpenSettings()
       }
+    },
+    {
+      icon: <Codicon name="screen-full" />,
+      id: 'fullscreen',
+      label: 'Toggle Full Screen',
+      onSelect: () => window.hermesDesktop?.toggleFullscreen()
     }
   ]
 

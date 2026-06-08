@@ -5073,6 +5073,19 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId) => {
 
   return { ok: true }
 })
+ipcMain.handle('hermes:fullscreen:toggle', async () => {
+  // Dispatch F11 to the webContents — triggers Electron's built-in 'togglefullscreen'
+  // menu role handler, which has proper platform-specific fallbacks (X11/Wayland).
+  const win = BrowserWindow.getFocusedWindow()
+  if (win) {
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'F11' })
+    return { fullscreen: win.isFullScreen() }
+  }
+  return { fullscreen: false }
+})
+ipcMain.handle('hermes:fullscreen:get', async () => ({
+  fullscreen: BrowserWindow.getFocusedWindow()?.isFullScreen() ?? false
+}))
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the

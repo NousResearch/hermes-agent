@@ -120,6 +120,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
+  toggleFullscreen: () => ipcRenderer.invoke('hermes:fullscreen:toggle'),
+  isFullscreen: () => ipcRenderer.invoke('hermes:fullscreen:get'),
   uninstall: {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
     run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })

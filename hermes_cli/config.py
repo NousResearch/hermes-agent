@@ -1539,6 +1539,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
         "title_generation": {
+            "enabled": True,       # set false to disable automatic session titles
             "provider": "auto",
             "model": "",
             "base_url": "",

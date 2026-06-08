@@ -335,3 +335,51 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+
+class TestAutoTitleEnabledConfig:
+    """auxiliary.title_generation.enabled must gate the automatic path (issue #41744)."""
+
+    _HISTORY = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ]
+
+    def _run(self, config):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        with patch("agent.title_generator.load_config", return_value=config), \
+                patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", self._HISTORY)
+            import time
+            time.sleep(0.2)
+            return mock_auto
+
+    def test_disabled_skips_generation(self):
+        mock_auto = self._run({"auxiliary": {"title_generation": {"enabled": False}}})
+        mock_auto.assert_not_called()
+
+    def test_enabled_fires_generation(self):
+        mock_auto = self._run({"auxiliary": {"title_generation": {"enabled": True}}})
+        mock_auto.assert_called_once()
+
+    def test_title_alias_disables_generation(self):
+        """The ``auxiliary.title.enabled`` alias is honored too."""
+        mock_auto = self._run({"auxiliary": {"title": {"enabled": False}}})
+        mock_auto.assert_not_called()
+
+    def test_default_enabled_when_key_absent(self):
+        """Omitting the flag preserves the historical always-on behavior."""
+        mock_auto = self._run({"auxiliary": {"title_generation": {}}})
+        mock_auto.assert_called_once()
+
+    def test_enabled_when_config_unreadable(self):
+        """A config-load failure must not silently suppress titles."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        with patch("agent.title_generator.load_config", side_effect=RuntimeError("boom")), \
+                patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", self._HISTORY)
+            import time
+            time.sleep(0.2)
+            mock_auto.assert_called_once()

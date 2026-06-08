@@ -9,6 +9,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from hermes_cli.config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,26 @@ def _title_language() -> str:
         ).strip()
     except Exception:
         return ""
+
+
+def _auto_title_enabled() -> bool:
+    """Whether automatic session-title generation is enabled in config.
+
+    Reads ``auxiliary.title_generation.enabled`` (canonical) and also honors
+    the ``auxiliary.title.enabled`` alias for convenience. Defaults to ``True``
+    when the key is unset or the config can't be read, preserving the historical
+    always-on behavior. Only the *automatic* path consults this flag — manual
+    ``/title`` titling stays available even when auto-titles are disabled.
+    """
+    try:
+        auxiliary = (load_config() or {}).get("auxiliary", {}) or {}
+    except Exception:
+        return True
+    for key in ("title_generation", "title"):
+        section = auxiliary.get(key)
+        if isinstance(section, dict) and "enabled" in section:
+            return bool(section["enabled"])
+    return True
 
 
 def generate_title(
@@ -188,6 +209,13 @@ def maybe_auto_title(
     # (or 2 counting system). Be generous: generate on first 2 exchanges.
     user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
     if user_msg_count > 2:
+        return
+
+    # Respect the opt-out: auxiliary.title_generation.enabled=false disables
+    # automatic titling entirely (issue #41744). Checked after the cheap
+    # first-exchange guard above so the config read only happens when we are
+    # actually about to title, not on every turn of a long conversation.
+    if not _auto_title_enabled():
         return
 
     thread = threading.Thread(

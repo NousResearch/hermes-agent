@@ -518,6 +518,13 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Automatic session titles — names a session from its first exchange
+#   title_generation:
+#     enabled: true         # set false to turn off automatic titling entirely
+#                           # (manual /title still works)
+#     provider: "auto"
+#     model: ""
 
 # =============================================================================
 # Persistent Memory

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
 
@@ -33,7 +33,7 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus } = await import('./updates')
+const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply } = await import('./updates')
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -152,6 +152,35 @@ describe('checkBackendUpdates', () => {
     setRemote(false)
     await checkBackendUpdates()
     expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('applyBackendUpdate recovery', () => {
+  beforeEach(() => {
+    storage.clear()
+    checkHermesUpdateSpy.mockReset()
+    updateHermesSpy.mockReset()
+    getActionStatusSpy.mockReset()
+    $backendUpdateApply.set({ applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] })
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('waits for the backend to return after the restart drops the connection, then clears the overlay', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+    checkHermesUpdateSpy.mockResolvedValue({ install_method: 'git', current_version: '0.16.0', behind: 0, update_available: false, can_apply: true, update_command: 'hermes update', message: null })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+    expect($backendUpdateApply.get().applying).toBe(false)
   })
 })
 

@@ -731,3 +731,105 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# Per-entry reasoning_effort override (#21256)
+# =============================================================================
+
+class TestFallbackReasoningEffort:
+    """A fallback_model entry may carry reasoning_effort to run that tier at a
+    different thinking depth than the global agent.reasoning_effort, restored
+    when the primary comes back."""
+
+    def test_override_applied_on_fallback(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "xhigh",
+            },
+        )
+        # Primary starts with no/medium reasoning override.
+        agent.reasoning_config = None
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            assert agent._try_activate_fallback() is True
+
+        # The fallback entry's xhigh effort is now active.
+        assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+
+    def test_override_restored_on_primary(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "xhigh",
+            },
+        )
+        # Primary runs at an explicit medium effort.  Set it on both the live
+        # agent and the captured _primary_runtime snapshot (init captured the
+        # value present at construction time).
+        primary_cfg = {"enabled": True, "effort": "medium"}
+        agent.reasoning_config = primary_cfg
+        agent._primary_runtime["reasoning_config"] = primary_cfg
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+
+        # Restoring the primary brings back medium.
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert agent.reasoning_config == primary_cfg
+
+    def test_absent_key_leaves_reasoning_unchanged(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        primary_cfg = {"enabled": True, "effort": "high"}
+        agent.reasoning_config = primary_cfg
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        # No reasoning_effort on the entry → keep whatever was active.
+        assert agent.reasoning_config == primary_cfg
+
+    def test_invalid_level_ignored(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openrouter",
+                "model": "model-x",
+                "reasoning_effort": "extreme",  # not a valid level
+            },
+        )
+        primary_cfg = {"enabled": True, "effort": "medium"}
+        agent.reasoning_config = primary_cfg
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        # Unknown level → no override, primary effort preserved.
+        assert agent.reasoning_config == primary_cfg
+
+    def test_none_disables_reasoning_on_fallback(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openrouter",
+                "model": "fast-model",
+                "reasoning_effort": "none",
+            },
+        )
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        # "none" → reasoning explicitly disabled for this tier.
+        assert agent.reasoning_config == {"enabled": False}

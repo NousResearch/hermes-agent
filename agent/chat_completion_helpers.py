@@ -1511,12 +1511,49 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
+        # Per-entry reasoning effort override (#21256).  A fallback_model
+        # entry may carry ``reasoning_effort`` (none through ultra) to run that
+        # tier at a different thinking depth than the
+        # global ``agent.reasoning_effort``. The primary's reasoning_config is
+        # snapshotted in ``_primary_runtime`` and restored on primary recovery,
+        # so this only affects the fallback turn(s). Absent/blank keeps the
+        # current reasoning effort unchanged.
+        _fb_reasoning_effort = str(fb.get("reasoning_effort") or "").strip()
+        if _fb_reasoning_effort:
+            try:
+                from hermes_constants import parse_reasoning_effort
+
+                _fb_reasoning_config = parse_reasoning_effort(_fb_reasoning_effort)
+                if _fb_reasoning_config is not None:
+                    agent.reasoning_config = _fb_reasoning_config
+                    logger.info(
+                        "Fallback %s/%s: reasoning effort override → %s",
+                        fb_provider,
+                        fb_model,
+                        _fb_reasoning_effort,
+                    )
+                else:
+                    logger.warning(
+                        "Fallback %s/%s: unknown reasoning_effort '%s' — "
+                        "keeping current effort",
+                        fb_provider,
+                        fb_model,
+                        _fb_reasoning_effort,
+                    )
+            except Exception as _re_exc:  # noqa: BLE001
+                logger.warning(
+                    "Fallback %s/%s: failed to apply reasoning_effort '%s': %s",
+                    fb_provider,
+                    fb_model,
+                    _fb_reasoning_effort,
+                    _re_exc,
+                )
+
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream
         # recovery (rate_limit / billing / auth) mutate the wrong credential
         # set and can overwrite the fallback's base_url back to the primary
         # endpoint.  See #33163.
-        #
         # When the fallback shares the pool's provider (e.g. both openrouter
         # entries with different routing) the pool is preserved.  When the
         # providers differ, load the fallback provider's own pool if one exists

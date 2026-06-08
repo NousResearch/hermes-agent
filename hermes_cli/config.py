@@ -5327,6 +5327,19 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                             f"fallback_model[{i}] is missing 'model' field",
                             "Add: model: <model-name>",
                         ))
+                    # Optional per-entry reasoning_effort override (#21256).
+                    _re = entry.get("reasoning_effort")
+                    if _re is not None and str(_re).strip():
+                        from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+
+                        if parse_reasoning_effort(_re) is None:
+                            _valid = ", ".join(("none", *VALID_REASONING_EFFORTS))
+                            issues.append(ConfigIssue(
+                                "warning",
+                                f"fallback_model[{i}] has invalid reasoning_effort "
+                                f"'{_re}' — ignored (global effort used)",
+                                f"Use one of: {_valid}",
+                            ))
         elif not isinstance(fb, dict):
             issues.append(ConfigIssue(
                 "error",

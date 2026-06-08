@@ -1007,6 +1007,10 @@ def try_recover_primary_transport(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        # Restore the primary's reasoning effort if a fallback entry
+        # overrode it (#21256).  Guarded for snapshots predating the key.
+        if "reasoning_config" in rt:
+            agent.reasoning_config = rt["reasoning_config"]
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1172,6 +1176,12 @@ def restore_primary_runtime(agent) -> bool:
         agent.api_key = rt["api_key"]
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
+        # Restore the primary's reasoning effort (a fallback entry may have
+        # overridden it via reasoning_effort).  Older snapshots predate this
+        # key — only restore when it was captured, to avoid clobbering the
+        # live value with None.  See #21256.
+        if "reasoning_config" in rt:
+            agent.reasoning_config = rt["reasoning_config"]
         # Default to native layout when the restored snapshot predates the
         # native-vs-proxy split (older sessions saved before this PR).
         agent._use_native_cache_layout = rt.get(
@@ -2094,6 +2104,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_context_length": _cc.context_length if _cc else 0,
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+        # Snapshot the primary's reasoning effort so a fallback entry that
+        # overrides it (fallback_model[N].reasoning_effort) can be reverted
+        # when the primary is restored.  See per-entry reasoning support in
+        # try_activate_fallback (#21256).
+        "reasoning_config": getattr(agent, "reasoning_config", None),
     }
     if api_mode == "anthropic_messages":
         agent._primary_runtime.update({

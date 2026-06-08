@@ -151,6 +151,8 @@ class TestSetupLogging:
         assert logging.getLogger("openai").level >= logging.WARNING
         assert logging.getLogger("httpx").level >= logging.WARNING
         assert logging.getLogger("httpcore").level >= logging.WARNING
+        # Docker environment logger should be suppressed to prevent TUI transcript pollution
+        assert logging.getLogger("tools.environments.docker").level >= logging.WARNING
 
     def test_writes_to_agent_log(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)

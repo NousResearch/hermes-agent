@@ -102,6 +102,8 @@ _NOISY_LOGGERS = (
     "websockets",
     "charset_normalizer",
     "markdown_it",
+    # Internal loggers that leak verbose sandbox startup chatter into the TUI transcript
+    "tools.environments.docker",
 )
 
 

@@ -7669,6 +7669,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if self.agent:
             self.agent.reasoning_callback = self._current_reasoning_callback()
+            # Keep the live agent's tool_progress_mode in sync so the
+            # tool_executor rendering path reflects the new mode this turn,
+            # without waiting for an agent rebuild.
+            self.agent.tool_progress_mode = self.tool_progress_mode
 
         # Use raw ANSI codes via _cprint so the output is routed through
         # prompt_toolkit's renderer.  self.console.print() with Rich markup

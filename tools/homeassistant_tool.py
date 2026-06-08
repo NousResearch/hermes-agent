@@ -18,6 +18,8 @@ import re
 import threading
 from typing import Any, Dict, Optional
 
+from agent.async_utils import safe_schedule_threadsafe
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -76,7 +78,16 @@ def _get_async_context_loop() -> asyncio.AbstractEventLoop:
 def _submit_to_async_context_loop(coro):
     """Run a coroutine on the persistent async-context bridge loop."""
     bridge_loop = _get_async_context_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, bridge_loop)
+    future = safe_schedule_threadsafe(
+        coro,
+        bridge_loop,
+        logger=logger,
+        log_message="Failed to schedule Home Assistant coroutine on async bridge loop",
+    )
+    if future is None:
+        raise RuntimeError(
+            "Failed to schedule Home Assistant coroutine on async bridge loop"
+        )
     try:
         return future.result(timeout=30)
     except Exception:

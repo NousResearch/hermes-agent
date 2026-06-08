@@ -576,6 +576,19 @@ class TestRunAsyncLoopLifecycle:
             "_run_async returned"
         )
 
+    def test_running_loop_scheduler_failure_is_reported(self):
+        from tools.homeassistant_tool import _submit_to_async_context_loop
+
+        with patch(
+            "asyncio.run_coroutine_threadsafe",
+            side_effect=RuntimeError("scheduler down"),
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="Failed to schedule Home Assistant coroutine",
+            ):
+                _submit_to_async_context_loop(_get_current_loop())
+
 
 class TestRunAsyncWorkerThread:
     """Verify worker threads also keep a persistent loop."""

@@ -229,7 +229,9 @@ export UV_NO_SYNC=1
 
 WHEEL_DIR="$SCRIPT_DIR/python-wheels"
 SITE_TAR="$SCRIPT_DIR/python-site-packages.tar.gz"
-SITE_PACKAGES="$VENV_DIR/lib/python${PYTHON_VERSION}/site-packages"
+# 自动检测 venv 中的 Python 版本
+VENV_PY_VER=$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "$PYTHON_VERSION")
+SITE_PACKAGES="$VENV_DIR/lib/python${VENV_PY_VER}/site-packages"
 
 # 方式1: python-site-packages.tar.gz（最可靠）
 if [[ -f "$SITE_TAR" ]]; then

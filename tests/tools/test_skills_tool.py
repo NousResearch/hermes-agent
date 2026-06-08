@@ -1,6 +1,7 @@
 """Tests for tools/skills_tool.py — skill discovery and viewing."""
 
 import json
+from contextlib import contextmanager
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -671,6 +672,17 @@ class TestSkillViewSecureSetupOnLoad:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _simulate_skill_platform(platform_name: str):
+    """Patch skill platform detection without leaking the real Termux host."""
+    with (
+        patch("agent.skill_utils.sys") as mock_sys,
+        patch("agent.skill_utils.is_termux", return_value=False),
+    ):
+        mock_sys.platform = platform_name
+        yield mock_sys
+
+
 class TestSkillMatchesPlatform:
     """Tests for the platforms frontmatter field filtering."""
 
@@ -685,62 +697,52 @@ class TestSkillMatchesPlatform:
         assert skill_matches_platform({"platforms": None}) is True
 
     def test_macos_on_darwin(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
+        with _simulate_skill_platform("darwin"):
             assert skill_matches_platform({"platforms": ["macos"]}) is True
 
     def test_macos_on_linux(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "linux"
+        with _simulate_skill_platform("linux"):
             assert skill_matches_platform({"platforms": ["macos"]}) is False
 
     def test_linux_on_linux(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "linux"
+        with _simulate_skill_platform("linux"):
             assert skill_matches_platform({"platforms": ["linux"]}) is True
 
     def test_linux_on_darwin(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
+        with _simulate_skill_platform("darwin"):
             assert skill_matches_platform({"platforms": ["linux"]}) is False
 
     def test_windows_on_win32(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "win32"
+        with _simulate_skill_platform("win32"):
             assert skill_matches_platform({"platforms": ["windows"]}) is True
 
     def test_windows_on_linux(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "linux"
+        with _simulate_skill_platform("linux"):
             assert skill_matches_platform({"platforms": ["windows"]}) is False
 
     def test_multi_platform_match(self):
         """Skills listing multiple platforms should match any of them."""
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
+        with _simulate_skill_platform("darwin"):
             assert skill_matches_platform({"platforms": ["macos", "linux"]}) is True
-            mock_sys.platform = "linux"
+        with _simulate_skill_platform("linux"):
             assert skill_matches_platform({"platforms": ["macos", "linux"]}) is True
-            mock_sys.platform = "win32"
+        with _simulate_skill_platform("win32"):
             assert skill_matches_platform({"platforms": ["macos", "linux"]}) is False
 
     def test_string_instead_of_list(self):
         """A single string value should be treated as a one-element list."""
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
+        with _simulate_skill_platform("darwin"):
             assert skill_matches_platform({"platforms": "macos"}) is True
-            mock_sys.platform = "linux"
+        with _simulate_skill_platform("linux"):
             assert skill_matches_platform({"platforms": "macos"}) is False
 
     def test_case_insensitive(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
+        with _simulate_skill_platform("darwin"):
             assert skill_matches_platform({"platforms": ["MacOS"]}) is True
             assert skill_matches_platform({"platforms": ["MACOS"]}) is True
 
     def test_unknown_platform_no_match(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "linux"
+        with _simulate_skill_platform("linux"):
             assert skill_matches_platform({"platforms": ["freebsd"]}) is False
 
 
@@ -756,6 +758,7 @@ class TestFindAllSkillsPlatformFiltering:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
+            patch("agent.skill_utils.is_termux", return_value=False),
         ):
             mock_sys.platform = "linux"
             _make_skill(tmp_path, "universal-skill")
@@ -769,6 +772,7 @@ class TestFindAllSkillsPlatformFiltering:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
+            patch("agent.skill_utils.is_termux", return_value=False),
         ):
             mock_sys.platform = "darwin"
             _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
@@ -781,6 +785,7 @@ class TestFindAllSkillsPlatformFiltering:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
+            patch("agent.skill_utils.is_termux", return_value=False),
         ):
             mock_sys.platform = "win32"
             _make_skill(tmp_path, "generic-skill")
@@ -792,6 +797,7 @@ class TestFindAllSkillsPlatformFiltering:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
+            patch("agent.skill_utils.is_termux", return_value=False),
         ):
             _make_skill(
                 tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n"

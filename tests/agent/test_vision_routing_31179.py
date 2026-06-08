@@ -153,11 +153,19 @@ class TestTextOnlyMainSkippedForVision:
 model:
   provider: deepseek
   default: deepseek-v4-pro
+  supports_vision: false
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
 
+        import agent.auxiliary_client as aux_client
         from agent.auxiliary_client import resolve_vision_provider_client
+
+        monkeypatch.setattr(
+            aux_client,
+            "_resolve_strict_vision_backend",
+            lambda *args, **kwargs: (None, None),
+        )
         provider, client, _model = resolve_vision_provider_client(provider="auto")
         assert client is None, (
             f"Vision auto-detect must skip text-only main {provider!r} when "

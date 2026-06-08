@@ -12,9 +12,56 @@ and a future refactor of these sites can't silently regress the contract.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 from tools import code_execution_tool, file_tools, terminal_tool
+
+
+@contextmanager
+def _isolated_terminal_file_state():
+    """Clear live terminal/file-tool cwd caches that other tests may populate."""
+    with terminal_tool._env_lock:
+        old_envs = dict(terminal_tool._active_environments)
+        old_last_activity = dict(terminal_tool._last_activity)
+        terminal_tool._active_environments.clear()
+        terminal_tool._last_activity.clear()
+    with file_tools._file_ops_lock:
+        old_file_ops = dict(file_tools._file_ops_cache)
+        old_last_known_cwd = dict(file_tools._last_known_cwd)
+        file_tools._file_ops_cache.clear()
+        file_tools._last_known_cwd.clear()
+    try:
+        yield
+    finally:
+        with file_tools._file_ops_lock:
+            file_tools._file_ops_cache.clear()
+            file_tools._file_ops_cache.update(old_file_ops)
+            file_tools._last_known_cwd.clear()
+            file_tools._last_known_cwd.update(old_last_known_cwd)
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.clear()
+            terminal_tool._active_environments.update(old_envs)
+            terminal_tool._last_activity.clear()
+            terminal_tool._last_activity.update(old_last_activity)
+
+
+@pytest.fixture
+def isolated_terminal_file_state():
+    with _isolated_terminal_file_state():
+        yield
+
+
+def test_isolation_clears_and_restores_last_known_cwd(monkeypatch, tmp_path):
+    stale = str(tmp_path / "stale-workspace")
+    monkeypatch.setitem(file_tools._last_known_cwd, "default", stale)
+
+    with _isolated_terminal_file_state():
+        assert file_tools._last_known_cwd == {}
+
+    assert file_tools._last_known_cwd["default"] == stale
 
 
 def test_terminal_env_config_uses_terminal_cwd(monkeypatch, tmp_path):
@@ -30,7 +77,7 @@ def test_terminal_env_config_uses_terminal_cwd(monkeypatch, tmp_path):
     assert config["cwd"] == str(workspace)
 
 
-def test_file_tool_relative_paths_use_terminal_cwd(monkeypatch, tmp_path):
+def test_file_tool_relative_paths_use_terminal_cwd(monkeypatch, tmp_path, isolated_terminal_file_state):
     """Relative file/search/patch paths resolve under TERMINAL_CWD."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -16,11 +16,23 @@ chosen ``user_peer_id`` can be asserted without touching the network.
 
 import hashlib
 import json
+import os
 from unittest.mock import MagicMock
 
 
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import HonchoSessionManager
+
+
+_PORTABLE_MTIME_NS = 1_700_000_000_000_000_000
+_PORTABLE_MTIME_STEP_NS = 2_000_000_000
+
+
+def _write_json_with_mtime(path, data, mtime_ns):
+    path.write_text(json.dumps(data))
+    os.utime(path, ns=(mtime_ns, mtime_ns))
+    return path.stat().st_mtime_ns
+
 
 
 # ---------------------------------------------------------------------------
@@ -744,10 +756,19 @@ class TestPinTransition:
         cfg_path = tmp_path / "honcho.json"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": True}))
+        first_mtime = _write_json_with_mtime(
+            cfg_path,
+            {"apiKey": "k", "peerName": "Igor", "pinPeerName": True},
+            _PORTABLE_MTIME_NS,
+        )
         sig_pinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
-        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": False}))
+        second_mtime = _write_json_with_mtime(
+            cfg_path,
+            {"apiKey": "k", "peerName": "Igor", "pinPeerName": False},
+            _PORTABLE_MTIME_NS + _PORTABLE_MTIME_STEP_NS,
+        )
+        assert second_mtime != first_mtime
         sig_unpinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]
@@ -758,14 +779,19 @@ class TestPinTransition:
         cfg_path = tmp_path / "honcho.json"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor"}))
+        first_mtime = _write_json_with_mtime(
+            cfg_path,
+            {"apiKey": "k", "peerName": "Igor"},
+            _PORTABLE_MTIME_NS,
+        )
         sig_no_aliases = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
-        cfg_path.write_text(json.dumps({
+        second_mtime = _write_json_with_mtime(cfg_path, {
             "apiKey": "k",
             "peerName": "Igor",
-            "userPeerAliases": {"7654321": "Igor"},
-        }))
+            "userPeerAliases": {"86701400": "Igor"},
+        }, _PORTABLE_MTIME_NS + _PORTABLE_MTIME_STEP_NS)
+        assert second_mtime != first_mtime
         sig_with_aliases = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_no_aliases["honcho.user_peer_aliases"] != sig_with_aliases["honcho.user_peer_aliases"]
@@ -776,14 +802,19 @@ class TestPinTransition:
         cfg_path = tmp_path / "honcho.json"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor"}))
+        first_mtime = _write_json_with_mtime(
+            cfg_path,
+            {"apiKey": "k", "peerName": "Igor"},
+            _PORTABLE_MTIME_NS,
+        )
         sig_no_prefix = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
-        cfg_path.write_text(json.dumps({
+        second_mtime = _write_json_with_mtime(cfg_path, {
             "apiKey": "k",
             "peerName": "Igor",
             "runtimePeerPrefix": "telegram_",
-        }))
+        }, _PORTABLE_MTIME_NS + _PORTABLE_MTIME_STEP_NS)
+        assert second_mtime != first_mtime
         sig_with_prefix = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_no_prefix["honcho.runtime_peer_prefix"] != sig_with_prefix["honcho.runtime_peer_prefix"]
@@ -800,18 +831,19 @@ class TestPinTransition:
         cfg_path = tmp_path / "honcho.json"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        cfg_path.write_text(json.dumps({
+        first_mtime = _write_json_with_mtime(cfg_path, {
             "apiKey": "k",
             "peerName": "Igor",
             "aiPeer": "hermes",
-        }))
+        }, _PORTABLE_MTIME_NS)
         sig_before = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
-        cfg_path.write_text(json.dumps({
+        second_mtime = _write_json_with_mtime(cfg_path, {
             "apiKey": "k",
             "peerName": "Igor",
             "aiPeer": "hermetika",
-        }))
+        }, _PORTABLE_MTIME_NS + _PORTABLE_MTIME_STEP_NS)
+        assert second_mtime != first_mtime
         sig_after = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_before["honcho.ai_peer"] != sig_after["honcho.ai_peer"]

@@ -6,9 +6,16 @@
 
 - 当前 live repo：`/workspace/hermes-agent-runtime-codex`
 - 当前 live branch：`runtime/live-f7877a505-20260608T063124Z`
-- 当前 live HEAD：`a0a8171b6e54854a6c131ac03a3af2822cd6ccf5`
-- 当前工作区：clean（2026-06-08 本轮只读核验后）
-- 本文档状态：第 0 批恢复清单；不是实现，不是合并，不是部署。
+- 当前 live HEAD：`72f5463ebc84bb29201e40023d8a87542688e232`（`72f5463eb feat(image-gen): restore custom Responses providers`）
+- 当前相对 upstream：`0 behind / 10 ahead`（upstream：`fork/runtime/live-f7877a505-20260608T063124Z`，upstream HEAD：`a0a8171b6`）
+- 当前工作区：tracked clean；仅保留 unrelated untracked `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`。
+- 本文档状态：第 1 批到第 6C 批均已恢复到 live 并创建本地 checkpoint；未 push，未重启 gateway/WebUI，未做运行态验证。
+
+## 恢复总览
+
+- 已完成本地 checkpoint：10 个。
+- 已恢复范围：session_search scope、compression/gateway recovery、process/Codex output governance、terminal raw Codex policy、guarded Codex workflow tools、strong raw Codex block、browser runtime repair script、custom Codex proxy cache compat、custom Responses image providers。
+- 仍需单独确认：push、gateway/WebUI restart、运行态验证（cache hit / image generation / browser repair check）。
 
 ## 恢复原则
 

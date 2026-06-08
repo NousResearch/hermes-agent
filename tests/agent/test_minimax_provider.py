@@ -128,6 +128,22 @@ class TestMinimaxThinkingSupport:
         assert "thinking" in kwargs
         assert kwargs["thinking"]["type"] == "enabled"
 
+    def test_minimax_m3_gets_adaptive_thinking(self):
+        # Unlike M2.x, MiniMax-M3 is Anthropic-compatible and supports the
+        # adaptive thinking format (type=adaptive + output_config.effort),
+        # so it should self-scale reasoning rather than use a fixed budget.
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "medium"}
+        assert "budget_tokens" not in kwargs["thinking"]
+
     def test_thinking_still_works_for_claude(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(

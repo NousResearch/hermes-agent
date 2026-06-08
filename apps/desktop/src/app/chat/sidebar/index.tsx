@@ -632,12 +632,12 @@ export function ChatSidebar({
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
                       {contentVisible && (
                         <>
-                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">
+                          <span className="min-w-0 flex-1 truncate">
                             {s.nav[item.id] ?? item.label}
                           </span>
                           {isNewSession && (
                             <KbdGroup
-                              className={cn('ml-auto max-[46.25rem]:hidden', newSessionKbdFlash && 'opacity-100!')}
+                              className={cn('ml-auto', newSessionKbdFlash && 'opacity-100!')}
                               keys={[...NEW_SESSION_KBD]}
                             />
                           )}

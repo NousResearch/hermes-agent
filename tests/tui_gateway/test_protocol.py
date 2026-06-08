@@ -1192,16 +1192,14 @@ def test_dispatch_unknown_long_method_still_goes_inline(server):
 class TestSlashWorkerProfilePropagation:
     """Verify _SlashWorker passes profile info to its subprocess."""
 
-    def test_argv_includes_profile_when_provided(self):
-        """--profile <name> appears in argv when profile is set."""
-        from tui_gateway.server import _SlashWorker
-
-        captured = {}
+    @staticmethod
+    def _make_fake_proc():
+        """Create a FakeProc that captures ALL Popen calls."""
+        all_calls = []
 
         class FakeProc:
             def __init__(self, cmd, **kwargs):
-                captured["cmd"] = list(cmd)
-                captured["env"] = kwargs.get("env", {})
+                all_calls.append({"cmd": list(cmd), "env": kwargs.get("env", {})})
                 self.stdin = None
                 self.stdout = []
                 self.stderr = []
@@ -1220,10 +1218,28 @@ class TestSlashWorkerProfilePropagation:
             def kill(self):
                 pass
 
+        return FakeProc, all_calls
+
+    @staticmethod
+    def _find_worker_call(all_calls):
+        """Find the _SlashWorker Popen call by --session-key in argv."""
+        for call in all_calls:
+            if "--session-key" in call["cmd"]:
+                return call
+        return None
+
+    def test_argv_includes_profile_when_provided(self):
+        """--profile <name> appears in argv when profile is set."""
+        from tui_gateway.server import _SlashWorker
+
+        FakeProc, all_calls = self._make_fake_proc()
+
         with patch("subprocess.Popen", FakeProc):
             _SlashWorker("test-key", "test-model", profile="myprofile")
 
-        cmd = captured["cmd"]
+        worker_call = self._find_worker_call(all_calls)
+        assert worker_call is not None, f"No --session-key call found in: {[c['cmd'] for c in all_calls]}"
+        cmd = worker_call["cmd"]
         assert "--profile" in cmd
         idx = cmd.index("--profile")
         assert cmd[idx + 1] == "myprofile"
@@ -1232,28 +1248,7 @@ class TestSlashWorkerProfilePropagation:
         """HERMES_HOME is set to profile_home in the worker's env."""
         from tui_gateway.server import _SlashWorker
 
-        captured = {}
-
-        class FakeProc:
-            def __init__(self, cmd, **kwargs):
-                captured["env"] = kwargs.get("env", {})
-                self.stdin = None
-                self.stdout = []
-                self.stderr = []
-                self.pid = 1
-                self.returncode = None
-
-            def poll(self):
-                return None
-
-            def terminate(self):
-                pass
-
-            def wait(self, timeout=None):
-                return 0
-
-            def kill(self):
-                pass
+        FakeProc, all_calls = self._make_fake_proc()
 
         with patch("subprocess.Popen", FakeProc):
             _SlashWorker(
@@ -1262,7 +1257,9 @@ class TestSlashWorkerProfilePropagation:
                 profile_home="/home/user/.hermes/profiles/myprofile",
             )
 
-        env = captured["env"]
+        worker_call = self._find_worker_call(all_calls)
+        assert worker_call is not None, f"No --session-key call found in: {[c['cmd'] for c in all_calls]}"
+        env = worker_call["env"]
         assert env["HERMES_HOME"] == "/home/user/.hermes/profiles/myprofile"
         assert env["HERMES_PROFILE"] == "myprofile"
 
@@ -1270,36 +1267,16 @@ class TestSlashWorkerProfilePropagation:
         """No --profile or HERMES_HOME/HERMES_PROFILE when profile is None."""
         from tui_gateway.server import _SlashWorker
 
-        captured = {}
-
-        class FakeProc:
-            def __init__(self, cmd, **kwargs):
-                captured["cmd"] = list(cmd)
-                captured["env"] = kwargs.get("env", {})
-                self.stdin = None
-                self.stdout = []
-                self.stderr = []
-                self.pid = 1
-                self.returncode = None
-
-            def poll(self):
-                return None
-
-            def terminate(self):
-                pass
-
-            def wait(self, timeout=None):
-                return 0
-
-            def kill(self):
-                pass
+        FakeProc, all_calls = self._make_fake_proc()
 
         with patch("subprocess.Popen", FakeProc):
             _SlashWorker("test-key", "test-model")
 
-        cmd = captured["cmd"]
+        worker_call = self._find_worker_call(all_calls)
+        assert worker_call is not None, f"No --session-key call found in: {[c['cmd'] for c in all_calls]}"
+        cmd = worker_call["cmd"]
         assert "--profile" not in cmd
-        env = captured["env"]
+        env = worker_call["env"]
         assert "HERMES_PROFILE" not in env or env.get("HERMES_PROFILE") == os.environ.get("HERMES_PROFILE")
         # HERMES_HOME should not be overridden by the worker
         assert env.get("HERMES_HOME") == os.environ.get("HERMES_HOME")

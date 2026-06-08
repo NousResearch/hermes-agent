@@ -183,6 +183,14 @@ class GatewayStreamConsumer:
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
 
+        # Streaming checkpoint — periodically persist incomplete content to session DB
+        # to recover partial responses if the gateway crashes mid-stream.
+        self._last_checkpoint_time = time.monotonic()
+        self._checkpoint_interval = 5.0  # Checkpoint every 5 seconds
+        self._checkpoint_callback = None  # Function to persist incomplete turn
+        self._session_id = metadata.get("session_id") if metadata else None
+        self._incomplete_turn_role = "assistant"  # Role for checkpointed message
+
     @property
     def already_sent(self) -> bool:
         """True if at least one message was sent or edited during the run."""
@@ -241,6 +249,36 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def set_checkpoint_callback(self, callback: Optional[callable], session_id: str) -> None:
+        """Set the callback for persisting incomplete streaming content.
+        
+        Args:
+            callback: Function(role, content) to persist incomplete turn to session DB.
+                     Called periodically during streaming to checkpoint partial responses.
+            session_id: Session ID for this streaming turn.
+        """
+        self._checkpoint_callback = callback
+        self._session_id = session_id
+
+    def _checkpoint_incomplete_turn(self) -> None:
+        """Persist the current accumulated text to session DB as an incomplete turn.
+        
+        This allows recovery of partial content if the gateway crashes during streaming.
+        The persisted content is marked incomplete so the UI can indicate recovery status.
+        """
+        if not self._checkpoint_callback or not self._session_id or not self._accumulated:
+            return
+        
+        try:
+            # Persist incomplete content with a marker indicating it's incomplete
+            self._checkpoint_callback(
+                role=self._incomplete_turn_role,
+                content=self._accumulated,
+                is_incomplete=True,
+            )
+        except Exception as e:
+            logger.debug("Failed to checkpoint incomplete turn: %s", e)
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -475,6 +513,13 @@ class GatewayStreamConsumer:
                         # check. _len_fn is reserved for overflow detection.
                         or len(self._accumulated) >= self.cfg.buffer_threshold
                     )
+
+                # Periodic checkpoint: persist incomplete streaming content to session DB
+                # so partial responses can be recovered if the gateway crashes mid-stream
+                checkpoint_elapsed = now - self._last_checkpoint_time
+                if checkpoint_elapsed >= self._checkpoint_interval and self._accumulated:
+                    self._checkpoint_incomplete_turn()
+                    self._last_checkpoint_time = now
 
                 current_update_visible = False
                 if should_edit and self._accumulated:

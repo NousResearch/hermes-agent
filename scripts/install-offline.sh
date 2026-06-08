@@ -228,16 +228,27 @@ export UV_PYTHON_DOWNLOADS=never
 export UV_NO_SYNC=1
 
 WHEEL_DIR="$SCRIPT_DIR/python-wheels"
-if [[ ! -d "$WHEEL_DIR" ]] || [[ -z "$(ls "$WHEEL_DIR"/*.whl 2>/dev/null)" ]]; then
-    die "python-wheels/ 目录为空或不存在"
+SITE_PACKAGES="$VENV_DIR/lib/python${PYTHON_VERSION}/site-packages"
+
+if [[ ! -d "$WHEEL_DIR" ]]; then
+    die "python-wheels/ 目录不存在"
 fi
 
-WHEEL_COUNT=$(ls "$WHEEL_DIR"/*.whl 2>/dev/null | wc -l)
-sub "从 $WHEEL_COUNT 个 wheel 包安装 ..."
+WHEEL_COUNT=$(find "$WHEEL_DIR" -name "*.whl" 2>/dev/null | wc -l)
+EXTRACTED_COUNT=$(find "$WHEEL_DIR" -name "*.py" -maxdepth 2 2>/dev/null | wc -l)
 
-# 安装 [all] extras（核心 + 可选）
-sub "安装 hermes-agent[all] ..."
-uv pip install --no-index --find-links "$WHEEL_DIR" -e ".[all]" 2>&1 | tail -3
+if [[ "$WHEEL_COUNT" -gt 0 ]]; then
+    # 方式1: .whl 文件，用 --find-links 安装
+    sub "从 $WHEEL_COUNT 个 wheel 包安装 ..."
+    uv pip install --no-index --find-links "$WHEEL_DIR" -e ".[all]" 2>&1 | tail -3
+elif [[ "$EXTRACTED_COUNT" -gt 0 ]]; then
+    # 方式2: 已解压的包，直接复制到 site-packages
+    sub "从已解压的包安装 ($EXTRACTED_COUNT 个 .py 文件) ..."
+    cp -r "$WHEEL_DIR"/* "$SITE_PACKAGES/" 2>/dev/null || true
+    sub "已复制到 $SITE_PACKAGES"
+else
+    die "python-wheels/ 目录为空"
+fi
 
 # 安装 lazy deps（所有可选后端）
 sub "安装 lazy deps（可选后端） ..."
@@ -293,13 +304,17 @@ LAZY_PACKAGES=(
     "agent-client-protocol==0.9.0"
 )
 
-# 分批安装
-BATCH_SIZE=10
-for ((i = 0; i < ${#LAZY_PACKAGES[@]}; i += BATCH_SIZE)); do
-    BATCH=("${LAZY_PACKAGES[@]:i:BATCH_SIZE}")
-    sub "安装批次 $((i / BATCH_SIZE + 1)): ${BATCH[*]} ..."
-    uv pip install --no-index --find-links "$WHEEL_DIR" "${BATCH[@]}" 2>&1 | tail -1 || true
-done
+# 分批安装（仅在使用 .whl 文件时需要，已解压的包已在上面复制完成）
+if [[ "$WHEEL_COUNT" -gt 0 ]]; then
+    BATCH_SIZE=10
+    for ((i = 0; i < ${#LAZY_PACKAGES[@]}; i += BATCH_SIZE)); do
+        BATCH=("${LAZY_PACKAGES[@]:i:BATCH_SIZE}")
+        sub "安装批次 $((i / BATCH_SIZE + 1)): ${BATCH[*]} ..."
+        uv pip install --no-index --find-links "$WHEEL_DIR" "${BATCH[@]}" 2>&1 | tail -1 || true
+    done
+else
+    sub "已解压的包已复制，跳过 lazy deps 单独安装"
+fi
 
 # 统计已安装包数
 INSTALLED_COUNT=$(uv pip list --format=columns 2>/dev/null | tail -n +3 | wc -l || echo "?")

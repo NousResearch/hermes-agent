@@ -567,6 +567,9 @@ _TABLE_MAX_ROWS = 50
 def _build_table_card_payload(content: str) -> Optional[str]:
     """Convert markdown-table content into a Feishu interactive card JSON string.
 
+    Uses the native Feishu card v2 ``table`` component so tables render as
+    proper interactive tables instead of raw pipe-character text.
+
     Returns ``None`` when the content cannot be parsed (caller should fall back
     to plain text).
     """
@@ -592,22 +595,65 @@ def _build_table_card_payload(content: str) -> Optional[str]:
             if text:
                 elements.append({"tag": "markdown", "content": text})
         else:
-            md = _format_table_md(seg)
-            if md:
-                elements.append({"tag": "markdown", "content": md})
+            table_elem = _build_feishu_table_element(seg)
+            if table_elem:
+                elements.append(table_elem)
 
     if not elements:
         return None
 
     card = {
+        "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"content": title, "tag": "plain_text"},
             "template": "blue",
         },
-        "elements": elements,
+        "body": {"elements": elements},
     }
     return json.dumps(card, ensure_ascii=False)
+
+
+def _build_feishu_table_element(seg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build a Feishu card v2 ``table`` component from a parsed table segment.
+
+    Returns a dict suitable for inclusion in ``body.elements[]`` of a v2 card.
+    """
+    header = seg.get("header", [])
+    rows = seg.get("rows", [])
+    if not header:
+        return None
+
+    columns = []
+    for idx, col_name in enumerate(header):
+        col_key = f"col{idx}"
+        columns.append({
+            "name": col_key,
+            "display_name": col_name,
+            "data_type": "text",
+            "width": "auto",
+        })
+
+    row_data = []
+    for row in rows:
+        padded = (row + [""] * len(header))[: len(header)]
+        row_obj = {}
+        for idx, val in enumerate(padded):
+            row_obj[f"col{idx}"] = val
+        row_data.append(row_obj)
+
+    return {
+        "tag": "table",
+        "page_size": min(len(row_data), 10) if row_data else 5,
+        "row_height": "auto",
+        "header_style": {
+            "text_align": "left",
+            "background_style": "grey",
+            "bold": True,
+        },
+        "columns": columns,
+        "rows": row_data,
+    }
 
 
 def _parse_table_segments(content: str) -> List[Dict[str, Any]]:

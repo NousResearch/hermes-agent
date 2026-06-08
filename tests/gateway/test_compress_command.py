@@ -130,6 +130,97 @@ async def test_compress_command_explains_when_token_estimate_rises():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_shows_real_measured_context_when_available():
+    """When the session has a real, provider-measured last_prompt_tokens
+    (the same number /usage shows), /compress must lead with it — clearly
+    labelled as the real count — alongside the char-based estimate, so the
+    two metrics can't be confused. This is the apples-to-oranges fix:
+    a tool-heavy real context (e.g. 290K) was being implicitly compared
+    against a transcript-only estimate (~30K)."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "hermes", "content": "Dense summary."},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    # Real provider-measured context from a prior live turn.
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 290_310
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor.context_length = 1_000_000
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+
+    def _estimate(messages, **_kwargs):
+        if messages == history:
+            return 100
+        if messages == compressed:
+            return 80
+        raise AssertionError(f"unexpected transcript: {messages!r}")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # Real measured number is present, labelled as real, with the % occupancy.
+    assert "290,310" in result
+    assert "1,000,000" in result
+    assert "29%" in result
+    assert "real provider count" in result
+    # Estimate is still shown, but now explicitly framed as char-based.
+    assert "Approx request size: ~100 → ~80 tokens" in result
+    assert "char-based estimate" in result
+    # User is told the real after-count updates on the next message.
+    assert "updates on your next message" in result
+
+
+@pytest.mark.asyncio
+async def test_compress_command_omits_real_line_when_no_measured_value():
+    """With no prior live turn (last_prompt_tokens == 0) there is no real
+    number to show, so the real-measured line is omitted and only the
+    estimate (with its legend) appears — backwards-compatible readout."""
+    history = _make_history()
+    compressed = [history[0], {"role": "hermes", "content": "s"}, history[-1]]
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 0  # no live turn yet
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor.context_length = 1_000_000
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+
+    def _estimate(messages, **_kwargs):
+        return 100 if messages == history else 80
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "real provider count" not in result
+    assert "Approx request size" in result
+    assert "char-based estimate" in result
+
+
+@pytest.mark.asyncio
 async def test_compress_command_appends_warning_when_compression_aborts():
     """When the auxiliary summariser fails and the compressor ABORTS (returns
     messages unchanged), /compress must append a visible ⚠️ warning to its

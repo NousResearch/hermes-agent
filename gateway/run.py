@@ -13145,6 +13145,15 @@ class GatewayRunner:
         if not history or len(history) < 4:
             return t("gateway.compress.not_enough")
 
+        # Real, provider-measured context size from the last live API call
+        # (the same number /usage reports). Captured BEFORE the post-compress
+        # reset further down zeroes session_entry.last_prompt_tokens. This is
+        # the only tokenizer-truth figure available here; the estimates below
+        # are char/4 heuristics. Showing both side-by-side stops the
+        # apples-to-oranges confusion where a tool-heavy real context (e.g.
+        # 290K) gets compared against a transcript-only estimate.
+        real_before_tokens = int(getattr(session_entry, "last_prompt_tokens", 0) or 0)
+
         # Parse args: either a focus topic (full compress) or the
         # boundary-aware "here [N]" form (partial compress).
         from hermes_cli.partial_compress import (
@@ -13203,10 +13212,20 @@ class GatewayRunner:
                 # figure reflects real request pressure, not a transcript-only
                 # underestimate (#6217). Must be computed after tmp_agent is
                 # built so _cached_system_prompt/tools are populated.
+                #
+                # Estimate over the FULL transcript (`history`), not the
+                # user/hermes-only `msgs` slice. Tool-call and tool-result
+                # messages are the bulk of a tool-heavy context, and the model
+                # is sent all of them — excluding them produced an estimate
+                # ~10x smaller than the real provider count, which is exactly
+                # the apples-to-oranges gap Ace flagged. `msgs` is still the
+                # right input for the compression *operation* (the summariser
+                # works on conversational turns), but it is the wrong basis for
+                # a "request size" figure.
                 _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
                 _tools = getattr(tmp_agent, "tools", None) or None
                 approx_tokens = estimate_request_tokens_rough(
-                    msgs, system_prompt=_sys_prompt, tools=_tools
+                    history, system_prompt=_sys_prompt, tools=_tools
                 )
 
                 compressor = tmp_agent.context_compressor
@@ -13270,9 +13289,32 @@ class GatewayRunner:
                 self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
             lines = [f"🗜️ {summary['headline']}"]
+            # Lead with the real, provider-measured context size (when we have
+            # one from a prior live turn) so the trustworthy number is front
+            # and centre and clearly labelled as the real one. The estimate
+            # lines that follow are explicitly framed as char-based previews,
+            # so the two can no longer be mistaken for the same metric.
+            if real_before_tokens > 0:
+                _ctx_len = getattr(compressor, "context_length", 0) or 0
+                _pct = (
+                    min(100, real_before_tokens / _ctx_len * 100)
+                    if _ctx_len
+                    else 0
+                )
+                lines.append(
+                    t(
+                        "gateway.compress.real_measured",
+                        used=real_before_tokens,
+                        total=_ctx_len,
+                        pct=f"{_pct:.0f}",
+                    )
+                )
+                if not summary["noop"]:
+                    lines.append(t("gateway.compress.real_after_note"))
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))
             lines.append(summary["token_line"])
+            lines.append(t("gateway.compress.estimate_legend"))
             if summary["note"]:
                 lines.append(summary["note"])
             if _summary_aborted:

@@ -696,6 +696,10 @@ async def _standalone_send(
 
 def register(ctx) -> None:
     """Called by the Hermes plugin loader at startup."""
+    # Local import to avoid argparse work at module load; reused for both the
+    # gateway-setup hook and the `hermes photon` CLI command below.
+    from . import cli as _cli
+
     ctx.register_platform(
         name="photon",
         label="Photon iMessage",
@@ -709,6 +713,9 @@ def register(ctx) -> None:
             "Spectrum project, links your phone number, installs the "
             "spectrum-ts sidecar)."
         ),
+        # Surfaces Photon in `hermes gateway setup` alongside every other
+        # channel — same unified onboarding wizard, no Photon-only detour.
+        setup_fn=_cli.gateway_setup,
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="PHOTON_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
@@ -717,8 +724,9 @@ def register(ctx) -> None:
         max_message_length=_MAX_MESSAGE_LENGTH,
         emoji="📱",
         # iMessage carries E.164 phone numbers — treat session descriptions
-        # as PII-sensitive so they get redacted in logs.
-        pii_safe=False,
+        # as PII-sensitive so they get redacted before reaching the LLM
+        # (matches the BlueBubbles iMessage channel in _PII_SAFE_PLATFORMS).
+        pii_safe=True,
         allow_update_command=True,
         platform_hint=(
             "You are communicating via Photon Spectrum (iMessage). "
@@ -730,8 +738,6 @@ def register(ctx) -> None:
     )
 
     # Register CLI subcommands — `hermes photon ...`
-    from . import cli as _cli  # local import to avoid argparse at module load
-
     ctx.register_cli_command(
         name="photon",
         help="Set up and manage the Photon iMessage integration",

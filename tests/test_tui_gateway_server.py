@@ -949,6 +949,37 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
         server._sessions.pop("orphan-sid", None)
 
 
+def test_finalize_session_closes_slash_worker(monkeypatch):
+    """_finalize_session closes the slash_worker subprocess itself.
+
+    Regression for #38095: the worker cleanup used to live only in the
+    callers (_teardown_session / _shutdown_sessions), so any code path that
+    finalized a session without going through them leaked the worker. Folding
+    close() into the single _finalized-guarded chokepoint makes the cleanup
+    defense-in-depth and idempotent.
+    """
+    closed = {"count": 0}
+
+    class _FakeWorker:
+        def close(self):
+            closed["count"] += 1
+
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    session = _session(slash_worker=_FakeWorker())
+
+    server._finalize_session(session)
+    assert closed["count"] == 1
+    assert session.get("_finalized") is True
+
+    # Idempotent: a second finalize (or a follow-up teardown) must not
+    # re-close the worker — the _finalized guard short-circuits.
+    server._finalize_session(session)
+    server._teardown_session(session)
+    assert closed["count"] == 1
+
+
 def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     """A session that rebinds a live transport is NOT considered orphaned."""
 

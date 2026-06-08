@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
+import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -25,22 +27,22 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
 }
 
-const AGE_TICKS: ReadonlyArray<[number, string]> = [
-  [86_400_000, 'd'],
-  [3_600_000, 'h'],
-  [60_000, 'm']
+const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
+  [86_400_000, 'ageDay'],
+  [3_600_000, 'ageHour'],
+  [60_000, 'ageMin']
 ]
 
-function formatAge(seconds: number): string {
+function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
 
-  for (const [ms, suffix] of AGE_TICKS) {
+  for (const [ms, key] of AGE_TICKS) {
     if (delta >= ms) {
-      return `${Math.floor(delta / ms)}${suffix}`
+      return `${Math.floor(delta / ms)}${r[key]}`
     }
   }
 
-  return 'now'
+  return r.ageNow
 }
 
 export function SidebarSessionRow({
@@ -60,8 +62,10 @@ export function SidebarSessionRow({
   ref,
   ...rest
 }: SidebarSessionRowProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
   const title = sessionTitle(session)
-  const age = formatAge(session.last_active || session.started_at)
+  const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
@@ -74,6 +78,7 @@ export function SidebarSessionRow({
       onDelete={onDelete}
       onPin={onPin}
       pinned={isPinned}
+      profile={session.profile}
       sessionId={session.id}
       title={title}
     >
@@ -86,6 +91,22 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
+        draggable
+        onDragStart={event => {
+          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
+          // native drag so the two DnD systems don't fight.
+          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
+            event.preventDefault()
+
+            return
+          }
+
+          writeSessionDrag(event.dataTransfer, {
+            id: session.id,
+            profile: session.profile || 'default',
+            title
+          })
+        }}
         ref={ref}
         style={style}
         {...rest}
@@ -123,12 +144,15 @@ export function SidebarSessionRow({
               className={cn(
                 // Scope the dot↔grabber swap to a local group so the grabber
                 // only reveals when hovering/focusing the handle itself, not
-                // anywhere on the row.
-                'group/handle relative -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
+                // anywhere on the row. Width MUST match the non-reorderable dot
+                // column (w-3.5) so rows don't shift horizontally when reorder is
+                // toggled (e.g. scoped → ALL-profiles view).
+                'group/handle relative -my-0.5 grid w-3.5 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
                 // The quest-glow box-shadow extends past the dot; let it bleed
                 // out instead of being clipped by this handle's overflow-hidden.
                 needsInput && 'overflow-visible'
               )}
+              data-reorder-handle
               onClick={event => event.stopPropagation()}
             >
               <SidebarRowDot
@@ -146,11 +170,16 @@ export function SidebarSessionRow({
               />
             </span>
           ) : (
-            <span className={cn('grid w-3.5 shrink-0 place-items-center', needsInput ? 'overflow-visible' : 'overflow-hidden')}>
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
+            <span
+              className={cn(
+                'grid w-3.5 shrink-0 place-items-center',
+                needsInput ? 'overflow-visible' : 'overflow-hidden'
+              )}
+            >
+            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+          </span>
           )}
-          <span className="truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
         </button>
@@ -165,14 +194,15 @@ export function SidebarSessionRow({
             onDelete={onDelete}
             onPin={onPin}
             pinned={isPinned}
+            profile={session.profile}
             sessionId={session.id}
             title={title}
           >
             <Button
-              aria-label={`Actions for ${title}`}
+              aria-label={r.actionsFor(title)}
               className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
               size="icon"
-              title="Session actions"
+              title={r.sessionActions}
               variant="ghost"
             >
               <Codicon name="ellipsis" size="0.875rem" />
@@ -193,6 +223,9 @@ function SidebarRowDot({
   needsInput?: boolean
   className?: string
 }) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+
   // "Needs input" wins over "working": a clarify-blocked session is technically
   // still running, but the actionable state is that it's waiting on the user.
   // Amber + steady (no ping) reads as "your turn", distinct from the accent
@@ -200,17 +233,17 @@ function SidebarRowDot({
   if (needsInput) {
     return (
       <span
-        aria-label="Needs your input"
+        aria-label={r.needsInput}
         className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
         role="status"
-        title="Waiting for your answer"
+        title={r.waitingForAnswer}
       />
     )
   }
 
   return (
     <span
-      aria-label={isWorking ? 'Session running' : undefined}
+      aria-label={isWorking ? r.sessionRunning : undefined}
       className={cn(
         'rounded-full',
         isWorking

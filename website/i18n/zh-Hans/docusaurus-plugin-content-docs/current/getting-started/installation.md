@@ -15,7 +15,7 @@ description: "在 Linux、macOS、WSL2、原生 Windows 或通过 Termux 在 And
 基于 git 的安装方式，跟踪 `main` 分支，可立即获取最新变更：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 ### Windows（原生，PowerShell）
@@ -25,12 +25,13 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 打开 PowerShell 并运行：
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 安装程序处理**一切**：`uv`、Python 3.11、Node.js 22、`ripgrep`、`ffmpeg`，**以及一个便携式 Git Bash**（PortableGit——一个自包含的 Git-for-Windows 发行版，附带 `bash.exe` 和 Hermes 用于 shell 命令的完整 POSIX 工具链；在 32 位 Windows 上安装程序会回退到 MinGit，后者缺少 bash，终端工具和 agent 浏览器功能将被禁用）。它将仓库克隆到 `%LOCALAPPDATA%\hermes\hermes-agent`，创建虚拟环境，并将 `hermes` 添加到**用户 PATH**。安装完成后请重启终端（或打开新的 PowerShell 窗口）以使 PATH 生效。
 
 **Git 的处理方式：**
+
 1. 如果 `git` 已在你的 PATH 中，安装程序将使用现有安装。
 2. 否则，它会下载便携式 **PortableGit**（约 50MB，来自官方 `git-for-windows` GitHub 发布页）并解压到 `%LOCALAPPDATA%\hermes\git`。无需管理员权限，完全隔离——不会干扰任何系统 Git 安装，无论其状态如何。（在 32 位 Windows 上会回退到 MinGit，因为 PortableGit 仅提供 64 位和 ARM64 资产；依赖 bash 的 Hermes 功能在 32 位主机上无法使用。）
 
@@ -47,10 +48,11 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 Hermes 现在也提供 Termux 感知的安装路径：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 安装程序会自动检测 Termux 并切换到经过测试的 Android 流程：
+
 - 使用 Termux `pkg` 安装系统依赖（`git`、`python`、`nodejs`、`ripgrep`、`ffmpeg`、构建工具）
 - 使用 `python -m venv` 创建虚拟环境
 - 自动导出 `ANDROID_API_LEVEL` 以用于 Android wheel 构建
@@ -62,6 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 :::note Windows 功能对等性
 
 除基于浏览器的 dashboard 聊天终端外，其余功能均可在 Windows 上原生运行：
+
 - **CLI（`hermes chat`、`hermes setup`、`hermes gateway` 等）** — 原生，使用默认终端
 - **Gateway（Telegram、Discord、Slack 等）** — 原生，作为后台 PowerShell 进程运行
 - **Cron 调度器** — 原生
@@ -80,11 +83,11 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 安装程序的存放位置取决于你是以普通用户还是 root 身份安装：
 
-| 安装方式 | 代码位置 | `hermes` 二进制 | 数据目录 |
-|---|---|---|---|
-| pip install | Python site-packages | `~/.local/bin/hermes`（console_scripts） | `~/.hermes/` |
-| 用户级（git 安装程序） | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes`（符号链接） | `~/.hermes/` |
-| Root 模式（`sudo curl … \| sudo bash`） | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes` | `/root/.hermes/`（或 `$HERMES_HOME`） |
+| 安装方式                                | 代码位置                       | `hermes` 二进制                          | 数据目录                              |
+| --------------------------------------- | ------------------------------ | ---------------------------------------- | ------------------------------------- |
+| pip install                             | Python site-packages           | `~/.local/bin/hermes`（console_scripts） | `~/.hermes/`                          |
+| 用户级（git 安装程序）                  | `~/.hermes/hermes-agent/`      | `~/.local/bin/hermes`（符号链接）        | `~/.hermes/`                          |
+| Root 模式（`sudo curl … \| sudo bash`） | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes`                  | `/root/.hermes/`（或 `$HERMES_HOME`） |
 
 Root 模式的 **FHS 布局**（`/usr/local/lib/…`、`/usr/local/bin/hermes`）与其他系统级开发工具在 Linux 上的安装位置一致。适用于共享机器部署场景，一次系统安装可服务所有用户。每个用户的个人配置（认证、技能、会话）仍位于各自的 `~/.hermes/` 或显式指定的 `HERMES_HOME` 下。
 
@@ -154,22 +157,27 @@ hermes setup --portal
 **推荐的分步方式（Debian/Ubuntu）：**
 
 1. **一次性操作，以具有 sudo 权限的管理员用户身份**，安装 Chromium 所需的系统库：
+
    ```bash
    sudo npx playwright install-deps chromium
    ```
+
    （可在任意位置运行——`npx` 会自动获取 Playwright。）
 
 2. **以非特权服务用户身份**，运行常规安装程序。它会检测到缺少 sudo，跳过 `--with-deps`，并将 Chromium 安装到用户本地的 Playwright 缓存中：
+
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
    ```
 
    如果想完全跳过 Playwright 步骤——例如在无头环境中运行且不需要浏览器自动化——传入 `--skip-browser`：
+
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-browser
+   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
    ```
 
 3. **使 `hermes` 对服务用户的 shell 可用。** 安装程序将启动器写入 `~/.local/bin/hermes`。系统服务账户通常具有不包含 `~/.local/bin` 的最小 PATH。可以将其添加到用户环境，或将启动器符号链接到系统位置：
+
    ```bash
    # 方案 A — 添加到服务用户的 profile
    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
@@ -186,11 +194,11 @@ hermes setup --portal
 
 ## 故障排查
 
-| 问题 | 解决方案 |
-|---------|----------|
-| `hermes: command not found` | 重新加载 shell（`source ~/.bashrc`）或检查 PATH |
-| `API key not set` | 运行 `hermes model` 配置提供商，或 `hermes config set OPENROUTER_API_KEY your_key` |
-| 更新后配置丢失 | 运行 `hermes config check`，然后运行 `hermes config migrate` |
+| 问题                        | 解决方案                                                                           |
+| --------------------------- | ---------------------------------------------------------------------------------- |
+| `hermes: command not found` | 重新加载 shell（`source ~/.bashrc`）或检查 PATH                                    |
+| `API key not set`           | 运行 `hermes model` 配置提供商，或 `hermes config set OPENROUTER_API_KEY your_key` |
+| 更新后配置丢失              | 运行 `hermes config check`，然后运行 `hermes config migrate`                       |
 
 如需更多诊断信息，运行 `hermes doctor`——它会告诉你确切缺少什么以及如何修复。
 

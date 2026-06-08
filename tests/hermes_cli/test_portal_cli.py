@@ -35,7 +35,7 @@ def test_bare_portal_and_login_run_one_shot(monkeypatch, sub):
         "hermes_cli.setup._run_portal_one_shot", fake_one_shot
     )
     monkeypatch.setattr(portal_cli, "_cmd_status", fake_status)
-    monkeypatch.setattr(portal_cli, "load_config", lambda: {})
+    monkeypatch.setattr(portal_cli, "load_config", dict)
 
     rc = portal_cli.portal_command(_args(sub))
 
@@ -89,7 +89,7 @@ def test_login_cancelled_returns_one(monkeypatch):
         raise KeyboardInterrupt
 
     monkeypatch.setattr("hermes_cli.setup._run_portal_one_shot", boom)
-    monkeypatch.setattr(portal_cli, "load_config", lambda: {})
+    monkeypatch.setattr(portal_cli, "load_config", dict)
 
     rc = portal_cli.portal_command(_args(None))
     assert rc == 1
@@ -127,7 +127,7 @@ def test_one_shot_delegates_to_model_flow_nous(monkeypatch):
     # _run_portal_one_shot, so patch it at the source module.
     monkeypatch.setattr("hermes_cli.main._model_flow_nous", fake_model_flow)
     # Keep the disk re-sync a no-op so the test never touches real config.
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
 
     setup_mod._run_portal_one_shot({})
 
@@ -151,7 +151,7 @@ def test_one_shot_swallows_cancel_and_systemexit(monkeypatch, exc):
         raise exc
 
     monkeypatch.setattr("hermes_cli.main._model_flow_nous", boom)
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
 
     # Must return normally (None), not propagate the exception.
     assert setup_mod._run_portal_one_shot({}) is None

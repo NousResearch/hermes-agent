@@ -173,7 +173,7 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     setup_model_provider(config)
 
@@ -308,7 +308,7 @@ def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, m
             },
         ),
     )
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
@@ -336,7 +336,7 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
             },
         ),
     )
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
@@ -376,7 +376,7 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
     monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
     monkeypatch.setattr("tools.browser_tool._using_lightpanda_engine", lambda: False)
     monkeypatch.setattr(
-        "agent.auxiliary_client.get_available_vision_backends", lambda: []
+        "agent.auxiliary_client.get_available_vision_backends", list
     )
 
     _print_setup_summary(load_config(), tmp_path)

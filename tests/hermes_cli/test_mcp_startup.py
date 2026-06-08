@@ -62,7 +62,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
         ),
     )
     monkeypatch.setitem(
@@ -99,7 +99,7 @@ def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        types.SimpleNamespace(load_config=lambda: {}),
+        types.SimpleNamespace(load_config=dict),
     )
     monkeypatch.setitem(
         sys.modules,

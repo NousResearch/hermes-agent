@@ -36,7 +36,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", dict)
 
 
 def _build_agent(monkeypatch):
@@ -433,7 +433,7 @@ def _build_xai_agent_with_slash_enum_tool(monkeypatch):
         ]
 
     monkeypatch.setattr(run_agent, "get_tool_definitions", _fake_get_tool_definitions)
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", dict)
 
     agent = run_agent.AIAgent(
         model="grok-4.3",

@@ -30,7 +30,7 @@ def curator_env(tmp_path, monkeypatch):
     monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
 
     # Default: no config file → curator defaults. Tests can override.
-    monkeypatch.setattr(curator, "_load_config", lambda: {})
+    monkeypatch.setattr(curator, "_load_config", dict)
     # Pin prune_builtins OFF by default so transition tests don't pick up
     # built-ins unless they explicitly enable it. Both config-reading paths
     # are pinned (curator reads via _load_config; skill_usage reads config

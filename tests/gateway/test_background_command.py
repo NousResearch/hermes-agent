@@ -292,7 +292,7 @@ class TestRunBackgroundTask:
         runner._run_in_executor_with_context = AsyncMock(
             return_value={"final_response": "see attached", "messages": []}
         )
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
 
         # Four real files so the media-delivery path validator accepts them
         # (default mode requires the file to exist as a regular file).
@@ -370,7 +370,7 @@ class TestRunBackgroundTask:
         runner._run_in_executor_with_context = AsyncMock(
             return_value={"final_response": "done", "messages": []}
         )
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
 
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()

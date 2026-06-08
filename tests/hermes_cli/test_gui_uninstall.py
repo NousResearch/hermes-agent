@@ -71,7 +71,7 @@ def test_gui_is_installed_true_when_built(tmp_path, monkeypatch):
     _make_gui_build(hermes_home)
     # Make sure packaged-app + userdata probes don't false-positive on the box
     # running the test.
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "nope")
     assert gu.gui_is_installed(hermes_home) is True
 
@@ -79,7 +79,7 @@ def test_gui_is_installed_true_when_built(tmp_path, monkeypatch):
 def test_gui_is_installed_false_when_nothing(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "nope")
     assert gu.gui_is_installed(hermes_home) is False
 
@@ -92,7 +92,7 @@ def test_uninstall_gui_removes_only_gui_artifacts(tmp_path, monkeypatch):
     _make_user_data(hermes_home)
 
     # Isolate the packaged-app + userdata probes from the test machine.
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "userdata-none")
 
     removed = gu.uninstall_gui(hermes_home)
@@ -124,7 +124,7 @@ def test_uninstall_gui_removes_userdata(tmp_path, monkeypatch):
     userdata.mkdir()
     (userdata / "connection.json").write_text("{}")
 
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: userdata)
 
     gu.uninstall_gui(hermes_home)
@@ -137,7 +137,7 @@ def test_uninstall_gui_keeps_userdata_when_requested(tmp_path, monkeypatch):
     userdata = tmp_path / "Hermes-userdata"
     userdata.mkdir()
 
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: userdata)
 
     gu.uninstall_gui(hermes_home, remove_userdata=False)
@@ -162,7 +162,7 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     _make_agent(hermes_home)
     _make_gui_build(hermes_home)
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     summary = gu.gui_install_summary(hermes_home)
@@ -242,15 +242,15 @@ def test_run_uninstall_yes_keep_data_is_non_interactive(tmp_path, monkeypatch):
     monkeypatch.setattr(uninstall, "get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr(uninstall, "get_project_root", lambda: fake_code)
     monkeypatch.setattr(uninstall, "uninstall_gateway_service", lambda: False)
-    monkeypatch.setattr(uninstall, "remove_path_from_shell_configs", lambda: [])
-    monkeypatch.setattr(uninstall, "remove_wrapper_script", lambda: [])
+    monkeypatch.setattr(uninstall, "remove_path_from_shell_configs", list)
+    monkeypatch.setattr(uninstall, "remove_wrapper_script", list)
     monkeypatch.setattr(uninstall, "remove_node_symlinks", lambda h: [])
-    monkeypatch.setattr(uninstall, "_discover_named_profiles", lambda: [])
+    monkeypatch.setattr(uninstall, "_discover_named_profiles", list)
     # Make input() blow up so a regression that reaches a prompt fails loudly.
     monkeypatch.setattr("builtins.input", lambda *a, **k: pytest.fail("prompted in --yes mode"))
 
     from hermes_cli import gui_uninstall as gu_mod
-    monkeypatch.setattr(gu_mod, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu_mod, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu_mod, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     uninstall.run_uninstall(_Args(yes=True, full=False))
@@ -276,14 +276,14 @@ def test_run_uninstall_yes_full_wipes_home(tmp_path, monkeypatch):
     monkeypatch.setattr(uninstall, "get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr(uninstall, "get_project_root", lambda: fake_code)
     monkeypatch.setattr(uninstall, "uninstall_gateway_service", lambda: False)
-    monkeypatch.setattr(uninstall, "remove_path_from_shell_configs", lambda: [])
-    monkeypatch.setattr(uninstall, "remove_wrapper_script", lambda: [])
+    monkeypatch.setattr(uninstall, "remove_path_from_shell_configs", list)
+    monkeypatch.setattr(uninstall, "remove_wrapper_script", list)
     monkeypatch.setattr(uninstall, "remove_node_symlinks", lambda h: [])
-    monkeypatch.setattr(uninstall, "_discover_named_profiles", lambda: [])
+    monkeypatch.setattr(uninstall, "_discover_named_profiles", list)
     monkeypatch.setattr("builtins.input", lambda *a, **k: pytest.fail("prompted in --yes mode"))
 
     from hermes_cli import gui_uninstall as gu_mod
-    monkeypatch.setattr(gu_mod, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu_mod, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu_mod, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     uninstall.run_uninstall(_Args(yes=True, full=True))
@@ -310,7 +310,7 @@ def test_uninstall_module_main_gui_mode(tmp_path, monkeypatch):
 
     monkeypatch.setattr(uninstall, "get_hermes_home", lambda: hermes_home)
     from hermes_cli import gui_uninstall as gu_mod
-    monkeypatch.setattr(gu_mod, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu_mod, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu_mod, "desktop_userdata_dir", lambda: tmp_path / "none")
     monkeypatch.setattr(gu_mod, "get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("builtins.input", lambda *a, **k: pytest.fail("prompted in module main"))

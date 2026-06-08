@@ -195,7 +195,7 @@ class TestWebhookEnabledGate:
     def test_real_check_disabled(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.webhook._get_webhook_config",
-            lambda: {},
+            dict,
         )
         monkeypatch.setattr(
             "hermes_cli.webhook._is_webhook_enabled",

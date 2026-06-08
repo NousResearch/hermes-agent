@@ -165,7 +165,7 @@ class TestProvider:
 
 class TestRegister:
     def test_skips_when_no_username(self, basic, monkeypatch):
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", dict)
         ctx = MagicMock()
         basic.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
@@ -173,7 +173,7 @@ class TestRegister:
 
     def test_skips_when_username_but_no_password(self, basic, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", dict)
         ctx = MagicMock()
         basic.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
@@ -182,7 +182,7 @@ class TestRegister:
     def test_registers_with_env_plaintext_password(self, basic, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", dict)
         ctx = MagicMock()
         basic.register(ctx)
         ctx.register_dashboard_auth_provider.assert_called_once()
@@ -232,7 +232,7 @@ class TestRegister:
         # Two providers built from the SAME explicit secret accept each
         # other's tokens (the restart-/multi-worker-survival contract).
         shared = secrets.token_bytes(32).hex()
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", dict)
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_SECRET", shared)

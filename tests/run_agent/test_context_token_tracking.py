@@ -22,7 +22,7 @@ def _patch_bootstrap(monkeypatch):
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", dict)
 
 
 class _FakeAnthropicClient:

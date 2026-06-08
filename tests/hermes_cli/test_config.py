@@ -572,8 +572,8 @@ class TestConfigMigrationSecretPrompts:
 
         monkeypatch.setattr(cfg_mod, "sanitize_env_file", lambda: 0)
         monkeypatch.setattr(cfg_mod, "check_config_version", lambda: (999, 999))
-        monkeypatch.setattr(cfg_mod, "get_missing_config_fields", lambda: [])
-        monkeypatch.setattr(cfg_mod, "get_missing_skill_config_vars", lambda: [])
+        monkeypatch.setattr(cfg_mod, "get_missing_config_fields", list)
+        monkeypatch.setattr(cfg_mod, "get_missing_skill_config_vars", list)
         monkeypatch.setattr(
             cfg_mod,
             "get_missing_env_vars",

@@ -1,5 +1,6 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import pytest
 
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
@@ -134,6 +135,41 @@ class TestBuildToolTitle:
             {"action": "patch", "name": "hermes-agent-operations", "file_path": "references/acp.md"},
         )
         assert title == "skill patch: hermes-agent-operations/references/acp.md"
+
+    @pytest.mark.parametrize(
+        ("tool_name", "args", "expected"),
+        [
+            ("web_extract", {}, "web extract"),
+            ("process", {"action": "poll", "session_id": "proc-123"}, "process poll: proc-123"),
+            ("process", {"action": "list"}, "process list"),
+            ("delegate_task", {"tasks": [{"goal": "one"}, {"goal": "two"}]}, "delegate batch (2 tasks)"),
+            ("delegate_task", {"goal": "x" * 90}, f"delegate: {'x' * 57}..."),
+            ("delegate_task", {}, "delegate task"),
+            ("session_search", {"query": "auth refactor"}, "session search: auth refactor"),
+            ("session_search", {}, "recent sessions"),
+            ("memory", {"action": "replace", "target": "user"}, "memory replace: user"),
+            ("execute_code", {"code": "#" * 90}, f"python: {'#' * 67}..."),
+            ("execute_code", {"code": "\n\n"}, "python code"),
+            ("todo", {}, "todo"),
+            ("skills_list", {"category": "github"}, "skills list (github)"),
+            ("skills_list", {}, "skills list"),
+            (
+                "skill_manage",
+                {"action": "edit", "name": "very-long-skill-name", "file_path": "references/" + "x" * 80 + ".md"},
+                f"skill edit: {('very-long-skill-name/references/' + ('x' * 80) + '.md')[:61]}...",
+            ),
+            ("browser_snapshot", {}, "browser snapshot"),
+            ("browser_vision", {"question": "what changed?"}, "browser vision: what changed?"),
+            ("browser_get_images", {}, "browser images"),
+            ("vision_analyze", {"question": "describe it"}, "analyze image: describe it"),
+            ("image_generate", {"prompt": "paint a blue dragon"}, "generate image: paint a blue dragon"),
+            ("image_generate", {}, "generate image"),
+            ("cronjob", {"action": "run", "job_id": "job-123"}, "cron run: job-123"),
+            ("cronjob", {"action": "list"}, "cron list"),
+        ],
+    )
+    def test_build_tool_title_covers_specialized_renderers(self, tool_name, args, expected):
+        assert build_tool_title(tool_name, args) == expected
 
     def test_unknown_tool_uses_name(self):
         title = build_tool_title("some_new_tool", {"foo": "bar"})
@@ -337,6 +373,18 @@ class TestBuildToolComplete:
         assert "Full skill content is available to the agent" in text
         assert result.raw_output is None
 
+    def test_build_tool_complete_for_skill_view_counts_linked_files(self):
+        result = build_tool_complete(
+            "tc-skill-linked",
+            "skill_view",
+            '{"success":true,"name":"github-operations","content":"# GitHub Ops","linked_files":{"references":["a.md","b.md"],"templates":["pr.md"]}}',
+        )
+        assert result.content is not None
+        text = result.content[0].content.text
+        assert "`github-operations`" in text
+        assert "**Linked files:** 3" in text
+        assert result.raw_output is None
+
     def test_build_tool_complete_for_execute_code_formats_output(self):
         result = build_tool_complete("tc-code", "execute_code", '{"output":"hello\\n","exit_code":0}')
         text = result.content[0].content.text
@@ -491,6 +539,20 @@ class TestBuildToolComplete:
         assert "Memory add saved" in text
         assert "User likes concise ACP rendering" in text
         assert "private long memory" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_web_search_formats_results(self):
+        result = build_tool_complete(
+            "tc-web-search",
+            "web_search",
+            '{"data":{"web":[{"title":"Hermes docs","url":"https://hermes-agent.nousresearch.com/docs","description":"Official documentation"},"ignored-non-dict"]}}',
+        )
+        assert result.content is not None
+        text = result.content[0].content.text
+        assert "Web results: 2" in text
+        assert "Hermes docs — https://hermes-agent.nousresearch.com/docs" in text
+        assert "Official documentation" in text
+        assert "ignored-non-dict" not in text
         assert result.raw_output is None
 
     def test_build_tool_complete_for_web_extract_success_stays_compact(self):

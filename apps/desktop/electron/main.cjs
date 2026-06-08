@@ -1793,6 +1793,13 @@ async function applyUpdatesPosixInApp() {
       message: 'Backend updated. Restart Hermes to load the new version.',
       percent: 100
     })
+    // On Linux (and other non-macOS POSIX), there is no .app bundle to
+    // atomically swap, so we cannot hand off to a swapper script.  Quit
+    // after a short delay so the Electron update overlay does not freeze
+    // the UI indefinitely (GitHub #41737).  The user relaunches manually.
+    if (!IS_MAC) {
+      setTimeout(() => app.quit(), 1200)
+    }
     return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
   }
 

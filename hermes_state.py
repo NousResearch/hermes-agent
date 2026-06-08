@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -904,6 +904,23 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 15:
+                # v15: Backfill device_name for sessions that were created
+                # before the device_name column was added. Re-resolve using
+                # the current device identity so existing sessions appear
+                # under their correct device group instead of "Unknown".
+                try:
+                    from hermes_constants import get_device_name
+                    dn = get_device_name()
+                    cursor.execute(
+                        "UPDATE sessions SET device_name = ? WHERE device_name IS NULL",
+                        (dn,),
+                    )
+                    updated = cursor.rowcount
+                    if updated:
+                        logger.info("backfilled device_name=%r for %d sessions", dn, updated)
+                except Exception:
+                    logger.debug("device_name backfill skipped", exc_info=True)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",

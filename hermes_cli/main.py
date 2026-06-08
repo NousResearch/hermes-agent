@@ -8236,7 +8236,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     PROJECT_ROOT,
                     f"origin/{branch}..HEAD",
                 )
-                if local_commit_count and local_commit_count > 0:
+                if local_commit_count is None:
+                    print(
+                        "✗ Fast-forward not possible, and Hermes could not determine whether local commits exist."
+                    )
+                    print("  Update stopped so local commits are not discarded by a hard reset.")
+                    print(
+                        f"  Inspect manually: git fetch origin && git log --oneline origin/{branch}..HEAD"
+                    )
+                    sys.exit(1)
+
+                if local_commit_count > 0:
                     print(
                         f"  ⚠ Fast-forward not possible; preserving {local_commit_count} local commit(s) by rebasing onto origin/{branch}..."
                     )
@@ -8269,9 +8279,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print("  Update stopped so your local Desktop changes are not discarded.")
                         sys.exit(1)
                 else:
-                    # No local commits to preserve (or we couldn't count them),
-                    # so keep the previous self-healing behavior for truly
-                    # diverged/force-pushed histories.
+                    # No local commits to preserve, so keep the previous
+                    # self-healing behavior for truly diverged/force-pushed
+                    # histories.
                     print(
                         "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                     )

@@ -496,6 +496,8 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
             if "origin/main..HEAD" in joined:
+                if local_commit_count is None:
+                    return SimpleNamespace(stdout="", stderr="fatal: bad revision\n", returncode=128)
                 return SimpleNamespace(stdout=f"{local_commit_count}\n", stderr="", returncode=0)
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "--ff-only" in joined:
@@ -539,6 +541,26 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
+
+
+def test_cmd_update_stops_when_local_commit_count_is_unknown(monkeypatch, tmp_path, capsys):
+    """If local commits cannot be counted, fail safe instead of hard-resetting."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_commit_count=None,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert [c for c in recorded if "reset" in c and "--hard" in c] == []
+    out = capsys.readouterr().out
+    assert "could not determine whether local commits exist" in out
+    assert "not discarded" in out
 
 
 def test_cmd_update_rebases_local_commits_when_ff_only_fails(monkeypatch, tmp_path, capsys):

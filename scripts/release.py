@@ -69,6 +69,7 @@ AUTHOR_MAP = {
     "ted.malone@outlook.com": "temalo",
     "adityamalik2833@gmail.com": "alarcritty",
     "islam666@users.noreply.github.com": "islam666",
+    "mnajafian@nvidia.com": "mnajafian-nv",
     "25539605+lsaether@users.noreply.github.com": "lsaether",
     "30080538+JimStenstrom@users.noreply.github.com": "JimStenstrom",
     "rod.boev@gmail.com": "rodboev",

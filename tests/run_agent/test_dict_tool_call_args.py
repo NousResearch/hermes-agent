@@ -40,14 +40,15 @@ class _FakeChatCompletions:
 
 
 class _FakeClient:
-    def __init__(self):
-        self.chat = SimpleNamespace(completions=_FakeChatCompletions())
+    def __init__(self, completions):
+        self.chat = SimpleNamespace(completions=completions)
 
 
 def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
     from run_agent import AIAgent
 
-    monkeypatch.setattr("run_agent.OpenAI", lambda **kwargs: _FakeClient())
+    completions = _FakeChatCompletions()
+    monkeypatch.setattr("run_agent.OpenAI", lambda **kwargs: _FakeClient(completions))
     monkeypatch.setattr(
         "run_agent.get_tool_definitions",
         lambda *args, **kwargs: [{"function": {"name": "read_file"}}],

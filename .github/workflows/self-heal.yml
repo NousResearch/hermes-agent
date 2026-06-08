@@ -1,0 +1,165 @@
+name: Self-Heal Pipeline
+
+on:
+  schedule:
+    # This will be replaced by the updated cron string
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Tests"]
+    types:
+      - completed
+
+concurrency:
+  group: selfheal-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  repair:
+    # On scheduled events, only run on the default branch
+    if: >
+      github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'failure' &&
+      (github.event_name != 'schedule' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check for duplicate/stale Self-Heal PRs
+        id: check-pr
+        run: |
+          # Loop prevention and duplicate check
+          if [[ "${{ github.ref }}" == refs/heads/selfheal-* ]]; then
+            echo "Already on a self-heal branch. Exiting."
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # We use gh CLI to check for open PRs with the automation label
+          open_prs=$(gh pr list --label "self-heal" --state open --json number -q '.[].number')
+          if [ -n "$open_prs" ]; then
+             echo "An open self-heal PR already exists ($open_prs). Skipping."
+             echo "skip=true" >> $GITHUB_OUTPUT
+             exit 0
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout Code
+        if: steps.check-pr.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        if: steps.check-pr.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Setup Python
+        if: steps.check-pr.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Sync dependencies
+        if: steps.check-pr.outputs.skip != 'true'
+        run: uv sync --all-extras --dev
+
+      - name: Run Initial Healthcheck
+        if: steps.check-pr.outputs.skip != 'true'
+        id: initial_health
+        run: |
+          if scripts/healthcheck.sh; then
+             echo "Healthcheck passed initially. No repair needed."
+             echo "passed=true" >> $GITHUB_OUTPUT
+          else
+             echo "Healthcheck failed. Proceeding with repair."
+             echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Run Self-Heal Pipeline
+        if: steps.check-pr.outputs.skip != 'true' && steps.initial_health.outputs.passed != 'true'
+        id: run_repair
+        run: |
+          if python scripts/self_heal.py; then
+            echo "success=true" >> $GITHUB_OUTPUT
+          else
+            echo "success=false" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Check Diff & Entropy
+        if: steps.check-pr.outputs.skip != 'true' && steps.run_repair.outputs.success == 'true'
+        id: check_diff
+        run: |
+          diff=$(git status --porcelain)
+          if [ -z "$diff" ]; then
+             echo "No diff generated. Exiting."
+             echo "has_diff=false" >> $GITHUB_OUTPUT
+             exit 0
+          fi
+          echo "has_diff=true" >> $GITHUB_OUTPUT
+
+          # Very basic entropy / secret check in diff
+          if git diff | grep -iE 'secret|token|password|api_key|credential'; then
+             echo "High entropy / secret pattern detected in diff! Aborting."
+             echo "safe=false" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          echo "safe=true" >> $GITHUB_OUTPUT
+
+      - name: Set PR Title
+        if: steps.check-pr.outputs.skip != 'true' && steps.check_diff.outputs.has_diff == 'true' && steps.check_diff.outputs.safe == 'true'
+        id: pr_title
+        run: |
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+             echo "title=[Self-Heal Scheduled] Drift fixes" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "workflow_run" ]; then
+             echo "title=[Self-Heal Reactive] CI fix" >> $GITHUB_OUTPUT
+          else
+             echo "title=[Self-Heal Manual] Repair" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Pull Request
+        if: steps.check-pr.outputs.skip != 'true' && steps.check_diff.outputs.has_diff == 'true' && steps.check_diff.outputs.safe == 'true'
+        run: |
+          BRANCH_NAME="selfheal-$(date +%s)"
+          git checkout -b "$BRANCH_NAME"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "${{ steps.pr_title.outputs.title }}"
+          git push origin "$BRANCH_NAME"
+
+          # Create PR via gh CLI
+          cat << 'EOF' > pr_body.txt
+          This PR was automatically generated by the Self-Heal Coding Agent.
+
+          **Trigger:** ${{ github.event_name }}
+
+          The pipeline successfully applied drift fixes (lockfile update, auto-format, or type stubs) and verified that the project passes its healthchecks.
+
+          *Refer to the Self-Heal CLI context chat for more details.*
+          EOF
+
+          gh pr create --title "${{ steps.pr_title.outputs.title }}" --body-file pr_body.txt --label "automation,self-heal" --base main --head "$BRANCH_NAME"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-heal-logs
+          path: |
+            .github/
+            scripts/

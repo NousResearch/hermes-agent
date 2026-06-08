@@ -1169,9 +1169,7 @@ class ProcessRegistry:
         # contract so consumers can rely on result["status"] unconditionally.
         if "status" not in approval:
             approval = {**approval, "status": "blocked"}
-        return approval
-
-    def write_stdin(self, session_id: str, data: str) -> dict:
+        return approval    def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
         session = self.get(session_id)
         if session is None:

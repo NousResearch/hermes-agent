@@ -7,3 +7,12 @@
 **Vulnerability:** The application was parsing XML directly from untrusted HTTP callbacks (like WeCom Webhooks and RSS Feeds) using Python's standard `xml.etree.ElementTree`, which is vulnerable to XML External Entity (XXE) attacks.
 **Learning:** Parsing XML content from external sources can lead to severe security vulnerabilities, including Local File Inclusion, DoS, and SSRF.
 **Prevention:** Always use `defusedxml.ElementTree` or `defusedxml.minidom` instead of `xml.etree.ElementTree` when parsing any XML payload obtained from user input, webhooks, or external URLs.
+## 2025-05-14 - [Sanitize Subprocess Environments in `hermes_cli/tools_config.py`]
+**Vulnerability:** `subprocess.run` calls in `hermes_cli/tools_config.py` (specifically in `_pip_install` and `_run_post_setup` hooks) were executing without environment sanitization.
+**Learning:** This could leak sensitive Hermes-managed API keys and secrets to external package managers (like `npm` or `pip`) or installation scripts (like the `cua-driver` curl-to-bash script).
+**Prevention:** Always apply `_sanitize_subprocess_env` from `tools.environments.local` to the environment dictionary before passing it to `subprocess.run` or `subprocess.Popen`.
+
+## 2024-05-30 - [Sanitize Subprocess Environments in `tools/transcription_tools.py`]
+**Vulnerability:** `subprocess.run` calls in `tools/transcription_tools.py` (specifically in `_prepare_local_audio` and `_transcribe_local_command`) were executing without environment sanitization.
+**Learning:** This could leak sensitive Hermes-managed API keys and secrets to external processes (like `ffmpeg` or `faster-whisper` binaries).
+**Prevention:** Always apply `_sanitize_subprocess_env` from `tools.environments.local` to the environment dictionary before passing it to `subprocess.run` or `subprocess.Popen`.

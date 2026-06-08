@@ -12,6 +12,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
+    is_shared_multi_user_session,
 )
 
 # Legacy name preserved for these tests; product renamed the function to
@@ -885,6 +886,71 @@ class TestWhatsAppSessionKeyConsistency:
         )
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
+
+    def test_telegram_general_topic_uses_group_user_isolation_by_default(self):
+        """Telegram General-topic routing id must not disable group isolation."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="1",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="1",
+            user_id="bob",
+        )
+
+        assert (
+            build_session_key(alice)
+            == "agent:main:telegram:group:-1002285219667:1:alice"
+        )
+        assert (
+            build_session_key(bob)
+            == "agent:main:telegram:group:-1002285219667:1:bob"
+        )
+        assert build_session_key(alice) != build_session_key(bob)
+
+    def test_telegram_general_topic_can_share_when_group_isolation_disabled(self):
+        """Deployments that explicitly share group sessions still can share General."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="1",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="1",
+            user_id="bob",
+        )
+
+        assert (
+            build_session_key(alice, group_sessions_per_user=False)
+            == "agent:main:telegram:group:-1002285219667:1"
+        )
+        assert (
+            build_session_key(alice, group_sessions_per_user=False)
+            == build_session_key(bob, group_sessions_per_user=False)
+        )
+
+    def test_telegram_general_topic_shared_session_detection_matches_keying(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="1",
+            user_id="alice",
+        )
+
+        assert is_shared_multi_user_session(source) is False
+        assert is_shared_multi_user_session(source, group_sessions_per_user=False) is True
 
     def test_group_thread_sessions_are_shared_by_default(self):
         """Threads default to shared sessions — user_id is NOT appended."""

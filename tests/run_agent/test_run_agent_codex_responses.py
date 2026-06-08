@@ -1115,10 +1115,8 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
     }
 
 
-def test_interim_commentary_preserves_assistant_content(monkeypatch):
-    """Interim commentary must not silently mutate assistant text containing
-    literal <memory-context> markers — that's legitimate model output (docs,
-    code).  Streaming-path leak prevention happens delta-by-delta upstream."""
+def test_interim_commentary_strips_echoed_memory_context(monkeypatch):
+    """Interim commentary should strip leaked internal memory-context blocks."""
     agent = _build_agent(monkeypatch)
     observed = {}
     agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
@@ -1136,7 +1134,8 @@ def test_interim_commentary_preserves_assistant_content(monkeypatch):
 
     agent._emit_interim_assistant_message({"role": "assistant", "content": content})
 
-    assert "<memory-context>" in observed["text"]
+    assert "<memory-context>" not in observed["text"]
+    assert "stale memory" not in observed["text"]
     assert "I'll inspect the repo structure first." in observed["text"]
 
 

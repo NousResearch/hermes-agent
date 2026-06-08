@@ -291,7 +291,15 @@ def _resolved_path(path: str) -> Path:
 def _snapshot_text(path: Path) -> str | None:
     """Return UTF-8 file content, or None for missing/unreadable files."""
     try:
-        return path.read_text(encoding="utf-8")
+        if path.is_symlink():
+            return None
+        resolved = path.resolve()
+        if not resolved.is_file():
+            return None
+        max_bytes = 256 * 1024
+        if resolved.stat().st_size > max_bytes:
+            return None
+        return resolved.read_text(encoding="utf-8")
     except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError, OSError):
         return None
 
@@ -359,8 +367,8 @@ def capture_local_edit_snapshot(tool_name: str, function_args: dict | None) -> L
     if not paths:
         return None
 
-    snapshot = LocalEditSnapshot(paths=paths)
-    for path in paths:
+    snapshot = LocalEditSnapshot(paths=paths[:128])
+    for path in snapshot.paths:
         snapshot.before[str(path)] = _snapshot_text(path)
     return snapshot
 
@@ -1004,5 +1012,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
-

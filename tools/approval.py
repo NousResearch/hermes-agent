@@ -37,6 +37,14 @@ _approval_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     default="",
 )
 
+# Per-run identity for approvals issued during a single agent turn (API server
+# attaches a run_id; cron/CLI leave this empty).  Used by approval-hook
+# observers that need to correlate user prompts back to the originating run.
+_approval_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_run_id",
+    default="",
+)
+
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook for the approval system.
@@ -84,9 +92,9 @@ def reset_current_run_id(token: contextvars.Token[str]) -> None:
     _approval_run_id.reset(token)
 
 
-def get_current_run_id() -> str:
-    """Return the active API run id for approval binding, if any."""
-    return _approval_run_id.get()
+def get_current_run_id(default: str = "") -> str:
+    """Return the active API run id for approval binding, or *default* when unset."""
+    return _approval_run_id.get() or default
 
 
 def get_current_session_key(default: str = "default") -> str:

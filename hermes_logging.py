@@ -196,8 +196,9 @@ def setup_logging(
     """
     global _logging_initialized
     home = hermes_home or get_hermes_home()
+    _ensure_private_dir(home)
     log_dir = home / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(log_dir)
 
     # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
@@ -307,8 +308,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     _LOG_MODE = 0o660
 
     def __init__(self, *args, **kwargs):
-        from hermes_cli.config import is_managed
-        self._managed = is_managed()
+        self._managed = _is_managed_mode()
         super().__init__(*args, **kwargs)
 
     def _secure_managed_open(self):
@@ -367,11 +367,12 @@ def _add_rotating_handler(
         ):
             return  # already attached
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(path.parent)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
         encoding="utf-8",
     )
+    _ensure_log_file_permissions(path, managed=_is_managed_mode())
     handler.setLevel(level)
     handler.setFormatter(formatter)
     if log_filter is not None:
@@ -400,3 +401,38 @@ def _read_logging_config():
     except Exception:
         pass
     return (None, None, None)
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """Create *path* and apply secure directory permissions when possible."""
+    managed = _is_managed_mode()
+    mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
+    try:
+        default_mode = 0o770 if managed else 0o700
+        mode = int(mode_str, 8) if mode_str else default_mode
+    except ValueError:
+        mode = 0o770 if managed else 0o700
+
+    try:
+        path.mkdir(mode=mode, parents=True, exist_ok=True)
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def _ensure_log_file_permissions(path: Path, managed: bool = False) -> None:
+    """Apply secure file permissions for log files."""
+    try:
+        if path.exists():
+            os.chmod(path, 0o660 if managed else 0o600)
+    except OSError:
+        pass
+
+
+def _is_managed_mode() -> bool:
+    """Best-effort managed-mode detection."""
+    try:
+        from hermes_cli.config import is_managed
+        return bool(is_managed())
+    except Exception:
+        return False

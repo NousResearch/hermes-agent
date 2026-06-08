@@ -70,11 +70,11 @@ def _seed_exact_failures(agent: AIAgent, tool_name: str, args: dict, count: int 
         )
 
 
-def _hard_stop_config(**overrides) -> dict:
+def _soft_warning_config(**overrides) -> dict:
     cfg = {
         "tool_loop_guardrails": {
             "warnings_enabled": True,
-            "hard_stop_enabled": True,
+            "hard_stop_enabled": False,
             "hard_stop_after": {
                 "exact_failure": 2,
                 "same_tool_failure": 8,
@@ -86,8 +86,8 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
-def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
-    agent = _make_agent("web_search")
+def test_config_disabled_hard_stop_sequential_path_warns_without_blocking_execution():
+    agent = _make_agent("web_search", config=_soft_warning_config())
     args = {"query": "same"}
     _seed_exact_failures(agent, "web_search", args)
     starts = []
@@ -112,8 +112,8 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
     assert agent._tool_guardrail_halt_decision is None
 
 
-def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution():
-    agent = _make_agent("web_search", config=_hard_stop_config())
+def test_default_hard_stop_blocks_repeated_exact_failure_before_execution():
+    agent = _make_agent("web_search")
     args = {"query": "same"}
     _seed_exact_failures(agent, "web_search", args)
     starts = []
@@ -153,8 +153,8 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
-def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
-    agent = _make_agent("web_search", config=_hard_stop_config())
+def test_default_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
+    agent = _make_agent("web_search")
     blocked_args = {"query": "blocked"}
     allowed_args = {"query": "allowed"}
     _seed_exact_failures(agent, "web_search", blocked_args)
@@ -207,8 +207,8 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
-def test_default_run_conversation_warns_without_guardrail_halt():
-    agent = _make_agent("web_search", max_iterations=10)
+def test_config_disabled_hard_stop_run_conversation_warns_without_guardrail_halt():
+    agent = _make_agent("web_search", max_iterations=10, config=_soft_warning_config())
     same_args = {"query": "same"}
     responses = [
         _mock_response(
@@ -237,8 +237,8 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
-def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
-    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+def test_default_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
+    agent = _make_agent("web_search", max_iterations=10)
     same_args = {"query": "same"}
     responses = [
         _mock_response(

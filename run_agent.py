@@ -3945,7 +3945,7 @@ class AIAgent:
         return None
 
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM and browser resources for a given task.
+        """Clean up VM, browser, and file-state resources for a given task.
 
         Skips ``cleanup_vm`` when the active terminal environment is marked
         persistent (``persistent_filesystem=True``) so that long-lived sandbox
@@ -3972,6 +3972,12 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+        try:
+            from tools import file_state
+            file_state.cleanup_task(task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup file state for task {task_id}: {e}")
 
     # ------------------------------------------------------------------
     # Background memory/skill review
@@ -4366,6 +4372,24 @@ class AIAgent:
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
+
+    @staticmethod
+    def _memory_tool_write_succeeded(function_result: str) -> bool:
+        """Return True only when the builtin memory tool accepted a new write.
+
+        Returns False for both hard failures (success=false) and no-op responses
+        such as duplicate-entry rejections (success=true, message contains
+        "already exists"), which must not be mirrored to external providers.
+        """
+        try:
+            result = json.loads(function_result)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not (isinstance(result, dict) and result.get("success") is True):
+            return False
+        # Exclude no-op responses where the entry was already present
+        message = result.get("message", "")
+        return "already exists" not in message.lower()
 
     def _build_memory_write_metadata(
         self,
@@ -7545,7 +7569,7 @@ class AIAgent:
         if cb is None or not isinstance(assistant_msg, dict):
             return
         content = assistant_msg.get("content")
-        visible = self._strip_think_blocks(content or "").strip()
+        visible = sanitize_context(self._strip_think_blocks(content or "")).strip()
         if not visible or visible == "(empty)":
             return
         already_streamed = self._interim_content_was_streamed(visible)
@@ -10532,8 +10556,12 @@ class AIAgent:
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in {"add", "replace"}:
+            # Bridge only after the built-in memory store accepted the write.
+            if (
+                self._memory_manager
+                and function_args.get("action") in {"add", "replace"}
+                and self._memory_tool_write_succeeded(result)
+            ):
                 try:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
@@ -11163,8 +11191,12 @@ class AIAgent:
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
                 )
-                # Bridge: notify external memory provider of built-in memory writes
-                if self._memory_manager and function_args.get("action") in {"add", "replace"}:
+                # Bridge only after the built-in memory store accepted the write.
+                if (
+                    self._memory_manager
+                    and function_args.get("action") in {"add", "replace"}
+                    and self._memory_tool_write_succeeded(function_result)
+                ):
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),
@@ -14912,7 +14944,9 @@ class AIAgent:
                             # old code injected "Calling the X tools..." which
                             # poisoned the conversation history.  Just use the
                             # fallback text as the final response and break.
-                            final_response = self._strip_think_blocks(fallback).strip()
+                            final_response = sanitize_context(
+                                self._strip_think_blocks(fallback)
+                            ).strip()
                             self._response_was_previewed = True
                             break
 
@@ -15159,7 +15193,9 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    final_response = self._strip_think_blocks(final_response).strip()
+                    final_response = sanitize_context(
+                        self._strip_think_blocks(final_response)
+                    ).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
@@ -15406,6 +15442,9 @@ class AIAgent:
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
+
+        if isinstance(final_response, str):
+            final_response = sanitize_context(final_response).strip()
 
         # Build result with interrupt info if applicable
         result = {

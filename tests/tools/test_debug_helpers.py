@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from unittest.mock import patch
 
 from tools.debug_helpers import DebugSession
@@ -76,6 +77,7 @@ class TestDebugSessionEnabled:
         files = list(tmp_path.glob("*.json"))
         assert len(files) == 1
         assert "test_tool_debug_" in files[0].name
+        assert stat.S_IMODE(files[0].stat().st_mode) == 0o600
 
         data = json.loads(files[0].read_text())
         assert data["session_id"] == ds.session_id

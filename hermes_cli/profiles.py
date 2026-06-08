@@ -1025,6 +1025,7 @@ def export_profile(name: str, output_path: str) -> Path:
             shutil.copytree(
                 profile_dir,
                 staged,
+                symlinks=True,
                 ignore=_default_export_ignore(profile_dir),
             )
             result = shutil.make_archive(base, "gztar", tmpdir, "default")

@@ -34,6 +34,13 @@ class TurnRecord:
     reasoning_tokens: int = 0
     context_used: int = 0
     context_length: int = 0
+    # Last-call cache split — decomposes the context WINDOW (occupancy), as
+    # opposed to the cache_*_tokens above which are whole-turn billing sums.
+    # These three sum to the final call's prompt_tokens == context_used.
+    # Nullable in the store (old rows predate the columns → None).
+    last_cache_read_tokens: Optional[int] = None
+    last_cache_write_tokens: Optional[int] = None
+    last_uncached_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
     cost_status: str = "unknown"                   # estimated|included|unknown|partial
     interrupted: bool = False

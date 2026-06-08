@@ -58,3 +58,38 @@ def test_turn_usage_fold_sums_calls():
     assert summary["cache_read_tokens"] == 230
     assert summary["total_tokens"] == 330
     assert summary["latency_s"] == 3.5
+
+
+def test_turn_usage_includes_last_call_split_keys():
+    """The fold must surface the FINAL call's cache split (window decomposition)."""
+    src = inspect.getsource(cl.run_conversation)
+    fire = src[src.index('"on_session_end",'):]
+    # The payload assembled just above the fire carries the three last-call keys.
+    block = src[:src.index('"on_session_end",')]
+    assert '"last_cache_read_tokens": _last_cache_read' in block
+    assert '"last_cache_write_tokens": _last_cache_write' in block
+    assert '"last_uncached_tokens": _last_uncached' in block
+    # Sourced from the LAST call, not summed.
+    assert "_last_call = _turn_calls[-1]" in block
+
+
+def test_last_call_split_taken_from_final_call_not_summed():
+    """Simulate the fold's last-call extraction on a 3-call turn."""
+    _turn_calls = [
+        {"input_tokens": 2, "cache_read_tokens": 0, "cache_write_tokens": 100,
+         "output_tokens": 5, "reasoning_tokens": 0, "total_tokens": 107, "latency_s": 1.0},
+        {"input_tokens": 2, "cache_read_tokens": 100, "cache_write_tokens": 50,
+         "output_tokens": 5, "reasoning_tokens": 0, "total_tokens": 157, "latency_s": 1.0},
+        {"input_tokens": 2, "cache_read_tokens": 150, "cache_write_tokens": 30,
+         "output_tokens": 5, "reasoning_tokens": 0, "total_tokens": 187, "latency_s": 1.0},
+    ]
+    _last_call = _turn_calls[-1]
+    last_cache_read = int(_last_call.get("cache_read_tokens", 0) or 0)
+    last_cache_write = int(_last_call.get("cache_write_tokens", 0) or 0)
+    last_uncached = int(_last_call.get("input_tokens", 0) or 0)
+    # Final call only — NOT the summed 250 cache_read across all calls.
+    assert last_cache_read == 150
+    assert last_cache_write == 30
+    assert last_uncached == 2
+    # The three sum to the final call's prompt_tokens (== context_used invariant).
+    assert last_cache_read + last_cache_write + last_uncached == 182

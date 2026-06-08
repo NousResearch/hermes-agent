@@ -64,6 +64,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             reasoning INT,
             context_used INT,
             context_length INT,
+            last_cache_read INT,
+            last_cache_write INT,
+            last_uncached INT,
             cost_usd REAL,
             cost_status TEXT,
             interrupted INT,
@@ -99,11 +102,38 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ON turns(cost_usd);
         """
     )
+    # Additive migration for DBs created before the last-call cache split
+    # columns existed. CREATE TABLE IF NOT EXISTS won't add columns to an
+    # existing table, so ALTER each missing one. Guarded per-column so a
+    # partially-migrated DB (or a second writer that already added them)
+    # never raises "duplicate column name".
+    _existing = {row[1] for row in conn.execute("PRAGMA table_info(turns)").fetchall()}
+    for _col in ("last_cache_read", "last_cache_write", "last_uncached"):
+        if _col not in _existing:
+            try:
+                conn.execute(f"ALTER TABLE turns ADD COLUMN {_col} INT")
+            except sqlite3.OperationalError:
+                pass  # raced with another writer; column now exists
     conn.commit()
 
 
 def _int(value: Any) -> int:
     return int(value or 0)
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Preserve NULL for columns that are genuinely absent (old rows / no data).
+
+    Unlike ``_int`` (which coerces None→0), this keeps None as SQL NULL so a
+    missing last-call split reads back as None and the renderer can fall back to
+    the plain Context line instead of showing a misleading ``0`` split.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _bool_int(value: Any) -> int:
@@ -128,6 +158,12 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     data["cache_read_tokens"] = data.pop("cache_read")
     data["cache_write_tokens"] = data.pop("cache_write")
     data["reasoning_tokens"] = data.pop("reasoning")
+    # Last-call cache split — preserve None (old rows predate these columns).
+    # Expose under the _tokens names for renderer consistency, keeping the raw
+    # column keys too so direct SELECT * consumers (e.g. /context) still match.
+    data["last_cache_read_tokens"] = data.get("last_cache_read")
+    data["last_cache_write_tokens"] = data.get("last_cache_write")
+    data["last_uncached_tokens"] = data.get("last_uncached")
     try:
         data["tools"] = json.loads(data.get("tools") or "[]")
     except json.JSONDecodeError:
@@ -147,9 +183,10 @@ def insert_turn(record: TurnRecord) -> None:
                     profile, provider, model, platform, chat_id, chat_name,
                     api_calls, tools, input_tokens, output_tokens, cache_read,
                     cache_write, reasoning, context_used, context_length,
+                    last_cache_read, last_cache_write, last_uncached,
                     cost_usd, cost_status, interrupted, alerted, user_text,
                     final_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.turn_id,
@@ -172,6 +209,9 @@ def insert_turn(record: TurnRecord) -> None:
                     _int(record.reasoning_tokens),
                     _int(record.context_used),
                     _int(record.context_length),
+                    _int_or_none(record.last_cache_read_tokens),
+                    _int_or_none(record.last_cache_write_tokens),
+                    _int_or_none(record.last_uncached_tokens),
                     _cost_float(record.cost_usd),
                     record.cost_status or "unknown",
                     _bool_int(record.interrupted),

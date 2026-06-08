@@ -8414,6 +8414,7 @@ class GatewayRunner:
                         thread_id=str(source.thread_id) if source.thread_id else "",
                         user_id=str(source.user_id) if source.user_id else "",
                         user_name=str(source.user_name) if source.user_name else "",
+                        session_key=str(_quick_key or ""),
                     )
                     try:
                         result = plugin_handler(user_args)

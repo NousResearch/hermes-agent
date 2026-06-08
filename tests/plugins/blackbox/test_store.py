@@ -281,3 +281,84 @@ def test_debug_stats_on_missing_db_is_graceful(tmp_path, monkeypatch):
     assert stats["turns"] == 0
     assert stats["tool_calls"] == 0
     assert "error" not in stats
+
+
+# --------------------------------------------------------------------------- #
+# Last-call cache split (window decomposition) — columns + migration
+# --------------------------------------------------------------------------- #
+def test_last_call_split_round_trips_and_sums_to_context_used(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # last split sums to context_used by construction (invariant from the loop).
+    record = make_record(
+        "turn-split",
+        context_used=206941,
+        last_cache_read_tokens=3100,
+        last_cache_write_tokens=203839,
+        last_uncached_tokens=2,
+    )
+    store.insert_turn(record)
+    row = store.get_turn("turn-split")
+    assert row["last_cache_read_tokens"] == 3100
+    assert row["last_cache_write_tokens"] == 203839
+    assert row["last_uncached_tokens"] == 2
+    assert (
+        row["last_cache_read_tokens"]
+        + row["last_cache_write_tokens"]
+        + row["last_uncached_tokens"]
+    ) == row["context_used"]
+
+
+def test_last_call_split_defaults_to_null_when_absent(tmp_path, monkeypatch):
+    """Old/unsplit records must persist NULL (not 0) so the renderer can fall back."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store.insert_turn(make_record("turn-nosplit"))  # no last_* overrides
+    row = store.get_turn("turn-nosplit")
+    assert row["last_cache_read_tokens"] is None
+    assert row["last_cache_write_tokens"] is None
+    assert row["last_uncached_tokens"] is None
+
+
+def test_schema_migration_adds_columns_to_preexisting_table(tmp_path, monkeypatch):
+    """A DB created WITHOUT the split columns gets them added idempotently.
+
+    Simulates a real legacy DB: a full pre-split `turns` table (all the original
+    columns, just missing the three last_* ones). _ensure_schema must ALTER them
+    in, and a freshly inserted record must then round-trip through them.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db_path = store._db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Full pre-split schema (everything except last_cache_read/write/uncached).
+    legacy = sqlite3.connect(str(db_path))
+    legacy.execute(
+        """
+        CREATE TABLE turns (
+            turn_id TEXT PRIMARY KEY, parent_turn_id TEXT, is_subagent INT,
+            ts_start REAL, ts_end REAL, profile TEXT, provider TEXT, model TEXT,
+            platform TEXT, chat_id TEXT, chat_name TEXT, api_calls INT, tools TEXT,
+            input_tokens INT, output_tokens INT, cache_read INT, cache_write INT,
+            reasoning INT, context_used INT, context_length INT, cost_usd REAL,
+            cost_status TEXT, interrupted INT, alerted INT DEFAULT 0,
+            user_text TEXT, final_text TEXT
+        )
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    # Re-open through the store: _ensure_schema must ALTER in the new columns.
+    with store._connect() as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
+    assert {"last_cache_read", "last_cache_write", "last_uncached"} <= cols
+
+    # A new record round-trips through the migrated columns.
+    store.insert_turn(make_record("post-migrate", last_cache_read_tokens=7,
+                                  last_cache_write_tokens=8, last_uncached_tokens=1))
+    row = store.get_turn("post-migrate")
+    assert row["last_cache_read_tokens"] == 7
+    assert row["last_cache_write_tokens"] == 8
+    assert row["last_uncached_tokens"] == 1
+
+    # Idempotent: connecting again must not raise (columns already present).
+    with store._connect() as conn:
+        conn.execute("SELECT last_cache_read FROM turns").fetchall()

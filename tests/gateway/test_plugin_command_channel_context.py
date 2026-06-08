@@ -61,6 +61,7 @@ async def test_plugin_command_sees_channel_context(monkeypatch):
         captured["platform"] = get_session_env("HERMES_SESSION_PLATFORM", "")
         captured["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID", "")
         captured["chat_name"] = get_session_env("HERMES_SESSION_CHAT_NAME", "")
+        captured["session_key"] = get_session_env("HERMES_SESSION_KEY", "")
         return "ok"
 
     monkeypatch.setattr(
@@ -77,6 +78,9 @@ async def test_plugin_command_sees_channel_context(monkeypatch):
     assert captured["platform"] == "discord"
     assert captured["chat_id"] == "111222333"
     assert captured["chat_name"] == "ops"
+    # session_key must be bound too (resident-agent / transcript resolution
+    # for /context's non-fixed breakdown depends on it).
+    assert captured["session_key"]
 
 
 @pytest.mark.asyncio

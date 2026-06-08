@@ -93,6 +93,16 @@ def _int_value(value: Any) -> int:
         return 0
 
 
+def _int_or_none_value(value: Any) -> int | None:
+    """Like _int_value but preserves None (absent last-call split → SQL NULL)."""
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _float_value(value: Any) -> float:
     try:
         return float(value or 0)
@@ -219,6 +229,9 @@ def _build_record(
         reasoning_tokens=_int_value(usage.get("reasoning_tokens")),
         context_used=_int_value(usage.get("context_used")),
         context_length=_int_value(usage.get("context_length")),
+        last_cache_read_tokens=_int_or_none_value(usage.get("last_cache_read_tokens")),
+        last_cache_write_tokens=_int_or_none_value(usage.get("last_cache_write_tokens")),
+        last_uncached_tokens=_int_or_none_value(usage.get("last_uncached_tokens")),
         cost_usd=cost_usd,
         cost_status=cost_status,
         interrupted=bool(interrupted),

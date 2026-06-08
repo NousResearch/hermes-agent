@@ -4928,6 +4928,18 @@ def run_conversation(
         _turn_usage = None
         try:
             if _turn_calls:
+                # Last-call cache split — the FINAL provider call's own
+                # cache_read/cache_write/uncached. Distinct from the summed
+                # cache_* totals above (which are whole-turn billing and
+                # double-count re-sent context). These three sum to the final
+                # call's prompt_tokens == context_used, so they decompose the
+                # context WINDOW (occupancy) rather than the turn's SPEND. The
+                # /context "Context window" line renders this split so the
+                # window numbers are visibly different from the billed sums.
+                _last_call = _turn_calls[-1]
+                _last_cache_read = int(_last_call.get("cache_read_tokens", 0) or 0)
+                _last_cache_write = int(_last_call.get("cache_write_tokens", 0) or 0)
+                _last_uncached = int(_last_call.get("input_tokens", 0) or 0)
                 _turn_usage = {
                     "api_calls": len(_turn_calls),
                     "input_tokens": sum(c["input_tokens"] for c in _turn_calls),
@@ -4944,6 +4956,10 @@ def run_conversation(
                         if getattr(agent, "context_compressor", None) else 0,
                     "context_length": getattr(agent.context_compressor, "context_length", 0)
                         if getattr(agent, "context_compressor", None) else 0,
+                    # Last-call cache split (decomposes the context window).
+                    "last_cache_read_tokens": _last_cache_read,
+                    "last_cache_write_tokens": _last_cache_write,
+                    "last_uncached_tokens": _last_uncached,
                     # Subagent attribution (set by delegate_tool before run; absent at top level).
                     "parent_turn_id": getattr(agent, "_blackbox_parent_turn_id", None),
                     "parent_platform": getattr(agent, "_blackbox_parent_platform", None),

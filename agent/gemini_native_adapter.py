@@ -402,6 +402,7 @@ def build_gemini_request(
     top_p: Optional[float] = None,
     stop: Any = None,
     thinking_config: Any = None,
+    service_tier: Optional[str] = None,
 ) -> Dict[str, Any]:
     contents, system_instruction = _build_gemini_contents(messages)
     request: Dict[str, Any] = {"contents": contents}
@@ -442,6 +443,9 @@ def build_gemini_request(
         generation_config["thinkingConfig"] = normalized_thinking
     if generation_config:
         request["generationConfig"] = generation_config
+
+    if service_tier:
+        request["service_tier"] = service_tier
 
     return request
 
@@ -897,6 +901,7 @@ class GeminiNativeClient:
         stop: Any = None,
         extra_body: Optional[Dict[str, Any]] = None,
         timeout: Any = None,
+        service_tier: Optional[str] = None,
         **_: Any,
     ) -> Any:
         thinking_config = None
@@ -912,6 +917,7 @@ class GeminiNativeClient:
             top_p=top_p,
             stop=stop,
             thinking_config=thinking_config,
+            service_tier=service_tier,
         )
 
         if stream:

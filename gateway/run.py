@@ -2795,7 +2795,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(route["model"], tier=service_tier)
         except Exception:
             overrides = None
         route["request_overrides"] = overrides or {}
@@ -3236,11 +3236,11 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
 
     @staticmethod
     def _load_service_tier() -> str | None:
-        """Load Priority Processing setting from config.yaml.
+        """Load service tier setting from config.yaml.
 
-        Reads agent.service_tier from config.yaml. Accepted values mirror the CLI:
-        "fast"/"priority"/"on" => "priority", while "normal"/"off" disables it.
-        Returns None when unset or unsupported.
+        Reads agent.service_tier from config.yaml. Accepted values:
+        "fast"/"priority"/"on" => "priority", "flex" => "flex",
+        "normal"/"off" => None (disabled).
         """
         cfg = _load_gateway_runtime_config()
         raw = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
@@ -3250,6 +3250,8 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
             return None
         if value in {"fast", "priority", "on"}:
             return "priority"
+        if value == "flex":
+            return "flex"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
 

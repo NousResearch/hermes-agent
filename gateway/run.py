@@ -11203,16 +11203,30 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
-                        await adapter.send(chat_id, "✅ Hermes update finished.", metadata=metadata)
+                        result = await adapter.send(
+                            chat_id,
+                            "✅ Hermes update finished.",
+                            metadata=metadata,
+                        )
                     else:
-                        await adapter.send(
+                        result = await adapter.send(
                             chat_id,
                             "❌ Hermes update failed (exit code {}).".format(exit_code),
                             metadata=metadata,
                         )
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.warning(
+                            "Update final notification to %s was not delivered: %s",
+                            session_key,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        await asyncio.sleep(poll_interval)
+                        continue
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
+                    await asyncio.sleep(poll_interval)
+                    continue
 
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
@@ -11402,7 +11416,25 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(chat_id, msg, metadata=metadata)
+                result = await adapter.send(chat_id, msg, metadata=metadata)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.warning(
+                        "Post-update notification to %s:%s was not delivered: %s",
+                        platform_str,
+                        chat_id,
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    cleanup = False
+                    active_pending_path = pending_path
+                    try:
+                        if claimed_path.exists():
+                            claimed_path.replace(pending_path)
+                    except OSError as move_err:
+                        logger.warning(
+                            "Failed to preserve post-update notification markers: %s",
+                            move_err,
+                        )
+                    return False
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
                     platform_str,

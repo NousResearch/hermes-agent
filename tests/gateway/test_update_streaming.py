@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -411,6 +411,41 @@ class TestWatchUpdateProgress:
         assert not pending_path.exists()
         assert not output_path.exists()
         assert not exit_code_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_keeps_markers_when_final_notification_send_fails(self, tmp_path):
+        """Falha retornada por adapter.send deve preservar estado para retry."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        output_path.write_text("done\n")
+        exit_code_path.write_text("0")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = SendResult(
+            success=False,
+            error="telegram timed out",
+            retryable=True,
+        )
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.05,
+                stream_interval=0.1,
+                timeout=0.15,
+            )
+
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
 
     @pytest.mark.asyncio
     async def test_failure_exit_code(self, tmp_path):

@@ -181,6 +181,54 @@ _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
+# ── Persist last-used model/provider (#42111) ─────────────────────────
+_LAST_MODEL_FILE = _hermes_home / "last_model.json"
+
+
+def _load_persisted_model() -> dict:
+    """Load the last-used model/provider from ``last_model.json``.
+
+    Returns ``{"model": str, "provider": str}`` or empty dict if file
+    missing / unreadable / stale (>30 days).
+    """
+    try:
+        import json as _json
+        from datetime import datetime, timezone, timedelta
+
+        if not _LAST_MODEL_FILE.exists():
+            return {}
+        data = _json.loads(_LAST_MODEL_FILE.read_text())
+        ts = data.get("timestamp")
+        if ts:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(ts)
+            if age > timedelta(days=30):
+                return {}
+        result: dict = {}
+        if data.get("model"):
+            result["model"] = data["model"]
+        if data.get("provider"):
+            result["provider"] = data["provider"]
+        return result
+    except Exception:
+        return {}
+
+
+def _save_persisted_model(model: str = "", provider: str = "") -> None:
+    """Save the current model/provider to ``last_model.json``."""
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+
+        data = {
+            "model": model or "",
+            "provider": provider or "",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        _LAST_MODEL_FILE.write_text(_json.dumps(data, indent=2) + "\n")
+    except Exception:
+        pass  # best-effort; never block session on persist failure
+
+
 _REASONING_TAGS = (
     "REASONING_SCRATCHPAD",
     "think",
@@ -13785,6 +13833,23 @@ def main(
     
     parsed_skills = _parse_skills_argument(skills)
 
+    # ── Persist last-used model/provider (#42111) ─────────────────────
+    # If persist_last is enabled and user didn't pass explicit --model or
+    # --provider, load the last-used values from last_model.json.
+    _persist_last = False
+    try:
+        _model_cfg = CLI_CONFIG.get("model", {})
+        _persist_last = bool(
+            isinstance(_model_cfg, dict) and _model_cfg.get("persist_last")
+        )
+    except Exception:
+        pass
+    if _persist_last and not model and not provider:
+        _persisted = _load_persisted_model()
+        if _persisted:
+            model = _persisted.get("model") or model
+            provider = _persisted.get("provider") or provider
+
     # Create CLI instance
     cli = HermesCLI(
         model=model,
@@ -14127,10 +14192,22 @@ def main(
             cli._show_security_advisories()
             cli.chat(query, images=single_query_images or None)
             cli._print_exit_summary()
+        # Persist model/provider on successful single-query completion
+        if _persist_last:
+            _save_persisted_model(
+                model=getattr(cli, "model", ""),
+                provider=getattr(cli, "provider", ""),
+            )
         return
-    
+
     # Run interactive mode
     cli.run()
+    # Persist model/provider on successful interactive session completion
+    if _persist_last:
+        _save_persisted_model(
+            model=getattr(cli, "model", ""),
+            provider=getattr(cli, "provider", ""),
+        )
 
 
 if __name__ == "__main__":

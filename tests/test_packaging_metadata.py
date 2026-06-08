@@ -1,6 +1,7 @@
-from pathlib import Path
+import ast
 import re
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -265,3 +266,113 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
+
+# ---------------------------------------------------------------------------
+# Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
+#
+# The same package is exact-pinned in two hand-maintained places: the
+# [project.optional-dependencies] extras in pyproject.toml and the LAZY_DEPS
+# allowlist in tools/lazy_deps.py (the lazy-install path deliberately mirrors
+# the extras — see the comments on LAZY_DEPS: "match the corresponding extra
+# in pyproject.toml ... update both this map AND the corresponding extra").
+#
+# They have silently drifted more than once: the aiohttp Slack pin (3.13.3 in
+# the extras vs 3.13.4 in lazy_deps) and the anthropic pin (0.86.0 vs 0.87.0).
+# The version a user ends up with then depends on whether the backend was
+# installed eagerly (extra) or lazily (lazy_deps) — and for a CVE bump applied
+# to only one side, that divergence is a latent security regression. These two
+# tests assert the documented contract: the two sources agree, in lockstep.
+# ---------------------------------------------------------------------------
+
+# Matches "name==version" and "name[extra]==version", ignoring any trailing
+# environment marker / comment. Only exact pins are collected; ranged specs
+# (">=", "<") can't be compared for equality and are skipped.
+_PIN_RE = re.compile(
+    r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;,#]+)"
+)
+
+
+def _canonical(name: str) -> str:
+    # PEP 503 normalization so e.g. discord.py / discord-py compare equal.
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pins_from_specs(specs):
+    """Map canonical package name -> set of exact-pinned versions seen."""
+    pins: dict[str, set[str]] = {}
+    for spec in specs:
+        m = _PIN_RE.match(spec)
+        if not m:
+            continue
+        pins.setdefault(_canonical(m.group(1)), set()).add(m.group(2))
+    return pins
+
+
+def _pyproject_pinned_specs():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    specs = list(data["project"].get("dependencies", []))
+    for extra in data["project"].get("optional-dependencies", {}).values():
+        specs.extend(extra)
+    return specs
+
+
+def _lazy_deps_pinned_specs():
+    """Extract every string literal inside the LAZY_DEPS dict via AST.
+
+    Parsing rather than importing keeps this test free of
+    tools/lazy_deps.py's runtime imports and side effects.
+    """
+    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    specs: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
+            continue
+        for sub in ast.walk(node.value):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                specs.append(sub.value)
+    assert specs, "could not extract specs from LAZY_DEPS — the AST parser drifted"
+    return specs
+
+
+def test_pyproject_pins_are_internally_consistent():
+    """No package may be exact-pinned to two different versions in pyproject.
+
+    A package legitimately appearing in several extras (e.g. aiohttp in
+    messaging/slack/homeassistant/sms) must use the SAME version everywhere.
+    """
+    pins = _pins_from_specs(_pyproject_pinned_specs())
+    conflicts = {name: sorted(v) for name, v in pins.items() if len(v) > 1}
+    assert not conflicts, (
+        "pyproject.toml exact-pins the same package to different versions "
+        "across [project.dependencies] / extras: " + str(conflicts)
+    )
+
+
+def test_pyproject_and_lazy_deps_pins_agree():
+    """Every package pinned in BOTH places must use the same version.
+
+    Regression guard for the aiohttp / anthropic extras-vs-lazy drift:
+    tools/lazy_deps.py mirrors the pyproject extras, so a CVE bump applied to
+    one and not the other leaves users on a vulnerable version depending on
+    the install path. Bump both in lockstep.
+    """
+    py = _pins_from_specs(_pyproject_pinned_specs())
+    lazy = _pins_from_specs(_lazy_deps_pinned_specs())
+
+    mismatches = [
+        f"{name}: pyproject={sorted(py[name])} lazy_deps={sorted(lazy[name])}"
+        for name in sorted(set(py) & set(lazy))
+        if py[name] != lazy[name]
+    ]
+    assert not mismatches, (
+        "pyproject.toml extras and tools/lazy_deps.py disagree on the pinned "
+        "version of the same package — bump both in lockstep:\n  "
+        + "\n  ".join(mismatches)
+    )

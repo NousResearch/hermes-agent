@@ -825,6 +825,44 @@ class TestLaunchdServiceRecovery:
 
         assert "stopped" in capsys.readouterr().out.lower()
 
+    def test_launchd_restart_bootouts_stale_job_before_bootstrap(self, monkeypatch, capsys):
+        """When kickstart fails with 'unloaded', bootout stale registration before bootstrap."""
+        calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_run_with_kickstart_fail(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    3, cmd, stderr="No such process"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run_with_kickstart_fail)
+
+        gateway_cli.launchd_restart()
+
+        # bootout must happen before bootstrap
+        assert ["launchctl", "bootout", target] in calls
+        bootout_idx = calls.index(["launchctl", "bootout", target])
+        bootstrap_cmd = ["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)]
+        assert bootstrap_cmd in calls
+        bootstrap_idx = calls.index(bootstrap_cmd)
+        assert bootout_idx < bootstrap_idx, "bootout must precede bootstrap"
+        out = capsys.readouterr().out
+        assert "Service restarted" in out
+
     def test_launchd_fallback_exits_when_spawn_fails(self, monkeypatch, capsys):
         """If the detached spawn fails, surface the manual workaround and exit 1."""
         monkeypatch.setattr(gateway_cli, "_spawn_detached_gateway", lambda: False)

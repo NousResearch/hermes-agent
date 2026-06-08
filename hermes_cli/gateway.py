@@ -3548,10 +3548,15 @@ def launchd_restart():
                 _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
                 return
             raise
-        # Job not loaded — bootstrap and start fresh
+        # Job not loaded — bootout any stale registration, then bootstrap fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
+            subprocess.run(
+                ["launchctl", "bootout", target],
+                check=False,
+                timeout=30,
+            )
             subprocess.run(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
                 check=True,

@@ -1989,6 +1989,42 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
+        # Wire the durable approval store (production-switch).
+        # tools.approval will use this for /approve <id> atomic consume,
+        # pinned-policy persistence, cross-process visibility, and the
+        # Phase 3 stricter-runtime guard. Without this call, gateway
+        # falls back to the legacy in-memory FIFO which does not satisfy
+        # the security invariants documented in
+        # docs/security/gateway-approval-lifecycle.md.
+        #
+        # State DB lives under the existing hermes-home convention
+        # (~/.hermes/state.db by default; respects
+        # set_hermes_home_override for profile-isolated tests).
+        try:
+            from tools.approval import set_default_approval_store
+            from tools.approval_store_sqlite import SqliteApprovalStore
+            set_default_approval_store(SqliteApprovalStore())
+            logger.info(
+                "Gateway approval store initialised: SqliteApprovalStore "
+                "(state.db under hermes home)"
+            )
+        except Exception as exc:
+            # Surface loudly AND mark the approval-store as init-failed so
+            # _await_gateway_decision fails closed for subsequent gateway-
+            # context approval requests rather than silently degrading to
+            # the legacy in-memory FIFO. Gateway is allowed to keep
+            # starting (other features work) but dangerous-command
+            # approval is hard-stopped until an operator restores wiring.
+            from tools.approval import mark_approval_store_init_failed
+            logger.error(
+                "FAILED to wire SqliteApprovalStore as gateway approval "
+                "store: %s. Gateway will continue starting but ALL "
+                "dangerous-command approval requests will fail closed "
+                "until this is fixed. Investigate immediately.",
+                exc, exc_info=True,
+            )
+            mark_approval_store_init_failed(str(exc))
+
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
@@ -14988,76 +15024,115 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval_by_id,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
+        # Per the security spec: ``/approve <id>`` is the ONLY accepted
+        # form. No FIFO. No "oldest pending item". No bulk /approve all.
+        # If the user wants to approve multiple proposals, each gets its
+        # own /approve <id>. This forces the user to read the id from the
+        # specific approval request rather than blindly approving whatever
+        # happens to be at the head of a queue.
+        _CHOICE_KEYWORDS = {
+            "session", "ses", "always",
+            "permanent", "permanently", "once",
+        }
 
-        # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
-        resolve_all = "all" in args
-        remaining = [a for a in args if a != "all"]
+        args_raw = event.get_command_args().strip().split()
+        args_lower = [a.lower() for a in args_raw]
 
-        if any(a in {"always", "permanent", "permanently"} for a in remaining):
+        # First non-keyword arg = approval_id (case-preserved because
+        # secrets.token_urlsafe ids include case-sensitive base64url chars).
+        candidate_id: Optional[str] = None
+        for original, lowered in zip(args_raw, args_lower):
+            if lowered not in _CHOICE_KEYWORDS:
+                candidate_id = original
+                break
+
+        if candidate_id is None:
+            # No id given. Refuse — do not silently FIFO-approve anything.
+            return t("gateway.approve.id_required")
+
+        # Choice extraction from any keyword tokens after the id.
+        if any(a in {"always", "permanent", "permanently"} for a in args_lower):
             choice = "always"
-        elif any(a in {"session", "ses"} for a in remaining):
+        elif any(a in {"session", "ses"} for a in args_lower):
             choice = "session"
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
-        if not count:
+        count = resolve_gateway_approval_by_id(session_key, candidate_id, choice)
+        if count == 0:
+            # store.get returned None / wrong session / non-pending /
+            # consume lost the race. Fail closed with explicit message.
+            logger.info(
+                "Gateway /approve %s rejected (session=%s) — not pending",
+                candidate_id, session_key,
+            )
             return t("gateway.approve.no_pending")
+        if count == -1:
+            # Orphan: store row consumed, but no live waiter existed
+            # (gateway restart, agent run finished). The command did NOT
+            # execute. User must know — saying "approved/resuming" would
+            # lie about a side effect that never occurred.
+            logger.info(
+                "Gateway /approve %s consumed orphan — no live waiter "
+                "(session=%s); no command executed",
+                candidate_id, session_key,
+            )
+            return t("gateway.approve.orphan_consumed")
 
-        # Resume typing indicator — agent is about to continue processing.
         _adapter = self.adapters.get(source.platform)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
-        logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
+        logger.info(
+            "User approved %d command(s) by id %s via /approve (%s)",
+            count, candidate_id, choice,
+        )
         plural = "plural" if count > 1 else "singular"
         return t(f"gateway.approve.{choice}_{plural}", count=count)
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
-        """Handle /deny command — reject pending dangerous command(s).
+        """Handle /deny <id> command — reject a specific pending approval.
 
-        Signals blocked agent thread(s) with a 'deny' result so they receive
-        a definitive BLOCKED message, same as the CLI deny flow.
-
-        ``/deny`` denies the oldest; ``/deny all`` denies everything.
+        Mirrors :meth:`_handle_approve_command`: an explicit ``approval_id``
+        is required. No FIFO, no /deny all. Each pending proposal must be
+        addressed by exact id so users cannot deny the wrong command by
+        habit.
         """
         source = event.source
         session_key = self._session_key_for_source(source)
 
-        from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
-        )
+        from tools.approval import resolve_gateway_approval_by_id
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
+        args_raw = event.get_command_args().strip().split()
+        candidate_id: Optional[str] = args_raw[0] if args_raw else None
+
+        if candidate_id is None:
+            return t("gateway.deny.id_required")
+
+        count = resolve_gateway_approval_by_id(session_key, candidate_id, "deny")
+        if count == 0:
+            logger.info(
+                "Gateway /deny %s rejected (session=%s) — not pending",
+                candidate_id, session_key,
+            )
             return t("gateway.deny.no_pending")
+        if count == -1:
+            # Orphan: store row marked denied, but original waiter is gone.
+            # Still meaningful — the proposal can no longer be approved.
+            logger.info(
+                "Gateway /deny %s denied orphan (session=%s)",
+                candidate_id, session_key,
+            )
+            return t("gateway.deny.orphan_denied")
 
-        args = event.get_command_args().strip().lower()
-        resolve_all = "all" in args
-
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
-        if not count:
-            return t("gateway.deny.no_pending")
-
-        # Resume typing indicator — agent continues (with BLOCKED result).
         _adapter = self.adapters.get(source.platform)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
-        logger.info("User denied %d dangerous command(s) via /deny", count)
-        if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
+        logger.info("User denied command id %s via /deny", candidate_id)
         return t("gateway.deny.denied_singular")
 
     # Built-in messaging platforms where the ``/update`` command is allowed.

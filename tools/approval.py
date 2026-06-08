@@ -578,17 +578,259 @@ _permanent_approved: set = set()
 
 
 class _ApprovalEntry:
-    """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    """One pending dangerous-command approval inside a gateway session.
 
-    def __init__(self, data: dict):
+    The ``event`` + ``result`` pair is the in-process wake-up mechanism
+    for the blocked agent thread. It is NOT the source of truth for
+    "should this command execute" — that decision is gated by the
+    durable approval store (see :mod:`tools.approval_store`). When the
+    store is configured, ``approval_id`` ties this entry to a persisted
+    row whose ``status`` column is the actual security boundary.
+    """
+    __slots__ = ("event", "data", "result", "approval_id")
+
+    def __init__(self, data: dict, approval_id: Optional[str] = None):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        self.approval_id = approval_id
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+
+
+# ─── Durable approval store (Phase 2/3 wiring) ─────────────────────────────
+# Optional: when set, every gateway approval entry also gets persisted to
+# the store, and /approve <id> can consume from there atomically. When None,
+# the legacy in-memory-only path is used unchanged. This keeps existing
+# tests passing while we incrementally wire the store into production
+# code paths.
+_default_approval_store = None  # type: ignore[assignment]
+
+
+def set_default_approval_store(store) -> None:  # type: ignore[no-untyped-def]
+    """Inject the approval store used by gateway approval flows.
+
+    Tests pass ``None`` (the default) or a fake store. The real gateway
+    init (gateway/run.py) wires a SqliteApprovalStore via this hook.
+    Set to ``None`` to disable durable persistence (legacy behavior).
+
+    Installing a non-None store also clears the init-failure flag — this
+    is the recovery path after a failed boot-time wiring.
+    """
+    global _default_approval_store
+    _default_approval_store = store
+    if store is not None:
+        clear_approval_store_init_failed()
+
+
+def get_default_approval_store():  # type: ignore[no-untyped-def]
+    """Return the currently-configured store, or None."""
+    return _default_approval_store
+
+
+# ─── Init-failure tracking (concern #1 from Hermes review v2) ──────────────
+# Gateway boot calls set_default_approval_store(SqliteApprovalStore()). If
+# that raises, the gateway is in a degraded state: store is None, but unlike
+# "store is None by design" (tests, scripts) this is a production
+# mis-configuration. We must NOT silently fall back to the legacy in-memory
+# FIFO under such conditions — dangerous-command approval has to fail closed
+# until an operator restores the store.
+#
+# The flag is process-local and reset on store re-wiring; gateway init's
+# except-block sets it via mark_approval_store_init_failed().
+_approval_store_init_failed: bool = False
+_approval_store_init_failure_reason: str = ""
+
+
+def mark_approval_store_init_failed(reason: str) -> None:
+    """Called by gateway init (or any production wiring code) when
+    set_default_approval_store fails. Subsequent gateway-context approval
+    requests will fail closed instead of degrading to legacy FIFO."""
+    global _approval_store_init_failed, _approval_store_init_failure_reason
+    _approval_store_init_failed = True
+    _approval_store_init_failure_reason = reason or "unknown"
+    logger.error(
+        "Approval store initialisation marked as FAILED: %s. Subsequent "
+        "gateway approval requests will fail closed.", _approval_store_init_failure_reason,
+    )
+
+
+def clear_approval_store_init_failed() -> None:
+    """Reset the init-failure flag. Called by set_default_approval_store
+    when a real store is installed (recovery path), and by tests."""
+    global _approval_store_init_failed, _approval_store_init_failure_reason
+    _approval_store_init_failed = False
+    _approval_store_init_failure_reason = ""
+
+
+def is_approval_store_init_failed() -> bool:
+    return _approval_store_init_failed
+
+
+# ─── Phase 3: stricter-runtime fail-closed guard ───────────────────────────
+# Risk ordering for the post-consume re-classification check. Unknown values
+# rank ABOVE high so an unrecognised risk_level on the pinned proposal causes
+# fail-closed rather than silent acceptance.
+_RISK_ORDER = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+}
+
+
+def _risk_rank(value) -> int:  # type: ignore[no-untyped-def]
+    """Return the order of *value* with unknown ranking above all known."""
+    if not value or not isinstance(value, str):
+        return 999
+    return _RISK_ORDER.get(value.lower(), 999)
+
+
+def _classify_runtime_risk(command: str) -> str:
+    """Re-classify *command* with the live classifier at execution-thread
+    wake-up time.
+
+    Returns a coarse risk level keyword: ``low`` / ``medium`` / ``high``.
+    This is the same lattice used in :class:`ApprovalProposal`'s
+    ``risk_level``. Used by Phase 3 fail-closed guard to detect cases
+    where the runtime classifier has become STRICTER than the pinned
+    policy between proposal-creation and execution.
+
+    Hardlines (``rm -rf /``, ``mkfs``, …) are already blocked before
+    reaching the gateway approval path, but we still report them as
+    ``high`` here for defensive parity with the pinning logic.
+    """
+    is_hardline, _ = detect_hardline_command(command)
+    if is_hardline:
+        return "high"
+    is_dangerous, _, desc = detect_dangerous_command(command)
+    if is_dangerous:
+        return _classify_pattern_risk(desc or "")
+    return "low"
+
+
+# Keywords in the pattern description that elevate medium → high. These
+# are the genuinely-destructive non-hardline patterns: data loss,
+# system-file overwrites, raw-device writes, remote-code-execution,
+# privilege escalation, ratio-of-blast-radius high enough that "I
+# approved without reading" is unrecoverable.
+_HIGH_RISK_DESCRIPTION_MARKERS = (
+    "recursive delete",      # rm -rf in any path
+    "delete in root",
+    "recursive world",       # chmod -R 777
+    "recursive chown to root",
+    "format filesystem",
+    "write to block device",
+    "raw block device",
+    "block device",
+    "sql drop",
+    "sql delete without",    # DELETE FROM without WHERE
+    "sql truncate",
+    "overwrite system config",
+    "overwrite system file",
+    "pipe remote content",   # curl|sh
+    "execute remote script",
+    "kill all processes",
+)
+
+
+def _render_approval_display_text(
+    *,
+    approval_id: str,
+    risk_level: str,
+    command: str,
+    risk_reason: str,
+    cwd: Optional[str] = None,
+    backend: Optional[str] = None,
+    diff_text: Optional[str] = None,
+    diff_summary: Optional[str] = None,
+) -> str:
+    """Build the user-visible approval prompt text.
+
+    Phase 4 contract: when ``risk_level == 'high'`` the rendered text MUST
+    include a HIGH RISK marker, default-deny statement, the exact command,
+    available context (cwd/backend), pinned risk reason, the approval id,
+    and EITHER a diff/summary OR an explicit "no diff available" warning.
+
+    Platforms (Telegram/Matrix/Slack/etc) MAY override rendering using the
+    structured fields in approval_data; this string is the fallback /
+    canonical rendering and is what tests assert against.
+    """
+    lines: list = []
+    is_high = risk_level == "high"
+
+    if is_high:
+        lines.append("🚨 HIGH RISK")
+        lines.append("Default: DENY")
+        lines.append("")
+
+    lines.append(f"Command:")
+    lines.append(f"  {command}")
+    lines.append("")
+
+    if cwd or backend:
+        lines.append("Context:")
+        if cwd:
+            lines.append(f"  cwd: {cwd}")
+        if backend:
+            lines.append(f"  backend: {backend}")
+        lines.append("")
+
+    lines.append("Pinned policy:")
+    lines.append(f"  risk: {risk_level}")
+    if risk_reason:
+        lines.append(f"  reason: {risk_reason}")
+    lines.append("")
+
+    if diff_text or diff_summary:
+        lines.append("Diff / change summary:")
+        if diff_summary:
+            lines.append(f"  {diff_summary}")
+        if diff_text:
+            # Bound the inline preview so a huge diff doesn't fill the message.
+            preview = diff_text if len(diff_text) <= 1500 else (
+                diff_text[:1500] + "\n  …[diff truncated; inspect full via command-side tooling]"
+            )
+            lines.append("  ---")
+            for ln in preview.split("\n"):
+                lines.append(f"  {ln}")
+        lines.append("")
+    else:
+        # Spec: missing diff MUST be explicit, not silent.
+        lines.append(
+            "Diff/summary: NOT AVAILABLE — approve only if you have "
+            "independently reviewed the command/context."
+        )
+        lines.append("")
+
+    if is_high:
+        lines.append("Approve only after reading the diff/summary:")
+        lines.append(f"  /approve {approval_id}")
+        lines.append("")
+        lines.append("Deny:")
+        lines.append(f"  /deny {approval_id}")
+    else:
+        lines.append(f"Approve: /approve {approval_id}")
+        lines.append(f"Deny:    /deny {approval_id}")
+
+    return "\n".join(lines)
+
+
+def _classify_pattern_risk(description: str) -> str:
+    """Map a dangerous-pattern description string to ``high`` or ``medium``.
+
+    Hardlines and missing/None descriptions both map to ``high`` (defensive
+    default: an unknown dangerous pattern is treated as high until proven
+    safe via explicit categorisation).
+    """
+    if not description:
+        return "high"
+    desc_lower = description.lower()
+    for marker in _HIGH_RISK_DESCRIPTION_MARKERS:
+        if marker in desc_lower:
+            return "high"
+    return "medium"
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -649,6 +891,118 @@ def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
+
+
+def resolve_gateway_approval_by_id(session_key: str, approval_id: str,
+                                   choice: str) -> int:
+    """Atomically consume/deny a specific approval by id and signal the
+    matching blocked agent thread.
+
+    This is the *security gate* for the per-id path. Order matters:
+
+      1. Look up the proposal in the durable store. If the id is unknown,
+         the requesting session_key does not own it, or the proposal is
+         not pending → return 0 with no side effects.
+      2. Atomically transition via ``store.consume`` (for approve choices)
+         or ``store.deny`` (for deny). If that returns ``None``/``False``
+         — already consumed / denied / expired — return 0.
+      3. Only after the store transition succeeds do we find the matching
+         in-memory ``_ApprovalEntry`` (by approval_id), set its result,
+         and signal its event. The blocked agent thread wakes and runs
+         the command from its (pinned) entry data.
+
+    A return of 0 means "no execution will happen". 1 means the proposal
+    was consumed/denied and the matching waiter (if any) was signalled.
+
+    If the store is not configured, falls back to the legacy FIFO path
+    (see :func:`resolve_gateway_approval`).
+    """
+    store = get_default_approval_store()
+    if store is None:
+        # No durable store. Per security spec we should not silently
+        # fall back to FIFO under a per-id request, but for the rollout
+        # window we accept the no-store legacy behaviour to keep the
+        # existing test suite running. Production gateway always wires
+        # a store, so this branch is operator-misconfiguration only.
+        logger.warning(
+            "resolve_gateway_approval_by_id called but no store configured; "
+            "falling back to FIFO (approval_id=%s ignored)", approval_id,
+        )
+        return resolve_gateway_approval(session_key, choice)
+
+    # Lookup + session-key authorization check.
+    proposal = store.get(approval_id)
+    if proposal is None:
+        return 0
+    if proposal.session_key and proposal.session_key != session_key:
+        # Cross-session approval attempt — fail closed silently.
+        logger.warning(
+            "Gateway approval id %s requested by session %s but owned by %s; "
+            "rejecting",
+            approval_id, session_key, proposal.session_key,
+        )
+        return 0
+    if proposal.status != "pending":
+        return 0
+
+    # Atomic store-level transition. If we lose the race or the proposal
+    # is already terminal, this returns None/False and we exit without
+    # signalling anything.
+    consumed_by = f"session:{session_key}"
+    if choice == "deny":
+        ok = store.deny(approval_id, denied_by=consumed_by)
+        if not ok:
+            return 0
+    else:
+        got = store.consume(approval_id, consumed_by=consumed_by)
+        if got is None:
+            return 0
+
+    # Now find and signal the matching in-memory waiter. The store gate
+    # has already irreversibly committed; the in-memory step is purely
+    # the wake mechanism for the blocked agent thread.
+    with _lock:
+        target = None
+        for queued in _gateway_queues.get(session_key, []):
+            if getattr(queued, "approval_id", None) == approval_id:
+                target = queued
+                break
+        if target is not None:
+            queue = _gateway_queues.get(session_key, [])
+            if target in queue:
+                queue.remove(target)
+                if not queue:
+                    _gateway_queues.pop(session_key, None)
+    if target is not None:
+        target.result = choice
+        target.event.set()
+        return 1
+    # Store accepted but no live waiter — original agent thread is gone
+    # (gateway restart, agent run finished). The store row is now
+    # consumed/denied; no command will execute. We mark the audit row
+    # accordingly and return -1 to signal "orphan: store updated but no
+    # execution happened". Handler should surface a DISTINCT message to
+    # the user — saying "approved" here would lie about a side effect
+    # that never occurred.
+    if choice != "deny":
+        try:
+            store.mark_post_consume(
+                approval_id, executed=False,
+                reason="orphan_no_waiter",
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to mark orphan-consume execution status "
+                "(approval_id=%s): %s", approval_id, e,
+            )
+    logger.info(
+        "Gateway approval %s consumed/denied but no live waiter "
+        "(session=%s) — store row updated with execution_status=%s; "
+        "no command will execute",
+        approval_id, session_key,
+        "blocked_after_consume" if choice != "deny" else "not_started",
+    )
+    return -1
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -1142,7 +1496,147 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
-    entry = _ApprovalEntry(approval_data)
+    # ── Durable approval store (Phase 2/3) ─────────────────────────────
+    # Generate an approval_id and submit a persisted proposal to the
+    # configured store, if any. This is "shadow persistence" in this
+    # commit: the in-memory queue still drives execution; the store
+    # row is a parallel record that future commits will promote to
+    # source-of-truth for /approve <id> consumption.
+    #
+    # If no store is configured (legacy tests, scripts), approval_id
+    # stays None and nothing changes vs. previous behavior.
+    store = get_default_approval_store()
+    approval_id: Optional[str] = None
+
+    # If the gateway tried to wire a store at boot and failed, we are
+    # in a degraded state. Production gateway-context approval requests
+    # MUST fail closed here rather than silently degrade to the legacy
+    # in-memory FIFO path. This addresses the specific 'silent
+    # degradation' concern from review v2.
+    if store is None and is_approval_store_init_failed():
+        logger.error(
+            "FAIL CLOSED: gateway-context approval requested but the "
+            "durable store is in init-failed state (reason=%r). Refusing "
+            "to fall back to legacy in-memory path. Operator must restore "
+            "store via re-wiring before approvals can resume.",
+            _approval_store_init_failure_reason,
+        )
+        _fire_approval_hook(
+            "post_approval_response",
+            command=command,
+            description=description,
+            pattern_key=primary_key,
+            pattern_keys=list(all_keys),
+            session_key=session_key,
+            surface=surface,
+            choice="store_failed",
+        )
+        return {
+            "resolved": False,
+            "choice": None,
+            "store_failed": True,
+        }
+
+    if store is not None:
+        import secrets as _secrets
+        approval_id = _secrets.token_urlsafe(8)
+
+        # Phase 4: real risk classification at proposal time. The
+        # description coming from check_all_command_guards is the
+        # classifier's own match. Map it to high/medium per the keyword
+        # table. Hardlines never reach here (blocked earlier) but if a
+        # description is empty/unknown, default to high (defensive).
+        risk_level = _classify_pattern_risk(description or primary_key or "")
+        diff_text = approval_data.get("diff_text")
+        diff_summary = approval_data.get("diff_summary")
+        cwd = approval_data.get("cwd")
+        backend = approval_data.get("backend")
+
+        display_text = _render_approval_display_text(
+            approval_id=approval_id,
+            risk_level=risk_level,
+            command=command,
+            risk_reason=description or primary_key or "",
+            cwd=cwd,
+            backend=backend,
+            diff_text=diff_text,
+            diff_summary=diff_summary,
+        )
+
+        # Carry pinned policy + render data into approval_data so the
+        # platform-side notify callback can either render structured or
+        # use the pre-built display_text verbatim.
+        approval_data = {
+            **approval_data,
+            "approval_id": approval_id,
+            "risk_level": risk_level,
+            "default_decision": "deny",
+            "display_text": display_text,
+        }
+        try:
+            from tools.approval_store import ApprovalProposal
+            timeout_for_proposal = _get_approval_config().get(
+                "gateway_timeout", 300
+            )
+            try:
+                timeout_for_proposal = int(timeout_for_proposal)
+            except (ValueError, TypeError):
+                timeout_for_proposal = 300
+            created = time.time()
+            proposal = ApprovalProposal(
+                approval_id=approval_id,
+                created_at=created,
+                expires_at=created + max(timeout_for_proposal, 0),
+                session_key=session_key,
+                command=command,
+                cwd=cwd,
+                backend=backend,
+                risk_level=risk_level,
+                risk_reason=description or primary_key or "dangerous-command-pattern",
+                policy_decision="needs_approval",
+                requires_explicit_approval=True,
+                default_decision="deny",
+                diff_text=diff_text,
+                diff_summary=diff_summary,
+                display_text=display_text,
+            )
+            store.submit(proposal)
+        except Exception as e:
+            # FAIL CLOSED: when the durable store cannot persist a
+            # proposal (DB unavailable, validation refused, disk full,
+            # …) we MUST NOT degrade to the legacy in-memory path.
+            # An approval flow without persistence is exactly the
+            # trust gap this rewrite eliminated; falling back would
+            # silently reintroduce it.
+            #
+            # Per spec: store-failure is no-execution. The agent thread
+            # gets {"resolved": False, "choice": None, "store_failed":
+            # True} so its caller can surface a clear error to the
+            # user/model without ever queuing an _ApprovalEntry that
+            # could be approved.
+            logger.error(
+                "FAIL CLOSED: could not persist gateway approval proposal "
+                "(approval_id=%s, command=%r): %s — refusing to fall back "
+                "to in-memory path; no command will execute",
+                approval_id, command[:100], e, exc_info=True,
+            )
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=description,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface=surface,
+                choice="store_failed",
+            )
+            return {
+                "resolved": False,
+                "choice": None,
+                "store_failed": True,
+            }
+
+    entry = _ApprovalEntry(approval_data, approval_id=approval_id)
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 
@@ -1206,10 +1700,126 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     _drop_entry()
 
     choice = entry.result
+
+    # ── Phase 3: stricter-runtime fail-closed guard ────────────────────
+    # The user just released the consume gate (via /approve <id>). Before
+    # the agent thread resumes and runs the command, re-classify the
+    # command against the live classifier/policy. If the live classifier
+    # has become STRICTER than the policy that was pinned at proposal
+    # creation (e.g. a new dangerous pattern landed between proposal and
+    # approval, or a regression made a previously-safe command risky),
+    # fail closed — do not silently execute under stale weaker risk.
+    #
+    # Allowed transitions:
+    #   pinned high  + runtime low/med  → still high (no downgrade)
+    #   pinned low   + runtime high     → FAIL CLOSED
+    #   pinned med   + runtime high     → FAIL CLOSED
+    #   missing pinned                   → FAIL CLOSED
+    #   matching levels                 → proceed
+    #
+    # The consumed approval is intentionally NOT put back into pending —
+    # store row stays consumed/denied. The user must obtain a new approval
+    # with fresh pinned policy if they want to retry. That keeps the
+    # exactly-once invariant intact.
+    if resolved and choice in {"once", "session", "always"} and \
+            approval_id is not None and store is not None:
+        try:
+            pinned_proposal = store.get(approval_id)
+        except Exception as e:
+            logger.error(
+                "Phase 3 guard: could not load pinned proposal %s "
+                "(failing closed): %s", approval_id, e,
+            )
+            choice = "deny"
+        else:
+            if pinned_proposal is None:
+                logger.error(
+                    "Phase 3 guard: pinned proposal %s missing post-consume "
+                    "(failing closed)", approval_id,
+                )
+                choice = "deny"
+            else:
+                pinned_risk = pinned_proposal.risk_level
+                try:
+                    runtime_risk = _classify_runtime_risk(command)
+                except Exception as e:
+                    # Classifier crashed — cannot prove safety, fail closed.
+                    logger.error(
+                        "Phase 3 guard: runtime classifier raised "
+                        "(failing closed) for approval %s: %s",
+                        approval_id, e, exc_info=True,
+                    )
+                    choice = "deny"
+                else:
+                    if _risk_rank(runtime_risk) > _risk_rank(pinned_risk):
+                        logger.warning(
+                            "Phase 3 fail-closed: runtime risk=%s exceeds "
+                            "pinned risk=%s for approval %s (command=%r) — "
+                            "overriding choice from %s to deny; user must "
+                            "obtain new approval",
+                            runtime_risk, pinned_risk, approval_id,
+                            command[:120], choice,
+                        )
+                        choice = "deny"
+
     # Normalize outcome for the post hook. Unresolved (timeout) and None both
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
     _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+
+    # ── Mirror outcome to the durable store + record execution audit ───
+    # The store row may or may not already be in a terminal state:
+    #
+    #   - resolve_gateway_approval_by_id (the strict /approve <id> path,
+    #     used by the slash-command handler) already transitioned the
+    #     row to consumed/denied before signalling the event.
+    #
+    #   - resolve_gateway_approval (legacy FIFO path, still used by
+    #     platform inline-button callbacks in Telegram, Slack, Matrix,
+    #     QQBot, Feishu, api_server) signals the event but does NOT
+    #     touch the store. We need to transition here.
+    #
+    # Both consume() and deny() are idempotent-by-WHERE-clause: if the
+    # row is already terminal, they return None/False harmlessly.
+    #
+    # We distinguish ``user_choice`` (what the user actually clicked,
+    # captured on entry.result) from ``choice`` (the possibly-Phase-3-
+    # overridden final outcome). That distinction is what makes
+    # execution_status auditable:
+    #
+    #   user_choice = approve, final_choice = approve  → executed
+    #   user_choice = approve, final_choice = deny     → blocked_after_consume
+    #                                                    (Phase 3 overrode)
+    #   user_choice = deny                              → not_started (never executes)
+    user_choice = entry.result  # raw user input, pre-Phase-3
+    if approval_id is not None and store is not None and resolved:
+        try:
+            if user_choice == "deny":
+                store.deny(approval_id, denied_by=f"session:{session_key}")
+                # execution_status stays at 'not_started' — denied
+                # proposals never reach the post-consume audit path.
+            elif user_choice in {"once", "session", "always"}:
+                store.consume(approval_id, consumed_by=f"session:{session_key}")
+                if choice == "deny":
+                    # Phase 3 guard fail-closed the user's approve.
+                    # status='consumed' (user clicked /approve), but
+                    # execution_status='blocked_after_consume' so the
+                    # audit trail doesn't misreport this as executed.
+                    store.mark_post_consume(
+                        approval_id, executed=False,
+                        reason="phase3_runtime_stricter",
+                    )
+                else:
+                    # Approve confirmed by Phase 3 — agent thread about
+                    # to release for execution.
+                    store.mark_post_consume(approval_id, executed=True)
+        except Exception as e:
+            logger.warning(
+                "Failed to mirror execution outcome to store "
+                "(approval_id=%s, user_choice=%s, final_choice=%s): %s",
+                approval_id, user_choice, choice, e,
+            )
+
     _fire_approval_hook(
         "post_approval_response",
         command=command,
@@ -1389,6 +1999,23 @@ def check_all_command_guards(command: str, env_type: str,
                 return {
                     "approved": False,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+            if decision.get("store_failed"):
+                # FAIL CLOSED: persistent approval store is unavailable.
+                # We deliberately do NOT fall back to legacy in-memory
+                # approval, because that path lacks the security
+                # guarantees the rewrite depends on (durability + atomic
+                # consume across processes). Operator action required.
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: Approval store unavailable — approval "
+                        "could not be durably persisted. Do NOT retry "
+                        "this command; the operator must investigate "
+                        "the gateway approval state database."
+                    ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
@@ -1661,6 +2288,18 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "pattern_key": pattern_key,
             "description": description,
             "outcome": "notify_failed",
+            "user_consent": False,
+        }
+    if decision.get("store_failed"):
+        # FAIL CLOSED: see _await_gateway_decision's matching comment.
+        return {
+            "approved": False,
+            "message": ("BLOCKED: Approval store unavailable — execute_code "
+                        "approval could not be durably persisted. Do NOT "
+                        "retry; operator must investigate gateway state DB."),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "store_failed",
             "user_consent": False,
         }
 

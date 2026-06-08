@@ -69,7 +69,9 @@ gateway:
     state_running:         "running"
 
   approve:
-    no_pending:            "No pending command to approve."
+    no_pending:            "No pending command with that id (already consumed, denied, expired, or unknown)."
+    id_required:           "Approval id required. Use: /approve <id>  (pending approvals must be approved by exact id for safety.)"
+    orphan_consumed:       "⚠️ Approval recorded, but the original command session is no longer active. The command was NOT executed. Re-issue the command if you still want it run."
     once_singular:         "✅ Command approved. The agent is resuming..."
     once_plural:           "✅ Commands approved ({count} commands). The agent is resuming..."
     session_singular:      "✅ Command approved (pattern approved for this session). The agent is resuming..."
@@ -118,7 +120,9 @@ gateway:
 
   deny:
     stale:                 "❌ Command denied (approval was stale)."
-    no_pending:            "No pending command to deny."
+    no_pending:            "No pending command with that id (already consumed, denied, expired, or unknown)."
+    id_required:           "Approval id required. Use: /deny <id>  (pending approvals must be denied by exact id for safety.)"
+    orphan_denied:         "❌ Approval denied (the original command session was no longer active; no command was waiting to be denied either way)."
     denied_singular:       "❌ Command denied."
     denied_plural:         "❌ Commands denied ({count} commands)."
 

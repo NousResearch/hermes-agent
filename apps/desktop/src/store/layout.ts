@@ -54,6 +54,11 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
 export const $sidebarPinsOpen = atom(true)
+// Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
+// true the whole time it's a floating overlay (not just while shown) so the
+// consumer mounts contents off-screen, ready to slide. ChatSidebar mounts its
+// rows on `sidebarOpen || this`.
+export const $sidebarOverlayMounted = atom(false)
 export const $sidebarRecentsOpen = atom(true)
 // Cron-job sessions live in their own section below recents, collapsed by
 // default (it only renders at all when cron sessions exist) so the
@@ -114,6 +119,10 @@ export function selectRightRailTab(id: RightRailTabId) {
 
 export function setSidebarPinsOpen(open: boolean) {
   $sidebarPinsOpen.set(open)
+}
+
+export function setSidebarOverlayMounted(mounted: boolean) {
+  $sidebarOverlayMounted.set(mounted)
 }
 
 export function setSidebarRecentsOpen(open: boolean) {

@@ -130,3 +130,37 @@ def test_only_some_links_present(fake_home):
     assert (local_bin / "node").exists()
     assert not (local_bin / "npm").is_symlink()
     assert not (local_bin / "npx").is_symlink()
+
+
+def test_removes_fhs_symlinks_in_usr_local_bin(fake_home, tmp_path, monkeypatch):
+    """Root FHS installs place node symlinks in /usr/local/bin.
+
+    We monkeypatch _node_symlink_candidate_dirs to return a temp dir standing
+    in for /usr/local/bin so the test doesn't need real root privileges.
+    """
+    hermes_home = fake_home / ".hermes"
+    node_bin = _make_hermes_node(hermes_home)
+
+    # Fake /usr/local/bin as a temp dir with our symlinks.
+    fhs_bin = tmp_path / "usr_local_bin"
+    fhs_bin.mkdir()
+    for name in ("node", "npm", "npx"):
+        (fhs_bin / name).symlink_to(node_bin / name)
+
+    # Ensure ~/.local/bin has NO symlinks (simulate pure FHS install).
+    local_bin = fake_home / ".local" / "bin"
+    for name in ("node", "npm", "npx"):
+        p = local_bin / name
+        if p.exists() or p.is_symlink():
+            p.unlink()
+
+    # Return only our fake FHS dir as a candidate.
+    monkeypatch.setattr(
+        uninstall, "_node_symlink_candidate_dirs", lambda: [fhs_bin]
+    )
+
+    removed = uninstall.remove_node_symlinks(hermes_home)
+
+    assert sorted(p.name for p in removed) == ["node", "npm", "npx"]
+    for name in ("node", "npm", "npx"):
+        assert not (fhs_bin / name).is_symlink()

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 from typing import Any
 
 from tui_gateway import server
@@ -100,7 +101,10 @@ class WSTransport:
             return not self._closed
         except Exception as exc:
             self._closed = True
-            _log.warning("ws write failed peer=%s error=%s", self._peer, exc)
+            _log.warning(
+                "ws write failed peer=%s error_type=%s error=%s",
+                self._peer, type(exc).__name__, exc,
+            )
             return False
 
     async def write_async(self, obj: dict) -> bool:
@@ -115,7 +119,10 @@ class WSTransport:
             await self._ws.send_text(line)
         except Exception as exc:
             self._closed = True
-            _log.warning("ws send failed peer=%s error=%s", self._peer, exc)
+            _log.warning(
+                "ws send failed peer=%s error_type=%s error=%s",
+                self._peer, type(exc).__name__, exc,
+            )
 
     def close(self) -> None:
         self._closed = True
@@ -131,6 +138,24 @@ def _ws_peer_label(ws: Any) -> str:
     return f"{host}:{port}" if port is not None else host
 
 
+def _disable_nagle(ws: Any) -> None:
+    """Disable Nagle so streamed JSON-RPC frames go out individually.
+
+    Without it the kernel coalesces the small per-token frames, so a burst after
+    the model's think-pause lands on the client in one tick and no client-side
+    smoothing can recover the cadence. GUI/WS only; chat platforms don't hit
+    this path. Best-effort — skip silently if the socket isn't reachable.
+    """
+    try:
+        scope = getattr(ws, "scope", None) or {}
+        transport = (scope.get("extensions") or {}).get("transport") or getattr(ws, "transport", None)
+        sock = transport.get_extra_info("socket") if transport is not None else None
+        if sock is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception as exc:  # pragma: no cover - best-effort tuning
+        _log.debug("ws TCP_NODELAY skip: %s", exc)
+
+
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -144,6 +169,9 @@ async def handle_ws(ws: Any) -> None:
     try:
         await ws.accept()
         disconnect_reason = "connected"
+        # Push small streamed frames out immediately instead of letting Nagle
+        # batch them — keeps the live token cadence intact for GUI clients.
+        _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
@@ -256,15 +284,32 @@ async def handle_ws(ws: Any) -> None:
                 break
     finally:
         detached_sessions = 0
+        reaped_scheduled = 0
         if transport is not None:
             transport.close()
 
             # Detach the transport from any sessions it owned so later emits
             # fall back to stdio instead of crashing into a closed socket.
-            for _, sess in list(server._sessions.items()):
+            #
+            # In the dashboard's in-process gateway that stdio fallback has no
+            # real reader, so a detached session would otherwise sit forever
+            # holding its _SlashWorker subprocess open (one leaked python proc
+            # per browser refresh — #38591 fallout). Schedule a grace-delayed
+            # reap; a quick reconnect / session.resume re-binds a live
+            # transport and cancels it (see _ws_session_is_orphaned).
+            for _sid, sess in list(server._sessions.items()):
                 if sess.get("transport") is transport:
                     sess["transport"] = server._stdio_transport
                     detached_sessions += 1
+                    try:
+                        server._schedule_ws_orphan_reap(_sid)
+                        reaped_scheduled += 1
+                    except Exception:
+                        _log.exception(
+                            "ws orphan-reap schedule failed peer=%s sid=%s",
+                            peer,
+                            _sid,
+                        )
         try:
             await ws.close()
         except Exception as exc:

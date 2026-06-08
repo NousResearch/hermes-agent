@@ -349,23 +349,97 @@
   // -------------------------------------------------------------------------
   // Touch drag-drop helper.
   //
-  // HTML5 DnD is desktop-only. On touch devices we attach a pointerdown
-  // handler that simulates a drag proxy and fires a custom event on the
-  // column under the finger when released. Columns listen for both the
-  // standard `drop` event and our `hermes-kanban:drop` event.
+  // HTML5 DnD is desktop-only. On touch devices we wait for a short long-press
+  // before activating drag so a normal swipe can scroll the column. Once drag
+  // is active we simulate a proxy and fire a custom event on the column under
+  // the finger when released. Columns listen for both the standard `drop`
+  // event and our `hermes-kanban:drop` event.
   // -------------------------------------------------------------------------
+
+  const TOUCH_DRAG_HOLD_MS = 260;
+  const TOUCH_DRAG_SLOP_PX = 8;
+  const TOUCH_SCROLL_INTENT_PX = 12;
+  const TOUCH_SUPPRESS_CLICK_MS = 400;
+
+  function markTouchSuppressClick(el) {
+    if (!el || !el.dataset) return;
+    el.dataset.hermesKanbanSuppressClickUntil = String(Date.now() + TOUCH_SUPPRESS_CLICK_MS);
+  }
+
+  function shouldSuppressTouchClick(el) {
+    if (!el || !el.dataset) return false;
+    return Number(el.dataset.hermesKanbanSuppressClickUntil || 0) > Date.now();
+  }
 
   function attachTouchDrag(el, taskId) {
     if (!el) return;
     function onDown(e) {
       if (e.pointerType !== "touch") return;
-      e.preventDefault();
-      const proxy = el.cloneNode(true);
-      proxy.classList.add("hermes-kanban-touch-proxy");
-      document.body.appendChild(proxy);
+      const startX = e.clientX;
+      const startY = e.clientY;
       let lastTarget = null;
+      let dragging = false;
+      let proxy = null;
+      let holdTimer = null;
+      let cancelled = false;
+
+      function clearTarget() {
+        if (lastTarget) lastTarget.classList.remove("hermes-kanban-column--drop");
+        lastTarget = null;
+      }
+
+      function cleanup() {
+        if (holdTimer) {
+          clearTimeout(holdTimer);
+          holdTimer = null;
+        }
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", up);
+        clearTarget();
+        if (proxy) {
+          proxy.remove();
+          proxy = null;
+        }
+      }
+
+      function startDrag(originEvent) {
+        if (cancelled || dragging) return;
+        dragging = true;
+        markTouchSuppressClick(el);
+        proxy = el.cloneNode(true);
+        proxy.classList.add("hermes-kanban-touch-proxy");
+        document.body.appendChild(proxy);
+        proxy.style.position = "fixed";
+        proxy.style.pointerEvents = "none";
+        proxy.style.opacity = "0.85";
+        proxy.style.zIndex = "9999";
+        proxy.style.width = `${el.offsetWidth}px`;
+        proxy.style.left = `${originEvent.clientX - el.offsetWidth / 2}px`;
+        proxy.style.top = `${originEvent.clientY - 24}px`;
+      }
 
       function move(ev) {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (!dragging) {
+          const absX = Math.abs(dx);
+          const absY = Math.abs(dy);
+          if (absY >= TOUCH_SCROLL_INTENT_PX && absY >= absX) {
+            cancelled = true;
+            markTouchSuppressClick(el);
+            cleanup();
+            return;
+          }
+          if (Math.hypot(dx, dy) > TOUCH_DRAG_SLOP_PX) {
+            cancelled = true;
+            markTouchSuppressClick(el);
+            cleanup();
+            return;
+          }
+          return;
+        }
+        if (ev.cancelable) ev.preventDefault();
         proxy.style.left = `${ev.clientX - proxy.offsetWidth / 2}px`;
         proxy.style.top = `${ev.clientY - 24}px`;
         proxy.style.display = "none";
@@ -380,12 +454,13 @@
           lastTarget = target;
         }
       }
+
       function up() {
-        document.removeEventListener("pointermove", move);
-        document.removeEventListener("pointerup", up);
-        document.removeEventListener("pointercancel", up);
+        if (!dragging) {
+          cleanup();
+          return;
+        }
         if (lastTarget) {
-          lastTarget.classList.remove("hermes-kanban-column--drop");
           const status = lastTarget.getAttribute("data-kanban-column");
           const isTrash = lastTarget.hasAttribute("data-kanban-trash");
           if (isTrash) {
@@ -400,17 +475,11 @@
             }));
           }
         }
-        proxy.remove();
+        cleanup();
       }
-      // Kick off proxy at the pointer origin.
-      proxy.style.position = "fixed";
-      proxy.style.pointerEvents = "none";
-      proxy.style.opacity = "0.85";
-      proxy.style.zIndex = "9999";
-      proxy.style.width = `${el.offsetWidth}px`;
-      proxy.style.left = `${e.clientX - el.offsetWidth / 2}px`;
-      proxy.style.top = `${e.clientY - 24}px`;
-      document.addEventListener("pointermove", move);
+
+      holdTimer = setTimeout(function () { startDrag(e); }, TOUCH_DRAG_HOLD_MS);
+      document.addEventListener("pointermove", move, { passive: false });
       document.addEventListener("pointerup", up);
       document.addEventListener("pointercancel", up);
     }
@@ -2460,6 +2529,14 @@
       }
     };
     const handleClick = function (e) {
+      if (shouldSuppressTouchClick(cardRef.current)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (e.target && e.target.closest && e.target.closest(".hermes-kanban-card-check-wrap")) {
+        return;
+      }
       if (e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();

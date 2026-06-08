@@ -1418,13 +1418,61 @@ class APIServerAdapter(BasePlatformAdapter):
             return {}, web.json_response(_openai_error("Request body must be a JSON object"), status=400)
         return body, None
 
+    @staticmethod
+    def _session_model_config_dict(session: Dict[str, Any]) -> Dict[str, Any]:
+        raw = session.get("model_config")
+        if isinstance(raw, dict):
+            return dict(raw)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
+
+    def _session_owner_key(self, session: Dict[str, Any]) -> Optional[str]:
+        value = self._session_model_config_dict(session).get("gateway_session_key")
+        return str(value) if value else None
+
+    def _session_visible_to_key(
+        self,
+        session: Dict[str, Any],
+        gateway_session_key: Optional[str],
+    ) -> bool:
+        owner_key = self._session_owner_key(session)
+        return not owner_key or owner_key == gateway_session_key
+
+    def _session_not_found_response(self, session_id: str) -> "web.Response":
+        return web.json_response(
+            _openai_error(f"Session not found: {session_id}", code="session_not_found"),
+            status=404,
+        )
+
+    def _claim_session_owner_if_needed(
+        self,
+        db: Any,
+        session: Dict[str, Any],
+        gateway_session_key: Optional[str],
+    ) -> None:
+        if not gateway_session_key or self._session_owner_key(session):
+            return
+        model_config = self._session_model_config_dict(session)
+        model_config["gateway_session_key"] = gateway_session_key
+        db.update_session_meta(
+            str(session["id"]),
+            json.dumps(model_config),
+            session.get("model"),
+        )
+        session["model_config"] = json.dumps(model_config)
+
     def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
         db = self._ensure_session_db()
         if db is None:
             return None, web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
         session = db.get_session(session_id)
         if not session:
-            return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
+            return None, self._session_not_found_response(session_id)
         return session, None
 
     def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
@@ -1442,6 +1490,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
 
         db = self._ensure_session_db()
         if db is None:
@@ -1458,6 +1509,10 @@ class APIServerAdapter(BasePlatformAdapter):
             include_children=include_children,
             order_by_last_active=True,
         )
+        sessions = [
+            session for session in sessions
+            if self._session_visible_to_key(session, gateway_session_key)
+        ]
         return web.json_response({
             "object": "list",
             "data": [self._session_response(s) for s in sessions],
@@ -1471,6 +1526,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1492,7 +1550,17 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
-        db.create_session(session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
+        model_config = (
+            {"gateway_session_key": gateway_session_key}
+            if gateway_session_key else None
+        )
+        db.create_session(
+            session_id,
+            "api_server",
+            model=str(model) if model else None,
+            model_config=model_config,
+            system_prompt=system_prompt,
+        )
         title = body.get("title")
         if title is not None:
             try:
@@ -1508,9 +1576,14 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
         session, err = self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
             return err
+        if not self._session_visible_to_key(session, gateway_session_key):
+            return self._session_not_found_response(request.match_info["session_id"])
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     async def _handle_patch_session(self, request: "web.Request") -> "web.Response":
@@ -1518,10 +1591,15 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
         session_id = request.match_info["session_id"]
         session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        if not self._session_visible_to_key(session, gateway_session_key):
+            return self._session_not_found_response(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1546,10 +1624,15 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
         session_id = request.match_info["session_id"]
         session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        if not self._session_visible_to_key(session, gateway_session_key):
+            return self._session_not_found_response(session_id)
         db = self._ensure_session_db()
         deleted = db.delete_session(session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
@@ -1559,10 +1642,15 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        if not self._session_visible_to_key(session, gateway_session_key):
+            return self._session_not_found_response(session_id)
         db = self._ensure_session_db()
         resolved_id = db.resolve_resume_session_id(session_id)
         messages = db.get_messages(resolved_id)
@@ -1577,10 +1665,15 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
         source_id = request.match_info["session_id"]
         source, err = self._get_existing_session_or_404(source_id)
         if err:
             return err
+        if not self._session_visible_to_key(source, gateway_session_key):
+            return self._session_not_found_response(source_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1600,6 +1693,10 @@ class APIServerAdapter(BasePlatformAdapter):
             fork_id,
             "api_server",
             model=source.get("model"),
+            model_config=(
+                {"gateway_session_key": self._session_owner_key(source) or gateway_session_key}
+                if (self._session_owner_key(source) or gateway_session_key) else None
+            ),
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
         )
@@ -1628,9 +1725,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        if not self._session_visible_to_key(session, gateway_session_key):
+            return self._session_not_found_response(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1640,6 +1739,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        db = self._ensure_session_db()
+        if db is not None:
+            self._claim_session_owner_if_needed(db, session, gateway_session_key)
         history = self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(
             user_message=user_message,
@@ -1672,9 +1774,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        if not self._session_visible_to_key(session, gateway_session_key):
+            return self._session_not_found_response(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1684,6 +1788,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        db = self._ensure_session_db()
+        if db is not None:
+            self._claim_session_owner_if_needed(db, session, gateway_session_key)
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()

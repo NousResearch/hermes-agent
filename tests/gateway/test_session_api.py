@@ -252,6 +252,58 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_resources_are_scoped_by_session_key(auth_adapter, session_db):
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", AsyncMock()) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            create_resp = await cli.post(
+                "/api/sessions",
+                json={"id": "owned-session", "title": "Owned"},
+                headers={
+                    "Authorization": "Bearer sk-test",
+                    "X-Hermes-Session-Key": "alpha",
+                },
+            )
+            assert create_resp.status == 201
+            session_db.append_message("owned-session", "user", "secret from alpha")
+
+            wrong_headers = {
+                "Authorization": "Bearer sk-test",
+                "X-Hermes-Session-Key": "beta",
+            }
+            list_resp = await cli.get("/api/sessions", headers=wrong_headers)
+            assert list_resp.status == 200
+            listed = await list_resp.json()
+            assert [s["id"] for s in listed["data"]] == []
+
+            for method, path, kwargs in (
+                (cli.get, "/api/sessions/owned-session", {}),
+                (cli.get, "/api/sessions/owned-session/messages", {}),
+                (cli.patch, "/api/sessions/owned-session", {"json": {"title": "stolen"}}),
+                (cli.post, "/api/sessions/owned-session/fork", {"json": {"id": "stolen-fork"}}),
+                (cli.post, "/api/sessions/owned-session/chat", {"json": {"message": "continue"}}),
+                (cli.post, "/api/sessions/owned-session/chat/stream", {"json": {"message": "continue"}}),
+                (cli.delete, "/api/sessions/owned-session", {}),
+            ):
+                resp = await method(path, headers=wrong_headers, **kwargs)
+                assert resp.status == 404
+
+            right_headers = {
+                "Authorization": "Bearer sk-test",
+                "X-Hermes-Session-Key": "alpha",
+            }
+            messages_resp = await cli.get(
+                "/api/sessions/owned-session/messages",
+                headers=right_headers,
+            )
+            assert messages_resp.status == 200
+            messages = await messages_resp.json()
+            assert messages["data"][0]["content"] == "secret from alpha"
+
+    mock_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [

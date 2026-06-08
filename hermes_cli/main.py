@@ -3123,6 +3123,7 @@ def select_provider_and_model(args=None):
         "xiaomi",
         "arcee",
         "gmi",
+        "pioneer",
         "nvidia",
         "ollama-cloud",
         "tencent-tokenhub",

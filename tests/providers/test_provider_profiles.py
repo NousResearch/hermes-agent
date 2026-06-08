@@ -46,6 +46,28 @@ class TestNvidiaProfile:
         assert p.default_headers == {}
 
 
+class TestPioneerProfile:
+    def test_base_profile(self):
+        p = get_provider_profile("pioneer")
+        assert p is not None
+        assert p.name == "pioneer"
+        assert p.base_url == "https://api.pioneer.ai/v1"
+        assert p.env_vars == ("PIONEER_API_KEY", "PIONEER_BASE_URL")
+        assert p.supports_developer_role is False
+
+    def test_alias_lookup(self):
+        assert get_provider_profile("pioneer-ai").name == "pioneer"
+        assert get_provider_profile("pioneerai").name == "pioneer"
+
+    def test_fallback_models_include_major_families(self):
+        p = get_provider_profile("pioneer")
+        assert len(p.fallback_models) == 47
+        assert "gpt-5.5" in p.fallback_models
+        assert "claude-opus-4-8" in p.fallback_models
+        assert "deepseek-ai/DeepSeek-V4-Pro" in p.fallback_models
+        assert "openai/gpt-oss-120b" in p.fallback_models
+
+
 class TestKimiProfile:
     def test_temperature_omit(self):
         p = get_provider_profile("kimi")

@@ -132,6 +132,56 @@ def test_resolve_provider_full_finds_named_custom_provider():
     assert resolved.source == "user-config"
 
 
+def test_resolve_provider_full_finds_pioneer_provider():
+    """Explicit /model pioneer:<model> should resolve the bundled provider."""
+    resolved = resolve_provider_full("pioneer", user_providers={}, custom_providers=[])
+
+    assert resolved is not None
+    assert resolved.id == "pioneer"
+    assert resolved.name == "Pioneer"
+    assert resolved.base_url == "https://api.pioneer.ai/v1"
+    assert resolved.api_key_env_vars == ("PIONEER_API_KEY",)
+
+
+def test_resolve_provider_full_finds_pioneer_alias():
+    resolved = resolve_provider_full("pioneer-ai", user_providers={}, custom_providers=[])
+
+    assert resolved is not None
+    assert resolved.id == "pioneer"
+
+
+def test_switch_model_accepts_explicit_pioneer_provider(monkeypatch):
+    """Shared /model switch pipeline should accept Pioneer as a built-in."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "test-key",
+            "base_url": "https://api.pioneer.ai/v1",
+            "provider": "pioneer",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="gpt-5.5",
+        current_provider="pioneer",
+        current_model="claude-haiku-4-5",
+        current_base_url="https://api.pioneer.ai/v1",
+        current_api_key="test-key",
+        explicit_provider="pioneer",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success
+    assert result.target_provider == "pioneer"
+    assert result.new_model == "gpt-5.5"
+    assert result.provider_label == "Pioneer"
+
+
 def test_list_authenticated_providers_includes_active_bare_custom_endpoint(monkeypatch):
     """Bare model.provider=custom + model.base_url should still populate /model.
 

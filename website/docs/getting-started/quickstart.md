@@ -118,6 +118,7 @@ Good defaults:
 | **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
 | **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
 | **GMI Cloud** | Multi-model direct API | Set `GMI_API_KEY` |
+| **Pioneer** | Multi-model inference endpoint | Set `PIONEER_API_KEY` |
 | **MiniMax (OAuth)** | MiniMax frontier model via browser OAuth — no API key needed (model name in `hermes_cli/models.py` may change between releases) | `hermes model` → MiniMax (OAuth) |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |

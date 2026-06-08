@@ -256,6 +256,14 @@ class TestDeveloperRoleParity:
         )
         assert kw["messages"][0]["role"] == "system"
 
+    def test_profile_can_disable_developer_role_swap(self, transport):
+        msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=msgs, tools=None,
+            provider_profile=get_provider_profile("pioneer"),
+        )
+        assert kw["messages"][0]["role"] == "system"
+
 
 class TestRequestOverridesParity:
     """request_overrides with extra_body must merge identically on both paths."""

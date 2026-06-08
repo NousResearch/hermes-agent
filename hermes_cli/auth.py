@@ -290,6 +290,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
     ),
+    "pioneer": ProviderConfig(
+        id="pioneer",
+        name="Pioneer",
+        auth_type="api_key",
+        inference_base_url="https://api.pioneer.ai/v1",
+        api_key_env_vars=("PIONEER_API_KEY",),
+        base_url_env_var="PIONEER_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -1656,6 +1664,7 @@ def resolve_provider(
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
+        "pioneer-ai": "pioneer", "pioneerai": "pioneer",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",

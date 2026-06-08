@@ -24,6 +24,10 @@ class TestGetDefaultModelForProvider:
         from hermes_cli.models import get_default_model_for_provider
         assert get_default_model_for_provider("nonexistent-provider") == ""
 
+    def test_pioneer_returns_static_default(self):
+        from hermes_cli.models import get_default_model_for_provider
+        assert get_default_model_for_provider("pioneer") == "claude-haiku-4-5"
+
     def test_custom_provider_returns_empty(self):
         """Custom provider has no model catalog — should return empty."""
         from hermes_cli.models import get_default_model_for_provider

@@ -1,0 +1,5 @@
+name: pioneer-provider
+kind: model-provider
+version: 1.0.0
+description: Pioneer OpenAI-compatible multi-model inference endpoint
+author: Nous Research

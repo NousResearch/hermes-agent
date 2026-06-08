@@ -371,6 +371,12 @@ def _run_agent(
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
     )
+    if not effective_model:
+        from hermes_cli.models import get_default_model_for_provider
+
+        effective_model = get_default_model_for_provider(
+            str(runtime.get("provider") or "")
+        )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived

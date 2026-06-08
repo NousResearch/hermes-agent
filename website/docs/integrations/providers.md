@@ -26,6 +26,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Pioneer** | `PIONEER_API_KEY` in `~/.hermes/.env` (provider: `pioneer`; aliases: `pioneer-ai`, `pioneerai`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
@@ -512,6 +513,25 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### Pioneer
+
+Multi-model inference via [Pioneer](https://pioneer.ai/) - OpenAI-compatible API, API key authentication.
+
+```bash
+# Pioneer
+hermes chat --provider pioneer --model gpt-5.5
+# Requires: PIONEER_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "pioneer"
+  default: "gpt-5.5"
+```
+
+The base URL can be overridden with `PIONEER_BASE_URL` (default: `https://api.pioneer.ai/v1`).
 
 ### StepFun
 
@@ -1099,6 +1119,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
+| [Pioneer](https://pioneer.ai/) | `https://api.pioneer.ai/v1` | Managed multi-model inference |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
@@ -1472,7 +1493,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `pioneer`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

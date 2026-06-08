@@ -473,6 +473,7 @@ class ChatCompletionsTransport(ProviderTransport):
             sanitized
             and isinstance(sanitized[0], dict)
             and sanitized[0].get("role") == "system"
+            and profile.supports_developer_role
             and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
         ):
             sanitized = list(sanitized)

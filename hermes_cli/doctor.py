@@ -405,6 +405,7 @@ def _build_apikey_providers_list() -> list:
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                           "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("GMI Cloud",        ("GMI_API_KEY",),                               "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
+        ("Pioneer",          ("PIONEER_API_KEY",),                           "https://api.pioneer.ai/v1/models",     "PIONEER_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                          "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                  "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                            "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
@@ -425,7 +426,7 @@ def _build_apikey_providers_list() -> list:
     _name_to_canonical = {
         "Z.AI / GLM": "zai", "Kimi / Moonshot": "kimi-coding",
         "StepFun Step Plan": "stepfun", "Kimi / Moonshot (China)": "kimi-coding-cn",
-        "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
+        "Arcee AI": "arcee", "GMI Cloud": "gmi", "Pioneer": "pioneer", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
         "MiniMax (China)": "minimax-cn",

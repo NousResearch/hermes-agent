@@ -87,6 +87,7 @@ class ProviderProfile:
     # ── Request-level quirks ─────────────────────────────────
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
+    supports_developer_role: bool = True
     default_max_tokens: int | None = None
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)

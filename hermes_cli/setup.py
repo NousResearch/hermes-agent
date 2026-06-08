@@ -103,6 +103,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
+    "pioneer": ["gpt-5.5", "claude-opus-4-8", "deepseek-ai/DeepSeek-V4-Pro"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],

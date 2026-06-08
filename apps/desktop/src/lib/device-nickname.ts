@@ -100,6 +100,31 @@ export function setDeviceNickname(host: string, nickname: string) {
   saveNicknames(nicknames)
 }
 
+/** Cached hostname lookup — avoids repeated async calls. */
+let hostnameCache: string | null = null
+
+function getHostname(): string {
+  if (hostnameCache) return hostnameCache
+  // Use Electron's remote hostname if available
+  if (typeof window !== 'undefined' && (window as any).getHostname) {
+    hostnameCache = (window as any).getHostname()
+  } else if (typeof navigator !== 'undefined') {
+    // Fallback: use platform from navigator (e.g., "MacIntel", "Linux x86_64")
+    hostnameCache = navigator.platform || 'this-machine'
+  } else {
+    hostnameCache = 'this-machine'
+  }
+  return hostnameCache as string
+}
+
+/**
+ * Get the nickname for the current device running this app.
+ * Used to label local sessions in the sidebar.
+ */
+export function currentDeviceNickname(): string {
+  return resolveDeviceNickname(getHostname())
+}
+
 /**
  * Check if the nickname came from user customization or heuristic.
  */

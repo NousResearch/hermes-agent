@@ -306,6 +306,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+-- Covering index for last_active subquery (SELECT MAX(timestamp) WHERE session_id = ...)
+CREATE INDEX IF NOT EXISTS idx_messages_session_ts_max ON messages(session_id, timestamp DESC);
+-- Covering index for preview subquery (SELECT content WHERE session_id, role='user' ORDER BY timestamp, id LIMIT 1)
+CREATE INDEX IF NOT EXISTS idx_messages_session_role_ts_id ON messages(session_id, role, timestamp, id);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -1832,15 +1836,21 @@ class SessionDB:
                     WHERE parent.end_reason = 'compression'
                       AND child.started_at >= parent.ended_at
                 ),
+                chain_sessions AS (
+                    SELECT DISTINCT cur_id FROM chain
+                ),
+                msg_max AS (
+                    SELECT session_id, MAX(timestamp) AS max_ts FROM messages GROUP BY session_id
+                ),
                 chain_max AS (
                     SELECT
-                        root_id,
-                        MAX(COALESCE(
-                            (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
-                            (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
-                        )) AS effective_last_active
-                    FROM chain
-                    GROUP BY root_id
+                        c.root_id,
+                        MAX(COALESCE(mm.max_ts, cs.started_at)) AS effective_last_active
+                    FROM chain c
+                    JOIN chain_sessions cs2 ON cs2.cur_id = c.cur_id
+                    LEFT JOIN sessions cs ON cs.id = c.cur_id
+                    LEFT JOIN msg_max mm ON mm.session_id = c.cur_id
+                    GROUP BY c.root_id
                 )
                 SELECT s.*,
                     COALESCE(
@@ -1851,7 +1861,7 @@ class SessionDB:
                         ''
                     ) AS _preview_raw,
                     COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        (SELECT mm2.max_ts FROM msg_max mm2 WHERE mm2.session_id = s.id),
                         s.started_at
                     ) AS last_active,
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
@@ -1866,6 +1876,9 @@ class SessionDB:
             params = params + params + id_params + [limit, offset]
         else:
             query = f"""
+                WITH msg_max AS (
+                    SELECT session_id, MAX(timestamp) AS max_ts FROM messages GROUP BY session_id
+                )
                 SELECT s.*,
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
@@ -1875,7 +1888,7 @@ class SessionDB:
                         ''
                     ) AS _preview_raw,
                     COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        (SELECT mm2.max_ts FROM msg_max mm2 WHERE mm2.session_id = s.id),
                         s.started_at
                     ) AS last_active
                 FROM sessions s

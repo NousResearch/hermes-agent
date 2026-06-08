@@ -7,7 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { osLabel, resolveDeviceNickname } from '@/lib/device-nickname'
+import { currentDeviceNickname, osLabel, resolveDeviceNickname } from '@/lib/device-nickname'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
@@ -95,7 +95,7 @@ export function SidebarSessionRow({
     >
       <div
         className={cn(
-          'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+          'group relative grid min-h-[2.375rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-start rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
@@ -124,7 +124,7 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className="z-0 flex min-w-0 items-start gap-1.5 bg-transparent py-1 pl-2 pr-1 text-left group-hover:pr-12"
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -184,7 +184,8 @@ export function SidebarSessionRow({
             <span
               className={cn(
                 'grid w-3.5 shrink-0 place-items-center',
-                needsInput ? 'overflow-visible' : 'overflow-hidden'
+                needsInput ? 'overflow-visible' : 'overflow-hidden',
+                'self-center'
               )}
             >
             <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
@@ -277,6 +278,9 @@ function SidebarRowDot({
 /**
  * Line 2 metadata row: device nickname + OS + source/client.
  * Renders below the session title with subtle tertiary styling.
+ *
+ * For remote sessions (presence record): shows device nickname from presence.
+ * For local sessions (no presence): shows "This Machine" with source (Terminal, API, etc.)
  */
 function SessionSourceLine({
   deviceNickname,
@@ -289,20 +293,30 @@ function SessionSourceLine({
 }) {
   const parts: string[] = []
 
-  // Device nickname from presence record (remote session)
+  // Remote session: device nickname from presence record
   if (deviceNickname) {
     parts.push(deviceNickname)
   }
 
-  // Profile as fallback for local sessions in multi-profile mode
-  if (!deviceNickname && profile && profile !== 'default') {
-    parts.push(profile)
+  // Local session: show source/client type if available
+  if (!deviceNickname && source && source !== 'unknown') {
+    const srcMap: Record<string, string> = {
+      tui: 'Terminal',
+      api_server: 'API',
+      cron: 'Cron',
+      desktop: 'Hermes Desktop',
+      telegram: 'Telegram',
+      discord: 'Discord',
+      slack: 'Slack',
+      bluesky: 'Bluesky',
+      whatsapp: 'WhatsApp',
+    }
+    parts.push(srcMap[source] ?? source)
   }
 
-  // Source/client type (tui, api_server, etc.)
-  if (source && source !== 'unknown') {
-    const src = source === 'tui' ? 'Terminal' : source === 'api_server' ? 'API' : source === 'cron' ? 'Cron' : source
-    parts.push(src)
+  // Profile as fallback for multi-profile mode (only if nothing else shown)
+  if (parts.length === 0 && profile && profile !== 'default') {
+    parts.push(profile)
   }
 
   if (parts.length === 0) {
@@ -310,7 +324,7 @@ function SessionSourceLine({
   }
 
   return (
-    <span className="block truncate pt-0.5 text-[0.625rem] leading-3 text-(--ui-text-tertiary)">
+    <span className="block truncate pt-[3px] text-[0.625rem] leading-3 text-(--ui-text-tertiary)">
       {parts.join(' · ')}
     </span>
   )

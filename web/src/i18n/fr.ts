@@ -1,6 +1,6 @@
 import type { Translations } from "./types";
 
-export const fr: Translations = {
+export const fr = {
   common: {
     save: "Enregistrer",
     saving: "Enregistrement...",
@@ -57,39 +57,45 @@ export const fr: Translations = {
     footer: {
       org: "Nous Research",
     },
-    activeSessionsLabel: "Sessions actives:",
-    gatewayStatusLabel: "État de la passerelle:",
+    activeSessionsLabel: "Sessions actives :",
+    gatewayStatusLabel: "Passerelle :",
     gatewayStrip: {
       failed: "Échec du démarrage",
       off: "Désactivé",
-      running: "En cours",
+      running: "En ligne",
       starting: "Démarrage",
       stopped: "Arrêté",
     },
     nav: {
       analytics: "Analyses",
-      chat: "Chat",
+      chat: "Discussion",
       config: "Configuration",
-      cron: "Cron",
+      cron: "Planification",
       documentation: "Documentation",
+      files: "Fichiers",
       keys: "Clés",
       logs: "Journaux",
       models: "Modèles",
-      profiles: "profils : multi agents",
-      plugins: "Plugins",
+      profiles: "Profils",
+      plugins: "Extensions",
       sessions: "Sessions",
       skills: "Compétences",
+      mcp: "MCP",
+      channels: "Canaux",
+      webhooks: "Webhooks",
+      pairing: "Appairage",
+      system: "Système",
     },
     modelToolsSheetSubtitle: "& outils",
     modelToolsSheetTitle: "Modèle",
     navigation: "Navigation",
     openDocumentation: "Ouvrir la documentation dans un nouvel onglet",
     openNavigation: "Ouvrir la navigation",
-    pluginNavSection: "Plugins",
+    pluginNavSection: "Extensions",
     sessionsActiveCount: "{count} actives",
     statusOverview: "Aperçu de l'état",
     system: "Système",
-    webUi: "Web UI",
+    webUi: "Interface web",
   },
 
   status: {
@@ -114,8 +120,8 @@ export const fr: Translations = {
     recentSessions: "Sessions récentes",
     restartGateway: "Redémarrer la passerelle",
     restartingGateway: "Redémarrage de la passerelle…",
-    running: "En cours",
-    runningRemote: "En cours (distant)",
+    running: "En ligne",
+    runningRemote: "En ligne (distant)",
     startFailed: "Échec du démarrage",
     starting: "Démarrage",
     startedInBackground: "Démarré en arrière-plan — consultez les journaux pour la progression",
@@ -762,4 +768,4 @@ export const fr: Translations = {
     logTruncated: "(affichage des derniers 100 KB — log complet à ",
     logAt: ")",
   },
-};
+} as const satisfies Translations;

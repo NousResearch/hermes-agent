@@ -64,6 +64,11 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+# Stable prefix of the local interrupt status string emitted when a turn is
+# cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
+# to treat it as cancellation metadata rather than assistant prose.
+INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
@@ -1738,7 +1743,7 @@ def run_conversation(
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 agent._persist_session(messages, conversation_history)
                 interrupted = True
-                final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
+                final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
                 break
 
             except Exception as api_error:

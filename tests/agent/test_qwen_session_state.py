@@ -12,6 +12,7 @@ def _agent(**overrides):
     values = {
         "provider": "qwen-local",
         "base_url": "http://127.0.0.1:3264/api",
+        "model": "qwen3.7-max",
         "session_id": "session-1",
         "platform": "telegram",
         "_chat_id": "330137562",
@@ -59,6 +60,49 @@ def test_qwen_portal_provider_keeps_native_metadata_contract(monkeypatch, tmp_pa
 def test_non_qwen_provider_does_not_emit_qwen_metadata(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = _agent(provider="openrouter", base_url="https://openrouter.ai/api/v1")
+
+    assert not is_qwen_session_provider(agent)
+    assert build_qwen_session_metadata(agent) is None
+
+
+def test_resolved_custom_qwen_provider_uses_original_provider_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    direct = _agent(provider="qwen-local")
+    resolved_custom = _agent(
+        provider="custom",
+        _custom_providers=[
+            {
+                "provider_key": "qwen-local",
+                "name": "Qwen Local",
+                "base_url": "http://127.0.0.1:3264/api",
+                "model": "qwen3.7-max",
+            }
+        ],
+    )
+
+    direct_metadata = build_qwen_session_metadata(direct)
+    custom_metadata = build_qwen_session_metadata(resolved_custom)
+
+    assert direct_metadata is not None
+    assert is_qwen_session_provider(resolved_custom)
+    assert custom_metadata is not None
+    assert custom_metadata["conversation_id"] == direct_metadata["conversation_id"]
+
+
+def test_plain_custom_provider_with_qwen_model_is_not_assumed_qwen(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = _agent(
+        provider="custom",
+        base_url="http://127.0.0.1:1234/v1",
+        _custom_providers=[
+            {
+                "provider_key": "local-openai",
+                "name": "Local OpenAI",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "model": "qwen3.7-max",
+            }
+        ],
+    )
 
     assert not is_qwen_session_provider(agent)
     assert build_qwen_session_metadata(agent) is None

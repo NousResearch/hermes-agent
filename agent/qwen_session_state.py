@@ -24,6 +24,68 @@ _STATE_VERSION = 1
 _STATE_FILE = "qwen_sessions.json"
 
 
+def _normalized_base_url(value: Any) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _custom_provider_entry_matches_model(agent: Any, entry: dict[str, Any]) -> bool:
+    model = str(getattr(agent, "model", "") or "").strip()
+    entry_model = str(entry.get("model", "") or "").strip()
+    if entry_model:
+        return not model or entry_model == model
+
+    models = entry.get("models")
+    if isinstance(models, dict) and models:
+        return not model or model in models
+    return True
+
+
+def _qwen_provider_identity(agent: Any) -> str:
+    """Return the stable Qwen-web provider identity, or ``""``.
+
+    Runtime resolution can turn a user-defined provider such as ``qwen-local``
+    into the generic provider name ``custom`` while preserving its base URL and
+    a normalized entry in ``agent._custom_providers``.  The session bridge must
+    still recognize that endpoint as Qwen and must use the original provider
+    key for the conversation digest, otherwise CLI/runtime-resolved and
+    gateway-switched sessions get different conversation IDs.
+    """
+
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if not provider:
+        return ""
+
+    base_url = str(getattr(agent, "base_url", "") or "")
+    if base_url_host_matches(base_url, "portal.qwen.ai"):
+        return ""
+
+    if "qwen" in provider:
+        return provider
+
+    if provider != "custom":
+        return ""
+
+    target_url = _normalized_base_url(base_url)
+    if not target_url:
+        return ""
+
+    for entry in getattr(agent, "_custom_providers", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if _normalized_base_url(entry.get("base_url")) != target_url:
+            continue
+        if not _custom_provider_entry_matches_model(agent, entry):
+            continue
+
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        name = str(entry.get("name", "") or "").strip()
+        haystack = f"{provider_key} {name}".lower()
+        if "qwen" in haystack:
+            return (provider_key or name).lower()
+
+    return ""
+
+
 def is_qwen_session_provider(agent: Any) -> bool:
     """Return True for custom/user Qwen-web relays that need session hints.
 
@@ -32,17 +94,7 @@ def is_qwen_session_provider(agent: Any) -> bool:
     fields intended for local web relays.
     """
 
-    provider = str(getattr(agent, "provider", "") or "").strip().lower()
-    if not provider:
-        return False
-
-    base_url = str(getattr(agent, "base_url", "") or "")
-    if base_url_host_matches(base_url, "portal.qwen.ai"):
-        return False
-
-    # User-defined providers from config.yaml keep their own slug (for example
-    # ``qwen-local``). Legacy custom providers use ``custom:<name>``.
-    return "qwen" in provider
+    return bool(_qwen_provider_identity(agent))
 
 
 def _state_path() -> Path:
@@ -100,8 +152,8 @@ def _stable_session_source(agent: Any) -> str:
 
 
 def _conversation_id(agent: Any) -> str:
-    provider = str(getattr(agent, "provider", "") or "")
-    base_url = str(getattr(agent, "base_url", "") or "").rstrip("/")
+    provider = _qwen_provider_identity(agent) or str(getattr(agent, "provider", "") or "")
+    base_url = _normalized_base_url(getattr(agent, "base_url", ""))
     source = _stable_session_source(agent)
     digest = hashlib.sha256(f"{provider}\n{base_url}\n{source}".encode("utf-8")).hexdigest()
     return f"hermes_{digest[:32]}"
@@ -181,8 +233,8 @@ def maybe_update_qwen_session_from_response(agent: Any, response: Any) -> None:
     previous = sessions.get(conversation_id) if isinstance(sessions.get(conversation_id), dict) else {}
     entry = {
         "conversation_id": conversation_id,
-        "provider": str(getattr(agent, "provider", "") or ""),
-        "base_url": str(getattr(agent, "base_url", "") or "").rstrip("/"),
+        "provider": _qwen_provider_identity(agent) or str(getattr(agent, "provider", "") or ""),
+        "base_url": _normalized_base_url(getattr(agent, "base_url", "")),
         "session_source": _stable_session_source(agent),
         "updated_at": int(time.time()),
     }

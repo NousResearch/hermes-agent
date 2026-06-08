@@ -720,6 +720,16 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     rt["bridge"].teardown()
                 except Exception:
                     pass
+            # Reap pcm_pump subprocess (paplay/ffmpeg) to prevent zombie
+            # accumulation. The process is spawned with start_new_session
+            # and never explicitly reaped on normal bot exit (issue #38032).
+            _pcm = rt.get("pcm_pump")
+            if _pcm is not None:
+                try:
+                    _pcm.terminate()
+                    _pcm.wait(timeout=3)
+                except Exception:
+                    pass
             state.set(in_call=False, captioning=False, exited=True)
             return 0
 

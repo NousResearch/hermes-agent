@@ -1239,7 +1239,7 @@ def init_agent(
     _compression_cfg = _agent_cfg.get("compression", {})
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    compression_threshold = float(_compression_cfg.get("threshold", 0.85))
     try:
         from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
         _model_cthresh = _cthresh_fn(agent.model)

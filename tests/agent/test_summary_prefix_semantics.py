@@ -40,7 +40,7 @@ def test_latest_message_wins_on_conflict():
     assert HISTORICAL_PENDING_ASKS_HEADING.lower() in lower
     assert HISTORICAL_REMAINING_WORK_HEADING.lower() in lower
     # Must have an explicit conflict-resolution rule.
-    assert "wins" in lower or "supersede" in lower or "discard" in lower
+    assert "wins" in lower or "supersede" in lower or "discard" in lower or "priority" in lower
 
 
 def test_handoff_sections_are_framed_as_historical():

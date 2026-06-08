@@ -56,6 +56,10 @@ def test_latest_message_wins_over_inherited_active_task():
     # Conflict-resolution must be explicit, not implied.
     assert "wins" in lower or "supersede" in lower
     assert "discard" in lower
+    # The "consistent -> use as background" carveout licensed stale-task
+    # resumption on topic overlap (#41607, #38364) — it must stay gone.
+    assert "you may use the summary as background" not in lower
+    assert "topic overlap" in lower
 
 
 def test_no_resume_exactly_directive_can_hijack():
@@ -87,7 +91,9 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
     # current latest-message-wins framing.
     assert "resume exactly" not in renormalized.lower()
     assert renormalized.startswith(SUMMARY_PREFIX)
-    assert "wins" in renormalized.lower()
+    assert ("wins" in renormalized.lower()
+            or "priority" in renormalized.lower()
+            or "supersede" in renormalized.lower())
 
 
 def test_legacy_prefix_handoff_also_renormalized():

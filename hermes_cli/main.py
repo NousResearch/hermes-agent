@@ -1570,7 +1570,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
         npm_cwd = _workspace_root(tui_dir)
-        npm_workspace_args: tuple[str, ...] = ()
+        # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
+        # See #38772.
+        npm_workspace_args: tuple[str, ...] = ("--workspace", "ui-tui")
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
@@ -6695,8 +6697,30 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Hermes Agent."""
-    _require_tty("uninstall")
+    """Uninstall Hermes Agent (or just the Chat GUI with --gui)."""
+    # Machine-readable install snapshot for the desktop app's uninstall UI.
+    # Must run before any TTY gate — it's called from a non-interactive child.
+    if getattr(args, "gui_summary", False):
+        from hermes_cli.gui_uninstall import gui_install_summary
+
+        print(json.dumps(gui_install_summary()))
+        return
+
+    # GUI-only uninstall. The desktop app shells out to this non-interactively
+    # with --yes, so only gate on a TTY when we actually need to prompt.
+    if getattr(args, "gui", False):
+        if not getattr(args, "yes", False):
+            _require_tty("uninstall --gui")
+        from hermes_cli.uninstall import run_gui_uninstall
+
+        run_gui_uninstall(args)
+        return
+
+    # Full/keep-data uninstall. ``--yes`` runs non-interactively (the desktop
+    # app's lite/full modes drive this from a detached cleanup script), so only
+    # gate on a TTY when we actually need to prompt for the option + confirm.
+    if not getattr(args, "yes", False):
+        _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)
@@ -7090,7 +7114,11 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
                 _say(text)
 
     npm_cwd = _workspace_root(web_dir)
-    npm_workspace_args: tuple[str, ...] = ()
+    # Scope the install to the web workspace only so that the full workspace
+    # graph (including apps/desktop with its Electron + node-pty deps) is never
+    # resolved here.  Without --workspace the root package.json's apps/* glob
+    # would pull in desktop on every web build. See #38772.
+    npm_workspace_args: tuple[str, ...] = ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
     r1 = _run_npm_install_deterministic(
@@ -7105,7 +7133,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r1)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
@@ -7147,7 +7175,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r2)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     _say("  ✓ Web UI built")
     return True
@@ -12406,7 +12434,7 @@ def cmd_dashboard(args):
         )
         if not (_dist_root / "index.html").exists():
             print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  cd web && npm install && npm run build")
+            print("  Pre-build first:  npm install --workspace web && npm run build -w web")
             print("  Or drop --skip-build to build automatically.")
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
@@ -15447,6 +15475,17 @@ Examples:
         "--full",
         action="store_true",
         help="Full uninstall - remove everything including configs and data",
+    )
+    uninstall_parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Uninstall only the desktop Chat GUI, leaving the agent intact",
+    )
+    uninstall_parser.add_argument(
+        "--gui-summary",
+        action="store_true",
+        help="Print a JSON summary of installed GUI/agent artifacts and exit "
+        "(used by the desktop app to gate uninstall options)",
     )
     uninstall_parser.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation prompts"

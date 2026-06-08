@@ -389,7 +389,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           scheduleStartupPrompt()
         })
       })
-      .catch(() => {
+      .catch((err) => {
+        console.warn('[TUI] auto-resume failed, falling back to new session:', err)
         patchUiState({ status: 'forging session…' })
         newSession()
         scheduleStartupPrompt()

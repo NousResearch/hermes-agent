@@ -13,6 +13,7 @@ const buildOverlayState = (): OverlayState => ({
   secret: null,
   sessions: false,
   skillsHub: false,
+  statusTooltip: null,
   sudo: null
 })
 

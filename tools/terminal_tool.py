@@ -1674,6 +1674,16 @@ _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
 )
 
+_LONG_RUNNING_CODING_AGENT_PATTERNS = (
+    re.compile(
+        r"(?:^|[;&|]\s*)"
+        r"(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?"
+        r"(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*"
+        r"(?:\S*/)?codex(?:-yuna)?\s+exec\b",
+        re.IGNORECASE,
+    ),
+)
+
 _CODEX_EXECUTABLES = {"codex", "codex-yuna"}
 _CODEX_FOREGROUND_BYPASS_ENV = "HERMES_ALLOW_FOREGROUND_CODEX_EXEC"
 

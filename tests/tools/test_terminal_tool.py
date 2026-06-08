@@ -342,6 +342,20 @@ def test_bare_codex_after_controlled_wrapper_still_gets_guidance():
     assert "notify_on_complete=true" in guidance
 
 
+def test_foreground_background_guidance_handles_benign_command_without_name_error():
+    assert terminal_tool._foreground_background_guidance("printf '%s\\n' hello") is None
+
+
+def test_foreground_background_guidance_handles_env_prefixed_codex_exec():
+    guidance = terminal_tool._foreground_background_guidance(
+        "env FOO=bar codex-yuna exec 'review current changes'"
+    )
+
+    assert guidance is not None
+    assert "background=true" in guidance
+    assert "notify_on_complete=true" in guidance
+
+
 def test_codex_review_guard_rejects_missing_required_flags():
     command = "codex-yuna exec review --uncommitted 'review current changes'"
 

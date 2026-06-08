@@ -1,11 +1,13 @@
 import json
+import pytest
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  observe_unmentioned_group_messages=None):
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
@@ -23,6 +25,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_policy"] = group_policy
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if observe_unmentioned_group_messages is not None:
+        extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -257,6 +261,65 @@ def test_group_policy_open_allows_all_groups():
     assert adapter._should_process_message(_group_message("/status")) is True
 
 
+def test_observe_unmentioned_group_messages_with_star_allowlist():
+    adapter = _make_adapter(
+        require_mention=True,
+        group_policy="allowlist",
+        group_allow_from="*",
+        observe_unmentioned_group_messages=True,
+    )
+
+    assert adapter._should_process_message(_group_message("ordinary group chatter")) is False
+    assert adapter._should_observe_unmentioned_group_message(_group_message("ordinary group chatter")) is True
+    assert adapter._should_observe_unmentioned_group_message(
+        _group_message("@15551230000 please reply", mentionedIds=["15551230000@s.whatsapp.net"])
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_observed_group_message_is_stored_without_dispatch():
+    class FakeStore:
+        def __init__(self):
+            self.entries = []
+            self.sources = []
+
+        def get_or_create_session(self, source):
+            self.sources.append(source)
+            return type("Session", (), {"session_id": "session-1"})()
+
+        def append_to_transcript(self, session_id, entry):
+            self.entries.append((session_id, entry))
+
+    adapter = _make_adapter(
+        require_mention=True,
+        group_policy="allowlist",
+        group_allow_from="*",
+        observe_unmentioned_group_messages=True,
+    )
+    store = FakeStore()
+    adapter.set_session_store(store)
+
+    event = await adapter._build_message_event(
+        _group_message(
+            "ordinary group chatter",
+            senderId="5216640000000@s.whatsapp.net",
+            senderName="Alice",
+            chatName="Test Group",
+            messageId="msg-1",
+        )
+    )
+
+    assert event is None
+    assert len(store.entries) == 1
+    session_id, entry = store.entries[0]
+    assert session_id == "session-1"
+    assert entry["observed"] is True
+    assert entry["message_id"] == "msg-1"
+    assert "ordinary group chatter" in entry["content"]
+    assert store.sources[0].user_id is None
+    assert store.sources[0].chat_id == "120363001234567890@g.us"
+
+
 # --- Config bridging tests ---
 
 def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
@@ -266,6 +329,7 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
         "whatsapp:\n"
         "  dm_policy: disabled\n"
         "  group_policy: allowlist\n"
+        "  observe_unmentioned_group_messages: true\n"
         "  group_allow_from:\n"
         "    - \"120363001234567890@g.us\"\n",
         encoding="utf-8",
@@ -274,6 +338,7 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("WHATSAPP_DM_POLICY", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_POLICY", raising=False)
+    monkeypatch.delenv("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_ALLOWED_USERS", raising=False)
 
     config = load_gateway_config()
@@ -281,14 +346,16 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     assert config is not None
     assert config.platforms[Platform.WHATSAPP].extra["dm_policy"] == "disabled"
     assert config.platforms[Platform.WHATSAPP].extra["group_policy"] == "allowlist"
+    assert config.platforms[Platform.WHATSAPP].extra["observe_unmentioned_group_messages"] is True
     assert config.platforms[Platform.WHATSAPP].extra["group_allow_from"] == ["120363001234567890@g.us"]
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "disabled"
     assert __import__("os").environ["WHATSAPP_GROUP_POLICY"] == "allowlist"
+    assert __import__("os").environ["WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] == "true"
     assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
 
 
 def test_adapter_reads_group_allowlist_env_fallback(monkeypatch):
-    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
     monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "120363001234567890@g.us")
@@ -302,7 +369,7 @@ def test_adapter_reads_group_allowlist_env_fallback(monkeypatch):
 
 
 def test_adapter_reads_group_allowlist_env_star(monkeypatch):
-    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
     monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "*")

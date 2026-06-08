@@ -181,19 +181,22 @@ export function useStatusbarItems({
     const appVersion = desktopVersion?.appVersion
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
+    const rebuildNeeded = updateStatus?.rebuildNeeded === true
     const applying = updateApply.applying || updateApply.stage === 'restart'
     const base = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+    const rebuildHint = !applying && rebuildNeeded ? ' (+rebuild)' : ''
 
     const label = applying
       ? updateApply.stage === 'restart'
         ? `${base} · ${copy.restart}`
         : `${base} · ${copy.update}`
-      : `${base}${behindHint}`
+      : `${base}${behindHint}${rebuildHint}`
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      !applying && rebuildNeeded && copy.rebuildNeeded,
       appVersion && copy.desktopVersion(appVersion),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
@@ -202,7 +205,7 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      className: !applying && (behind > 0 || rebuildNeeded) ? 'text-primary hover:text-primary' : undefined,
       detail: appVersion && sha && !applying ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,

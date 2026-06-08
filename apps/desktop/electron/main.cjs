@@ -110,13 +110,16 @@ const APP_ROOT = app.getAppPath()
 // switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
 // (1/true → always disable, 0/false → keep GPU on).
 const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
-if (REMOTE_DISPLAY_REASON) {
+if (REMOTE_DISPLAY_REASON || IS_WINDOWS) {
   app.disableHardwareAcceleration()
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
+  // Disable sandbox to prevent STATUS_BREAKPOINT crashes on Windows
+  app.commandLine.appendSwitch('no-sandbox')
+  app.commandLine.appendSwitch('disable-gpu-sandbox')
   console.log(
-    `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
+    `[hermes] remote display or Windows environment detected; disabling GPU hardware acceleration and sandbox to prevent crashes`
   )
 }
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
@@ -4687,7 +4690,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       webviewTag: true,
-      sandbox: true,
+      sandbox: !IS_WINDOWS,
       nodeIntegration: false,
       devTools: true
     }
@@ -4769,12 +4772,11 @@ function createWindow() {
     const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
     const level = details ? details.level : detailsOrLevel
 
-    if (level !== 3) return
-
     const text = details ? details.message : message
     const src = details ? details.sourceUrl : sourceId
     const lineNo = details ? details.lineNumber : line
-    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+    const levelStr = ['log', 'info', 'warn', 'error'][level] || String(level)
+    rememberLog(`[renderer console ${levelStr}] ${text} (${src}:${lineNo})`)
   })
 
   if (DEV_SERVER) {

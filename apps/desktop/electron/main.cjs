@@ -1417,11 +1417,34 @@ async function checkUpdates() {
   const behind = Number.parseInt(countStr, 10) || 0
   const commits = behind > 0 ? await readCommitLog(updateRoot, target.ref) : []
 
+  // Detect if the running app bundle is stale relative to the source checkout.
+  // This catches the case where source was changed (merge, local edit) but the
+  // desktop app hasn't been rebuilt yet — no new git commits, but a rebuild is
+  // still needed. We compare the embedded install-stamp commit (baked into
+  // the running .app) against the current git HEAD.
+  let rebuildNeeded = false
+  try {
+    const bundlePath = runningAppBundle()
+    if (bundlePath) {
+      const stampPath = path.join(bundlePath, 'Contents', 'Resources', 'install-stamp.json')
+      if (fileExists(stampPath)) {
+        const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'))
+        const stampCommit = String(stamp?.commit || '').trim()
+        if (stampCommit && stampCommit !== currentSha) {
+          rebuildNeeded = true
+        }
+      }
+    }
+  } catch {
+    // Best-effort — don't let a stamp read failure break the check
+  }
+
   return {
     supported: true,
     branch,
     currentBranch: target.currentBranch,
     behind,
+    rebuildNeeded,
     currentSha,
     targetSha,
     commits,

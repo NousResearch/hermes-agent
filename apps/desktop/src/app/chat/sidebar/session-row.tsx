@@ -7,7 +7,6 @@ import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { currentDeviceNickname, osLabel, resolveDeviceNickname } from '@/lib/device-nickname'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
@@ -27,7 +26,7 @@ export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
-  /** Presence record for this session (from another device). */
+  /** Presence record for this session (from another device) — indicates live/active state. */
   presence?: SessionPresenceRecord
   /** If true, show the device source badge next to the title. */
   showSourceBadge?: boolean
@@ -83,8 +82,7 @@ export function SidebarSessionRow({
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
 
-  // Device source badge: resolve hostname → nickname from presence record
-  const deviceNickname = presence?.host ? resolveDeviceNickname(presence.host) : null
+  // Device source badge — no longer needed since sessions are grouped by device
 
   return (
     <SessionContextMenu
@@ -198,7 +196,6 @@ export function SidebarSessionRow({
             <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
             {showSourceBadge && (
               <SessionSourceLine
-                deviceNickname={deviceNickname}
                 profile={session.profile ?? null}
                 source={session.source}
               />
@@ -281,20 +278,17 @@ function SidebarRowDot({
   )
 }
 /**
- * Line 2 metadata row: device nickname + OS + source/client.
+ * Line 2 metadata row: source/client type.
  * Renders below the session title with subtle tertiary styling.
  *
- * For remote sessions (presence record): shows device nickname from
- * the presence host, falling back to profile name.
- * For local sessions (no presence): shows the source/client type.
+ * Since sessions are grouped by device, this only shows the source
+ * (Terminal, Cron, Hermes Desktop, etc.) — not the device name.
  * Always renders — never returns null.
  */
 function SessionSourceLine({
-  deviceNickname,
   profile,
   source,
 }: {
-  deviceNickname: string | null
   profile: string | null
   source: string | null
 }) {
@@ -319,26 +313,18 @@ function SessionSourceLine({
     unknown: '',
   }
 
-  // Remote session: device nickname from presence record
-  if (deviceNickname) {
-    parts.push(deviceNickname)
-    // Also show source type if available and not redundant
-    if (source && source !== 'unknown' && srcMap[source]) {
-      parts.push(srcMap[source])
-    }
-  } else {
-    // Local session: show source/client type
-    if (source && srcMap[source]) {
-      parts.push(srcMap[source])
-    }
+  // Sessions are grouped by device — device name is the group header,
+  // so line 2 should only show the source/client, not the device name again.
+  if (source && source !== 'unknown' && srcMap[source]) {
+    parts.push(srcMap[source])
   }
 
-  // Profile as fallback for multi-profile mode (only if nothing else shown)
+  // Profile as fallback for multi-profile mode
   if (parts.length === 0 && profile && profile !== 'default') {
     parts.push(profile)
   }
 
-  // Ultimate fallback — always show something
+  // Ultimate fallback
   if (parts.length === 0) {
     parts.push('Hermes')
   }

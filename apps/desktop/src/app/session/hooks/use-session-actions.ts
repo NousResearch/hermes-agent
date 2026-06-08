@@ -203,7 +203,7 @@ function upsertOptimisticSession(
     output_tokens: 0,
     preview,
     profile: profileKey,
-    source: 'tui',
+    source: 'desktop',
     started_at: now,
     title,
     tool_call_count: 0

@@ -233,7 +233,11 @@ export const zhHant = defineLocale({
         backend: '執行後端',
         timeout: '指令逾時',
         persistentShell: '持久化 Shell',
-        envPassthrough: '環境變數傳遞'
+        envPassthrough: '環境變數傳遞',
+        dockerImage: 'Docker 映像',
+        singularityImage: 'Singularity 映像',
+        modalImage: 'Modal 映像',
+        daytonaImage: 'Daytona 映像'
       },
       fileReadMaxChars: '檔案讀取上限',
       toolOutput: {
@@ -274,6 +278,15 @@ export const zhHant = defineLocale({
           model: '本機轉寫模型',
           language: '轉寫語言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 語言',
@@ -293,6 +306,33 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 語音',
+          language: 'xAI 語言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 語音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 語音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 語音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 裝置'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 語音'
+        },
+        piper: {
+          voice: 'Piper 語音'
         }
       },
       memory: {

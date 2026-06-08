@@ -688,6 +688,19 @@ except ImportError:
     _cron_resume = None
     _cron_trigger = None
 
+# Defense-in-depth: mirror the agent-facing cronjob tool, which scans the
+# user-supplied prompt for exfiltration/injection payloads at create/update
+# time (tools/cronjob_tools.py).  The REST cron endpoints are authenticated
+# (every handler runs _check_auth, and connect() refuses to start without
+# API_SERVER_KEY), so this is not the trust boundary — it's parity with the
+# tool path so a malicious prompt is rejected the same way regardless of
+# which surface created the job.  Imported defensively: a missing scanner
+# must not disable the cron REST API.
+try:
+    from tools.cronjob_tools import _scan_cron_prompt as _scan_cron_prompt
+except Exception:  # pragma: no cover - scanner is optional hardening
+    _scan_cron_prompt = None
+
 
 class APIServerAdapter(BasePlatformAdapter):
     """
@@ -3140,6 +3153,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
+            if prompt and _scan_cron_prompt is not None:
+                scan_error = _scan_cron_prompt(prompt)
+                if scan_error:
+                    return web.json_response({"error": scan_error}, status=400)
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
 
@@ -3205,6 +3222,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
+            if sanitized.get("prompt") and _scan_cron_prompt is not None:
+                scan_error = _scan_cron_prompt(sanitized["prompt"])
+                if scan_error:
+                    return web.json_response({"error": scan_error}, status=400)
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)

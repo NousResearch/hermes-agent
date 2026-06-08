@@ -185,6 +185,60 @@ async def test_compress_command_appends_warning_when_compression_aborts():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_does_not_repoint_session_when_transcript_write_fails():
+    """If the canonical transcript write fails after compression produces a new
+    continuation session_id, /compress must NOT repoint the live session onto
+    that empty session_id, and must report the failure instead of a success
+    banner. Otherwise a transient DB/IO error during compression would silently
+    drop the user's active conversation while still claiming success."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    # Simulate the canonical DB write failing (lock contention, ENOSPC, ...).
+    runner.session_store.rewrite_transcript = MagicMock(return_value=False)
+    # Telegram topic re-binding must never run on the failure path.
+    runner._sync_telegram_topic_binding = MagicMock()
+
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    # Compression rotated the session: the agent now holds a NEW session_id.
+    agent_instance.session_id = "sess-2"
+    agent_instance._compress_context.return_value = (compressed, "")
+
+    def _estimate(messages, **_kwargs):
+        return 100
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # The user sees a failure banner, not a success banner.
+    assert "Compression failed" in result
+    assert "Compressed:" not in result
+    # The live session was NOT repointed onto the empty new session_id, so the
+    # original conversation stays reachable.
+    assert session_entry.session_id == "sess-1"
+    runner.session_store._save.assert_not_called()
+    runner._sync_telegram_topic_binding.assert_not_called()
+    # Resources are still cleaned up even though the command errored.
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_compress_command_surfaces_aux_model_failure_even_when_recovered():
     """When the user's configured ``auxiliary.compression.model`` errors out
     but compression recovers by retrying on the main model, /compress must

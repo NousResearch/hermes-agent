@@ -13381,15 +13381,28 @@ class GatewayRunner:
                 # (preserving its full transcript in SQLite) and creates a new
                 # session_id for the continuation.  Write the compressed messages
                 # into the NEW session so the original history stays searchable.
+                #
+                # Order matters: persist the compressed transcript BEFORE
+                # repointing the live session onto the new session_id.  If we
+                # repointed first and the canonical DB write then failed (lock
+                # contention under concurrent writes, ENOSPC, a disk/IO error),
+                # the session entry would already reference a brand-new, empty
+                # session_id while the handler still reported success — the
+                # user's active conversation would silently vanish from view.
+                # Writing first, and treating a write failure as fatal, keeps the
+                # old history reachable (the entry still points at it) and lets
+                # the outer handler surface a "compress failed" banner instead.
                 new_session_id = tmp_agent.session_id
+                if not self.session_store.rewrite_transcript(new_session_id, compressed):
+                    raise RuntimeError(
+                        f"failed to persist compressed transcript for session {new_session_id}"
+                    )
                 if new_session_id != session_entry.session_id:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
                     self._sync_telegram_topic_binding(
                         source, session_entry, reason="compress-command",
                     )
-
-                self.session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0

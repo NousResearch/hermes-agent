@@ -195,3 +195,11 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestIsAlive:
+    def test_default_is_alive_true(self):
+        """Backends without a real liveness probe (local, ssh, modal, …) are
+        assumed alive so the reuse path is unchanged for them."""
+        env = _TestableEnv()
+        assert env.is_alive() is True

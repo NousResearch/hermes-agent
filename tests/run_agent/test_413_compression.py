@@ -479,6 +479,9 @@ class TestPreflightCompression:
 
     def test_compress_context_suppresses_automatic_status_when_engine_opts_out(self, agent):
         """Plugin engines can make successful automatic compaction silent."""
+        # Keep this isolated from the lazy aux-provider feasibility warning,
+        # which is unrelated to automatic compaction lifecycle status.
+        agent.compression_enabled = False
         events = []
         agent.status_callback = lambda ev, msg: events.append((ev, msg))
         agent.context_compressor.emit_automatic_compaction_status = False
@@ -504,6 +507,9 @@ class TestPreflightCompression:
 
     def test_compress_context_force_keeps_manual_status_when_engine_opts_out(self, agent):
         """Manual /compress remains visible even for quiet automatic engines."""
+        # Keep this isolated from the lazy aux-provider feasibility warning,
+        # which is unrelated to manual compression lifecycle status.
+        agent.compression_enabled = False
         events = []
         agent.status_callback = lambda ev, msg: events.append((ev, msg))
         agent.context_compressor.emit_automatic_compaction_status = False

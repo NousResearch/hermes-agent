@@ -1,9 +1,14 @@
 import json
+import ipaddress
+import socket
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
 
+from agent.web_search_provider import WebSearchProvider
+from agent.web_search_registry import register_provider
 from tests.tools.conftest import register_all_web_providers
 
 from tools.website_policy import WebsitePolicyError, check_website_access, load_website_blocklist
@@ -448,6 +453,61 @@ class TestWebToolPolicy:
         assert result["results"][0]["url"] == "https://blocked.test/final"
         assert result["results"][0]["content"] == ""
         assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
+
+    @pytest.mark.asyncio
+    async def test_web_extract_keeps_original_url_after_clash_fake_ip_recheck(self, monkeypatch):
+        from tools import web_tools
+        import tools.url_safety as url_safety
+
+        seen_urls = []
+
+        class FakeExtractProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return "fake-extract"
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return False
+
+            def supports_extract(self):
+                return True
+
+            def extract(self, urls, **kwargs):
+                seen_urls.extend(urls)
+                return [{
+                    "url": urls[0],
+                    "title": "Example",
+                    "content": "public page",
+                    "raw_content": "public page",
+                    "metadata": {},
+                }]
+
+        register_provider(FakeExtractProvider())
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "fake-extract")
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(
+            url_safety,
+            "_resolve_public_dns_ips",
+            lambda hostname: [ipaddress.ip_address("93.184.216.34")],
+        )
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+        with patch("socket.getaddrinfo", return_value=[
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.23", 0)),
+        ]):
+            result = json.loads(
+                await web_tools.web_extract_tool(
+                    ["https://example.com/article"],
+                    use_llm_processing=False,
+                )
+            )
+
+        assert seen_urls == ["https://example.com/article"]
+        assert result["results"][0]["url"] == "https://example.com/article"
+        assert result["results"][0]["content"] == "public page"
 
 
 def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypatch):

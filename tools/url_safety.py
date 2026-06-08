@@ -24,11 +24,14 @@ Limitations (documented, not fixable at pre-flight level):
 """
 
 import ipaddress
+import json
 import logging
 import os
 import socket
 import asyncio
+import urllib.request
 from urllib.parse import quote, urlparse, urlsplit, urlunsplit
+from urllib.parse import urlencode
 
 from utils import is_truthy_value
 
@@ -121,6 +124,12 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+_CLASH_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_PUBLIC_DNS_ENDPOINTS = (
+    "https://cloudflare-dns.com/dns-query",
+    "https://dns.google/resolve",
+)
+_PUBLIC_DNS_TIMEOUT_SECONDS = 3
 
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
@@ -208,6 +217,65 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if ip in _CGNAT_NETWORK:
         return True
     return False
+
+
+def _is_clash_fake_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True for mihomo/Clash fake-ip benchmark-space addresses."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return isinstance(ip, ipaddress.IPv4Address) and ip in _CLASH_FAKE_IP_NETWORK
+
+
+def _parse_hostname_ip(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        return None
+
+
+def _resolve_public_dns_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Resolve a hostname through public DoH instead of the system fake-ip DNS."""
+    resolved: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen: set[str] = set()
+
+    for endpoint in _PUBLIC_DNS_ENDPOINTS:
+        for record_type in ("A", "AAAA"):
+            query = urlencode({"name": hostname, "type": record_type})
+            request = urllib.request.Request(
+                f"{endpoint}?{query}",
+                headers={"Accept": "application/dns-json"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=_PUBLIC_DNS_TIMEOUT_SECONDS) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except Exception as exc:
+                logger.debug(
+                    "Public DNS recheck failed for %s via %s %s: %s",
+                    hostname,
+                    endpoint,
+                    record_type,
+                    exc,
+                )
+                continue
+
+            answers = payload.get("Answer") if isinstance(payload, dict) else None
+            if not isinstance(answers, list):
+                continue
+            for answer in answers:
+                if not isinstance(answer, dict):
+                    continue
+                data = str(answer.get("data") or "").strip()
+                try:
+                    ip = ipaddress.ip_address(data)
+                except ValueError:
+                    continue
+                key = str(ip)
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append(ip)
+
+    return resolved
 
 
 def is_always_blocked_url(url: str) -> bool:
@@ -341,6 +409,8 @@ def is_safe_url(url: str) -> bool:
         allow_all_private = _global_allow_private_urls()
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
+        literal_host_ip = _parse_hostname_ip(hostname)
+        clash_fake_ip_candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
 
         # Try to resolve and check IP
         try:
@@ -367,11 +437,41 @@ def is_safe_url(url: str) -> bool:
                 return False
 
             if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+                if literal_host_ip is None and _is_clash_fake_ip(ip):
+                    clash_fake_ip_candidates.append(ip)
+                    continue
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
                 )
                 return False
+
+        if clash_fake_ip_candidates:
+            public_dns_ips = _resolve_public_dns_ips(hostname)
+            if not public_dns_ips:
+                logger.warning(
+                    "Blocked request to Clash fake-ip address without public DNS proof: %s -> %s",
+                    hostname,
+                    ", ".join(str(ip) for ip in clash_fake_ip_candidates),
+                )
+                return False
+
+            for real_ip in public_dns_ips:
+                if real_ip in _ALWAYS_BLOCKED_IPS or any(
+                    real_ip in net for net in _ALWAYS_BLOCKED_NETWORKS
+                ) or _is_blocked_ip(real_ip):
+                    logger.warning(
+                        "Blocked request after Clash fake-ip public DNS recheck: %s -> %s",
+                        hostname,
+                        real_ip,
+                    )
+                    return False
+
+            logger.debug(
+                "Allowing Clash fake-ip candidate after public DNS recheck: %s -> %s",
+                hostname,
+                ", ".join(str(ip) for ip in public_dns_ips),
+            )
 
         if allow_all_private:
             logger.debug(

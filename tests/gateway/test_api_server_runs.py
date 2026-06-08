@@ -256,6 +256,53 @@ class TestRunStatus:
                 assert status["session_id"] == "space-session"
 
     @pytest.mark.asyncio
+    async def test_status_records_tool_events_and_tool_turns(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.tool_start_callback = None
+                mock_agent.tool_complete_callback = None
+                mock_agent.session_prompt_tokens = 4
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 6
+
+                def _run_conversation(user_message=None, conversation_history=None, task_id=None):
+                    mock_agent.tool_start_callback(
+                        "call_web_extract",
+                        "web_extract",
+                        {"urls": ["https://example.com/"]},
+                    )
+                    mock_agent.tool_complete_callback(
+                        "call_web_extract",
+                        "web_extract",
+                        {"urls": ["https://example.com/"]},
+                        '{"title": "Example Domain", "content": "ok"}',
+                    )
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "use web_extract"})
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "completed"
+                assert [event["event"] for event in status["tool_events"]] == [
+                    "tool.started",
+                    "tool.completed",
+                ]
+                assert status["tool_turns"] == 1
+
+    @pytest.mark.asyncio
     async def test_status_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

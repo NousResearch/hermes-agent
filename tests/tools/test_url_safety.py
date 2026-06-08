@@ -15,6 +15,7 @@ from tools.url_safety import (
 
 import ipaddress
 import pytest
+import tools.url_safety as url_safety
 
 
 class TestNormalizeUrlForRequest:
@@ -221,6 +222,45 @@ class TestIsSafeUrl:
     def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
+
+    def test_public_domain_with_clash_fake_ip_allowed_after_public_dns_recheck(self, monkeypatch):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            monkeypatch.setattr(
+                url_safety,
+                "_resolve_public_dns_ips",
+                lambda hostname: [ipaddress.ip_address("93.184.216.34")],
+                raising=False,
+            )
+
+            assert is_safe_url("https://example.com/article") is True
+
+    def test_clash_fake_ip_literal_url_still_blocked(self, monkeypatch):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            monkeypatch.setattr(
+                url_safety,
+                "_resolve_public_dns_ips",
+                lambda hostname: pytest.fail("literal fake-ip URL must not be rechecked"),
+                raising=False,
+            )
+
+            assert is_safe_url("http://198.18.0.23/admin") is False
+
+    def test_clash_fake_ip_recheck_blocks_real_private_dns(self, monkeypatch):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            monkeypatch.setattr(
+                url_safety,
+                "_resolve_public_dns_ips",
+                lambda hostname: [ipaddress.ip_address("10.0.0.5")],
+                raising=False,
+            )
+
+            assert is_safe_url("https://private.example.test/data") is False
 
 
 class TestAsyncIsSafeUrl:

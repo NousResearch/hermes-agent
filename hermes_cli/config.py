@@ -539,6 +539,22 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
+
+def get_owner_email() -> str:
+    """Return the canonical admin email for this Hermes instance.
+
+    Reads HERMES_OWNER_EMAIL env var first; falls back to ``owner_email``
+    in config.yaml; returns empty string when neither is set.
+    """
+    env_val = os.environ.get("HERMES_OWNER_EMAIL", "").strip()
+    if env_val:
+        return env_val
+    try:
+        cfg = load_config()
+        return (cfg.get("owner_email") or "").strip()
+    except Exception:
+        return ""
+
 def _resolve_hermes_uid_gid() -> tuple[Optional[int], Optional[int]]:
     """Read the HERMES_UID / HERMES_GID env vars set by Docker deployments.
 
@@ -741,6 +757,10 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Canonical admin identity for this Hermes instance.
+    # Used for email gateway routing, cron notifications, and the dashboard
+    # System page. Overridden by the HERMES_OWNER_EMAIL env var when set.
+    "owner_email": "",
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

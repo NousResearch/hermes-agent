@@ -845,6 +845,8 @@ export interface StatusResponse {
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  /** Canonical admin email for this instance (owner_email in config or HERMES_OWNER_EMAIL env). */
+  owner_email?: string;
   release_date: string;
   version: string;
 }

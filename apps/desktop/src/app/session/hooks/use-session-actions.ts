@@ -333,6 +333,17 @@ export function useSessionActions({
         // Route the new chat to the chosen profile's backend (null = primary,
         // so single-profile users are unaffected).
         await ensureGatewayProfile($newChatProfile.get())
+
+        // Close the previous runtime session (if any) so its `ended_at` is set
+        // in the DB and it appears as a closed/resumable session in the sidebar.
+        // Without this, the old session stays open in-memory until the gateway
+        // process shuts down, and an unclean shutdown (PtyBridge kill, desktop
+        // close) never persists `ended_at`.
+        const prevActiveId = activeSessionIdRef.current
+        if (prevActiveId) {
+          await requestGateway('session.close', { session_id: prevActiveId }).catch(() => undefined)
+        }
+
         const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.

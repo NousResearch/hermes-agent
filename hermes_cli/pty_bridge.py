@@ -241,7 +241,14 @@ class PtyBridge:
     # -- teardown ---------------------------------------------------------
 
     def close(self) -> None:
-        """Terminate the child (SIGTERM → 0.5s grace → SIGKILL) and close fds.
+        """Terminate the child (SIGTERM → 2s grace → SIGHUP → SIGKILL) and close fds.
+
+        SIGTERM is sent first (not SIGHUP) so Python's ``atexit`` handlers
+        (notably ``_shutdown_sessions`` → ``end_session()`` in
+        ``tui_gateway.server``) have a chance to persist session state
+        before the process dies.  SIGHUP is used as the escalation — the
+        PtyBridge always represents a browser tab that disconnected, so the
+        sentinel is ``"your terminal went away"`` semantics.
 
         Idempotent.  Reaping the child is important so we don't leak
         zombies across the lifetime of the dashboard process.
@@ -255,11 +262,10 @@ class PtyBridge:
         except Exception:
             pgid = None
 
-        # SIGHUP is the conventional "your terminal went away" signal.
-        # Send it to the whole foreground process group, not just the PTY
-        # leader: the dashboard TUI starts helper children such as the Python
-        # slash worker, and killing only the leader can strand those helpers.
-        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        # Send SIGTERM FIRST so Python processes in the group can run
+        # atexit handlers and persist session state (end_session etc.).
+        # Give a generous 2s grace window for flush + cleanup.
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
             if not self._proc.isalive():
                 break
             try:
@@ -269,7 +275,8 @@ class PtyBridge:
                     self._proc.kill(sig)
             except Exception:
                 pass
-            deadline = time.monotonic() + 0.5
+            grace = 2.0 if sig == signal.SIGTERM else 0.5
+            deadline = time.monotonic() + grace
             while self._proc.isalive() and time.monotonic() < deadline:
                 time.sleep(0.02)
 

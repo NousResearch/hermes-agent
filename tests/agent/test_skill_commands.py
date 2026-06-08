@@ -486,6 +486,46 @@ Generate some audio.
         assert "test-skill" in msg
         assert "do stuff" in msg
 
+    def test_opt_invocation_adds_optimize_and_execute_runtime_contract(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "opt",
+                body=(
+                    "# /opt - PromptForge Optimizer\n"
+                    "For normal /opt <task>, optimize and execute."
+                ),
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message(
+                "/opt",
+                "make detailed research with sources on urgent passport renewal",
+            )
+
+        assert msg is not None
+        assert "OPTIMIZE-AND-EXECUTE CONTRACT" in msg
+        assert "execute the optimized request in the same turn" in msg
+        assert "Never stop after only returning the optimized prompt" in msg
+
+    def test_opt_prompt_only_invocation_does_not_add_execute_runtime_contract(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "opt",
+                body=(
+                    "# /opt - PromptForge Optimizer\n"
+                    "For normal /opt <task>, optimize and execute."
+                ),
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message(
+                "/opt",
+                "--prompt-only make detailed research with sources on urgent passport renewal",
+            )
+
+        assert msg is not None
+        assert "OPTIMIZE-AND-EXECUTE CONTRACT" not in msg
+
     def test_returns_none_for_unknown(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()

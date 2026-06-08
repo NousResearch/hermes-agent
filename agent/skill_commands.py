@@ -25,6 +25,54 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_OPT_PROMPT_ONLY_MARKERS = (
+    "explain",
+    "help",
+    "--prompt-only",
+    "--no-run",
+    "--dry-run",
+    "prompt only",
+    "optimize only",
+    "do not run",
+    "don't run",
+    "dont run",
+)
+
+
+def _normalized_skill_slug(value: str) -> str:
+    slug = str(value or "").strip().lower().replace("_", "-")
+    slug = _SKILL_INVALID_CHARS.sub("-", slug)
+    return _SKILL_MULTI_HYPHEN.sub("-", slug).strip("-")
+
+
+def _is_prompt_only_opt_instruction(user_instruction: str) -> bool:
+    payload = " ".join(str(user_instruction or "").strip().lower().split())
+    if not payload:
+        return True
+    return any(
+        payload == marker or payload.startswith(f"{marker} ")
+        for marker in _OPT_PROMPT_ONLY_MARKERS
+    )
+
+
+def _optimize_and_execute_runtime_note(
+    *,
+    cmd_key: str,
+    skill_name: str,
+    user_instruction: str,
+) -> str:
+    command_slug = _normalized_skill_slug(cmd_key.lstrip("/"))
+    skill_slug = _normalized_skill_slug(skill_name)
+    if command_slug not in {"opt", "optimize", "optimizer"} and skill_slug != "opt":
+        return ""
+    if _is_prompt_only_opt_instruction(user_instruction):
+        return ""
+    return (
+        "OPTIMIZE-AND-EXECUTE CONTRACT: This is a normal /opt invocation, not prompt-only mode. "
+        "First run the PromptForge optimization pipeline on the user's instruction, then execute the optimized request in the same turn. "
+        "Never stop after only returning the optimized prompt, never ask the user to send a second \"run it\" message, and make the final answer the result of the executed task. "
+        "If the optimized task calls for research, legal/source-backed work, or another specialized pipeline, route to that profile/tool after optimization and deliver its result."
+    )
 
 
 def _resolve_skill_commands_platform() -> Optional[str]:
@@ -164,6 +212,7 @@ def _build_skill_message(
     user_instruction: str = "",
     runtime_note: str = "",
     session_id: str | None = None,
+    skill_command_key: str = "",
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
@@ -252,6 +301,18 @@ def _build_skill_message(
     if user_instruction:
         parts.append("")
         parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
+
+    opt_runtime_note = _optimize_and_execute_runtime_note(
+        cmd_key=skill_command_key,
+        skill_name=loaded_skill.get("name") or "",
+        user_instruction=user_instruction,
+    )
+    if opt_runtime_note:
+        runtime_note = (
+            f"{runtime_note}\n{opt_runtime_note}"
+            if runtime_note
+            else opt_runtime_note
+        )
 
     if runtime_note:
         parts.append("")
@@ -473,6 +534,7 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
         session_id=task_id,
+        skill_command_key=cmd_key,
     )
 
 

@@ -8,6 +8,7 @@ from tools.cronjob_tools import (
     check_cronjob_requirements,
     cronjob,
 )
+from gateway.session_context import set_session_vars, clear_session_vars
 
 
 # =========================================================================
@@ -210,6 +211,14 @@ class TestCronjobRequirements:
 
         assert check_cronjob_requirements() is True
 
+    def test_accepts_cron_session(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+        assert check_cronjob_requirements() is True
+
     def test_rejects_when_no_session_env(self, monkeypatch):
         """Without any session env vars, cronjob tool should not be available."""
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -297,6 +306,62 @@ class TestUnifiedCronjobTool:
         resumed = json.loads(cronjob(action="resume", job_id=job_id))
         assert resumed["success"] is True
         assert resumed["job"]["state"] == "scheduled"
+
+    def test_cron_context_blocks_recursive_job_creation(self):
+        tokens = set_session_vars(platform="cron")
+        try:
+            blocked = json.loads(
+                cronjob(action="create", prompt="Check", schedule="every 1h")
+            )
+        finally:
+            clear_session_vars(tokens)
+        assert blocked["success"] is False
+        assert "blocked inside cron-run sessions" in blocked["error"]
+
+    @pytest.mark.parametrize("action", ["pause", "update", "remove", "run"])
+    def test_cron_context_blocks_mutating_actions(self, action):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+        tokens = set_session_vars(platform="cron")
+        try:
+            blocked = json.loads(cronjob(action=action, job_id=job_id, name="New Name"))
+        finally:
+            clear_session_vars(tokens)
+        assert blocked["success"] is False
+        assert "blocked inside cron-run sessions" in blocked["error"]
+
+    def test_cron_context_allows_list_resume(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+        json.loads(cronjob(action="pause", job_id=job_id))
+        tokens = set_session_vars(platform="cron")
+        try:
+            listing = json.loads(cronjob(action="list"))
+            resumed = json.loads(cronjob(action="resume", job_id=job_id))
+        finally:
+            clear_session_vars(tokens)
+        assert listing["success"] is True
+        assert resumed["success"] is True
+
+    def test_cron_env_flag_also_blocks_mutating_actions(self, monkeypatch):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        try:
+            blocked = json.loads(cronjob(action="remove", job_id=created["job_id"]))
+        finally:
+            monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        assert blocked["success"] is False
+        assert "blocked inside cron-run sessions" in blocked["error"]
+
+    def test_non_cron_session_overrides_process_cron_flag(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        tokens = set_session_vars(platform="discord")
+        try:
+            created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        finally:
+            clear_session_vars(tokens)
+            monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        assert created["success"] is True
 
     def test_update_schedule_recomputes_display(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))

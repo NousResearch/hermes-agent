@@ -380,12 +380,45 @@
 2. 当前未重启 gateway/WebUI；如果需要运行态加载第 3 批，必须另行确认 restart/reload。
 3. 第 3 批 checkpoint 后，可继续第 4 批 `terminal raw Codex policy`。
 
+## 第 4 批执行记录：terminal raw Codex policy
+
+状态：**第 4 批已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：恢复 `codex-yuna exec` / `codex exec` 通过 `terminal` 工具启动时的基础安全策略：阻断 foreground / non-PTY 的 raw Codex exec，引导使用 `background=true`、`notify_on_complete=true`、`pty=true`，并默认把 background Codex exec 转为 completion 通知。
+
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-terminal-b4-20260608130313`
+- 隔离分支：`recover/terminal-b4-20260608130313`
+- 基线 HEAD：`12b2d6771 fix(process): restore codex output governance`
+- 候选来源：
+  - `88cd13013 fix(terminal): guard codex exec launch policy`
+- 候选备注：
+  - 另发现后续相关 commit `8b5118fae fix: block unguarded codex implementation launches`，但它涉及更强的 unguarded implementation block，并 touching `tools/process_registry.py`；可能依赖第 5 批 guarded workflow tools，因此本批未混入，避免扩大第 4 批范围。
+- 冲突处理：
+  - `tools/terminal_tool.py`：候选新增 Codex executable-position detection / heredoc 过滤 / env prefix 处理 / foreground 与 PTY policy helper；live 原位置无等价 helper，保留候选新增 helper，没有整文件覆盖。
+- 隔离 worktree touched files：
+  - `tools/terminal_tool.py`
+  - `tests/tools/test_terminal_tool.py`
+- 隔离验证命令与结果（live 复跑同组命令结果一致）：
+  - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/terminal_tool.py tests/tools/test_terminal_tool.py` ✅
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_terminal_tool.py -q -o addopts=''` ✅ `24 passed in 1.40s`
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_terminal_tool_pty_fallback.py tests/tools/test_terminal_none_command_guard.py -q -o addopts=''` ✅ `5 passed in 1.29s`
+  - `git diff --check HEAD` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=2`，最终 `0`
+- 当前隔离 worktree 状态：保留 staged candidate diff 作为来源证据。
+- live 状态：已应用第 4 批代码并完成 focused 验证；未 push，未重启。live 仍有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+
+下一步选择：
+
+1. 本批收尾创建本地 checkpoint commit，作为第 4 批 stable point。
+2. 当前未重启 gateway/WebUI；如果需要运行态加载第 4 批，必须另行确认 restart/reload。
+3. 第 4 批 checkpoint 后，可继续第 5 批 `guarded Codex workflow tools`。
+
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
 - [x] 第 1 批：session_search scope handoff（已落 live 并本地 commit，未 push/未重启）。
 - [x] 第 2 批：compression / gateway recovery（2A 已落 live 并本地 commit；2B 已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 3 批：process / Codex output governance（已落 live 并完成 focused 验证；未 push/未重启）。
-- [ ] 第 4 批：terminal raw Codex policy。
+- [x] 第 4 批：terminal raw Codex policy（已落 live 并完成 focused 验证；未 push/未重启）。
 - [ ] 第 5 批：guarded Codex workflow tools。
 - [ ] 第 6 批：browser / image / custom provider 增强。

@@ -181,8 +181,17 @@ done
 # The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
+# Check whether the hermes-owned subdirectories need re-chowning.
+# usermod -u re-chowns files it can reach, but on bind mounts, NFS,
+# or rootless Podman it may miss files inside subdirectories even
+# though the top-level $HERMES_HOME is updated (it's the user's home
+# dir).  So we probe the first canonical subdir rather than just the
+# top-level directory to decide whether a targeted chown is needed.
 needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+    needs_chown=true
+elif [ -d "$HERMES_HOME/sessions" ] && \
+     [ "$(stat -c %u "$HERMES_HOME/sessions" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
 fi
 if [ "$needs_chown" = true ]; then

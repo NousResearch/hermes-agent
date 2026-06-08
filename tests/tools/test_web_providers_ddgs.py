@@ -208,7 +208,72 @@ class TestDDGSBackendWiring:
 
 
 # ---------------------------------------------------------------------------
-# ddgs is search-only: web_extract returns a clear error
+# Configured web_search fallbacks
+# ---------------------------------------------------------------------------
+
+
+class TestSearchFallbackBackends:
+    def test_parse_search_fallback_backends_from_list_or_string(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"search_fallback_backends": [" ddgs ", "DDGS", "brave-free"]})
+        assert web_tools._get_search_fallback_backends() == ["ddgs", "brave-free"]
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"search_fallback_backends": "ddgs, brave-free"})
+        assert web_tools._get_search_fallback_backends() == ["ddgs", "brave-free"]
+
+    def test_web_search_tries_configured_fallback_after_primary_failure(self, monkeypatch):
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import _reset_for_tests, register_provider
+        from tools import web_tools
+
+        calls = []
+
+        class _FailingProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return "firecrawl"
+
+            def is_available(self):
+                return True
+
+            def search(self, query, limit=5):
+                calls.append((self.name, query, limit))
+                return {"success": False, "error": "Payment Required: Insufficient credits"}
+
+        class _FallbackProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return "ddgs"
+
+            def is_available(self):
+                return True
+
+            def search(self, query, limit=5):
+                calls.append((self.name, query, limit))
+                return {"success": True, "data": {"web": [{"title": "ok", "url": "https://example.com", "description": "", "position": 1}]}}
+
+        _reset_for_tests()
+        register_provider(_FailingProvider())
+        register_provider(_FallbackProvider())
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "search_fallback_backends": ["ddgs"],
+        })
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+
+        try:
+            result = json.loads(web_tools.web_search_tool("builder news", limit=3))
+        finally:
+            _reset_for_tests()
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "ok"
+        assert calls == [("firecrawl", "builder news", 3), ("ddgs", "builder news", 3)]
+
+
+# ---------------------------------------------------------------------------
+# ddgs is search-only: web_extract / web_crawl return clear errors
 # ---------------------------------------------------------------------------
 
 

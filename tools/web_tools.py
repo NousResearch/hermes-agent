@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "openrouter"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -162,6 +162,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("openrouter", _has_env("OPENROUTER_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -185,6 +186,36 @@ def _get_search_backend() -> str:
     (e.g. SearXNG for search + Firecrawl for extract).
     """
     return _get_capability_backend("search")
+
+
+def _get_search_fallback_backends() -> list[str]:
+    """Return configured fallback providers for ``web_search``.
+
+    ``web.search_fallback_backends`` may be either a YAML list or a
+    comma-separated string.  Fallbacks are attempted only after the primary
+    search provider returns a failure response or raises, so existing installs
+    keep their configured provider unless it is actually failing (for example,
+    Firecrawl quota exhaustion / payment-required errors).
+    """
+    value = _load_web_config().get("search_fallback_backends")
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        return []
+
+    seen = set()
+    backends: list[str] = []
+    for item in raw_items:
+        backend = str(item or "").lower().strip()
+        if not backend or backend in seen:
+            continue
+        seen.add(backend)
+        backends.append(backend)
+    return backends
 
 
 def _get_extract_backend() -> str:
@@ -237,6 +268,10 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "openrouter":
+        # OpenRouter backend is available when the user has an API key set
+        # (which they likely do if Hermes is using OpenRouter as provider).
+        return _has_env("OPENROUTER_API_KEY")
     return False
 
 
@@ -848,27 +883,73 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         )
 
         backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
+
+        # Build a primary + fallback chain. Fallbacks are opt-in via
+        # ``web.search_fallback_backends`` so we preserve explicit-backend
+        # behavior unless the user has asked for backup routing.
+        provider_candidates = []
+        seen_provider_names = set()
+
+        def _append_provider(candidate_backend: str) -> None:
+            candidate = _wsp_get_provider(candidate_backend) if candidate_backend else None
+            if candidate is None or not candidate.supports_search():
+                return
+            if candidate.name in seen_provider_names:
+                return
+            seen_provider_names.add(candidate.name)
+            provider_candidates.append(candidate)
+
+        _append_provider(backend)
+        for fallback_backend in _get_search_fallback_backends():
+            _append_provider(fallback_backend)
+
+        if not provider_candidates:
             # Fall back to availability-walked active provider when the
             # configured backend isn't a registered search provider (typo,
             # uninstalled plugin, or capability mismatch).
             provider = get_active_search_provider()
+            if provider is not None:
+                provider_candidates.append(provider)
 
-        if provider is None:
+        response_data = None
+        provider_errors = []
+        for index, provider in enumerate(provider_candidates):
+            logger.info(
+                "Web search via %s: '%s' (limit: %d)",
+                provider.name, query, limit,
+            )
+            try:
+                candidate_response = provider.search(query, limit)
+            except Exception as exc:  # noqa: BLE001 - try configured fallbacks before failing
+                provider_errors.append(f"{provider.name}: {exc}")
+                logger.warning("Web search provider %s failed; trying fallback if configured: %s", provider.name, exc)
+                continue
+
+            if candidate_response.get("success", True) is not False:
+                response_data = candidate_response
+                break
+
+            provider_errors.append(f"{provider.name}: {candidate_response.get('error', 'search failed')}")
+            has_fallback = index + 1 < len(provider_candidates)
+            if has_fallback:
+                logger.warning(
+                    "Web search provider %s returned failure; trying fallback: %s",
+                    provider.name,
+                    candidate_response.get("error", "search failed"),
+                )
+                continue
+            response_data = candidate_response
+
+        if response_data is None:
             response_data = {
                 "success": False,
                 "error": (
                     "No web search provider configured. "
                     "Run `hermes tools` to set one up."
+                    if not provider_errors
+                    else "All configured web search providers failed: " + "; ".join(provider_errors)
                 ),
             }
-        else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1182,11 +1263,11 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "openrouter"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "openrouter")
     )
 
 

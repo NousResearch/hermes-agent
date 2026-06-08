@@ -1,0 +1,7 @@
+name: web-openrouter
+version: 1.0.0
+description: "OpenRouter agentic web search and content fetch — uses OpenRouter server-side tools (openrouter:web_search / openrouter:web_fetch). Leverages your existing OpenRouter credits — no separate API key needed. Renders Firecrawl/Exa subscriptions optional."
+author: Otolock
+kind: backend
+provides_web_providers:
+  - openrouter

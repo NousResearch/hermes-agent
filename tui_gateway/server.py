@@ -136,6 +136,7 @@ _op_lock = threading.Lock()
 # Capability registry keyed by client_id.
 # TODO: scope to connection/transport instead once transport ref is available here.
 _client_capabilities: dict[str, dict] = {}
+_client_capabilities_lock = threading.Lock()
 _server_file_transfer_expected: dict[str, dict] = {}
 _server_file_transfer_lock = threading.Lock()
 _db = None
@@ -765,11 +766,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
             # Invalidate tool check_fn cache so freshly-wired callbacks
             # (client_terminal, client_file_*) are immediately visible.
-            try:
-                from tools.registry import invalidate_check_fn_cache
-                invalidate_check_fn_cache()
-            except Exception:
-                pass
             # Hydrate credits notices at session OPEN (not just on the first
             # message), so depletion / usage-band warnings show at "ready". Runs
             # off the build thread, after the notice_callback is wired. Fail-open.
@@ -9193,14 +9189,15 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     client_id = str(params.get("client_id") or "").strip()
     if client_id:
-        _client_capabilities[client_id] = {
-            "client_id": client_id,
-            "instance_id": str(params.get("instance_id") or ""),
-            "name": str(params.get("name") or ""),
-            "protocol_version": int(params.get("protocol_version") or 1),
-            "platform": params.get("platform") or {},
-            "capabilities": params.get("capabilities") or {},
-        }
+        with _client_capabilities_lock:
+            _client_capabilities[client_id] = {
+                "client_id": client_id,
+                "instance_id": str(params.get("instance_id") or ""),
+                "name": str(params.get("name") or ""),
+                "protocol_version": int(params.get("protocol_version") or 1),
+                "platform": params.get("platform") or {},
+                "capabilities": params.get("capabilities") or {},
+            }
         logger.info("client.register client_id=%s name=%s", client_id, params.get("name"))
     return _ok(rid, {"accepted": True, "protocol_version": 1})
 

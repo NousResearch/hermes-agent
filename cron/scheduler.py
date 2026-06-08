@@ -2227,6 +2227,41 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _extract_context_payload_from_job_output(raw_output: str) -> str:
+    """Reduce stored cron markdown to the most useful downstream context payload.
+
+    For chained cron jobs, the downstream agent usually needs the upstream
+    model/script result, not the full wrapper with repeated prompts and schedule
+    metadata. Prefer the ``## Response`` body, then ``## Error`` for failed runs,
+    otherwise fall back to the full stored text.
+    """
+    document = raw_output or ""
+    length_match = re.match(r"\A\*\*Result Chars:\*\*[ \t]*(\d+)[ \t]*\r?\n", document)
+    if length_match:
+        result_chars = int(length_match.group(1))
+        content_end = len(document) - 1 if document.endswith("\n") else len(document)
+        if 0 < result_chars <= content_end:
+            return document[content_end - result_chars:content_end]
+
+    text = document.strip()
+    if not text:
+        return ""
+
+    headings = list(re.finditer(r"(?m)^## (?:Response|Error)[ \t]*\r?$", text))
+    if headings:
+        payload = text[headings[-1].end():].lstrip()
+        if payload:
+            return payload
+    return text
+
+
+def _truncate_context_payload(text: str, max_chars: int = 8000) -> str:
+    """Clamp injected cron context without dropping the response header entirely."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n[... output truncated ...]"
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -2306,11 +2341,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
-                # Truncate to 8K characters to avoid prompt bloat
-                _MAX_CONTEXT_CHARS = 8000
-                if len(latest_output) > _MAX_CONTEXT_CHARS:
-                    latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
+                latest_output = output_files[0].read_text(encoding="utf-8")
+                latest_output = _extract_context_payload_from_job_output(latest_output)
+                latest_output = _truncate_context_payload(latest_output)
                 if latest_output:
                     prompt = (
                         f"## Output from job '{source_job_id}'\n"
@@ -3398,7 +3431,8 @@ def run_job(
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
-        output = f"""# Cron Job: {job_name}
+        output = f"""**Result Chars:** {len(logged_response)}
+# Cron Job: {job_name}
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -3419,8 +3453,10 @@ def run_job(
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
-        
-        output = f"""# Cron Job: {job_name} (FAILED)
+        error_payload = f"```\n{error_msg}\n```"
+
+        output = f"""**Result Chars:** {len(error_payload)}
+# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -3432,9 +3468,7 @@ def run_job(
 
 ## Error
 
-```
-{error_msg}
-```
+{error_payload}
 """
         return False, output, "", error_msg
 

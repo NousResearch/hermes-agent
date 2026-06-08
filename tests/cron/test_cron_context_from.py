@@ -181,6 +181,141 @@ class TestBuildJobPromptContextFrom:
         prompt_pos = prompt.find("Process the data above")
         assert context_pos < prompt_pos
 
+    def test_cron_output_prefers_response_section_over_prompt_wrapper(self, cron_env):
+        """Cron output chaining should inject the upstream response body, not the wrapper preamble."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find data", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cron_doc = (
+            "# Cron Job: Example\n\n"
+            "## Prompt\n\n" + ("P" * 9000) +
+            "\n\n## Response\n\n"
+            "status: candidate_unverified\n"
+            "generated_at: 2026-05-29T08:30:25+02:00\n"
+            "fresh payload\n"
+        )
+        (out_dir / "2026-04-22_10-00-00.md").write_text(cron_doc, encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Verify upstream draft", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+
+        assert "fresh payload" in prompt
+        assert "generated_at: 2026-05-29T08:30:25+02:00" in prompt
+        assert "P" * 8500 not in prompt
+
+    def test_cron_output_uses_final_structural_heading_when_preamble_contains_response(self, cron_env):
+        """A heading copied into prompt data must not eclipse the final artifact response."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find data", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cron_doc = (
+            "# Cron Job: Example\n\n"
+            "## Prompt\n\n"
+            "Script emitted this literal heading:\n"
+            "## Response\n\n"
+            "preamble data that must not be injected\n\n"
+            "## Response\n\n"
+            "authoritative final payload\n"
+        )
+        (out_dir / "2026-04-22_10-00-00.md").write_text(cron_doc, encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Verify upstream draft", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+
+        assert "authoritative final payload" in prompt
+        assert "preamble data that must not be injected" not in prompt
+
+    def test_cron_output_preserves_structural_headings_inside_result_body(self, cron_env):
+        """Length metadata prevents result-body headings from becoming delimiters."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find data", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        response = "answer intro\n\n## Error\n\nquoted subheading"
+        cron_doc = (
+            f"**Result Chars:** {len(response)}\n"
+            "# Cron Job: Example\n**Result Chars:** 1\n\n"
+            "## Prompt\n\n"
+            "preamble data that must not be injected\n\n"
+            "## Response\n\n"
+            f"{response}\n"
+        )
+        (out_dir / "2026-04-22_10-00-00.md").write_text(cron_doc, encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Verify upstream draft", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+
+        assert response in prompt
+        assert "preamble data that must not be injected" not in prompt
+
+    def test_cron_output_truncation_preserves_response_header_when_wrapper_is_huge(self, cron_env):
+        """If a cron wrapper is huge, truncation should still preserve the response start."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find data", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        big_response = "Y" * 9000
+        cron_doc = (
+            "# Cron Job: Example\n\n"
+            "## Prompt\n\n" + ("P" * 12000) +
+            "\n\n## Response\n\n"
+            "**Candidate Report**\n"
+            "**Generated at:** `2026-05-29T08:30:25+02:00`\n" +
+            big_response
+        )
+        (out_dir / "2026-04-22_10-00-00.md").write_text(cron_doc, encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Verify upstream draft", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+
+        assert "**Candidate Report**" in prompt
+        assert "**Generated at:** `2026-05-29T08:30:25+02:00`" in prompt
+        assert "[... output truncated ...]" in prompt
+
+    def test_cron_output_prefers_error_section_when_response_absent(self, cron_env):
+        """Failed upstream cron runs should pass the useful error body, not the whole wrapper."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find data", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cron_doc = (
+            "# Cron Job: Example\n\n"
+            "## Prompt\n\n" + ("P" * 9000) +
+            "\n\n## Error\n\n"
+            "Script exited with code 2\n"
+            "missing feed URL\n"
+        )
+        (out_dir / "2026-04-22_10-00-00.md").write_text(cron_doc, encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Verify upstream draft", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+
+        assert "missing feed URL" in prompt
+        assert "Script exited with code 2" in prompt
+        assert "P" * 8500 not in prompt
+
     def test_output_truncated_at_8k_chars(self, cron_env):
         """Output longer than 8000 chars should be truncated."""
         from cron.jobs import create_job, OUTPUT_DIR

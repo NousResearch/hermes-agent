@@ -53,6 +53,11 @@ class FakeClient:
         if method == "thread/start":
             return {"thread": {"id": "thread-fake-001"},
                     "activePermissionProfile": {"id": "workspace-write"}}
+        if method == "thread/resume":
+            # Resume echoes back the requested thread, like real app-server
+            # loading the rollout from disk and returning the same id.
+            return {"thread": {"id": (params or {}).get("threadId", "thread-fake-001")},
+                    "activePermissionProfile": {"id": "workspace-write"}}
         if method == "turn/start":
             return {"turn": {"id": "turn-fake-001"}}
         if method == "turn/interrupt":
@@ -963,6 +968,124 @@ class TestSessionRetirement:
         assert r.should_retire is True
         # Stderr-derived auth hint takes precedence over generic message
         assert r.error and "codex login" in r.error
+
+
+# ---- thread/resume (cross-turn continuity) ----
+
+class TestThreadResume:
+    """When a prior codex thread id is known for the Hermes session, the
+    adapter resumes it (reloading the on-disk rollout) instead of starting a
+    new thread, so multi-turn working context survives the
+    fresh-AIAgent-per-message gateway lifecycle. Resume degrades gracefully to
+    thread/start when the rollout/method is unavailable."""
+
+    def test_resume_id_issues_thread_resume_not_start(self):
+        client = FakeClient()
+        s = make_session(client, resume_thread_id="prior-thread-xyz")
+        tid = s.ensure_started()
+        assert tid == "prior-thread-xyz"
+        methods = [m for (m, _) in client.requests]
+        assert "thread/resume" in methods
+        assert "thread/start" not in methods
+        # resume carried exactly the prior thread id, nothing else
+        _, params = next(r for r in client.requests if r[0] == "thread/resume")
+        assert params == {"threadId": "prior-thread-xyz"}
+
+    def test_no_resume_id_uses_thread_start(self):
+        client = FakeClient()
+        s = make_session(client)  # no resume_thread_id
+        s.ensure_started()
+        methods = [m for (m, _) in client.requests]
+        assert "thread/start" in methods
+        assert "thread/resume" not in methods
+
+    def test_resume_failure_falls_back_to_thread_start(self):
+        """codex too old to expose thread/resume (or rollout GC'd) → -32601 →
+        fall back to a fresh thread/start so the turn is never lost."""
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        client = FakeClient()
+
+        def handler(method, params):
+            if method == "thread/resume":
+                raise CodexAppServerError(
+                    code=-32601, message="Unsupported method: thread/resume"
+                )
+            if method == "thread/start":
+                return {"thread": {"id": "fresh-thread-001"},
+                        "activePermissionProfile": {"id": "x"}}
+            if method == "turn/start":
+                return {"turn": {"id": "tu1"}}
+            return {}
+
+        client._request_handler = handler
+        s = make_session(client, resume_thread_id="dead-thread")
+        tid = s.ensure_started()
+        assert tid == "fresh-thread-001"
+        methods = [m for (m, _) in client.requests]
+        assert "thread/resume" in methods  # attempted first
+        assert "thread/start" in methods   # then fell back
+
+    def test_resume_timeout_falls_back_to_thread_start(self):
+        client = FakeClient()
+
+        def handler(method, params):
+            if method == "thread/resume":
+                raise TimeoutError(
+                    "codex method 'thread/resume' timed out after 15s"
+                )
+            if method == "thread/start":
+                return {"thread": {"id": "fresh-thread-002"},
+                        "activePermissionProfile": {"id": "x"}}
+            return {}
+
+        client._request_handler = handler
+        s = make_session(client, resume_thread_id="slow-thread")
+        assert s.ensure_started() == "fresh-thread-002"
+
+    def test_resume_runtime_error_falls_back_to_thread_start(self):
+        """A dead/closed subprocess surfaces as RuntimeError from the client
+        (broken stdin pipe). Resume must still fall back to thread/start rather
+        than letting the RuntimeError escape and fail the turn."""
+        client = FakeClient()
+
+        def handler(method, params):
+            if method == "thread/resume":
+                raise RuntimeError("codex app-server stdin closed unexpectedly")
+            if method == "thread/start":
+                return {"thread": {"id": "fresh-thread-003"},
+                        "activePermissionProfile": {"id": "x"}}
+            return {}
+
+        client._request_handler = handler
+        s = make_session(client, resume_thread_id="broken-pipe-thread")
+        assert s.ensure_started() == "fresh-thread-003"
+
+    def test_resumed_thread_flows_into_turn_start_and_result(self):
+        """End-to-end: the resumed thread id is what turn/start targets and
+        what TurnResult.thread_id reports back (so the caller re-persists it)."""
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client, resume_thread_id="resumed-abc")
+        r = s.run_turn("hi", turn_timeout=1.0)
+        assert r.thread_id == "resumed-abc"
+        _, params = next(rq for rq in client.requests if rq[0] == "turn/start")
+        assert params["threadId"] == "resumed-abc"
+
+    def test_resume_tolerates_session_id_alias(self):
+        """thread/resume result under the thread.sessionId alias is accepted,
+        same cross-fill tolerance as thread/start."""
+        client = FakeClient()
+        client._request_handler = lambda method, params: (
+            {"thread": {"sessionId": "alias-resumed"}}
+            if method == "thread/resume"
+            else {"turn": {"id": "tu1"}} if method == "turn/start" else {}
+        )
+        s = make_session(client, resume_thread_id="whatever")
+        assert s.ensure_started() == "alias-resumed"
 
 
 # ---- thread/start cross-fill ----

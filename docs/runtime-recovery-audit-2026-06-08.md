@@ -340,12 +340,52 @@
 1. 第 2 批 2B 完成本地 checkpoint commit 后，第 2 批代码恢复线可视为 live 工作区本地稳定点。
 2. 当前未重启 gateway/WebUI；如果需要运行态加载第 2 批，必须另行确认 restart/reload。
 
+## 第 3 批执行记录：process / Codex output governance
+
+状态：**第 3 批已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：恢复 `process long-output / Codex output summary`、`wait timeout metadata`、`kill/trusted_completion` 语义。
+
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-process-b3-20260608122441`
+- 隔离分支：`recover/process-b3-20260608122441`
+- 基线 HEAD：`3a5e6d4df fix(compression): restore wall-clock cap and gateway split persistence`
+- 候选来源按顺序移植：
+  - `eeaf970aa fix(process): address codex wait guard review`
+  - `fc5613430 fix: harden background process long-output metadata`
+  - `1982dd9a1 fix(process): summarize codex output in context paths`
+- 冲突处理：
+  - `tools/process_registry.py`：合并输出统计 / diff flood / Codex context-safe summary 与 kill/trusted_completion / wait-window metadata；补齐 `kill_process(force/reason)`、`kill_all(force/reason)`、`_terminate_host_pid(...)->dict`。
+  - `tests/tools/test_process_registry.py`：保留既有 process tests，同时加入 Codex output summary、wait timeout、kill trust 相关测试。
+- 隔离 worktree touched files：
+  - `tools/process_registry.py`
+  - `gateway/run.py`
+  - `agent/transports/codex_event_projector.py`
+  - `tests/tools/test_process_registry.py`
+  - `tests/gateway/test_background_process_notifications.py`
+  - `tests/agent/transports/test_codex_event_projector.py`
+- 隔离验证命令与结果（live 复跑同组命令结果一致）：
+  - `python -m py_compile tools/process_registry.py gateway/run.py agent/transports/codex_event_projector.py tests/tools/test_process_registry.py tests/gateway/test_background_process_notifications.py tests/agent/transports/test_codex_event_projector.py` ✅
+  - `python -m pytest tests/tools/test_process_registry.py -q -o addopts='' -k '<第3批新增/合并缺口相关 12 项>'` ✅ `12 passed, 85 deselected in 2.09s`
+  - `python -m pytest tests/gateway/test_background_process_notifications.py -q -o addopts=''` ✅ `32 passed in 3.08s`
+  - `python -m pytest tests/agent/transports/test_codex_event_projector.py -q -o addopts=''` ✅ `24 passed in 0.53s`
+  - `git diff --check HEAD` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=6`，最终 `0`
+- 全量 `tests/tools/test_process_registry.py` 说明：本环境缺 `psutil` / `ptyprocess`，且 live-system guard 会拦 `os.kill(pid, 0)` / `proc.kill()`；其中抽样 baseline 在当前 live HEAD 也复现 `4 failed`，因此未把这些环境/既有失败算作第 3 批候选失败。
+- 当前隔离 worktree 状态：保留 staged candidate diff 作为来源证据。
+- live 状态：已应用第 3 批代码并完成 focused 验证；未 push，未重启。live 仍有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+
+下一步选择：
+
+1. 本批收尾创建本地 checkpoint commit，作为第 3 批 stable point。
+2. 当前未重启 gateway/WebUI；如果需要运行态加载第 3 批，必须另行确认 restart/reload。
+3. 第 3 批 checkpoint 后，可继续第 4 批 `terminal raw Codex policy`。
+
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
 - [x] 第 1 批：session_search scope handoff（已落 live 并本地 commit，未 push/未重启）。
 - [x] 第 2 批：compression / gateway recovery（2A 已落 live 并本地 commit；2B 已落 live 并完成 focused 验证；未 push/未重启）。
-- [ ] 第 3 批：process / Codex output governance。
+- [x] 第 3 批：process / Codex output governance（已落 live 并完成 focused 验证；未 push/未重启）。
 - [ ] 第 4 批：terminal raw Codex policy。
 - [ ] 第 5 批：guarded Codex workflow tools。
 - [ ] 第 6 批：browser / image / custom provider 增强。

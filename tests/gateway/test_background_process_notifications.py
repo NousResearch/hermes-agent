@@ -358,6 +358,44 @@ async def test_agent_notification_no_message_id_is_tolerated(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_agent_notification_codex_output_is_context_safe(monkeypatch, tmp_path):
+    """Codex notify_on_complete synthetic messages must not inject raw stdout."""
+    import tools.process_registry as pr_module
+
+    raw = "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80
+    sessions = [SimpleNamespace(
+        output_buffer=raw,
+        exited=True,
+        exit_code=0,
+        command="codex-yuna exec --full-auto 'review'",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher({
+        "session_id": "proc_codex",
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:dm:123:24296",
+        "platform": "telegram",
+        "chat_id": "123",
+        "thread_id": "24296",
+        "notify_on_complete": True,
+    })
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert "Codex output suppressed for context safety" in synth_event.text
+    assert "raw_log_available_via_process_log=True" in synth_event.text
+    assert "SECRET_SOURCE_LINE" not in synth_event.text
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

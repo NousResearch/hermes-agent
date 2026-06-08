@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import pytest
 from unittest.mock import MagicMock, patch
@@ -61,6 +62,161 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
             return True
         time.sleep(interval)
     return False
+
+
+# =========================================================================
+# Output buffering / metadata
+# =========================================================================
+
+class TestOutputHardening:
+    def test_append_output_rolls_buffer_and_updates_metadata(self, registry):
+        s = _make_session()
+        s.max_output_chars = 10
+
+        registry._append_output(s, "hello\n")
+        registry._append_output(s, "world\nagain")
+
+        assert s.output_buffer == "orld\nagain"
+        assert s.output_total_chars == len("hello\nworld\nagain")
+        assert s.output_total_lines == 2
+        assert s.output_buffer_chars == 10
+        assert s.buffer_truncated is True
+        assert s.output_dropped_chars == len("hello\nworld\nagain") - 10
+
+    def test_append_output_merges_partial_lines_across_chunks(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "abc")
+        registry._append_output(s, "def\n")
+
+        assert s.output_buffer == "abcdef\n"
+        assert s.output_total_lines == 1
+        assert s.output_total_chars == len("abcdef\n")
+
+    def test_append_output_carriage_return_refresh_is_not_new_line(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "progress 1\rprogress 2\r")
+
+        assert s.output_total_lines == 0
+        assert s.output_buffer == "progress 1\rprogress 2\r"
+
+    def test_diff_flood_detection_triggers_across_chunks(self, registry):
+        s = _make_session()
+        chunks = []
+        for file_no in range(3):
+            lines = [
+                f"diff --git a/file{file_no}.py b/file{file_no}.py\n",
+                "index 1111111..2222222 100644\n",
+                f"--- a/file{file_no}.py\n",
+                f"+++ b/file{file_no}.py\n",
+                "@@ -1,20 +1,20 @@\n",
+            ]
+            for i in range(20):
+                lines.append(f"-old line {file_no}-{i}\n")
+                lines.append(f"+new line {file_no}-{i}\n")
+            chunks.append("".join(lines))
+
+        for chunk in chunks:
+            registry._append_output(s, chunk)
+
+        assert s.diff_flood_detected is True
+        assert s.diff_flood_score > 0
+        assert s.diff_flood_first_seen_at > 0
+
+    def test_diff_flood_detection_ignores_normal_short_output(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "collected 12 items\n...........\n12 passed\n")
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score == 0.0
+
+    def test_diff_flood_detection_ignores_markdown_bullet_flood(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "".join(f"- checklist item {i}\n" for i in range(80)))
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score > 0
+
+    def test_diff_flood_detection_ignores_markdown_rule_and_bullets(self, registry):
+        s = _make_session()
+
+        text = "--- release notes\n" + "".join(f"- checklist item {i}\n" for i in range(80))
+        registry._append_output(s, text)
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score > 0
+
+    def test_diff_flood_detection_ignores_markdown_plus_minus_sections(self, registry):
+        s = _make_session()
+
+        text = (
+            "+++ added section\n"
+            "-- removed section\n"
+            + "".join(f"- bullet item {i}\n" for i in range(80))
+        )
+        registry._append_output(s, text)
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score > 0
+
+    def test_poll_wait_read_log_and_list_include_output_metadata(self, registry, monkeypatch):
+        s = _make_session(exited=True, exit_code=0)
+        registry._append_output(s, "line 1\nline 2\n")
+        registry._finished[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        poll = registry.poll(s.id)
+        wait = registry.wait(s.id, timeout=1)
+        log = registry.read_log(s.id)
+        entry = registry.list_sessions()[0]
+
+        for result in (poll, wait, log, entry):
+            assert result["output_total_chars"] == len("line 1\nline 2\n")
+            assert result["output_total_lines"] == 2
+            assert result["output_buffer_chars"] == len("line 1\nline 2\n")
+            assert result["buffer_truncated"] is False
+            assert result["output_dropped_chars"] == 0
+            assert result["diff_flood_detected"] is False
+            assert result["diff_flood_score"] == 0.0
+            assert result["diff_flood_first_seen_at"] is None
+            assert "returned_chars" in result
+        assert log["source"] == "rolling_buffer"
+
+    def test_completion_notification_says_output_tail_only(self, registry):
+        s = _make_session(exited=True, exit_code=0)
+        s.notify_on_complete = True
+        registry._running[s.id] = s
+        registry._append_output(s, "done\n")
+
+        registry._move_to_finished(s)
+        event, text = registry.drain_notifications()[0]
+
+        assert event["source"] == "rolling_buffer"
+        assert "Output tail only (not full output):" in text
+        assert "done" in text
+
+    def test_concurrent_append_output_sanity(self, registry):
+        s = _make_session()
+        chunks = [f"thread-{i}\n" for i in range(20)]
+
+        def worker(chunk):
+            for _ in range(50):
+                registry._append_output(s, chunk)
+
+        threads = [threading.Thread(target=worker, args=(chunk,)) for chunk in chunks]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        expected_chars = sum(len(chunk) * 50 for chunk in chunks)
+        assert s.output_total_chars == expected_chars
+        assert s.output_total_lines == 20 * 50
+        assert s.output_buffer_chars == len(s.output_buffer)
+        assert s.output_dropped_chars + s.output_buffer_chars == s.output_total_chars
 
 
 # =========================================================================
@@ -360,6 +516,18 @@ class TestListSessions:
         assert "status" in entry
         assert "pid" in entry
         assert "output_preview" in entry
+
+    def test_list_codex_process_uses_context_safe_preview(self, registry):
+        raw = "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80
+        s = _make_session(command="codex-yuna exec --full-auto 'review'", output=raw)
+        registry._running[s.id] = s
+
+        entry = registry.list_sessions()[0]
+
+        assert entry["context_safe_summary"] is True
+        assert entry["raw_log_available_via_process_log"] is True
+        assert "Codex output suppressed for context safety" in entry["output_preview"]
+        assert "SECRET_SOURCE_LINE" not in entry["output_preview"]
 
 
 # =========================================================================
@@ -910,6 +1078,302 @@ class TestKillProcess:
         finally:
             registry._running.pop(s.id, None)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_kill_local_process_falls_back_without_psutil(self, registry, monkeypatch):
+        """Missing psutil must not make process(action='kill') unusable."""
+        proc = MagicMock()
+        proc.pid = 12345
+        proc.poll.return_value = None
+        proc.wait.return_value = -15
+        s = _make_session(sid="proc_no_psutil", command="sleep 999")
+        s.process = proc
+        s.pid = proc.pid
+        s.pgid = proc.pid
+        registry._running[s.id] = s
+
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "psutil":
+                raise ImportError("No module named 'psutil'")
+            return real_import(name, *args, **kwargs)
+
+        killpg_calls = []
+
+        def fake_killpg(pgid, sig):
+            killpg_calls.append((pgid, sig))
+
+        monkeypatch.setattr("builtins.__import__", fake_import)
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(os, "killpg", fake_killpg)
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert result["fallback_used"] is True
+        assert result["termination_method"] == "os.killpg"
+        assert killpg_calls == [(12345, signal.SIGTERM)]
+        assert s.kill_requested is True
+        assert s.trusted_completion is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_kill_pty_process_prefers_process_group(self, registry, monkeypatch):
+        """PTY-backed Codex wrappers should be killed by process group, not just parent PID."""
+        pty = MagicMock()
+        pty.pid = 23456
+        pty.isalive.return_value = True
+        s = _make_session(sid="proc_pty", command="codex-yuna exec ...")
+        s._pty = pty
+        s.pid = pty.pid
+        s.pgid = pty.pid
+        registry._running[s.id] = s
+
+        killpg_calls = []
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert result["termination_method"] == "os.killpg"
+        assert killpg_calls == [(23456, signal.SIGTERM)]
+        pty.terminate.assert_not_called()
+
+    def test_codex_kill_after_wait_timeout_requires_force(self, registry):
+        """A wait-window timeout must not let Hermes kill Codex by mistake."""
+        s = _make_session(sid="proc_codex_guard", command="codex-yuna exec --full-auto task")
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "refused"
+        assert result["requires_force"] is True
+        assert result["codex_process"] is True
+        assert s.exited is False
+        assert s.kill_attempted is False
+        assert s.trusted_completion is True
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_process_tool_force_false_string_does_not_bypass_codex_guard(self, registry, monkeypatch):
+        from tools.process_registry import _handle_process
+        import tools.process_registry as process_registry_module
+
+        s = _make_session(sid="proc_force_false_string", command="codex-yuna exec --full-auto task")
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+        monkeypatch.setattr(process_registry_module, "process_registry", registry)
+
+        result = json.loads(_handle_process({"action": "kill", "session_id": s.id, "force": "false"}))
+
+        assert result["status"] == "refused"
+        assert result["requires_force"] is True
+        assert s.exited is False
+        assert s.kill_attempted is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_process_tool_force_true_string_bypasses_codex_guard(self, registry, monkeypatch):
+        from tools.process_registry import _handle_process
+        import tools.process_registry as process_registry_module
+
+        proc = MagicMock()
+        proc.pid = 45679
+        s = _make_session(sid="proc_force_true_string", command="codex-yuna exec --full-auto task")
+        s.process = proc
+        s.pid = proc.pid
+        s.pgid = proc.pid
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+        monkeypatch.setattr(process_registry_module, "process_registry", registry)
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            staticmethod(lambda *args, **kwargs: {"method": "os.killpg", "fallback_used": True}),
+        )
+
+        result = json.loads(_handle_process({"action": "kill", "session_id": s.id, "force": "true"}))
+
+        assert result["status"] == "killed"
+        assert s.kill_attempted is True
+
+    def test_codex_kill_after_wait_timeout_allows_explicit_force(self, registry, monkeypatch):
+        """Explicit stop/hard-deadline paths can still terminate Codex."""
+        proc = MagicMock()
+        proc.pid = 45678
+        s = _make_session(sid="proc_codex_force", command="codex-yuna exec --full-auto task")
+        s.process = proc
+        s.pid = proc.pid
+        s.pgid = proc.pid
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            staticmethod(lambda *args, **kwargs: {"method": "os.killpg", "fallback_used": True}),
+        )
+
+        result = registry.kill_process(s.id, force=True, reason="user requested stop")
+
+        assert result["status"] == "killed"
+        assert result["trusted_completion"] is False
+        assert s.kill_attempted is True
+
+    def test_scoped_kill_all_respects_codex_wait_timeout_guard(self, registry):
+        """Agent close/cache cleanup should not force-kill a healthy Codex worker."""
+        s = _make_session(
+            sid="proc_codex_scoped_cleanup",
+            command="codex-yuna exec --full-auto task",
+            task_id="agent-session",
+        )
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        killed = registry.kill_all(task_id="agent-session")
+
+        assert killed == 0
+        assert s.exited is False
+        assert s.kill_attempted is False
+
+    def test_global_kill_all_forces_codex_wait_timeout_guard(self, registry, monkeypatch):
+        """Explicit global stop/shutdown can still kill guarded Codex workers."""
+        proc = MagicMock()
+        proc.pid = 56789
+        s = _make_session(
+            sid="proc_codex_global_stop",
+            command="codex-yuna exec --full-auto task",
+            task_id="agent-session",
+        )
+        s.process = proc
+        s.pid = proc.pid
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            staticmethod(lambda *args, **kwargs: {"method": "os.kill", "fallback_used": True}),
+        )
+
+        killed = registry.kill_all()
+
+        assert killed == 1
+        assert s.exited is True
+        assert s.kill_attempted is True
+
+    def test_kill_failed_records_state(self, registry, monkeypatch):
+        proc = MagicMock()
+        proc.pid = 34567
+        proc.poll.return_value = None
+        s = _make_session(sid="proc_kill_error", command="sleep 999")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        def boom(*args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr("tools.process_registry.ProcessRegistry._terminate_host_pid", staticmethod(boom))
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "error"
+        assert s.kill_attempted is True
+        assert s.kill_failed is True
+        assert "denied" in s.kill_error
+
+    def test_no_runtime_handle_branch_returns_kill_failure_metadata(self, registry):
+        s = _make_session(sid="proc_no_handle", command="sleep 999")
+        registry._running[s.id] = s
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "error"
+        assert result["kill_attempted"] is True
+        assert result["kill_requested"] is True
+        assert result["kill_failed"] is True
+        assert result["trusted_completion"] is False
+        assert s.kill_failed is True
+
+
+class TestWaitTimeoutMetadata:
+    def test_wait_clamp_returns_structured_metadata(self, registry, monkeypatch):
+        s = _make_session(sid="proc_wait_clamp")
+        registry._running[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        result = registry.wait(s.id, timeout=5)
+
+        assert result["status"] == "timeout"
+        assert result["requested_timeout"] == 5
+        assert result["effective_timeout"] == 1
+        assert result["max_wait_timeout"] == 1
+        assert result["clamped"] is True
+
+    def test_codex_command_detection_handles_quoted_wrapper_path(self):
+        assert ProcessRegistry._is_codex_command('"$HOME/.local/bin/codex" exec --full-auto task')
+
+    def test_codex_command_detection_does_not_match_plain_text_mentions(self):
+        assert not ProcessRegistry._is_codex_command("echo codex-yuna")
+        assert not ProcessRegistry._is_codex_command("python -c 'print(\"codex-yuna\")'")
+
+    def test_wait_returns_exited_if_process_finishes_at_deadline_boundary(self, registry, monkeypatch):
+        s = _make_session(sid="proc_wait_boundary", command="codex-yuna exec --full-auto task")
+        registry._running[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        monotonic_values = iter([0.0, 0.0, 2.0])
+        monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values))
+
+        def finish_during_sleep(_seconds):
+            with s._lock:
+                s.output_buffer = "done\n"
+                s.exited = True
+                s.exit_code = 0
+
+        monkeypatch.setattr(time, "sleep", finish_during_sleep)
+
+        result = registry.wait(s.id, timeout=1)
+
+        assert result["status"] == "exited"
+        assert result["exit_code"] == 0
+        assert "Codex output suppressed for context safety" in result["output"]
+        assert "raw_log_available_via_process_log=True" in result["output"]
+        assert "process_still_running" not in result
+        assert not s.last_wait_timeout_at
+
+    def test_wait_timeout_is_marked_as_wait_window_not_failure(self, registry, monkeypatch):
+        s = _make_session(sid="proc_wait_window", command="codex-yuna exec --full-auto task")
+        registry._running[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        result = registry.wait(s.id, timeout=1)
+
+        assert result["status"] == "timeout"
+        assert result["timeout_kind"] == "wait_window_expired"
+        assert result["process_still_running"] is True
+        assert result["is_failure"] is False
+        assert result["codex_guard"] is True
+        assert result["codex_process"] is True
+        assert result["last_wait_timeout_kind"] == "wait_window_expired"
+        assert s.last_wait_timeout_seconds == 1
+
+    def test_exited_after_kill_request_is_not_trusted_completion(self, registry):
+        s = _make_session(sid="proc_killed_then_zero", exited=True, exit_code=0)
+        s.kill_requested = True
+        s.termination_method = "os.killpg"
+        registry._finished[s.id] = s
+
+        result = registry.poll(s.id)
+
+        assert result["status"] == "exited"
+        assert result["exit_code"] == 0
+        assert result["kill_requested"] is True
+        assert result["trusted_completion"] is False
+
 
 # =========================================================================
 # Tool handler
@@ -951,7 +1415,62 @@ def test_format_completion_event():
     assert "[IMPORTANT: Background process proc_abc completed" in result
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
-    assert "Output:\ndone]" in result
+    assert "Output tail only (not full output):\ndone]" in result
+
+
+def test_format_codex_completion_event_uses_context_safe_summary():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_codex",
+        "command": "codex-yuna exec --full-auto 'review'",
+        "exit_code": 0,
+        "output": "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80,
+        "stdout_chars": 9999,
+        "stdout_lines": 240,
+        "diff_flood_detected": True,
+    }
+
+    result = format_process_notification(evt)
+
+    assert "Context-safe Codex summary:" in result
+    assert "Codex output suppressed for context safety" in result
+    assert "stdout_chars=9999" in result
+    assert "raw_log_available_via_process_log=True" in result
+    assert "SECRET_SOURCE_LINE" not in result
+
+
+def test_poll_codex_process_returns_summary_but_log_keeps_raw(registry):
+    raw = "diff --git a/x.py b/x.py\n@@\n+SECRET_SOURCE_LINE\n" * 80
+    s = _make_session(command="codex-yuna exec --full-auto 'implement'", output=raw)
+    registry._running[s.id] = s
+
+    poll = registry.poll(s.id)
+    log = registry.read_log(s.id, limit=20)
+
+    assert poll["context_safe_summary"] is True
+    assert poll["raw_log_available_via_process_log"] is True
+    assert "Codex output suppressed for context safety" in poll["output_preview"]
+    assert "SECRET_SOURCE_LINE" not in poll["output_preview"]
+    assert "SECRET_SOURCE_LINE" in log["output"]
+
+
+def test_format_completion_event_after_kill_request_is_not_plain_completed():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_killed",
+        "command": "codex-yuna exec ...",
+        "exit_code": 0,
+        "output": "",
+        "kill_requested": True,
+        "trusted_completion": False,
+        "termination_method": "os.killpg",
+    }
+
+    result = format_process_notification(evt)
+
+    assert "exited after a kill/termination request" in result
+    assert "trusted_completion=false" in result
+    assert "completed (exit code 0)" not in result
 
 
 def test_format_watch_match_event():

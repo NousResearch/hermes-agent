@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -47,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from tools.ansi_strip import strip_ansi
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,7 @@ class ProcessSession:
     task_id: str = ""                           # Task/sandbox isolation key
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
+    pgid: Optional[int] = None                  # POSIX process group ID (when known)
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
@@ -102,8 +105,25 @@ class ProcessSession:
     exit_code: Optional[int] = None             # Exit code (None if still running)
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
+    output_total_chars: int = 0                 # Python characters seen, not bytes
+    output_total_lines: int = 0                 # Completed "\n" lines only; "\r" refreshes do not count
+    output_buffer_chars: int = 0                # Current rolling-buffer character count
+    buffer_truncated: bool = False              # True once rolling buffer has dropped any output
+    output_dropped_chars: int = 0               # Characters dropped from the rolling buffer
+    diff_flood_detected: bool = False           # Sticky once high-volume diff-like output is detected
+    diff_flood_score: float = 0.0
+    diff_flood_first_seen_at: float = 0.0
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    kill_attempted: bool = False                # A kill request was attempted for this session
+    kill_requested: bool = False                # A termination signal/request was sent or attempted
+    kill_failed: bool = False                   # The kill request failed before the process was observed dead
+    kill_error: str = ""                        # Last kill error, if any
+    termination_method: str = ""                # psutil/taskkill/os.killpg/os.kill/env.kill/etc.
+    terminated_by_agent: bool = False           # Hermes process tool marked this as terminated
+    trusted_completion: bool = True             # False after any kill/termination attempt
+    last_wait_timeout_at: float = 0.0           # Last process(wait) window expiry while still running
+    last_wait_timeout_seconds: int = 0           # Effective wait window that expired
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -132,6 +152,8 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    _diff_recent_lines: Any = field(default_factory=lambda: deque(maxlen=1000), repr=False)
+    _diff_partial_line: str = field(default="", repr=False)
 
 
 class ProcessRegistry:
@@ -316,6 +338,187 @@ class ProcessRegistry:
             "message_id": session.watcher_message_id,
         })
 
+    @staticmethod
+    def _is_diff_like_line(line: str) -> bool:
+        stripped = strip_ansi(line).lstrip("\r")
+        if stripped.startswith("diff --git "):
+            return True
+        if stripped.startswith("@@"):
+            return True
+        if stripped.startswith("index "):
+            return True
+        if stripped.startswith(("--- a/", "+++ b/", "--- /dev/null", "+++ /dev/null")):
+            return True
+        if stripped.startswith(("+", "-")) and not stripped.startswith(("+++", "---")):
+            return True
+        return False
+
+    @staticmethod
+    def _diff_flood_recommendation() -> str:
+        return (
+            "Diff-like output flood detected. Inspect git status, git diff --stat, "
+            "and git diff --name-only, then read touched files directly; avoid "
+            "process(action='log') full scan unless debugging agent output itself."
+        )
+
+    def _append_output(self, session: ProcessSession, text: str) -> None:
+        """Append process output and update rolling-output metadata.
+
+        Counting semantics are intentionally character-based: output_total_chars
+        uses Python len(text), not bytes. output_total_lines counts completed
+        newline characters ("\n") only, so carriage-return refreshes ("\r") do
+        not create new lines. Partial lines are carried across chunks naturally;
+        appending "abc" then "def\n" records one completed line and buffers
+        "abcdef\n".
+        """
+        if not text:
+            return
+        with session._lock:
+            session.output_total_chars += len(text)
+            session.output_total_lines += text.count("\n")
+
+            session.output_buffer += text
+            if len(session.output_buffer) > session.max_output_chars:
+                dropped = len(session.output_buffer) - session.max_output_chars
+                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                session.buffer_truncated = True
+                session.output_dropped_chars += dropped
+            session.output_buffer_chars = len(session.output_buffer)
+
+            combined = session._diff_partial_line + text
+            parts = combined.split("\n")
+            completed_lines = parts[:-1]
+            session._diff_partial_line = parts[-1]
+            if completed_lines:
+                for line in completed_lines:
+                    session._diff_recent_lines.append(line.rstrip("\r"))
+                recent = list(session._diff_recent_lines)
+                total = len(recent)
+                if total >= 40:
+                    normalized_recent = [strip_ansi(line) for line in recent]
+                    diff_headers = sum(1 for line in normalized_recent if line.startswith("diff --git "))
+                    hunk_headers = sum(1 for line in normalized_recent if line.startswith("@@"))
+                    old_file_headers = sum(
+                        1 for line in normalized_recent
+                        if line.startswith(("--- a/", "--- /dev/null"))
+                    )
+                    new_file_headers = sum(
+                        1 for line in normalized_recent
+                        if line.startswith(("+++ b/", "+++ /dev/null"))
+                    )
+                    paired_file_headers = bool(old_file_headers and new_file_headers)
+                    patch_lines = sum(
+                        1 for line in normalized_recent
+                        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+                    )
+                    diff_like = sum(1 for line in normalized_recent if self._is_diff_like_line(line))
+                    score = diff_like / total if total else 0.0
+                    session.diff_flood_score = max(session.diff_flood_score, round(score, 3))
+                    has_diff_structure = bool(diff_headers or hunk_headers)
+                    if (
+                        not session.diff_flood_detected
+                        and score >= 0.45
+                        and has_diff_structure
+                        and (
+                            (patch_lines >= 30 and (diff_headers or hunk_headers))
+                            or (diff_headers >= 2 and hunk_headers >= 2 and patch_lines >= 12)
+                        )
+                    ):
+                        session.diff_flood_detected = True
+                        session.diff_flood_first_seen_at = time.time()
+
+    @staticmethod
+    def _output_metadata(session: ProcessSession, returned_text: Optional[str] = None) -> dict:
+        buffer_chars = session.output_buffer_chars or len(session.output_buffer)
+        total_chars = session.output_total_chars or len(session.output_buffer)
+        total_lines = session.output_total_lines or session.output_buffer.count("\n")
+        data = {
+            "output_total_chars": total_chars,
+            "output_total_lines": total_lines,
+            "stdout_chars": total_chars,
+            "stdout_lines": total_lines,
+            "output_buffer_chars": buffer_chars,
+            "buffer_truncated": session.buffer_truncated,
+            "output_dropped_chars": session.output_dropped_chars,
+            "diff_flood_detected": session.diff_flood_detected,
+            "diff_flood_score": session.diff_flood_score,
+            "diff_flood_first_seen_at": session.diff_flood_first_seen_at or None,
+        }
+        if returned_text is not None:
+            data["returned_chars"] = len(returned_text)
+        if session.diff_flood_first_seen_at:
+            data["diff_flood_recommended_next_action"] = ProcessRegistry._diff_flood_recommendation()
+        return data
+
+    @staticmethod
+    def _is_codex_event(evt: dict) -> bool:
+        return bool(
+            evt.get("codex_process")
+            or ProcessRegistry._is_codex_command(str(evt.get("command") or ""))
+        )
+
+    @staticmethod
+    def _codex_context_safe_summary_from_metadata(evt: dict) -> str:
+        """Return a bounded summary for automatic Codex stdout injection paths.
+
+        The raw rolling buffer remains available via process(action='log'); this
+        helper is only for context-feeding paths such as poll/wait/completion
+        notifications and gateway synthetic messages.
+        """
+        sid = evt.get("session_id") or "unknown"
+        status = evt.get("status") or evt.get("type") or "unknown"
+        exit_code = evt.get("exit_code", "?")
+        stdout_chars = evt.get("stdout_chars", evt.get("output_total_chars", "?"))
+        stdout_lines = evt.get("stdout_lines", evt.get("output_total_lines", "?"))
+        buffer_truncated = bool(evt.get("buffer_truncated", False))
+        diff_flood = bool(evt.get("diff_flood_detected", False))
+        trusted = evt.get("trusted_completion")
+        parts = [
+            "Codex output suppressed for context safety.",
+            f"session_id={sid}",
+            f"status={status}",
+            f"exit_code={exit_code}",
+            f"stdout_chars={stdout_chars}",
+            f"stdout_lines={stdout_lines}",
+            f"buffer_truncated={buffer_truncated}",
+            f"diff_flood_detected={diff_flood}",
+        ]
+        if trusted is not None:
+            parts.append(f"trusted_completion={bool(trusted)}")
+        if evt.get("last_wait_timeout_kind"):
+            parts.append(f"last_wait_timeout_kind={evt.get('last_wait_timeout_kind')}")
+        if evt.get("raw_log_available_via_process_log") is not False:
+            parts.append("raw_log_available_via_process_log=True")
+        if diff_flood:
+            parts.append(ProcessRegistry._diff_flood_recommendation())
+        return "\n".join(parts)
+
+    @staticmethod
+    def _codex_context_safe_result(
+        session: ProcessSession,
+        *,
+        status: str,
+        exit_code: Optional[int] = None,
+    ) -> dict:
+        metadata = ProcessRegistry._output_metadata(session)
+        evt = {
+            "type": status,
+            "session_id": session.id,
+            "status": status,
+            "command": session.command,
+            "exit_code": exit_code if exit_code is not None else session.exit_code,
+            "codex_process": True,
+            "context_safe_summary": True,
+            "raw_log_available_via_process_log": True,
+        }
+        evt.update(metadata)
+        evt.update(ProcessRegistry._process_state_metadata(session))
+        summary = ProcessRegistry._codex_context_safe_summary_from_metadata(evt)
+        evt["output"] = summary
+        evt["output_preview"] = summary
+        evt["returned_chars"] = len(summary)
+        return evt
+
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
 
@@ -413,6 +616,177 @@ class ProcessRegistry:
         from gateway.status import _pid_exists
         return _pid_exists(pid)
 
+    @staticmethod
+    def _is_codex_command(command: str) -> bool:
+        """Return True for Codex CLI worker commands.
+
+        This intentionally keys off the executable/wrapper name rather than
+        model/provider strings. It protects tracked Codex background processes
+        from being killed just because a Hermes wait window expired.
+        """
+        try:
+            lexer = shlex.shlex(command or "", posix=True, punctuation_chars=";&|")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except (TypeError, ValueError):
+            tokens = shlex.split(command or "") if command else []
+
+        command_position = True
+        for index, token in enumerate(tokens):
+            stripped = token.strip("'\"")
+            if stripped in {";", "&", "&&", "|", "||"}:
+                command_position = True
+                continue
+
+            # Skip common environment prefixes without losing command position.
+            if command_position and (stripped == "env" or "=" in stripped and not stripped.startswith(("/", "./", "../"))):
+                continue
+
+            if command_position:
+                exe = os.path.basename(stripped)
+                if exe in {"codex-yuna", "codex-yuna.exe"}:
+                    return True
+                if exe in {"codex", "codex.exe"} and any(
+                    t.strip("'\"") == "exec" for t in tokens[index + 1:index + 4]
+                ):
+                    return True
+
+            command_position = False
+        return False
+
+    @staticmethod
+    def _wait_timeout_metadata(session: ProcessSession) -> dict:
+        """Structured metadata for wait-window expiries.
+
+        A process(wait) timeout means Hermes stopped waiting; it does not mean
+        the process failed. Make that machine-readable so the agent can avoid
+        treating a healthy long-running Codex task as failed.
+        """
+        data = {
+            "timeout_kind": "wait_window_expired",
+            "process_still_running": True,
+            "is_failure": False,
+            "recommended_next_action": (
+                "Poll status or wait again; do not kill solely because the wait window expired."
+            ),
+        }
+        if ProcessRegistry._is_codex_command(session.command):
+            data.update({
+                "codex_guard": True,
+                "recommended_next_action": (
+                    "Codex is still running. Use process(action='poll') and inspect git status/diff stat; "
+                    "only kill with force after an explicit user stop request, hard deadline, "
+                    "or evidence that the process is no longer making progress."
+                ),
+            })
+        if session.diff_flood_detected:
+            data["recommended_next_action"] = (
+                data["recommended_next_action"] + " " + ProcessRegistry._diff_flood_recommendation()
+            )
+        return data
+
+    @staticmethod
+    def _process_state_metadata(session: ProcessSession) -> dict:
+        """Return process-state fields that disambiguate natural vs forced exits."""
+        kill_related = bool(
+            session.kill_attempted
+            or session.kill_requested
+            or session.kill_failed
+            or session.terminated_by_agent
+            or session.termination_method
+        )
+        trusted = bool(session.trusted_completion and not kill_related)
+        data = {"trusted_completion": trusted}
+        if ProcessRegistry._is_codex_command(session.command):
+            data["codex_process"] = True
+        if session.last_wait_timeout_at:
+            data.update({
+                "last_wait_timeout_at": session.last_wait_timeout_at,
+                "last_wait_timeout_seconds": session.last_wait_timeout_seconds,
+                "last_wait_timeout_kind": "wait_window_expired",
+            })
+        if kill_related:
+            data.update({
+                "kill_attempted": session.kill_attempted,
+                "kill_requested": session.kill_requested,
+                "kill_failed": session.kill_failed,
+                "termination_method": session.termination_method,
+                "terminated_by_agent": session.terminated_by_agent,
+            })
+            if session.kill_error:
+                data["kill_error"] = session.kill_error
+        return data
+
+    @staticmethod
+    def _mark_kill_attempt(session: ProcessSession) -> None:
+        with session._lock:
+            session.kill_attempted = True
+            session.kill_requested = True
+            session.kill_failed = False
+            session.kill_error = ""
+            session.trusted_completion = False
+
+    @staticmethod
+    def _mark_kill_failure(session: ProcessSession, exc: BaseException) -> None:
+        with session._lock:
+            session.kill_attempted = True
+            session.kill_requested = True
+            session.kill_failed = True
+            session.kill_error = str(exc)
+            session.trusted_completion = False
+
+    @staticmethod
+    def _record_termination(session: ProcessSession, info: dict) -> None:
+        with session._lock:
+            session.kill_attempted = True
+            session.kill_requested = True
+            session.kill_failed = False
+            session.kill_error = ""
+            session.termination_method = info.get("method", "")
+            session.terminated_by_agent = True
+            session.trusted_completion = False
+
+    @staticmethod
+    def _terminate_posix_process_group_or_pid(
+        pid: int,
+        sig: int = signal.SIGTERM,
+        *,
+        allow_process_group: bool = False,
+        pgid: Optional[int] = None,
+    ) -> dict:
+        """Terminate a POSIX PID, optionally its isolated process group.
+
+        Generic host PID callers must not kill ``os.getpgid(pid)`` because the
+        target may share Hermes/gateway's process group. Group termination is
+        allowed only for sessions we created as isolated groups and only when
+        the target is the group leader (``pgid == pid``).
+        """
+        group_exc: Optional[BaseException] = None
+        if allow_process_group:
+            try:
+                target_pgid = int(pgid) if pgid is not None else os.getpgid(pid)
+                if target_pgid == pid:
+                    os.killpg(target_pgid, sig)
+                    return {"method": "os.killpg", "fallback_used": True, "pgid": target_pgid, "signal": sig}
+                group_exc = OSError(f"refusing killpg for non-leader pid={pid}, pgid={target_pgid}")
+            except (ProcessLookupError, PermissionError, OSError) as exc:
+                group_exc = exc
+
+        try:
+            os.kill(pid, sig)
+            result = {
+                "method": "os.kill",
+                "fallback_used": True,
+                "signal": sig,
+            }
+            if group_exc is not None:
+                result["fallback_error"] = str(group_exc)
+            return result
+        except (ProcessLookupError, PermissionError, OSError) as pid_exc:
+            if group_exc is not None:
+                raise pid_exc from group_exc
+            raise
+
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
         if session is None or session.exited or not session.detached or session.pid_scope != "host":
@@ -433,54 +807,53 @@ class ProcessRegistry:
         return session
 
     @staticmethod
-    def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID and its descendants.
+    def _terminate_host_pid(
+        pid: int,
+        *,
+        allow_process_group: bool = False,
+        pgid: Optional[int] = None,
+    ) -> dict:
+        """Terminate a host-visible PID and descendants when possible.
 
-        POSIX: walks the process tree with ``psutil`` and SIGTERMs
-        children before the parent so subprocess trees (e.g. Chromium
-        renderers/GPU helpers spawned by an ``agent-browser`` daemon)
-        don't get reparented to init and survive cleanup.
-
-        Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
-        the documented Microsoft primitive for tree-kill and matches the
-        existing convention in ``gateway.status.terminate_pid``. We can't
-        reuse the POSIX psutil path on Windows because:
-
-          1. Windows doesn't maintain a Unix-style process tree —
-             ``psutil.Process.children(recursive=True)`` walks PPID
-             links that go stale when intermediate processes exit, so
-             enumeration is best-effort and misses orphaned descendants.
-          2. ``psutil.Process.terminate()`` on Windows is
-             ``TerminateProcess()`` which kills only the target handle
-             and is a hard kill — there is no Windows equivalent of a
-             SIGTERM that cascades through a process group. (See the
-             warning in ``gateway/status.py::terminate_pid``: "os.kill
-             with SIGTERM is not equivalent to a tree-killing hard stop"
-             on Windows.) Headless Chromium has no GUI window, so the
-             softer ``taskkill /T`` without ``/F`` won't reach it either.
-
-        ``psutil`` is a hard dependency (see ``pyproject.toml``); the
-        bare-``os.kill`` fallback covers OSError / PermissionError on
-        POSIX and a missing ``taskkill.exe`` on Windows (effectively
-        unreachable on real Windows installs, but cheap insurance).
+        ``psutil`` is optional at runtime. When it is unavailable, POSIX falls
+        back to a single-PID SIGTERM by default. Callers that know the process
+        was launched in an isolated group may opt into guarded process-group
+        termination with ``allow_process_group=True`` and ``pgid``.
         """
         if _IS_WINDOWS:
             try:
-                subprocess.run(
+                completed = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     text=True,
                     timeout=10,
                     creationflags=windows_hide_flags(),
                 )
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                if completed.returncode != 0:
+                    detail = completed.stderr or completed.stdout or f"taskkill exited {completed.returncode}"
+                    raise OSError(detail)
+                return {"method": "taskkill", "fallback_used": False, "signal": None}
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
                 try:
                     os.kill(pid, signal.SIGTERM)
-                except (OSError, ProcessLookupError, PermissionError):
-                    pass
-            return
+                    return {
+                        "method": "os.kill",
+                        "fallback_used": True,
+                        "signal": signal.SIGTERM,
+                        "fallback_error": str(exc),
+                    }
+                except (OSError, ProcessLookupError, PermissionError) as kill_exc:
+                    raise kill_exc from exc
 
-        import psutil
+        try:
+            import psutil
+        except ImportError:
+            return ProcessRegistry._terminate_posix_process_group_or_pid(
+                pid,
+                allow_process_group=allow_process_group,
+                pgid=pgid,
+            )
+
         try:
             parent = psutil.Process(pid)
             for child in parent.children(recursive=True):
@@ -489,13 +862,15 @@ class ProcessRegistry:
                 except psutil.NoSuchProcess:
                     pass
             parent.terminate()
+            return {"method": "psutil", "fallback_used": False, "signal": signal.SIGTERM}
         except psutil.NoSuchProcess:
-            return
+            return {"method": "psutil.no_such_process", "fallback_used": False, "signal": None}
         except (OSError, PermissionError):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError, PermissionError):
-                pass
+            return ProcessRegistry._terminate_posix_process_group_or_pid(
+                pid,
+                allow_process_group=allow_process_group,
+                pgid=pgid,
+            )
 
     # ----- Spawn -----
 
@@ -722,7 +1097,7 @@ class ProcessRegistry:
         except Exception as e:
             session.exited = True
             session.exit_code = -1
-            session.output_buffer = f"Failed to start: {e}"
+            self._append_output(session, f"Failed to start: {e}")
 
         if not session.exited:
             # Start a poller thread that periodically reads the log file
@@ -758,10 +1133,7 @@ class ProcessRegistry:
                 if first_chunk:
                     chunk = self._clean_shell_noise(chunk)
                     first_chunk = False
-                with session._lock:
-                    session.output_buffer += chunk
-                    if len(session.output_buffer) > session.max_output_chars:
-                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                self._append_output(session, chunk)
                 self._check_watch_patterns(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
@@ -791,13 +1163,10 @@ class ProcessRegistry:
                 new_output = result.get("output", "")
                 if new_output:
                     # Compute delta for watch pattern scanning
-                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
+                    delta = new_output[prev_output_len:] if len(new_output) >= prev_output_len else new_output
                     prev_output_len = len(new_output)
-                    with session._lock:
-                        session.output_buffer = new_output
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     if delta:
+                        self._append_output(session, delta)
                         self._check_watch_patterns(session, delta)
 
                 # Check if process is still running
@@ -838,10 +1207,7 @@ class ProcessRegistry:
                     if chunk:
                         # ptyprocess returns bytes
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                        with session._lock:
-                            session.output_buffer += text
-                            if len(session.output_buffer) > session.max_output_chars:
-                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        self._append_output(session, text)
                         self._check_watch_patterns(session, text)
                 except EOFError:
                     break
@@ -877,14 +1243,24 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            event = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,
-            })
+                "source": "rolling_buffer",
+            }
+            event.update(self._process_state_metadata(session))
+            event.update(self._output_metadata(session, output_tail))
+            if self._is_codex_command(session.command):
+                event["codex_process"] = True
+                event["context_safe_summary"] = True
+                event["raw_log_available_via_process_log"] = True
+                event["output"] = self._codex_context_safe_summary_from_metadata(event)
+                event["returned_chars"] = len(event["output"])
+            self.completion_queue.put(event)
 
     # ----- Query Methods -----
 
@@ -976,11 +1352,9 @@ class ProcessRegistry:
             except Exception as e:
                 logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
 
+        if drained:
+            self._append_output(session, drained)
         with session._lock:
-            if drained:
-                session.output_buffer += drained
-                if len(session.output_buffer) > session.max_output_chars:
-                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
             session.exit_code = rc
         logger.info(
@@ -1002,19 +1376,35 @@ class ProcessRegistry:
         # Guards against orphaned-pipe reader hangs (issue #17327).
         self._reconcile_local_exit(session)
 
-        with session._lock:
-            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+        status = "exited" if session.exited else "running"
+        if self._is_codex_command(session.command):
+            result = self._codex_context_safe_result(
+                session,
+                status=status,
+                exit_code=session.exit_code if session.exited else None,
+            )
+            result.update({
+                "command": session.command,
+                "pid": session.pid,
+                "uptime_seconds": int(time.time() - session.started_at),
+            })
+        else:
+            with session._lock:
+                output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+                output_metadata = self._output_metadata(session, output_preview)
 
-        result = {
-            "session_id": session.id,
-            "command": session.command,
-            "status": "exited" if session.exited else "running",
-            "pid": session.pid,
-            "uptime_seconds": int(time.time() - session.started_at),
-            "output_preview": output_preview,
-        }
+            result = {
+                "session_id": session.id,
+                "command": session.command,
+                "status": status,
+                "pid": session.pid,
+                "uptime_seconds": int(time.time() - session.started_at),
+                "output_preview": output_preview,
+            }
+            result.update(output_metadata)
         if session.exited:
             result["exit_code"] = session.exit_code
+            result.update(self._process_state_metadata(session))
             self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
@@ -1022,7 +1412,7 @@ class ProcessRegistry:
         return result
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
-        """Read the full output log with optional pagination by lines."""
+        """Read rolling-buffer output with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
         session = self.get(session_id)
@@ -1031,6 +1421,7 @@ class ProcessRegistry:
 
         with session._lock:
             full_output = strip_ansi(session.output_buffer)
+            output_metadata = self._output_metadata(session)
 
         lines = full_output.splitlines()
         total_lines = len(lines)
@@ -1047,7 +1438,10 @@ class ProcessRegistry:
             "output": "\n".join(selected),
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
+            "source": "rolling_buffer",
         }
+        result.update(output_metadata)
+        result["returned_chars"] = len(result["output"])
         if session.exited:
             self._completion_consumed.add(session_id)
         return result
@@ -1074,7 +1468,6 @@ class ProcessRegistry:
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None
-
         if requested_timeout and requested_timeout > max_timeout:
             effective_timeout = max_timeout
             timeout_note = (
@@ -1083,6 +1476,13 @@ class ProcessRegistry:
             )
         else:
             effective_timeout = requested_timeout or max_timeout
+        timeout_metadata = {
+            "requested_timeout": requested_timeout,
+            "effective_timeout": effective_timeout,
+            "max_timeout": max_timeout,
+            "max_wait_timeout": max_timeout,
+            "clamped": bool(requested_timeout and requested_timeout > max_timeout),
+        }
 
         session = self.get(session_id)
         if session is None:
@@ -1098,106 +1498,228 @@ class ProcessRegistry:
             self._reconcile_local_exit(session)
             if session.exited:
                 self._completion_consumed.add(session_id)
-                result = {
-                    "status": "exited",
-                    "exit_code": session.exit_code,
-                    "output": strip_ansi(session.output_buffer[-2000:]),
-                }
+                with session._lock:
+                    output = strip_ansi(session.output_buffer[-2000:])
+                    output_metadata = self._output_metadata(session, output)
+                if self._is_codex_command(session.command):
+                    result = self._codex_context_safe_result(
+                        session,
+                        status="exited",
+                        exit_code=session.exit_code,
+                    )
+                else:
+                    result = {
+                        "status": "exited",
+                        "exit_code": session.exit_code,
+                        "output": output,
+                    }
+                    result.update(output_metadata)
+                    result.update(self._process_state_metadata(session))
+                result.update(timeout_metadata)
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
 
             if _is_interrupted():
-                result = {
-                    "status": "interrupted",
-                    "output": strip_ansi(session.output_buffer[-1000:]),
-                    "note": "User sent a new message -- wait interrupted",
-                }
+                with session._lock:
+                    output = strip_ansi(session.output_buffer[-1000:])
+                    output_metadata = self._output_metadata(session, output)
+                if self._is_codex_command(session.command):
+                    result = self._codex_context_safe_result(
+                        session,
+                        status="interrupted",
+                        exit_code=session.exit_code,
+                    )
+                    result["note"] = "User sent a new message -- wait interrupted"
+                else:
+                    result = {
+                        "status": "interrupted",
+                        "output": output,
+                        "note": "User sent a new message -- wait interrupted",
+                    }
+                    result.update(output_metadata)
+                result.update(timeout_metadata)
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
 
             time.sleep(1)
 
-        result = {
-            "status": "timeout",
-            "output": strip_ansi(session.output_buffer[-1000:]),
-        }
+        session = self._refresh_detached_session(session)
+        self._reconcile_local_exit(session)
+        if session.exited:
+            self._completion_consumed.add(session_id)
+            with session._lock:
+                output = strip_ansi(session.output_buffer[-2000:])
+                output_metadata = self._output_metadata(session, output)
+            if self._is_codex_command(session.command):
+                result = self._codex_context_safe_result(
+                    session,
+                    status="exited",
+                    exit_code=session.exit_code,
+                )
+            else:
+                result = {
+                    "status": "exited",
+                    "exit_code": session.exit_code,
+                    "output": output,
+                }
+                result.update(output_metadata)
+                result.update(self._process_state_metadata(session))
+            result.update(timeout_metadata)
+            if timeout_note:
+                result["timeout_note"] = timeout_note
+            return result
+
+        with session._lock:
+            output = strip_ansi(session.output_buffer[-1000:])
+            output_metadata = self._output_metadata(session, output)
+        if self._is_codex_command(session.command):
+            result = self._codex_context_safe_result(
+                session,
+                status="timeout",
+                exit_code=session.exit_code,
+            )
+        else:
+            result = {
+                "status": "timeout",
+                "output": output,
+            }
+            result.update(output_metadata)
+        result.update(timeout_metadata)
+        with session._lock:
+            session.last_wait_timeout_at = time.time()
+            session.last_wait_timeout_seconds = int(effective_timeout)
+        result.update(self._wait_timeout_metadata(session))
+        result.update(self._process_state_metadata(session))
+        if self._is_codex_command(session.command):
+            result["context_safe_summary"] = True
+            result["raw_log_available_via_process_log"] = True
+            result["output"] = self._codex_context_safe_summary_from_metadata(result)
+            result["output_preview"] = result["output"]
+            result["returned_chars"] = len(result["output"])
         if timeout_note:
             result["timeout_note"] = timeout_note
         else:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str) -> dict:
+    def kill_process(self, session_id: str, *, force: bool = False, reason: str = "") -> dict:
         """Kill a background process."""
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         if session.exited:
-            return {
+            result = {
                 "status": "already_exited",
                 "exit_code": session.exit_code,
             }
+            result.update(self._process_state_metadata(session))
+            return result
+
+        if self._is_codex_command(session.command) and session.last_wait_timeout_at and not force:
+            return {
+                "status": "refused",
+                "session_id": session.id,
+                "error": (
+                    "Refusing to kill a running Codex process solely after a process(wait) "
+                    "wait-window timeout. A wait timeout is not a Codex failure."
+                ),
+                "requires_force": True,
+                "force_allowed_when": (
+                    "the user explicitly requested stop, a hard deadline was exceeded, "
+                    "the diff is sufficient and continued work is risky, or polling shows no progress"
+                ),
+                "recommended_next_action": (
+                    "Use process(action='poll') and inspect git status/diff stat before stopping; "
+                    "retry kill with force=true only when one of the force conditions is met."
+                ),
+                **self._process_state_metadata(session),
+            }
+
+        self._mark_kill_attempt(session)
+        termination_info: dict = {}
 
         # Kill via PTY, Popen (local), or env execute (non-local)
         try:
             if session._pty:
-                # PTY process -- terminate via ptyprocess
-                try:
+                # PTY-backed CLIs (Codex/Claude Code) often have wrapper child
+                # chains. Prefer the POSIX process group so children do not
+                # survive when only the wrapper PID is killed.
+                if session.pid and not _IS_WINDOWS:
+                    termination_info = self._terminate_posix_process_group_or_pid(
+                        session.pid,
+                        allow_process_group=True,
+                        pgid=session.pgid,
+                    )
+                else:
                     session._pty.terminate(force=True)
-                except Exception:
-                    if session.pid:
-                        os.kill(session.pid, signal.SIGTERM)
+                    termination_info = {"method": "pty.terminate", "fallback_used": False, "signal": signal.SIGTERM}
             elif session.process:
-                # Local process -- kill the process tree
-                try:
-                    if _IS_WINDOWS:
-                        session.process.terminate()
-                    else:
-                        import psutil
-                        try:
-                            parent = psutil.Process(session.process.pid)
-                            for child in parent.children(recursive=True):
-                                try:
-                                    child.terminate()
-                                except psutil.NoSuchProcess:
-                                    pass
-                            parent.terminate()
-                        except psutil.NoSuchProcess:
-                            pass
-                except (ProcessLookupError, PermissionError):
-                    session.process.kill()
+                termination_info = self._terminate_host_pid(
+                    session.process.pid,
+                    allow_process_group=not _IS_WINDOWS,
+                    pgid=session.pgid,
+                )
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                # Non-local -- kill inside sandbox. Try process-group kill first;
+                # fall back to the specific PID for shells that lack a matching group.
+                session.env_ref.execute(
+                    f"kill -TERM -{session.pid} 2>/dev/null || kill -TERM {session.pid} 2>/dev/null",
+                    timeout=5,
+                )
+                termination_info = {"method": "env.kill", "fallback_used": False, "signal": signal.SIGTERM}
             elif session.detached and session.pid_scope == "host" and session.pid:
                 if not self._is_host_pid_alive(session.pid):
                     with session._lock:
                         session.exited = True
                         session.exit_code = None
                     self._move_to_finished(session)
-                    return {
+                    result = {
                         "status": "already_exited",
                         "exit_code": session.exit_code,
                     }
-                self._terminate_host_pid(session.pid)
+                    result.update(self._process_state_metadata(session))
+                    return result
+                termination_info = self._terminate_host_pid(
+                    session.pid,
+                    allow_process_group=bool(session.pgid) and not _IS_WINDOWS,
+                    pgid=session.pgid,
+                )
             else:
+                error = RuntimeError(
+                    "Recovered process cannot be killed after restart because "
+                    "its original runtime handle is no longer available"
+                )
+                self._mark_kill_failure(session, error)
+                self._write_checkpoint()
                 return {
                     "status": "error",
-                    "error": (
-                        "Recovered process cannot be killed after restart because "
-                        "its original runtime handle is no longer available"
-                    ),
+                    "error": str(error),
+                    **self._process_state_metadata(session),
                 }
-            session.exited = True
-            session.exit_code = -15  # SIGTERM
+
+            self._record_termination(session, termination_info)
+            with session._lock:
+                session.exited = True
+                session.exit_code = -15  # SIGTERM requested by process tool
+                session.trusted_completion = False
             self._move_to_finished(session)
             self._write_checkpoint()
-            return {"status": "killed", "session_id": session.id}
+            result = {
+                "status": "killed",
+                "session_id": session.id,
+                "exit_code": session.exit_code,
+                "termination_method": termination_info.get("method", ""),
+                "fallback_used": bool(termination_info.get("fallback_used", False)),
+            }
+            result.update(self._process_state_metadata(session))
+            return result
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            self._mark_kill_failure(session, e)
+            self._write_checkpoint()
+            return {"status": "error", "error": str(e), **self._process_state_metadata(session)}
 
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
@@ -1278,6 +1800,21 @@ class ProcessRegistry:
 
         result = []
         for s in all_sessions:
+            with s._lock:
+                output_preview = s.output_buffer[-200:] if s.output_buffer else ""
+                output_metadata = self._output_metadata(s, output_preview)
+            if self._is_codex_command(s.command):
+                safe_entry = self._codex_context_safe_result(
+                    s,
+                    status="exited" if s.exited else "running",
+                    exit_code=s.exit_code if s.exited else None,
+                )
+                output_preview = safe_entry["output_preview"]
+                output_metadata.update({
+                    "context_safe_summary": True,
+                    "raw_log_available_via_process_log": True,
+                    "returned_chars": len(output_preview),
+                })
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],
@@ -1286,8 +1823,9 @@ class ProcessRegistry:
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
-                "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "output_preview": output_preview,
             }
+            entry.update(output_metadata)
             if s.exited:
                 entry["exit_code"] = s.exit_code
             if s.detached:
@@ -1325,17 +1863,26 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def kill_all(self, task_id: str = None) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+    def kill_all(self, task_id: str = None, *, force: Optional[bool] = None, reason: str = "") -> int:
+        """Kill running processes, optionally filtered by task_id.
+
+        Global stop/shutdown calls (task_id is None) are explicit operator
+        actions and force termination. Per-agent cleanup calls pass a task_id;
+        those should respect the Codex wait-timeout guard so a normal agent
+        close/cache cleanup does not stop a healthy long-running Codex worker.
+        """
         with self._lock:
             targets = [
                 s for s in self._running.values()
                 if (task_id is None or s.task_id == task_id) and not s.exited
             ]
 
+        kill_force = task_id is None if force is None else force
+        kill_reason = reason or ("global kill_all" if kill_force else "scoped kill_all")
+
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id)
+            result = self.kill_process(session.id, force=kill_force, reason=kill_reason)
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -1520,11 +2067,35 @@ def format_process_notification(evt: dict) -> "str | None":
 
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
+    _trusted = evt.get("trusted_completion", True)
+    _output_label = "Output tail only (not full output):"
+    _notes = []
+    if ProcessRegistry._is_codex_event(evt):
+        safe_evt = dict(evt)
+        safe_evt.setdefault("codex_process", True)
+        safe_evt.setdefault("context_safe_summary", True)
+        safe_evt.setdefault("raw_log_available_via_process_log", True)
+        _out = ProcessRegistry._codex_context_safe_summary_from_metadata(safe_evt)
+        _output_label = "Context-safe Codex summary:"
+    else:
+        if evt.get("buffer_truncated"):
+            _notes.append("rolling buffer was truncated")
+        if evt.get("diff_flood_detected"):
+            _notes.append(ProcessRegistry._diff_flood_recommendation())
+    _note_text = f"\nNote: {'; '.join(_notes)}" if _notes else ""
+    if evt.get("kill_requested") or evt.get("kill_attempted") or _trusted is False:
+        _method = evt.get("termination_method") or "unknown"
+        return (
+            f"[IMPORTANT: Background process {_sid} exited after a kill/termination request "
+            f"(exit code {_exit}, trusted_completion=false, method={_method}).\n"
+            f"Command: {_cmd}\n"
+            f"{_output_label}\n{_out}{_note_text}]"
+        )
     return (
         f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
+        f"{_output_label}\n{_out}{_note_text}]"
     )
 
 
@@ -1538,7 +2109,8 @@ PROCESS_SCHEMA = {
     "description": (
         "Manage background processes started with terminal(background=true). "
         "Actions: 'list' (show all), 'poll' (check status + new output), "
-        "'log' (full output with pagination), 'wait' (block until done or timeout), "
+        "'log' (tail-only rolling-buffer output with line pagination; source='rolling_buffer'), "
+        "'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
         "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
     ),
@@ -1578,6 +2150,30 @@ PROCESS_SCHEMA = {
 }
 
 
+def _coerce_process_bool(value) -> bool:
+    """Safely parse boolean-ish process tool arguments.
+
+    Tool schema coercion normally provides real booleans. This defensive parser
+    protects internal/direct handler calls where strings like "false" would
+    otherwise be truthy under bool("false"). Unknown strings are treated as
+    False to avoid accidentally enabling destructive force behavior.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off", ""}:
+            return False
+        return False
+    return False
+
+
 def _handle_process(args, **kw):
     task_id = kw.get("task_id")
     action = args.get("action", "")
@@ -1597,7 +2193,11 @@ def _handle_process(args, **kw):
         elif action == "wait":
             return json.dumps(process_registry.wait(session_id, timeout=args.get("timeout")), ensure_ascii=False)
         elif action == "kill":
-            return json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+            return json.dumps(process_registry.kill_process(
+                session_id,
+                force=_coerce_process_bool(args.get("force", False)),
+                reason=str(args.get("reason", "")),
+            ), ensure_ascii=False)
         elif action == "write":
             return json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":

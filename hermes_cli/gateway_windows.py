@@ -1302,10 +1302,54 @@ def stop() -> None:
         print("✗ No gateway was running")
 
 
+def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -> bool:
+    """Block until no gateway process is detectable, or the timeout elapses.
+
+    ``stop()`` can return while the previous gateway is still draining
+    in-flight agents (the drain runs up to the restart-drain timeout). Uses the
+    authoritative ``get_running_pid()`` (lock + liveness + start-time +
+    gateway-shape) plus the now-strict ``_gateway_pids()`` scan so a relaunch
+    never races a still-alive old process.
+    """
+    from gateway.status import get_running_pid
+
+    deadline = time.monotonic() + max(timeout_s, interval_s)
+    while time.monotonic() < deadline:
+        if get_running_pid() is None and not _gateway_pids():
+            return True
+        time.sleep(interval_s)
+    return get_running_pid() is None and not _gateway_pids()
+
+
 def restart() -> None:
-    """Stop the gateway then start it again."""
+    """Stop the gateway then start it again.
+
+    Waits for the old gateway to be authoritatively gone before relaunching --
+    otherwise ``start()``'s "already running" guard sees the still-draining old
+    process and no-ops, and when that process later exits nothing replaces it (a
+    silent outage). Fails loudly if the process can't be cleared or the relaunch
+    doesn't produce a running gateway.
+    """
     _assert_windows()
+    from hermes_cli.gateway import kill_gateway_processes
+
     stop()
+
+    if not _wait_for_gateway_absent(timeout_s=30.0):
+        print("⚠ Gateway still present after stop; forcing termination before restart...")
+        kill_gateway_processes(all_profiles=False, force=True)
+        if not _wait_for_gateway_absent(timeout_s=10.0):
+            raise RuntimeError(
+                "Gateway process still detected after force kill; refusing to "
+                "start a duplicate. Investigate stray PIDs before retrying."
+            )
+
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
     start()
+
+    if not _wait_for_gateway_ready(timeout_s=15.0):
+        raise RuntimeError(
+            "Gateway restart did not produce a running gateway process. "
+            "Check logs/gateway.log and run `hermes gateway status`."
+        )

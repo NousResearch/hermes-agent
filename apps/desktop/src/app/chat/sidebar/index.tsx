@@ -40,17 +40,21 @@ import { useI18n } from '@/i18n'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
+import { $cronJobs } from '@/store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
+  $sidebarCronOpen,
   $sidebarOpen,
+  $sidebarOverlayMounted,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
   pinSession,
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setSidebarAgentsGrouped,
+  setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
   SIDEBAR_SESSIONS_PAGE_SIZE,
@@ -65,6 +69,7 @@ import {
   normalizeProfileKey
 } from '@/store/profile'
 import {
+  $cronSessions,
   $selectedStoredSessionId,
   $sessionProfileTotals,
   $sessions,
@@ -78,6 +83,7 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
+import { SidebarCronJobsSection } from './cron-jobs-section'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -223,6 +229,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
+  onManageCronJob: (jobId: string) => void
+  onTriggerCronJob: (jobId: string) => void
 }
 
 export function ChatSidebar({
@@ -233,18 +241,26 @@ export function ChatSidebar({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
-  onNewSessionInWorkspace
+  onNewSessionInWorkspace,
+  onManageCronJob,
+  onTriggerCronJob
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const sidebarOpen = useStore($sidebarOpen)
+  // Collapsed-but-overlay-mounted → render the full sidebar, not just the nav rail.
+  const overlayMounted = useStore($sidebarOverlayMounted)
+  const contentVisible = sidebarOpen || overlayMounted
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
+  const cronOpen = useStore($sidebarCronOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
+  const cronSessions = useStore($cronSessions)
+  const cronJobs = useStore($cronJobs)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
@@ -323,7 +339,10 @@ export function ChatSidebar({
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
-    for (const s of visibleSessions) {
+    // Cron sessions are listed separately but can still be pinned, so index
+    // them too — otherwise a pinned cron job can't resolve into the Pinned
+    // section. Recents take precedence on id collisions (set last).
+    for (const s of [...cronSessions, ...visibleSessions]) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
@@ -332,7 +351,7 @@ export function ChatSidebar({
     }
 
     return map
-  }, [visibleSessions])
+  }, [visibleSessions, cronSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -482,7 +501,9 @@ export function ChatSidebar({
   ])
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
+
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
+
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
   // loaded rows against that profile's total — otherwise a huge default profile
@@ -563,7 +584,11 @@ export function ChatSidebar({
         panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
         sidebarOpen
           ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
-          : 'pointer-events-none border-transparent bg-transparent opacity-0'
+          : 'pointer-events-none border-transparent bg-transparent opacity-0',
+        // While floated by PaneShell's hover-reveal, force visible + interactive
+        // — on hover (group-hover/reveal) or when keyboard-pinned (data-forced).
+        'in-data-[pane-hover-reveal=open]:pointer-events-auto in-data-[pane-hover-reveal=open]:border-(--sidebar-edge-border) in-data-[pane-hover-reveal=open]:bg-(--ui-sidebar-surface-background) in-data-[pane-hover-reveal=open]:opacity-100',
+        'group-hover/reveal:pointer-events-auto group-hover/reveal:border-(--sidebar-edge-border) group-hover/reveal:bg-(--ui-sidebar-surface-background) group-hover/reveal:opacity-100'
       )}
       collapsible="none"
     >
@@ -607,14 +632,14 @@ export function ChatSidebar({
                       type="button"
                     >
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
-                      {sidebarOpen && (
+                      {contentVisible && (
                         <>
-                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">
+                          <span className="min-w-0 flex-1 truncate">
                             {s.nav[item.id] ?? item.label}
                           </span>
                           {isNewSession && (
                             <KbdGroup
-                              className={cn('ml-auto max-[46.25rem]:hidden', newSessionKbdFlash && 'opacity-100!')}
+                              className={cn('ml-auto', newSessionKbdFlash && 'opacity-100!')}
                               keys={[...NEW_SESSION_KBD]}
                             />
                           )}
@@ -628,7 +653,7 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {sidebarOpen && showSessionSections && (
+        {contentVisible && showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
@@ -640,7 +665,7 @@ export function ChatSidebar({
           </div>
         )}
 
-        {sidebarOpen && showSessionSections && trimmedQuery && (
+        {contentVisible && showSessionSections && trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
@@ -664,7 +689,7 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && showSessionSections && !trimmedQuery && (
+        {contentVisible && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
@@ -686,7 +711,7 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && showSessionSections && !trimmedQuery && (
+        {contentVisible && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName={cn(
@@ -759,9 +784,21 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && !showSessionSections && <div className="min-h-0 flex-1" />}
+        {contentVisible && !trimmedQuery && cronJobs.length > 0 && (
+          <SidebarCronJobsSection
+            jobs={cronJobs}
+            label={s.cronJobs}
+            onManageJob={onManageCronJob}
+            onOpenRun={onResumeSession}
+            onToggle={() => setSidebarCronOpen(!cronOpen)}
+            onTriggerJob={onTriggerCronJob}
+            open={cronOpen}
+          />
+        )}
 
-        {sidebarOpen && (
+        {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
+
+        {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
             <ProfileRail />
           </div>

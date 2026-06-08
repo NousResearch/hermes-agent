@@ -81,7 +81,7 @@ describe('SkillsView toolset management', () => {
 
     await renderSkills()
 
-    expect(screen.getByText('Cron Jobs')).toBeTruthy()
+    expect(await screen.findByText('Cron Jobs')).toBeTruthy()
     expect(screen.queryByText(/⏰/)).toBeNull()
   })
 

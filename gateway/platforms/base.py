@@ -1792,7 +1792,14 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
-    
+
+    # Whether this platform renders triple-backtick fenced code blocks (i.e.
+    # ``format_message`` translates/preserves markdown fences into a real code
+    # block).  Drives presentation choices like rendering a ``terminal`` tool
+    # call's command as a ```bash block instead of a flat preview line.
+    # Default False (plain-text platforms); markdown-rendering adapters set True.
+    supports_code_blocks: bool = False
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -1817,9 +1824,14 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Legacy busy_text_mode env var; when unset the runner syncs the
+        # resolved value (driven by busy_input_mode) onto the adapter after
+        # construction (gateway/run.py). Default to "interrupt" so a stray
+        # pre-sync read matches the single-knob default rather than silently
+        # queueing.
         self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue").strip().lower()
-            or "queue"
+            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower()
+            or "interrupt"
         )
         self._busy_text_debounce_seconds: float = _float_env(
             "HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35
@@ -3016,6 +3028,17 @@ class BasePlatformAdapter(ABC):
             expanded = os.path.expanduser(raw)
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
+            else:
+                # The reply mentions a deliverable-looking path that does not
+                # exist on disk, so it is silently dropped from native delivery.
+                # This is the most common reason a promised file never arrives
+                # (the model said "here's your file" but never wrote it, or
+                # referenced the wrong path). Log it so the gap is visible in
+                # gateway.log rather than vanishing without a trace.
+                logger.info(
+                    "Skipping bare file path in reply (no file on disk): %s",
+                    _log_safe_path(raw),
+                )
 
         # Deduplicate by expanded path, preserving discovery order
         seen: set = set()
@@ -3395,7 +3418,7 @@ class BasePlatformAdapter(ABC):
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
         """Return True for normal text eligible for queue-mode debounce."""
         result = (
-            getattr(self, "_busy_text_mode", "queue") == "queue"
+            getattr(self, "_busy_text_mode", "interrupt") == "queue"
             and event.message_type == MessageType.TEXT
             and not getattr(event, "internal", False)
             and not event.is_command()

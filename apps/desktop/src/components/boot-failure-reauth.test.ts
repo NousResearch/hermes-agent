@@ -8,6 +8,7 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
   return {
     envOverride: false,
     mode: 'remote',
+    profile: null,
     remoteAuthMode: 'oauth',
     remoteOauthConnected: false,
     remoteTokenPreview: null,

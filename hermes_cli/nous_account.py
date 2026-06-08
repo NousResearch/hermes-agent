@@ -38,6 +38,7 @@ class NousPortalSubscriptionInfo:
     plan: Optional[str] = None
     tier: Optional[int] = None
     monthly_charge: Optional[float] = None
+    monthly_credits: Optional[float] = None
     current_period_end: Optional[str] = None
     credits_remaining: Optional[float] = None
     rollover_credits: Optional[float] = None
@@ -662,6 +663,7 @@ def _subscription_from_payload(value: Any) -> Optional[NousPortalSubscriptionInf
         plan=_coerce_str(value.get("plan")),
         tier=_coerce_int(value.get("tier")),
         monthly_charge=_coerce_float(value.get("monthly_charge")),
+        monthly_credits=_coerce_float(value.get("monthly_credits")),
         current_period_end=_coerce_str(value.get("current_period_end")),
         credits_remaining=_coerce_float(value.get("credits_remaining")),
         rollover_credits=_coerce_float(value.get("rollover_credits")),

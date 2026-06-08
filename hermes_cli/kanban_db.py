@@ -3889,20 +3889,30 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
-def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
+def _try_cleanup_parent_workspaces(
+    conn: sqlite3.Connection, task_id: str, _visited: Optional[set] = None
+) -> None:
     """Clean up parent scratch workspaces now that *task_id* completed.
 
     When a parent task's cleanup was deferred because it had active children,
     this function is called after each child completes.  If all children of a
     parent are now done/archived/failed/cancelled, the parent's scratch
-    workspace is removed (#33774).
+    workspace is removed (#33774) and the sweep cascades to *its* parents so a
+    multi-level decomposition chain (A->B->C) does not leak the grandparent's
+    scratch dir.  ``_visited`` bounds each ancestor to one evaluation per
+    completion cascade so a diamond-shaped DAG is not re-traversed per path.
     """
+    if _visited is None:
+        _visited = set()
     try:
         parents = conn.execute(
             "SELECT parent_id FROM task_links WHERE child_id = ?",
             (task_id,),
         ).fetchall()
         for (parent_id,) in parents:
+            if parent_id in _visited:
+                continue  # already evaluated in this cascade (diamond DAG)
+            _visited.add(parent_id)
             row = conn.execute(
                 "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
                 (parent_id,),
@@ -3925,6 +3935,11 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
             if wp.is_dir() and _is_managed_scratch_path(wp):
                 shutil.rmtree(wp, ignore_errors=True)
                 _log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+            # Propagate the sweep upward: this parent is now terminal too, so a now-eligible
+            # scratch grandparent is reaped as well (regardless of whether this parent's own
+            # dir still existed) instead of leaking forever in a multi-level chain A->B->C.
+            # The DAG is acyclic (_would_cycle) and _visited de-dupes shared ancestors.
+            _try_cleanup_parent_workspaces(conn, parent_id, _visited)
     except Exception:
         pass  # best-effort
 

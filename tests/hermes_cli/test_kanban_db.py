@@ -2091,6 +2091,72 @@ def test_dir_child_completion_unblocks_deferred_scratch_parent(kanban_home, tmp_
     assert child_dir.exists(), "Non-scratch 'dir' child workspace is never deleted"
 
 
+def test_deferred_scratch_sweep_recurses_to_grandparent(kanban_home):
+    """A multi-level scratch chain A->B->C must sweep the grandparent A, not just B.
+
+    Regression for the non-recursive parent sweep: when leaf C completed it swept only its
+    direct parent B, leaving A's scratch dir leaked on disk forever even though A had become
+    eligible (its only child B was now terminal). The sweep must cascade up the whole chain.
+    """
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="A grandparent")
+        b = kb.create_task(conn, title="B parent")
+        c = kb.create_task(conn, title="C leaf")
+        kb.link_tasks(conn, a, b)  # B depends on A
+        kb.link_tasks(conn, b, c)  # C depends on B
+        a_ws = kb.resolve_workspace(kb.get_task(conn, a))
+        b_ws = kb.resolve_workspace(kb.get_task(conn, b))
+        c_ws = kb.resolve_workspace(kb.get_task(conn, c))
+        kb.set_workspace_path(conn, a, a_ws)
+        kb.set_workspace_path(conn, b, b_ws)
+        kb.set_workspace_path(conn, c, c_ws)
+
+        # A and B complete first; their cleanup is deferred while a descendant is still active.
+        kb.complete_task(conn, a, result="handoff A")
+        kb.complete_task(conn, b, result="handoff B")
+        assert a_ws.exists() and b_ws.exists(), "deferred while leaf C is still active"
+
+        # Leaf C completes -> the sweep must cascade C -> B -> A.
+        kb.complete_task(conn, c, result="done")
+
+    assert not c_ws.exists(), "leaf scratch dir cleaned up"
+    assert not b_ws.exists(), "direct parent scratch dir swept"
+    assert not a_ws.exists(), (
+        "grandparent scratch dir must also be swept once the whole chain is terminal"
+    )
+
+
+def test_deferred_scratch_sweep_handles_diamond_dag(kanban_home):
+    """A diamond DAG (A->B, A->C, B->D, C->D) reaps every eligible scratch dir, and the
+    shared ancestor A is reached through both paths without breaking the cascade."""
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="A root")
+        b = kb.create_task(conn, title="B")
+        c = kb.create_task(conn, title="C")
+        d = kb.create_task(conn, title="D leaf")
+        kb.link_tasks(conn, a, b)
+        kb.link_tasks(conn, a, c)
+        kb.link_tasks(conn, b, d)
+        kb.link_tasks(conn, c, d)
+        ws = {}
+        for tid in (a, b, c, d):
+            w = kb.resolve_workspace(kb.get_task(conn, tid))
+            kb.set_workspace_path(conn, tid, w)
+            ws[tid] = w
+
+        # Complete the ancestors first; each is deferred while leaf D is still active.
+        kb.complete_task(conn, a, result="a")
+        kb.complete_task(conn, b, result="b")
+        kb.complete_task(conn, c, result="c")
+        assert ws[a].exists() and ws[b].exists() and ws[c].exists(), "deferred while D active"
+
+        # D completes -> the cascade reaps B, C, and the shared ancestor A.
+        kb.complete_task(conn, d, result="d")
+
+    for tid in (a, b, c, d):
+        assert not ws[tid].exists(), f"scratch dir for {tid} must be swept once the DAG is terminal"
+
+
 def test_is_managed_scratch_path_accepts_per_board_workspaces(kanban_home, tmp_path):
     """Per-board scratch dirs under ``<kanban_home>/kanban/boards/<slug>/workspaces`` are managed."""
     board_scratch = kanban_home / "kanban" / "boards" / "my-board" / "workspaces" / "task-1"

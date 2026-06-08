@@ -1427,6 +1427,101 @@ def test_resolve_provider_lmstudio_returns_lmstudio(monkeypatch):
     assert resolve_provider("lm_studio") == "lmstudio"
 
 
+def test_resolve_provider_rapid_mlx_returns_rapid_mlx(monkeypatch):
+    """resolve_provider must accept the canonical ``rapid-mlx`` id plus all
+    three registered aliases (``rapid``, ``rapidmlx``, ``rapid_mlx``).
+
+    Parallels the LM Studio regression test above — if the alias map ever
+    forgets one of these the user gets a confusing "unknown provider"
+    error at runtime even though ``hermes model`` listed Rapid as an
+    option.
+    """
+    from hermes_cli.auth import resolve_provider
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert resolve_provider("rapid-mlx") == "rapid-mlx"
+    assert resolve_provider("rapid") == "rapid-mlx"
+    assert resolve_provider("rapidmlx") == "rapid-mlx"
+    assert resolve_provider("rapid_mlx") == "rapid-mlx"
+
+
+def test_rapid_mlx_api_key_does_not_hijack_auto(monkeypatch):
+    """``RAPID_MLX_API_KEY`` in env must NOT select rapid-mlx for
+    ``provider: auto`` — the local server may be offline and the user
+    expects auto-selection to skip local providers entirely.
+
+    Mirrors the LM Studio carve-out (``LM_API_KEY`` doesn't hijack auto
+    either). Regression for the LOCAL_NOAUTH_PROVIDERS gate at
+    ``resolve_provider``'s API-key auto-detect loop.
+    """
+    from hermes_cli.auth import AuthError, resolve_provider
+
+    # Clear every env var the auto-detect loop could otherwise match,
+    # then set only RAPID_MLX_API_KEY. The expected outcome is that
+    # auto-detect raises AuthError (no provider found) rather than
+    # returning "rapid-mlx".
+    for env in (
+        "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY", "GLM_API_KEY", "KIMI_API_KEY",
+        "MINIMAX_API_KEY", "GMI_API_KEY", "NOVITA_API_KEY",
+        "DASHSCOPE_API_KEY", "ARCEEAI_API_KEY", "XIAOMI_API_KEY",
+        "NVIDIA_API_KEY", "STEPFUN_API_KEY", "XAI_API_KEY",
+        "HF_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+        "TOKENHUB_API_KEY", "KILOCODE_API_KEY", "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_GO_API_KEY", "KIMI_CN_API_KEY", "MINIMAX_CN_API_KEY",
+        "LM_API_KEY",
+    ):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "rapid-token")
+
+    # No active_provider stored (so the first credential-pool path is skipped),
+    # AuthError fires when the loop ends without a match.
+    with pytest.raises(AuthError):
+        resolve_provider(None)
+
+
+def test_resolve_runtime_provider_rapid_mlx_alias_honors_config_base_url(monkeypatch):
+    """Regression for codex Round 16 BLOCKING: when a user writes the
+    short alias in config (``provider: rapid``) together with a saved
+    ``base_url`` override, the runtime must honor that base_url rather
+    than falling back to the loopback default.
+
+    Without alias normalization in ``_resolve_explicit_runtime`` and the
+    api-key path, ``cfg_provider="rapid"`` would not equal canonical
+    ``provider="rapid-mlx"`` and the override would be silently dropped.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "rapid-mlx")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "rapid",  # short alias, not canonical
+            "base_url": "http://192.168.1.10:9000/v1",
+            "default": "qwen3.5-4b",
+        },
+    )
+
+    def _fake_creds(provider_id):
+        # Simulate the no-auth local case: no env override, fall through
+        # to the registry default ``http://127.0.0.1:8000/v1``.
+        return {
+            "provider": provider_id,
+            "api_key": "dummy-rapid-api-key",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "source": "default",
+        }
+
+    monkeypatch.setattr(rp, "resolve_api_key_provider_credentials", _fake_creds)
+
+    resolved = rp.resolve_runtime_provider(requested="rapid")
+
+    assert resolved["provider"] == "rapid-mlx"
+    assert resolved["base_url"] == "http://192.168.1.10:9000/v1"
+    assert resolved["api_key"] == "dummy-rapid-api-key"
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_custom_provider_runtime_preserves_provider_name(monkeypatch):
     """resolve_runtime_provider with provider='custom' must return provider='custom'."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

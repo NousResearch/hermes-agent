@@ -156,6 +156,17 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_maps_rapid_mlx_aliases(self):
+        # Without this, fallback/auxiliary configs using ``provider: rapid``
+        # would land in ``resolve_provider_client`` with raw ``"rapid"`` and
+        # fail PROVIDER_REGISTRY lookup as "unknown provider" — even though
+        # the main runtime path accepts the alias.
+        assert _normalize_aux_provider("rapid") == "rapid-mlx"
+        assert _normalize_aux_provider("rapidmlx") == "rapid-mlx"
+        assert _normalize_aux_provider("rapid_mlx") == "rapid-mlx"
+        # Canonical name passes through unchanged.
+        assert _normalize_aux_provider("rapid-mlx") == "rapid-mlx"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

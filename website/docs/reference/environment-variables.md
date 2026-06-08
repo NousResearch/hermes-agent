@@ -22,6 +22,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
 | `LM_API_KEY` | API key for LM Studio (`lmstudio` provider). Often a placeholder for local servers |
 | `LM_BASE_URL` | LM Studio base URL (default: `http://localhost:1234/v1`) |
+| `RAPID_MLX_API_KEY` | API key for Rapid (MLX) (`rapid-mlx` provider). Optional — rapid-mlx allows no-auth by default |
+| `RAPID_MLX_BASE_URL` | Rapid (MLX) base URL (default: `http://127.0.0.1:8000/v1`) |
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API — first priority (OAuth `gho_*` or fine-grained PAT `github_pat_*`; classic PATs `ghp_*` are **not supported**) |
 | `GH_TOKEN` | GitHub token — second priority for Copilot (also used by `gh` CLI) |
 | `GITHUB_TOKEN` | GitHub token — third priority for Copilot |

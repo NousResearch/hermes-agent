@@ -440,6 +440,171 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "dummy-lm-api-key"
         assert creds["base_url"] == "http://127.0.0.1:1234/v1"
 
+    def test_resolve_rapid_mlx_uses_token_and_base_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "rapid-token")
+        monkeypatch.setenv("RAPID_MLX_BASE_URL", "http://rapid.remote:8000/v1")
+
+        creds = resolve_api_key_provider_credentials("rapid-mlx")
+
+        assert creds["provider"] == "rapid-mlx"
+        assert creds["api_key"] == "rapid-token"
+        assert creds["base_url"] == "http://rapid.remote:8000/v1"
+
+    def test_resolve_rapid_mlx_no_api_key_substitutes_placeholder(self, monkeypatch):
+        # No-auth Rapid (MLX): per-provider placeholder so the prompt and
+        # saved .env value don't carry the LM Studio name. Runtime sees the
+        # local Apple Silicon server as configured even when ``rapid-mlx
+        # serve`` was launched without ``--api-key``.
+        from hermes_cli.auth import RAPID_MLX_NOAUTH_PLACEHOLDER
+        monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+        monkeypatch.delenv("RAPID_MLX_BASE_URL", raising=False)
+
+        creds = resolve_api_key_provider_credentials("rapid-mlx")
+
+        assert creds["provider"] == "rapid-mlx"
+        assert creds["api_key"] == RAPID_MLX_NOAUTH_PLACEHOLDER
+        assert creds["base_url"] == "http://127.0.0.1:8000/v1"
+
+    def test_provider_model_ids_rapid_mlx_uses_models_url(self, monkeypatch):
+        # The rapid-mlx profile intentionally sets ``base_url=""`` (to avoid
+        # polluting agent.model_metadata._URL_TO_PROVIDER) and advertises the
+        # default catalog endpoint via ``models_url`` instead. ``provider_model_ids``
+        # must still enter the live-fetch path so the /model picker can probe
+        # whatever alias the user is currently serving.
+        from hermes_cli.models import provider_model_ids
+        from providers import get_provider_profile
+
+        rapid = get_provider_profile("rapid-mlx")
+        assert rapid is not None
+        # Sanity-check the asymmetric configuration this test exercises.
+        assert rapid.base_url == ""
+        assert rapid.models_url == "http://127.0.0.1:8000/v1/models"
+
+        captured = {}
+
+        def fake_fetch_models(self, *, api_key=""):
+            captured["api_key"] = api_key
+            captured["models_url"] = self.models_url
+            return ["qwen3.5-4b", "qwen3.6-27b-8bit"]
+
+        monkeypatch.setattr(
+            "providers.base.ProviderProfile.fetch_models",
+            fake_fetch_models,
+        )
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "rapid-token")
+        monkeypatch.delenv("RAPID_MLX_BASE_URL", raising=False)
+
+        assert provider_model_ids("rapid-mlx") == ["qwen3.5-4b", "qwen3.6-27b-8bit"]
+        assert captured["api_key"] == "rapid-token"
+        assert captured["models_url"] == "http://127.0.0.1:8000/v1/models"
+
+    def test_provider_model_ids_rapid_mlx_default_uses_static_models_url(self, monkeypatch):
+        # Regression for codex Round 10 NIT: when no ``RAPID_MLX_BASE_URL`` is
+        # set, the auth-registry default (``http://127.0.0.1:8000/v1``) is
+        # injected. That must NOT be treated as a user override — discovery
+        # should go through the profile's ``models_url`` only, not also through
+        # the generic ``fetch_api_models`` override probe (avoids double probing
+        # on every /model picker open).
+        from hermes_cli.models import provider_model_ids
+
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "rapid-token")
+        monkeypatch.delenv("RAPID_MLX_BASE_URL", raising=False)
+
+        def fake_profile_fetch(self, *, api_key=""):
+            return ["qwen3.5-4b"]
+
+        def fail_override_fetch(api_key, base_url, *args, **kwargs):
+            raise AssertionError(
+                "default rapid-mlx must not enter the override-probe path; "
+                f"got base_url={base_url!r}"
+            )
+
+        monkeypatch.setattr(
+            "providers.base.ProviderProfile.fetch_models",
+            fake_profile_fetch,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_api_models",
+            fail_override_fetch,
+        )
+
+        assert provider_model_ids("rapid-mlx") == ["qwen3.5-4b"]
+
+    def test_provider_model_ids_rapid_mlx_honors_base_url_override(self, monkeypatch):
+        # Regression for the codex Round 9 finding: when the user sets
+        # ``RAPID_MLX_BASE_URL`` (e.g. a remote rapid-mlx host on a non-default
+        # port), discovery must probe ``{override}/models`` instead of the
+        # profile's static ``models_url`` (which points at 127.0.0.1:8000).
+        from hermes_cli.models import provider_model_ids
+
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "rapid-token")
+        monkeypatch.setenv("RAPID_MLX_BASE_URL", "http://rapid.remote:9000/v1")
+
+        captured = {}
+
+        def fake_fetch_api_models(api_key, base_url, *args, **kwargs):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            return ["qwen3.6-27b-8bit"]
+
+        # If we fall through to profile.fetch_models, the test should fail
+        # because that path ignores the credential ``base_url`` override.
+        def fail_profile_fetch(self, *, api_key=""):
+            raise AssertionError(
+                "credential base_url override must take precedence over "
+                "the profile's static models_url"
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_api_models",
+            fake_fetch_api_models,
+        )
+        monkeypatch.setattr(
+            "providers.base.ProviderProfile.fetch_models",
+            fail_profile_fetch,
+        )
+
+        assert provider_model_ids("rapid-mlx") == ["qwen3.6-27b-8bit"]
+        assert captured["api_key"] == "rapid-token"
+        assert captured["base_url"] == "http://rapid.remote:9000/v1"
+
+    def test_provider_model_ids_rapid_mlx_override_failure_falls_back_to_curated(self, monkeypatch):
+        # Regression for codex Round 13 NIT: when the user explicitly set
+        # ``RAPID_MLX_BASE_URL`` but the override endpoint is unreachable
+        # (e.g. remote host down, wrong port), discovery must NOT fall back to
+        # the profile's static ``models_url`` — that would show loopback
+        # models the runtime will never actually hit. Expected behavior:
+        # return curated/static fallback only, without probing the default.
+        from hermes_cli.models import provider_model_ids
+
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "rapid-token")
+        monkeypatch.setenv("RAPID_MLX_BASE_URL", "http://rapid.remote:9000/v1")
+
+        def failing_override_fetch(api_key, base_url, *args, **kwargs):
+            # Simulate unreachable override endpoint.
+            return None
+
+        def fail_profile_fetch(self, *, api_key=""):
+            raise AssertionError(
+                "override failure must NOT fall back to the profile's "
+                "static models_url — that would mislead the user about "
+                "which endpoint is being probed"
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_api_models",
+            failing_override_fetch,
+        )
+        monkeypatch.setattr(
+            "providers.base.ProviderProfile.fetch_models",
+            fail_profile_fetch,
+        )
+
+        # No curated fallback is registered for rapid-mlx, so the function
+        # returns the empty curated list (not the static loopback probe).
+        result = provider_model_ids("rapid-mlx")
+        assert result == []
+
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
         monkeypatch.setattr(

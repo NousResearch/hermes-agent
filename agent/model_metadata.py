@@ -67,6 +67,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal", "novita-ai", "novitaai",
+    "rapid-mlx", "rapid", "rapidmlx", "rapid_mlx",
 })
 
 

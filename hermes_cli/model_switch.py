@@ -1334,6 +1334,46 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
+    # Rapid (MLX) mirrors LM Studio's local no-auth shape. Probe the
+    # OpenAI-compatible ``{base_url}/models`` endpoint live so the picker
+    # reflects whatever alias the user is currently serving via
+    # ``rapid-mlx serve``. Surface the row when ANY of:
+    #   - RAPID_MLX_API_KEY is set (auth-enabled local server),
+    #   - RAPID_MLX_BASE_URL is set (remote/non-default port), or
+    #   - the active config already routes through rapid-mlx.
+    # The no-auth placeholder makes the picker work even when the user
+    # started ``rapid-mlx serve`` without ``--api-key`` — matching the
+    # LOCAL_NOAUTH_PROVIDERS semantics in hermes_cli/auth.py.
+    if "rapid-mlx" not in curated and (
+        os.environ.get("RAPID_MLX_API_KEY")
+        or os.environ.get("RAPID_MLX_BASE_URL")
+        or current_provider.strip().lower() in ("rapid-mlx", "rapid", "rapidmlx", "rapid_mlx")
+    ):
+        from hermes_cli.models import fetch_api_models
+        from hermes_cli.auth import (
+            AuthError,
+            RAPID_MLX_NOAUTH_PLACEHOLDER,
+        )
+        is_current_rapid = current_provider.strip().lower() in (
+            "rapid-mlx", "rapid", "rapidmlx", "rapid_mlx",
+        )
+        rapid_base = (
+            os.environ.get("RAPID_MLX_BASE_URL")
+            or (current_base_url if is_current_rapid and current_base_url else None)
+            or "http://127.0.0.1:8000/v1"
+        )
+        rapid_key = (
+            os.environ.get("RAPID_MLX_API_KEY")
+            or RAPID_MLX_NOAUTH_PLACEHOLDER
+        )
+        try:
+            live = fetch_api_models(rapid_key, rapid_base, timeout=1.5) or []
+        except AuthError:
+            live = []
+        if not live and is_current_rapid and current_model:
+            live = [current_model]
+        curated["rapid-mlx"] = live
+
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
@@ -1451,6 +1491,37 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        # LOCAL_NOAUTH_PROVIDERS (lmstudio, rapid-mlx) intentionally treat the
+        # API key as optional — the user can run ``rapid-mlx serve`` (or LM
+        # Studio) without ``--api-key`` and the local server accepts any
+        # request. For the /model picker, surface the row when EITHER:
+        #   (a) the active config already routes through the provider (the
+        #       user explicitly chose it), OR
+        #   (b) the base-URL env var is set AND the live pre-probe above
+        #       actually found models (i.e. server is reachable).
+        # Without (b)'s probe-success check, a stale ``RAPID_MLX_BASE_URL``
+        # left over in ``.env`` would surface an empty rapid-mlx row even
+        # when the user is on a completely different provider.
+        if not has_creds and overlay.auth_type == "api_key":
+            try:
+                from hermes_cli.auth import LOCAL_NOAUTH_PROVIDERS as _LOCAL_NOAUTH
+            except Exception:
+                _LOCAL_NOAUTH = frozenset()
+            if hermes_slug in _LOCAL_NOAUTH or pid in _LOCAL_NOAUTH:
+                # Normalize current_provider through the provider alias table
+                # so ``provider: rapid`` (or ``rapidmlx``/``rapid_mlx``) is
+                # recognized as the canonical ``rapid-mlx``.
+                cur_raw = current_provider.strip().lower()
+                cur_norm = _PROVIDER_ALIAS_TABLE.get(cur_raw, cur_raw)
+                is_current_local = bool(cur_norm) and cur_norm in {
+                    hermes_slug.lower(), pid.lower(),
+                }
+                base_env = getattr(overlay, "base_url_env_var", "") or ""
+                probe_succeeded = bool(curated.get(hermes_slug)) or bool(curated.get(pid))
+                if is_current_local:
+                    has_creds = True
+                elif base_env and os.environ.get(base_env) and probe_succeeded:
+                    has_creds = True
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code
@@ -1554,21 +1625,46 @@ def list_authenticated_providers(
                 # launched models, exactly like an offline CLI run).
                 pass
         else:
-            # Unified pathway — see Section 1 rationale. Fall back to the
-            # curated dict (with models.dev merge for preferred providers)
-            # when the live fetcher comes up empty.
-            model_ids = cached_provider_model_ids(hermes_slug)
-            if not model_ids:
+            # LOCAL_NOAUTH_PROVIDERS (lmstudio, rapid-mlx) already had their
+            # endpoints probed live in the pre-fill block above (with a
+            # picker-friendly 1.5s timeout). Reuse that result directly to
+            # avoid a second probe via cached_provider_model_ids — which
+            # would use the default 5s timeout and could double the picker
+            # latency when the local server is unreachable.
+            try:
+                from hermes_cli.auth import LOCAL_NOAUTH_PROVIDERS as _LOCAL_NOAUTH
+            except Exception:
+                _LOCAL_NOAUTH = frozenset()
+            if hermes_slug in _LOCAL_NOAUTH or pid in _LOCAL_NOAUTH:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
-                if hermes_slug in _MODELS_DEV_PREFERRED:
-                    model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+            else:
+                # Unified pathway — see Section 1 rationale. Fall back to the
+                # curated dict (with models.dev merge for preferred providers)
+                # when the live fetcher comes up empty.
+                model_ids = cached_provider_model_ids(hermes_slug)
+                if not model_ids:
+                    model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+                    if hermes_slug in _MODELS_DEV_PREFERRED:
+                        model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
+        # Normalize ``current_provider`` through the alias table so a config
+        # using a short alias like ``provider: rapid`` is recognized as the
+        # canonical ``rapid-mlx`` here. Without this, the rapid-mlx row would
+        # appear in the picker without the "current" badge even though the
+        # user is actively routed through it.
+        _cur_raw = (current_provider or "").strip().lower()
+        _cur_norm = _PROVIDER_ALIAS_TABLE.get(_cur_raw, _cur_raw)
         results.append({
             "slug": hermes_slug,
             "name": get_label(hermes_slug),
-            "is_current": hermes_slug == current_provider or pid == current_provider,
+            "is_current": (
+                hermes_slug == current_provider
+                or pid == current_provider
+                or hermes_slug.lower() == _cur_norm
+                or pid.lower() == _cur_norm
+            ),
             "is_user_defined": False,
             "models": top,
             "total_models": total,

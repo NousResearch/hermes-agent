@@ -138,9 +138,26 @@ GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 
 # LM Studio's default no-auth mode still requires *some* non-empty bearer for
 # the API-key code paths (auxiliary_client, runtime resolver) to treat the
-# provider as configured. This sentinel is sent only to LM Studio, never to
-# any remote service.
+# provider as configured. These sentinels are sent only to local-server
+# providers, never to any remote service. Each local provider has its own
+# branded placeholder so the ``hermes model`` setup prompt and saved
+# ``.env`` value don't carry an unrelated provider's name.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
+RAPID_MLX_NOAUTH_PLACEHOLDER = "dummy-rapid-api-key"
+
+# Local-server providers where the API key is optional. The user may
+# leave the key blank during ``hermes model`` setup and the runtime
+# substitutes the matching placeholder from ``_NOAUTH_PLACEHOLDERS`` so
+# downstream code sees the provider as configured. These providers are
+# also excluded from API-key auto-detection — having ``LM_API_KEY`` or
+# ``RAPID_MLX_API_KEY`` set in the environment must not hijack
+# ``provider: auto`` while the local server is offline.
+LOCAL_NOAUTH_PROVIDERS = frozenset({"lmstudio", "rapid-mlx"})
+
+_NOAUTH_PLACEHOLDERS: dict[str, str] = {
+    "lmstudio": LMSTUDIO_NOAUTH_PLACEHOLDER,
+    "rapid-mlx": RAPID_MLX_NOAUTH_PLACEHOLDER,
+}
 
 
 # =============================================================================
@@ -213,6 +230,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="http://127.0.0.1:1234/v1",
         api_key_env_vars=("LM_API_KEY",),
         base_url_env_var="LM_BASE_URL",
+    ),
+    "rapid-mlx": ProviderConfig(
+        id="rapid-mlx",
+        name="Rapid (MLX)",
+        auth_type="api_key",
+        inference_base_url="http://127.0.0.1:8000/v1",
+        api_key_env_vars=("RAPID_MLX_API_KEY",),
+        base_url_env_var="RAPID_MLX_BASE_URL",
     ),
     "copilot": ProviderConfig(
         id="copilot",
@@ -1513,6 +1538,8 @@ def resolve_provider(
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
+        # Rapid (MLX) — first-class provider, mirrors lmstudio shape
+        "rapid": "rapid-mlx", "rapidmlx": "rapid-mlx", "rapid_mlx": "rapid-mlx",
     }
     # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.
     # This keeps providers/ as the single source for new aliases while the
@@ -1567,11 +1594,11 @@ def resolve_provider(
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses
-        # Copilot/GitHub Models as the provider. LM Studio is a local server
-        # whose availability isn't implied by LM_API_KEY presence (it may be
-        # offline, and the no-auth setup uses a placeholder value), so it
-        # also requires explicit selection.
-        if pid in {"copilot", "lmstudio"}:
+        # Copilot/GitHub Models as the provider. Local-server providers are a
+        # similar case — their availability isn't implied by an env var
+        # being set (the server may be offline, and no-auth setup uses a
+        # placeholder), so they also require explicit selection.
+        if pid == "copilot" or pid in LOCAL_NOAUTH_PROVIDERS:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -5870,11 +5897,12 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
-    # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
-    # see the local server as configured. doctor still reports unconfigured
-    # because get_api_key_provider_status uses the raw secret resolver.
-    if not api_key and provider_id == "lmstudio":
-        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+    # No-auth local server (LM Studio, Rapid): substitute the per-provider
+    # placeholder so runtime / auxiliary_client see the provider as
+    # configured. doctor still reports unconfigured because
+    # get_api_key_provider_status uses the raw secret resolver.
+    if not api_key and provider_id in LOCAL_NOAUTH_PROVIDERS:
+        api_key = _NOAUTH_PLACEHOLDERS[provider_id]
         key_source = key_source or "default"
 
     env_url = ""

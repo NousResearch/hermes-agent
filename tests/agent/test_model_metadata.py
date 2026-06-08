@@ -987,12 +987,25 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("anthropic:claude-sonnet-4") == "claude-sonnet-4"
         assert _strip_provider_prefix("stepfun:step-3.5-flash") == "step-3.5-flash"
 
+    def test_rapid_mlx_prefix_and_aliases_are_stripped(self):
+        # ``rapid-mlx`` is a first-class provider; provider-prefixed model
+        # strings must be stripped consistently for metadata/context helpers.
+        assert _strip_provider_prefix("rapid-mlx:qwen3.5-4b") == "qwen3.5-4b"
+        assert _strip_provider_prefix("rapid:qwen3.6-27b-8bit") == "qwen3.6-27b-8bit"
+        assert _strip_provider_prefix("rapidmlx:qwen3.5-35b") == "qwen3.5-35b"
+        assert _strip_provider_prefix("rapid_mlx:qwopus-27b-8bit") == "qwopus-27b-8bit"
+
     def test_ollama_model_tag_preserved(self):
         """Ollama model:tag format must NOT be stripped."""
         assert _strip_provider_prefix("qwen3.5:27b") == "qwen3.5:27b"
         assert _strip_provider_prefix("llama3.3:70b") == "llama3.3:70b"
         assert _strip_provider_prefix("gemma2:9b") == "gemma2:9b"
         assert _strip_provider_prefix("codellama:13b-instruct-q4_0") == "codellama:13b-instruct-q4_0"
+        # ``rapid`` is registered as a short provider alias; tags after it
+        # that match the Ollama tag pattern must still be preserved.
+        assert _strip_provider_prefix("rapid:latest") == "rapid:latest"
+        assert _strip_provider_prefix("rapid:7b") == "rapid:7b"
+        assert _strip_provider_prefix("rapid:q4_0") == "rapid:q4_0"
 
     def test_http_urls_preserved(self):
         assert _strip_provider_prefix("http://example.com") == "http://example.com"

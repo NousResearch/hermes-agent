@@ -2552,6 +2552,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "RAPID_MLX_API_KEY": {
+        "description": "Rapid (MLX) bearer token for auth-enabled local servers",
+        "prompt": "Rapid (MLX) API key / bearer token",
+        "url": "https://github.com/raullenchai/Rapid-MLX",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "RAPID_MLX_BASE_URL": {
+        "description": "Rapid (MLX) base URL override (e.g. http://host:8000/v1 for a remote rapid-mlx server)",
+        "prompt": "Rapid (MLX) base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "GLM_API_KEY": {
         "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
         "prompt": "Z.AI / GLM API key",

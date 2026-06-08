@@ -1147,6 +1147,9 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "rapid": "rapid-mlx",
+    "rapidmlx": "rapid-mlx",
+    "rapid_mlx": "rapid-mlx",
 }
 
 
@@ -2222,7 +2225,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         from hermes_cli.auth import resolve_api_key_provider_credentials
 
         _p = get_provider_profile(normalized)
-        if _p and _p.auth_type == "api_key" and _p.base_url:
+        # Enter the live-fetch path when the profile advertises EITHER a
+        # ``base_url`` (the common case) OR a ``models_url`` (used by local
+        # providers like ``rapid-mlx`` that intentionally leave ``base_url``
+        # empty to avoid polluting ``agent.model_metadata._URL_TO_PROVIDER``).
+        # A resolved credential ``base_url`` from auth.py (e.g.
+        # ``RAPID_MLX_BASE_URL``) also unlocks the fetch.
+        if _p and _p.auth_type == "api_key" and (_p.base_url or _p.models_url):
             try:
                 creds = resolve_api_key_provider_credentials(normalized)
                 api_key = str(creds.get("api_key") or "").strip()
@@ -2232,7 +2241,66 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key)
+                # If the user overrode the endpoint (e.g. ``RAPID_MLX_BASE_URL``
+                # points at a remote host on a different port), the static
+                # ``models_url`` on the profile would still probe the default
+                # loopback. Prefer the credential-supplied ``base_url`` and
+                # discover via ``{base_url}/models`` so the picker reflects
+                # whichever endpoint is actually being used at runtime.
+                #
+                # "Override" means the credential ``base_url`` differs from
+                # BOTH the plugin profile's ``base_url`` (the common case) AND
+                # the auth registry's ``inference_base_url`` (the default that
+                # gets injected for local providers like rapid-mlx / lmstudio,
+                # whose plugin profiles intentionally leave ``base_url=""``).
+                # Without the second check, default Rapid would always be
+                # treated as an override and probe twice on every picker open.
+                #
+                # Compare URLs semantically (scheme/host case-insensitive,
+                # port-aware, no trailing slash) so cosmetic variations like
+                # ``HTTP://127.0.0.1:8000/v1`` or ``http://127.0.0.1:08000/v1``
+                # don't get classified as overrides.
+                def _norm(u: str) -> str:
+                    raw = (u or "").strip().rstrip("/")
+                    if not raw:
+                        return ""
+                    try:
+                        from urllib.parse import urlsplit
+
+                        parts = urlsplit(raw)
+                        scheme = (parts.scheme or "").lower()
+                        host = (parts.hostname or "").lower()
+                        port = parts.port  # may raise ValueError on bad port
+                        netloc = host if port is None else f"{host}:{port}"
+                        path = parts.path.rstrip("/")
+                        return f"{scheme}://{netloc}{path}"
+                    except Exception:
+                        return raw
+
+                profile_default = _norm(_p.base_url)
+                registry_default = ""
+                try:
+                    from hermes_cli.auth import PROVIDER_REGISTRY as _PR
+                    _cfg = _PR.get(normalized)
+                    if _cfg is not None:
+                        registry_default = _norm(_cfg.inference_base_url)
+                except Exception:
+                    registry_default = ""
+                creds_base = _norm(base_url)
+
+                live = None
+                is_override = bool(creds_base) and creds_base not in {
+                    profile_default,
+                    registry_default,
+                }
+                if is_override:
+                    # User explicitly chose a non-default endpoint; only probe
+                    # that one. Falling back to the static ``models_url`` would
+                    # show models from the loopback default — misleading when
+                    # the runtime will route requests to the override.
+                    live = fetch_api_models(api_key, base_url)
+                else:
+                    live = _p.fetch_models(api_key=api_key)
                 if live:
                     return live
             # Use profile's fallback_models if defined

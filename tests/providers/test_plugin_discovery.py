@@ -68,7 +68,7 @@ def test_all_profiles_register():
     # Spot-check representative providers from different categories
     for required in (
         "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
-        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
+        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "rapid-mlx",
     ):
         assert required in names, f"Missing profile: {required}"
 
@@ -117,6 +117,33 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
 
     # Clean up: reset discovery state so other tests see the bundled version
     _clear_provider_caches()
+
+
+def test_rapid_mlx_does_not_pollute_url_inference_map():
+    """``rapid-mlx`` must not register ``127.0.0.1`` (or any loopback host) in
+    ``agent.model_metadata._URL_TO_PROVIDER``, since the auto-extension loop
+    would otherwise claim every local OpenAI-compatible endpoint
+    (vLLM/llama.cpp/custom servers on different ports) as ``rapid-mlx``.
+
+    Enforced by setting ``base_url=""`` in the plugin profile — actual
+    runtime URL is owned by hermes_cli/auth.py + hermes_cli/providers.py.
+    """
+    _clear_provider_caches()
+    from providers import get_provider_profile
+
+    rapid_mlx = get_provider_profile("rapid-mlx")
+    assert rapid_mlx is not None
+    assert rapid_mlx.get_hostname() == "", (
+        "rapid-mlx must not expose a hostname — see plugin __init__.py for why"
+    )
+
+    from agent.model_metadata import _URL_TO_PROVIDER
+    for url_part, provider in _URL_TO_PROVIDER.items():
+        if provider == "rapid-mlx":
+            raise AssertionError(
+                f"rapid-mlx registered in URL inference map at {url_part!r} — "
+                "this would hijack unrelated loopback endpoints"
+            )
 
 
 def test_general_plugin_manager_skips_model_provider_kind(tmp_path, monkeypatch):

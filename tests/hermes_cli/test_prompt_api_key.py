@@ -155,3 +155,33 @@ def test_lmstudio_replace_empty_does_not_overwrite_with_placeholder(profile_env)
     assert key == "my-real-lmstudio-key"
     assert abort is False
     assert get_env_value("LM_API_KEY") == "my-real-lmstudio-key"
+
+
+# Rapid (MLX) no-auth placeholder — parallels LM Studio ──────────────────────
+
+def test_rapid_mlx_first_time_empty_uses_placeholder(profile_env):
+    from hermes_cli.auth import RAPID_MLX_NOAUTH_PLACEHOLDER
+    from hermes_cli.config import get_env_value
+
+    key, abort = _run_prompt(
+        existing_key="", choice="", new_key="",
+        provider_id="rapid-mlx", pconfig_name="rapid-mlx",
+    )
+    assert key == RAPID_MLX_NOAUTH_PLACEHOLDER
+    assert abort is False
+    assert get_env_value("RAPID_MLX_API_KEY") == RAPID_MLX_NOAUTH_PLACEHOLDER
+
+
+def test_rapid_mlx_replace_empty_does_not_overwrite_with_placeholder(profile_env):
+    """Mirrors the LM Studio replace-empty contract for Rapid (MLX).
+    Same rationale: only first-time entry can substitute the placeholder."""
+    from hermes_cli.config import get_env_value, save_env_value
+    save_env_value("RAPID_MLX_API_KEY", "my-real-rapid-key")
+
+    key, abort = _run_prompt(
+        existing_key="my-real-rapid-key", choice="r", new_key="",
+        provider_id="rapid-mlx", pconfig_name="rapid-mlx",
+    )
+    assert key == "my-real-rapid-key"
+    assert abort is False
+    assert get_env_value("RAPID_MLX_API_KEY") == "my-real-rapid-key"

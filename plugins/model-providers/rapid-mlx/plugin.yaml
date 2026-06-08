@@ -1,0 +1,5 @@
+name: rapid-mlx-provider
+kind: model-provider
+version: 1.0.0
+description: Rapid (MLX) — OpenAI/Anthropic-compatible local inference for Apple Silicon
+author: Rapid-MLX contributors

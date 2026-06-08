@@ -88,6 +88,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="http://127.0.0.1:1234/v1",
         base_url_env_var="LM_BASE_URL",
     ),
+    "rapid-mlx": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        extra_env_vars=("RAPID_MLX_API_KEY",),
+        base_url_override="http://127.0.0.1:8000/v1",
+        base_url_env_var="RAPID_MLX_BASE_URL",
+    ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
         auth_type="external_process",
@@ -357,6 +364,9 @@ ALIASES: Dict[str, str] = {
     "llamacpp": "local",
     "llama.cpp": "local",
     "llama-cpp": "local",
+    "rapid": "rapid-mlx",
+    "rapidmlx": "rapid-mlx",
+    "rapid_mlx": "rapid-mlx",
 }
 
 
@@ -373,6 +383,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "gmi": "GMI Cloud",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
+    "rapid-mlx": "Rapid (MLX)",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",

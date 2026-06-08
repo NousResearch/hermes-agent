@@ -38,6 +38,24 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _canonical_provider_id(value: str) -> str:
+    """Normalize a raw provider string through the alias table.
+
+    ``provider: rapid`` in ``config.yaml`` resolves to canonical ``rapid-mlx``;
+    likewise ``rapidmlx`` / ``rapid_mlx``. Used in saved-config equality checks
+    so a configured ``base_url`` is honored even when the user wrote the short
+    alias (e.g. ``provider: rapid`` + ``base_url: http://host:9000/v1``).
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return raw
+    try:
+        from hermes_cli.providers import ALIASES as _ALIASES
+        return _ALIASES.get(raw, raw)
+    except Exception:
+        return raw
+
+
 def _loopback_hostname(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -369,7 +387,7 @@ def _resolve_runtime_from_pool_entry(
         if api_mode == "anthropic_messages":
             base_url = re.sub(r"/v1/?$", "", base_url)
     else:
-        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_provider = _canonical_provider_id(model_cfg.get("provider") or "")
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — same pattern as the Anthropic branch above.
         # Only override when the pool entry has no explicit base_url (i.e. it
@@ -1632,7 +1650,7 @@ def resolve_runtime_provider(
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
         # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = _canonical_provider_id(model_cfg.get("provider") or "")
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -1643,7 +1661,7 @@ def resolve_runtime_provider(
         elif provider == "xai":
             api_mode = "codex_responses"
         else:
-            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+            configured_provider = _canonical_provider_id(model_cfg.get("provider") or "")
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if provider in {"opencode-zen", "opencode-go"}:

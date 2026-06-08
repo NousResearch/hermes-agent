@@ -189,7 +189,7 @@ function IdleView({
   if (behind === 0) {
     return (
       <CenteredStatus
-        body={u.latestBody}
+        body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
         title={u.allSetTitle}
       />

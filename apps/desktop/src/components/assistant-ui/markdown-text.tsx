@@ -425,7 +425,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
             <table
               className={cn(
-                'm-0 w-full border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+                'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
                 className
               )}
               {...props}
@@ -438,7 +438,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         th: ({ className, ...props }: ComponentProps<'th'>) => (
           <th
             className={cn(
-              'px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+              'whitespace-nowrap px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
               className
             )}
             {...props}

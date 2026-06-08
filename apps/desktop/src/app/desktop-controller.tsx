@@ -8,6 +8,7 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
@@ -23,6 +24,7 @@ import {
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
   pinSession,
+  setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_SESSIONS_PAGE_SIZE,
@@ -76,6 +78,7 @@ import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
+import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
@@ -165,6 +168,10 @@ export function DesktopController() {
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
+  // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
+  // collapse both sidebars (without touching their stored open state) so the
+  // hover-reveal overlay becomes the way in. Restores once it's wide again.
+  const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -300,6 +307,7 @@ export function DesktopController() {
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page — the empty-history-on-profile-switch bug.
       const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
       const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: ['cron']
       })
@@ -846,6 +854,8 @@ export function DesktopController() {
     <Pane
       defaultOpen={false}
       disabled={!chatOpen}
+      forceCollapsed={narrowViewport}
+      hoverReveal
       id="file-browser"
       key="file-browser"
       maxWidth={FILE_BROWSER_MAX_WIDTH}
@@ -873,9 +883,12 @@ export function DesktopController() {
     >
       <Pane
         disabled={terminalTakeoverActive}
+        forceCollapsed={narrowViewport}
+        hoverReveal
         id="chat-sidebar"
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
+        onOverlayActiveChange={setSidebarOverlayMounted}
         resizable
         side={sidebarSide}
         width={`${SIDEBAR_DEFAULT_WIDTH}px`}

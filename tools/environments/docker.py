@@ -177,6 +177,7 @@ def reap_orphan_containers(
         listing = subprocess.run(
             [docker, "ps", "-a", *filters, "--format", "{{.ID}}"],
             capture_output=True, text=True, timeout=15, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker ps failed: %s", e)
@@ -210,6 +211,7 @@ def reap_orphan_containers(
             result = subprocess.run(
                 [docker, "rm", "-f", cid],
                 capture_output=True, text=True, timeout=30,
+                stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0:
                 removed += 1
@@ -239,6 +241,7 @@ def _container_finished_at(docker_exe: str, container_id: str):
         result = subprocess.run(
             [docker_exe, "inspect", "--format", "{{.State.FinishedAt}}", container_id],
             capture_output=True, text=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker inspect %s failed: %s", container_id[:12], e)
@@ -381,6 +384,7 @@ def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
             capture_output=True,
             text=True,
             timeout=15,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("Docker: could not inspect entrypoint for %s: %s", image, e)
@@ -453,6 +457,7 @@ def _ensure_docker_available() -> None:
             capture_output=True,
             text=True,
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         logger.error(
@@ -833,6 +838,7 @@ class DockerEnvironment(BaseEnvironment):
                             text=True,
                             timeout=30,
                             check=True,
+                            stdin=subprocess.DEVNULL,
                         )
                     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                         logger.warning(
@@ -871,6 +877,7 @@ class DockerEnvironment(BaseEnvironment):
                     text=True,
                     timeout=120,  # image pull may take a while
                     check=True,
+                    stdin=subprocess.DEVNULL,
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 # Docker may create the container object before `docker run`
@@ -887,6 +894,7 @@ class DockerEnvironment(BaseEnvironment):
                 subprocess.run(
                     [self._docker_exe, "rm", "-f", container_name],
                     capture_output=True, timeout=10,
+                    stdin=subprocess.DEVNULL,
                 )
                 raise
             self._container_id = result.stdout.strip()
@@ -997,6 +1005,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [self._docker_exe, "start", cid],
                         capture_output=True, text=True, timeout=30, check=True,
+                        stdin=subprocess.DEVNULL,
                     )
                     self._container_id = cid
                     logger.info("Recovery: restarted container %s", cid[:12])
@@ -1027,6 +1036,7 @@ class DockerEnvironment(BaseEnvironment):
                 ]
                 result = subprocess.run(
                     run_cmd, capture_output=True, text=True, timeout=120, check=True,
+                    stdin=subprocess.DEVNULL,
                 )
                 self._container_id = result.stdout.strip()
                 self._container_name = new_name
@@ -1081,6 +1091,7 @@ class DockerEnvironment(BaseEnvironment):
             result = subprocess.run(
                 [docker, "info", "--format", "{{.Driver}}"],
                 capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
             )
             driver = result.stdout.strip().lower()
             if driver != "overlay2":
@@ -1091,13 +1102,15 @@ class DockerEnvironment(BaseEnvironment):
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
                 capture_output=True, text=True, timeout=15,
+                stdin=subprocess.DEVNULL,
             )
             if probe.returncode == 0:
                 # Clean up the created container
                 container_id = probe.stdout.strip()
                 if container_id:
                     subprocess.run([docker, "rm", container_id],
-                                   capture_output=True, timeout=5)
+                                   capture_output=True, timeout=5,
+                                   stdin=subprocess.DEVNULL)
                 _storage_opt_ok = True
             else:
                 _storage_opt_ok = False
@@ -1132,6 +1145,7 @@ class DockerEnvironment(BaseEnvironment):
                 text=True,
                 timeout=10,
                 check=False,
+                stdin=subprocess.DEVNULL,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.debug("docker ps probe failed: %s — will start a fresh container", e)
@@ -1248,6 +1262,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [docker_exe, "stop", "-t", "10", container_id],
                         capture_output=True, timeout=30,
+                        stdin=subprocess.DEVNULL,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker stop %s timed out / failed: %s", log_id, e)
@@ -1256,6 +1271,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [docker_exe, "rm", "-f", container_id],
                         capture_output=True, timeout=30,
+                        stdin=subprocess.DEVNULL,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker rm -f %s failed: %s", log_id, e)

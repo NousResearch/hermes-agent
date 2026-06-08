@@ -596,6 +596,27 @@ export interface ActionStatusResponse {
   running: boolean
 }
 
+export interface BackendUpdateCommit {
+  sha: string
+  summary: string
+  author: string
+  at: number
+}
+
+/** Shape of `GET /api/hermes/update/check` — the backend's own update state.
+ *  Used by the desktop's remote update overlay so the backend version (not the
+ *  Electron client clone) drives "what's changed + Install" in remote mode. */
+export interface BackendUpdateCheckResponse {
+  install_method: string
+  current_version: string
+  behind: number | null
+  update_available: boolean
+  can_apply: boolean
+  update_command: string | null
+  message: string | null
+  commits?: BackendUpdateCommit[]
+}
+
 export interface AuxiliaryTaskAssignment {
   base_url: string
   model: string

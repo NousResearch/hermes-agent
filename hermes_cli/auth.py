@@ -1561,6 +1561,21 @@ def resolve_provider(
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
+    # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
+    # (manual pool entry, no env var). Without this, a key that only lives in
+    # the credential pool is invisible to auto-detection — the user sees
+    # `hermes auth list` showing the credential while requests go out with no
+    # Authorization header ("HTTP 401: Missing Authentication header"). The
+    # env-var check above only covers keys exported as OPENROUTER_API_KEY /
+    # OPENAI_API_KEY. See issue #42130.
+    try:
+        from agent.credential_pool import load_pool as _load_pool
+
+        if _load_pool("openrouter").has_credentials():
+            return "openrouter"
+    except Exception as e:
+        logger.debug("Could not check OpenRouter credential pool: %s", e)
+
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":

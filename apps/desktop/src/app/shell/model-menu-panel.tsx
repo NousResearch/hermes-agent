@@ -24,6 +24,7 @@ import {
   $visibleModels,
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
+  effectiveVisibleKeys,
   type ModelFamily,
   modelVisibilityKey,
   setModelVisibilityOpen
@@ -86,13 +87,17 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     : null
 
   const providers = modelOptions.data?.providers
+  const effectiveVisibleModels = useMemo(
+    () => effectiveVisibleKeys(visibleModels, providers ?? []),
+    [visibleModels, providers]
+  )
 
   const switchTo = (model: string, provider: string) =>
     onSelectModel({ model, persistGlobal: !activeSessionId, provider })
 
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, visibleModels),
-    [providers, search, optionsModel, optionsProvider, visibleModels]
+    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   return (

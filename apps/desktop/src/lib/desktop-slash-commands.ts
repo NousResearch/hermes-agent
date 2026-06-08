@@ -31,6 +31,7 @@ const DESKTOP_COMMAND_META = [
   ['/goal', 'Manage the standing goal for this session'],
   ['/help', 'Show desktop slash commands'],
   ['/new', 'Start a new desktop chat'],
+  ['/profile', 'Switch the active Hermes profile'],
   ['/queue', 'Queue a prompt for the next turn'],
   ['/resume', 'Resume a saved session'],
   ['/retry', 'Retry the last user message'],
@@ -41,7 +42,9 @@ const DESKTOP_COMMAND_META = [
   ['/stop', 'Stop running background processes'],
   ['/title', 'Rename the current session'],
   ['/undo', 'Remove the last user/assistant exchange'],
-  ['/usage', 'Show token usage for this session']
+  ['/usage', 'Show token usage for this session'],
+  ['/version', 'Show Hermes Agent version'],
+  ['/yolo', 'Toggle YOLO — auto-approve dangerous commands']
 ] as const
 
 const DESKTOP_COMMANDS: ReadonlySet<string> = new Set(DESKTOP_COMMAND_META.map(([command]) => command))
@@ -110,12 +113,10 @@ const ADVANCED_COMMANDS = new Set([
   '/insights',
   '/kanban',
   '/personality',
-  '/profile',
   '/reasoning',
   '/reload-mcp',
   '/reload-skills',
-  '/voice',
-  '/yolo'
+  '/voice'
 ])
 
 const BLOCKED_COMMANDS = new Set([
@@ -150,11 +151,48 @@ export function isDesktopSlashCommand(command: string): boolean {
   return DESKTOP_COMMANDS.has(canonical) || !isKnownHermesSlashCommand(normalized)
 }
 
+/**
+ * An "extension" command is anything the backend surfaces that is NOT one of
+ * Hermes' built-in slash commands — i.e. skill commands (`/gif-search`,
+ * `/codex`, …) and user-defined quick commands. These are user-activated, so
+ * they should appear in the desktop slash palette even though they aren't in
+ * the curated `DESKTOP_COMMANDS` allow-list. This mirrors the predicate in
+ * `isDesktopSlashCommand` that already lets them EXECUTE when typed.
+ */
+export function isDesktopSlashExtensionCommand(command: string): boolean {
+  const normalized = normalizeCommand(command)
+
+  if (!normalized || normalized === '/') {
+    return false
+  }
+
+  return !isKnownHermesSlashCommand(normalized)
+}
+
 export function isDesktopSlashSuggestion(command: string): boolean {
   const normalized = normalizeCommand(command)
   const canonical = canonicalDesktopSlashCommand(normalized)
 
+  // Surface skill / quick commands (extensions the backend provides) alongside
+  // the curated built-ins. Built-in aliases stay hidden so the popover isn't
+  // cluttered with duplicates.
+  if (isDesktopSlashExtensionCommand(normalized)) {
+    return true
+  }
+
   return DESKTOP_COMMANDS.has(canonical) && !DESKTOP_ALIASES.has(normalized)
+}
+
+/**
+ * True for commands the desktop fulfils by opening the model picker overlay
+ * (e.g. `/model`) rather than executing a slash command. The caller opens the
+ * picker UI instead of printing the "uses the desktop model picker" notice.
+ */
+export function isModelPickerCommand(command: string): boolean {
+  const normalized = normalizeCommand(command)
+  const canonical = canonicalDesktopSlashCommand(normalized)
+
+  return PICKER_OWNED_COMMANDS.has(canonical)
 }
 
 export function desktopSlashUnavailableMessage(command: string): string | null {

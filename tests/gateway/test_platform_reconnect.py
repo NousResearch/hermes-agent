@@ -218,6 +218,54 @@ class TestPlatformReconnectWatcher:
         assert Platform.TELEGRAM in runner.adapters
 
     @pytest.mark.asyncio
+    async def test_reconnect_retries_resume_pending_for_platform(self):
+        """A successful reconnect retries the startup auto-resume scoped to
+        that platform.
+
+        Regression: a platform offline at gateway startup had its
+        restart-interrupted sessions skipped by the one-shot startup pass and
+        never rescheduled, so the documented auto-resume silently dropped
+        until the user sent a fresh message. The watcher now re-runs the
+        platform-scoped auto-resume on reconnect.
+        """
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._schedule_resume_pending_sessions = MagicMock(return_value=1)
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        succeed_adapter = StubAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
+            with patch("gateway.run.build_channel_directory", create=True):
+                async def run_one_iteration():
+                    runner._running = True
+                    call_count = 0
+
+                    async def fake_sleep(n):
+                        nonlocal call_count
+                        call_count += 1
+                        if call_count > 1:
+                            runner._running = False
+                        await real_sleep(0)
+
+                    with patch("asyncio.sleep", side_effect=fake_sleep):
+                        await runner._platform_reconnect_watcher()
+
+                await run_one_iteration()
+
+        assert Platform.TELEGRAM in runner.adapters
+        runner._schedule_resume_pending_sessions.assert_called_once_with(
+            platform=Platform.TELEGRAM
+        )
+
+    @pytest.mark.asyncio
     async def test_reconnect_nonretryable_removed_from_queue(self):
         """Non-retryable errors should remove the platform from the retry queue."""
         runner = _make_runner()

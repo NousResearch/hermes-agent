@@ -42,7 +42,7 @@ export interface BootstrapStateModel {
   currentStage: string | null
   installRoot: string | null
   error: string | null
-  logs: Array<{ stage?: string; line: string }>
+  logs: Array<{ stage?: string; line: string; stream?: 'stdout' | 'stderr' }>
 }
 
 const INITIAL: BootstrapStateModel = {
@@ -106,6 +106,7 @@ interface BootstrapLogEvent {
   type: 'log'
   stage?: string
   line: string
+  stream?: 'stdout' | 'stderr'
 }
 
 interface BootstrapCompleteEvent {
@@ -192,7 +193,7 @@ export async function initialize(): Promise<void> {
         break
       }
       case 'log': {
-        const logs = [...cur.logs, { stage: payload.stage, line: payload.line }]
+        const logs = [...cur.logs, { stage: payload.stage, line: payload.line, stream: payload.stream }]
         // Keep the rolling buffer bounded so the UI doesn't get OOM'd
         // during a long install (playwright chromium download is ~10k lines).
         const trimmed = logs.length > 2000 ? logs.slice(-2000) : logs

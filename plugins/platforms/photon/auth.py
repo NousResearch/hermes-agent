@@ -1,27 +1,37 @@
 """
-Photon Dashboard + Spectrum API client and device-code login flow.
+Photon Dashboard API client + device-code login flow.
 
 This module is pure Python — it intentionally does not depend on
-``spectrum-ts``.  All management-plane operations (login, create
-project, create user, register webhook) talk to Photon's HTTP API
-directly:
+``spectrum-ts``.  Every management-plane operation (login, find/create
+project, enable Spectrum, rotate the project secret, register a user,
+list the assigned iMessage line) talks to Photon's **Dashboard API** on a
+single host, exactly like the official Photon CLI (``photon-hq/cli``):
 
     Dashboard API   https://app.photon.codes/api/...
-                    OAuth bearer token from device flow
+                    OAuth 2.0 device flow, Bearer access token
 
-    Spectrum API    https://spectrum.photon.codes/projects/{id}/...
-                    HTTP Basic with (projectId, projectSecret)
+A Photon project carries two distinct identifiers:
 
-The webhook receiver + Node sidecar in ``adapter.py`` consume the
-credentials this module persists to ``~/.hermes/auth.json``.
+    * ``id``                — the Dashboard project id (used in API paths)
+    * ``spectrumProjectId`` — the Spectrum Cloud project id, populated when
+                              Spectrum is enabled on the project
 
-Reference docs (read at integration time):
-  https://photon.codes/docs/api-reference/introduction
-  https://photon.codes/docs/api-reference/device-login/request-device-+-user-code
-  https://photon.codes/docs/api-reference/device-login/exchange-device-code-for-token
-  https://photon.codes/docs/api-reference/projects/create-project
-  https://photon.codes/docs/api-reference/users/create-user
-  https://photon.codes/docs/webhooks/overview
+The ``spectrum-ts`` SDK (run by the Node sidecar) authenticates to Spectrum
+Cloud with ``(spectrumProjectId, projectSecret)`` — so the value we persist
+as ``PHOTON_PROJECT_ID`` for the runtime is the **spectrumProjectId**, not
+the Dashboard ``id``.  The Dashboard ``id`` is kept only for management
+calls.
+
+Credential storage mirrors every other Hermes channel:
+
+    * runtime SDK creds  -> ``~/.hermes/.env``  (``PHOTON_PROJECT_ID`` =
+      spectrumProjectId, ``PHOTON_PROJECT_SECRET``) via ``save_env_value``
+    * management metadata -> ``~/.hermes/auth.json`` under
+      ``credential_pool.photon`` (device token) and
+      ``credential_pool.photon_project`` (dashboard id, spectrum id, name)
+
+Reference: https://github.com/photon-hq/cli and
+https://photon.codes/docs/api-reference/device-login/request-device-+-user-code
 """
 from __future__ import annotations
 
@@ -32,7 +42,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import httpx
@@ -51,17 +61,20 @@ class PhotonDashboardAuthError(RuntimeError):
 # Hosted Photon allowlists registered device clients on the device-code
 # endpoint — an unregistered client_id is rejected with
 # `400 {"error":"invalid_client"}`.  Use Photon's published CLI device
-# client until the dashboard API registers Hermes as its own client_id.
+# client (matches `CLI_CLIENT_ID` in photon-hq/cli) until the dashboard API
+# registers Hermes as its own client_id.
 DEFAULT_CLIENT_ID = "photon-cli"
 DEFAULT_SCOPE = "openid profile email"
 
 DEFAULT_DASHBOARD_HOST = "https://app.photon.codes"
-DEFAULT_SPECTRUM_HOST = "https://spectrum.photon.codes"
 
-# Polling defaults per RFC 8628.  Photon may override via `interval` /
-# `expires_in` fields in the device-code response — those win.
+# Default name of the project Hermes provisions for the operator.
+DEFAULT_PROJECT_NAME = "Hermes Agent"
+
+# Polling defaults per RFC 8628.  Photon overrides via `interval` /
+# `expires_in` in the device-code response — those win.
 DEFAULT_POLL_INTERVAL = 5
-DEFAULT_POLL_TIMEOUT = 900  # 15 minutes is conservative; Photon returns expires_in
+DEFAULT_POLL_TIMEOUT = 1800  # 30 min, matching the CLI's fallback
 
 E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 
@@ -104,7 +117,7 @@ def _save_auth(data: Dict[str, Any]) -> None:
 
 
 def load_photon_token() -> Optional[str]:
-    """Return the bearer token stored by ``login()`` or ``None``."""
+    """Return the device-flow bearer token stored by ``login()`` or ``None``."""
     auth = _load_auth()
     pool = auth.get("credential_pool", {}).get("photon") or []
     if isinstance(pool, list) and pool:
@@ -128,7 +141,13 @@ def store_photon_token(token: str) -> None:
 
 
 def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
-    """Return ``(project_id, project_secret)`` from auth.json + env override."""
+    """Return the runtime SDK creds ``(spectrum_project_id, project_secret)``.
+
+    Precedence: process env (``~/.hermes/.env`` is loaded into the gateway's
+    environment at startup) wins, then ``auth.json`` for offline / status
+    use.  This is the pair the Node sidecar feeds to ``spectrum-ts`` — the id
+    is the **spectrumProjectId**, not the Dashboard id.
+    """
     env_id = os.getenv("PHOTON_PROJECT_ID")
     env_sec = os.getenv("PHOTON_PROJECT_SECRET")
     if env_id and env_sec:
@@ -137,24 +156,72 @@ def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
     proj = auth.get("credential_pool", {}).get("photon_project") or []
     if isinstance(proj, list) and proj:
         entry = proj[0]
-        return (
-            env_id or entry.get("project_id"),
-            env_sec or entry.get("project_secret"),
-        )
+        # back-compat: old records used "project_id" for the spectrum id
+        sid = entry.get("spectrum_project_id") or entry.get("project_id")
+        return (env_id or sid, env_sec or entry.get("project_secret"))
     return env_id, env_sec
 
 
-def store_project_credentials(project_id: str, project_secret: str, **extra: Any) -> None:
-    """Persist the Spectrum project's id+secret under ``credential_pool.photon_project``."""
+def load_dashboard_project_id() -> Optional[str]:
+    """Return the Dashboard project id (for management API calls)."""
+    env_id = os.getenv("PHOTON_DASHBOARD_PROJECT_ID")
+    if env_id:
+        return env_id
     auth = _load_auth()
-    record = {
-        "project_id": project_id,
+    proj = auth.get("credential_pool", {}).get("photon_project") or []
+    if isinstance(proj, list) and proj:
+        return proj[0].get("dashboard_project_id") or proj[0].get("project_id")
+    return None
+
+
+def store_project_credentials(
+    *,
+    spectrum_project_id: str,
+    project_secret: str,
+    dashboard_project_id: Optional[str] = None,
+    name: Optional[str] = None,
+) -> None:
+    """Persist project credentials to both .env (runtime) and auth.json (mgmt).
+
+    The runtime SDK creds land in ``~/.hermes/.env`` via the same
+    ``save_env_value`` helper every other channel uses, so the gateway picks
+    them up from the environment with zero adapter changes.  A copy of the
+    non-secret ids (plus the secret, for offline ``status``) is written to
+    ``auth.json`` so management commands work even when ``.env`` hasn't been
+    loaded into the current process.
+    """
+    auth = _load_auth()
+    record: Dict[str, Any] = {
+        "spectrum_project_id": spectrum_project_id,
         "project_secret": project_secret,
         "issued_at": int(time.time()),
     }
-    record.update(extra)
+    if dashboard_project_id:
+        record["dashboard_project_id"] = dashboard_project_id
+    if name:
+        record["name"] = name
     auth.setdefault("credential_pool", {})["photon_project"] = [record]
     _save_auth(auth)
+    _persist_runtime_env(spectrum_project_id, project_secret)
+
+
+def _persist_runtime_env(spectrum_project_id: str, project_secret: str) -> None:
+    """Write the SDK creds to ``~/.hermes/.env`` (canonical runtime store).
+
+    Isolated in its own helper so the secret value flows straight into
+    ``save_env_value`` without ever being bound to a printable local in a
+    caller — same CodeQL-clean-flow rationale as the rest of this module.
+    """
+    try:
+        from hermes_cli.config import save_env_value
+    except ImportError:
+        logger.warning("photon: hermes_cli.config unavailable — skipping .env write")
+        return
+    try:
+        save_env_value("PHOTON_PROJECT_ID", spectrum_project_id)
+        save_env_value("PHOTON_PROJECT_SECRET", project_secret)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("photon: could not write project creds to .env: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +248,8 @@ def _dashboard_host() -> str:
     return (os.getenv("PHOTON_DASHBOARD_HOST") or DEFAULT_DASHBOARD_HOST).rstrip("/")
 
 
-def _spectrum_host() -> str:
-    return (os.getenv("PHOTON_API_HOST") or DEFAULT_SPECTRUM_HOST).rstrip("/")
+def _bearer(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def request_device_code(
@@ -218,16 +285,22 @@ def poll_for_token(
 ) -> str:
     """Poll ``/api/auth/device/token`` until the user approves.
 
-    Returns the bearer token from the ``set-auth-token`` response header
-    (Photon's documented mechanism).  Falls back to ``session.access_token``
-    in the JSON body if the header is absent — see the API spec.
+    Mirrors the official CLI's polling loop: sleep first, then poll;
+    ``authorization_pending`` keeps the interval, ``slow_down`` adds 5s,
+    HTTP 429 adds 10s, and ``access_denied`` / ``expired_token`` abort.
+
+    The bearer token comes from the response body's top-level
+    ``access_token`` (better-auth device-grant shape), with
+    ``session.access_token`` and the ``set-auth-token`` header kept as
+    fallbacks for API drift.
     """
     if httpx is None:
         raise RuntimeError("httpx is required for Photon device login")
     url = f"{_dashboard_host()}/api/auth/device/token"
     deadline = time.time() + (timeout or code.expires_in or DEFAULT_POLL_TIMEOUT)
-    sleep = interval or code.interval or DEFAULT_POLL_INTERVAL
+    sleep = interval if interval is not None else (code.interval or DEFAULT_POLL_INTERVAL)
     while time.time() < deadline:
+        time.sleep(sleep)
         try:
             resp = httpx.post(
                 url,
@@ -240,7 +313,6 @@ def poll_for_token(
             )
         except httpx.RequestError as e:
             logger.warning("photon: device-token poll failed: %s", e)
-            time.sleep(sleep)
             continue
         if resp.status_code == 200:
             body: Dict[str, Any] = {}
@@ -259,34 +331,35 @@ def poll_for_token(
                     "data.access_token, accessToken, or set-auth-token)."
                 )
             return candidates[0].token
+        if resp.status_code == 429:
+            # RFC 8628 §3.5 — treat 429 as slow_down.
+            sleep += 10
+            if on_pending:
+                _safe(on_pending)
+            continue
         if resp.status_code == 400:
-            # RFC 8628 §3.5 — error codes are returned with 400.
-            body: Dict[str, Any] = {}
+            body = {}
             try:
                 body = resp.json() or {}
             except json.JSONDecodeError:
                 pass
             err = body.get("error") or body.get("message") or ""
-            if err in ("authorization_pending", "slow_down"):
+            if err == "authorization_pending":
                 if on_pending:
-                    try:
-                        on_pending()
-                    except Exception:
-                        pass
-                if err == "slow_down":
-                    sleep += 5
-                time.sleep(sleep)
+                    _safe(on_pending)
+                continue
+            if err == "slow_down":
+                sleep += 5
+                if on_pending:
+                    _safe(on_pending)
                 continue
             if err in ("expired_token", "access_denied"):
                 raise RuntimeError(f"Photon login failed: {err}")
-            # Unknown error — surface it
             raise RuntimeError(f"Photon device token error: {err or resp.text}")
-        # Unexpected status; log and retry
         logger.warning(
             "photon: device-token unexpected status %s: %s",
             resp.status_code, resp.text[:200],
         )
-        time.sleep(sleep)
     raise TimeoutError("Photon device login timed out")
 
 
@@ -426,6 +499,13 @@ def _validated_dashboard_token(candidates: list) -> str:
     raise RuntimeError("Photon did not return a usable dashboard token")
 
 
+def _safe(fn: Callable[[], None]) -> None:
+    try:
+        fn()
+    except Exception:
+        pass
+
+
 def login_device_flow(
     *,
     client_id: str = DEFAULT_CLIENT_ID,
@@ -434,15 +514,12 @@ def login_device_flow(
 ) -> str:
     """Run the full device-code login flow and persist the token.
 
-    Returns the bearer token.  ``on_user_code`` is a callback receiving the
-    :class:`DeviceCode` so callers can print + optionally open the browser.
+    Returns the bearer token.  ``on_user_code`` receives the
+    :class:`DeviceCode` so callers can print it + optionally open a browser.
     """
     code = request_device_code(client_id=client_id)
     if on_user_code:
-        try:
-            on_user_code(code)
-        except Exception:
-            pass
+        _safe(lambda: on_user_code(code))
     if open_browser:
         try:
             import webbrowser
@@ -461,280 +538,320 @@ def login_device_flow(
     return token
 
 
+def get_session(token: str) -> Dict[str, Any]:
+    """GET ``/api/auth/get-session`` — confirm the token + fetch the user."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon")
+    url = f"{_dashboard_host()}/api/auth/get-session"
+    resp = httpx.get(url, headers=_bearer(token), timeout=30.0)
+    resp.raise_for_status()
+    return resp.json() or {}
+
+
 # ---------------------------------------------------------------------------
-# Dashboard API: create project
+# Dashboard API: projects
+
+def _unwrap_list(data: Any) -> List[Dict[str, Any]]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("data", "projects", "users", "lines", "items"):
+            inner = data.get(key)
+            if isinstance(inner, list):
+                return inner
+    return []
+
+
+def list_projects(token: str) -> List[Dict[str, Any]]:
+    """GET ``/api/projects`` — return the caller's projects."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon")
+    url = f"{_dashboard_host()}/api/projects"
+    resp = httpx.get(url, headers=_bearer(token), timeout=30.0)
+    resp.raise_for_status()
+    return _unwrap_list(resp.json())
+
+
+def find_project_by_name(token: str, name: str) -> Optional[Dict[str, Any]]:
+    """Return the first project whose name matches (case-insensitive)."""
+    target = (name or "").strip().lower()
+    for proj in list_projects(token):
+        if (proj.get("name") or "").strip().lower() == target:
+            return proj
+    return None
+
+
+def get_project(token: str, project_id: str) -> Dict[str, Any]:
+    """GET ``/api/projects/{id}`` — includes ``spectrum`` + ``spectrumProjectId``."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon")
+    url = f"{_dashboard_host()}/api/projects/{project_id}"
+    resp = httpx.get(url, headers=_bearer(token), timeout=30.0)
+    resp.raise_for_status()
+    return resp.json() or {}
+
 
 def create_project(
     token: str,
     *,
-    name: str,
+    name: str = DEFAULT_PROJECT_NAME,
     location: str = "United States",
-    platforms: Optional[list] = None,
 ) -> Dict[str, Any]:
-    """POST ``/api/projects/`` with ``spectrum: true`` and return the response.
-
-    The response includes ``spectrumProjectId`` and ``projectSecret`` — those
-    are the HTTP Basic credentials for the Spectrum API.  Photon only
-    returns ``projectSecret`` to project owners at creation time.
-    """
+    """POST ``/api/projects`` with ``spectrum: true`` and return ``{success, id}``."""
     if httpx is None:
         raise RuntimeError("httpx is required for Photon project creation")
-    url = f"{_dashboard_host()}/api/projects/"
+    url = f"{_dashboard_host()}/api/projects"
     body: Dict[str, Any] = {
         "name": name,
         "location": location,
         "spectrum": True,
-        "platforms": platforms or ["imessage"],
+        "template": False,
+        "observability": False,
     }
-    resp = httpx.post(
-        url,
-        json=body,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=30.0,
-    )
+    resp = httpx.post(url, json=body, headers=_bearer(token), timeout=30.0)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json() or {}
+    if data.get("error"):
+        raise RuntimeError(f"Photon create-project failed: {data['error']}")
+    if not data.get("id"):
+        raise RuntimeError("Photon create-project did not return a project id")
+    return data
+
+
+def ensure_spectrum_enabled(token: str, project_id: str) -> Dict[str, Any]:
+    """Enable Spectrum on the project if needed; return the project dict.
+
+    The dashboard exposes Spectrum as a toggle, so we only flip it when
+    ``spectrum`` is currently false, then re-fetch to pick up the freshly
+    populated ``spectrumProjectId``.
+    """
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon")
+    proj = get_project(token, project_id)
+    if not proj.get("spectrum"):
+        url = f"{_dashboard_host()}/api/projects/{project_id}/spectrum/toggle"
+        resp = httpx.post(url, json={}, headers=_bearer(token), timeout=30.0)
+        resp.raise_for_status()
+        proj = get_project(token, project_id)
+    if not proj.get("spectrumProjectId"):
+        raise RuntimeError(
+            "Spectrum is enabled but the project has no spectrumProjectId yet — "
+            "retry in a moment, or enable Spectrum from the dashboard."
+        )
+    return proj
+
+
+def regenerate_project_secret(token: str, project_id: str) -> str:
+    """POST ``/api/projects/{id}/regenerate-secret`` → the new project secret.
+
+    This is the only way to read a project secret (the dashboard shows it
+    exactly once), so callers should persist the returned value immediately.
+    """
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon")
+    url = f"{_dashboard_host()}/api/projects/{project_id}/regenerate-secret"
+    resp = httpx.post(url, json={}, headers=_bearer(token), timeout=30.0)
+    resp.raise_for_status()
+    data = resp.json() or {}
+    if data.get("error"):
+        raise RuntimeError(f"Photon regenerate-secret failed: {data['error']}")
+    secret = data.get("projectSecret")
+    if not secret:
+        raise RuntimeError("Photon regenerate-secret returned no projectSecret")
+    return str(secret)
 
 
 # ---------------------------------------------------------------------------
-# Spectrum API: create user
+# Dashboard API: spectrum users
+
+def _normalize_phone(phone: str) -> str:
+    """Reduce a phone string to ``+`` and digits for dedup comparison."""
+    return re.sub(r"[^\d+]", "", phone or "")
+
+
+def list_users(token: str, project_id: str) -> List[Dict[str, Any]]:
+    """GET ``/api/projects/{id}/spectrum/users`` → ``SpectrumUser[]``."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon")
+    url = f"{_dashboard_host()}/api/projects/{project_id}/spectrum/users"
+    resp = httpx.get(url, headers=_bearer(token), timeout=30.0)
+    resp.raise_for_status()
+    return _unwrap_list(resp.json())
+
+
+def find_user_by_phone(
+    token: str, project_id: str, phone_number: str,
+) -> Optional[Dict[str, Any]]:
+    """Return an existing Spectrum user with the given phone number, or None."""
+    target = _normalize_phone(phone_number)
+    for user in list_users(token, project_id):
+        if _normalize_phone(user.get("phoneNumber") or "") == target:
+            return user
+    return None
+
 
 def create_user(
+    token: str,
     project_id: str,
-    project_secret: str,
     *,
     phone_number: str,
-    user_type: str = "shared",
     first_name: Optional[str] = None,
     last_name: Optional[str] = None,
     email: Optional[str] = None,
-    assigned_phone_number: Optional[str] = None,
+    send_invite: bool = False,
 ) -> Dict[str, Any]:
-    """POST ``/projects/{id}/users/`` on the Spectrum API.
-
-    For free users we always pass ``type=shared``; Photon's Cosmos pool
-    assigns the iMessage line.  ``assigned_phone_number`` is only valid
-    for the paid ``dedicated`` mode.
-    """
+    """POST ``/api/projects/{id}/spectrum/users`` and return the created user."""
     if httpx is None:
         raise RuntimeError("httpx is required for Photon user creation")
     if not E164_RE.match(phone_number):
         raise ValueError(
             f"phone_number must be E.164 (e.g. +15551234567); got {phone_number!r}"
         )
-    url = f"{_spectrum_host()}/projects/{project_id}/users/"
-    body: Dict[str, Any] = {"type": user_type, "phoneNumber": phone_number}
+    url = f"{_dashboard_host()}/api/projects/{project_id}/spectrum/users"
+    body: Dict[str, Any] = {"phoneNumber": phone_number, "sendInvite": send_invite}
     if first_name:
         body["firstName"] = first_name
     if last_name:
         body["lastName"] = last_name
     if email:
         body["email"] = email
-    if assigned_phone_number:
-        body["assignedPhoneNumber"] = assigned_phone_number
-    resp = httpx.post(
-        url,
-        json=body,
-        auth=(project_id, project_secret),
-        timeout=30.0,
-    )
+    resp = httpx.post(url, json=body, headers=_bearer(token), timeout=30.0)
     resp.raise_for_status()
     data = resp.json() or {}
-    if not data.get("succeed"):
-        raise RuntimeError(
-            f"Photon create-user failed: {data.get('message') or data}"
-        )
-    return data.get("data") or {}
+    if data.get("error"):
+        raise RuntimeError(f"Photon create-user failed: {data['error']}")
+    return data.get("user") or data
+
+
+def register_user_if_absent(
+    token: str,
+    project_id: str,
+    *,
+    phone_number: str,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+    email: Optional[str] = None,
+) -> Tuple[Dict[str, Any], bool]:
+    """Idempotently register a Spectrum user.
+
+    Returns ``(user, created)`` — ``created`` is False when a user with the
+    same phone number already exists (the official CLI does no dedup, so we
+    add it here to make ``setup`` safely re-runnable).
+    """
+    existing = find_user_by_phone(token, project_id, phone_number)
+    if existing is not None:
+        return existing, False
+    user = create_user(
+        token, project_id,
+        phone_number=phone_number,
+        first_name=first_name,
+        last_name=last_name,
+        email=email,
+    )
+    return user, True
 
 
 # ---------------------------------------------------------------------------
-# Spectrum API: webhook registration
-#
-# Endpoints from https://photon.codes/docs/webhooks/overview:
-#   POST   /projects/{id}/webhooks/          register, returns signing secret ONCE
-#   GET    /projects/{id}/webhooks/          list
-#   DELETE /projects/{id}/webhooks/{wid}     remove
+# Dashboard API: iMessage lines (the assigned number inventory)
 
-def register_webhook(
-    project_id: str, project_secret: str, *, webhook_url: str,
-) -> Dict[str, Any]:
-    """Register a webhook URL with Photon and return the API response.
-
-    Photon returns the per-URL signing secret exactly once in this
-    response, so callers who need to persist it should hand the
-    response to :func:`persist_webhook_signing_secret` immediately —
-    that helper writes the value into ``~/.hermes/.env`` (mode 0o600,
-    existing entries preserved) without the secret value ever needing
-    to leave this module.
-    """
+def list_lines(token: str, project_id: str) -> List[Dict[str, Any]]:
+    """GET ``/api/projects/{id}/lines`` → ``[{id, platform, phoneNumber, status}]``."""
     if httpx is None:
-        raise RuntimeError("httpx is required for Photon webhook registration")
-    url = f"{_spectrum_host()}/projects/{project_id}/webhooks/"
+        raise RuntimeError("httpx is required for Photon")
+    url = f"{_dashboard_host()}/api/projects/{project_id}/lines"
+    resp = httpx.get(url, headers=_bearer(token), timeout=30.0)
+    resp.raise_for_status()
+    return _unwrap_list(resp.json())
+
+
+def add_line(
+    token: str, project_id: str, *, platform: str = "imessage",
+) -> Dict[str, Any]:
+    """POST ``/api/projects/{id}/lines`` to provision a new line."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon")
+    url = f"{_dashboard_host()}/api/projects/{project_id}/lines"
     resp = httpx.post(
-        url,
-        json={"webhookUrl": webhook_url},
-        auth=(project_id, project_secret),
-        timeout=30.0,
+        url, json={"platform": platform}, headers=_bearer(token), timeout=30.0,
     )
     resp.raise_for_status()
     data = resp.json() or {}
-    if not data.get("succeed"):
-        raise RuntimeError(
-            f"Photon register-webhook failed: {data.get('message') or data}"
-        )
-    return data.get("data") or {}
+    if data.get("error"):
+        raise RuntimeError(f"Photon add-line failed: {data['error']}")
+    return data.get("line") or data
 
+
+def get_imessage_line(
+    token: str, project_id: str, *, create_if_missing: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Return the project's iMessage line (the number to text the agent).
+
+    If none exists and ``create_if_missing`` is set, provision one.  Returns
+    ``None`` if there is no line and provisioning failed.
+    """
+    for line in list_lines(token, project_id):
+        if (line.get("platform") or "").lower() == "imessage":
+            return line
+    if create_if_missing:
+        try:
+            return add_line(token, project_id, platform="imessage")
+        except Exception as e:
+            logger.warning("photon: could not auto-provision iMessage line: %s", e)
+            return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Credential status (display-only — never emits raw secret material)
 
 def print_credential_summary(emit: Any = print) -> None:
     """Pretty-print the credential status table via the *emit* callback.
 
-    Same isolation rationale as :func:`persist_webhook_signing_secret`:
-    all secret-bearing reads happen inside this function; the *emit*
-    callback only ever receives display literals like ``"✓ stored"``
-    or a project UUID. No tainted variable ever escapes into the
-    caller's scope. Default ``emit=print`` so the function is usable
-    directly from a CLI handler with zero plumbing.
+    Every secret-bearing read is reduced to a display literal inside this
+    function (``"✓ stored"`` / ``"✗ missing"`` / a non-secret id); the
+    callback only ever receives the assembled banner string, so no tainted
+    value escapes into the caller's scope.
     """
-    # Resolve every credential read into a plain display string FIRST,
-    # in a tight block. The intermediate `labels` dict only ever stores
-    # literals from a finite set ("✓ stored" / "✗ missing" / "✓ set" /
-    # "⚠ unset — verification disabled" / a project UUID) — never a
-    # credential's raw bytes. We then assemble the whole banner into
-    # one string and call emit() exactly once with that string, so the
-    # static taint analyzer sees a single sink that consumes only a
-    # joined literal blob.
     labels: Dict[str, str] = {}
-    if load_photon_token():
-        labels["device_token"] = "✓ stored"
-    else:
-        labels["device_token"] = "✗ missing (run `hermes photon setup`)"
-    pid, sec = load_project_credentials()
-    labels["project_id"] = pid if pid else "✗ missing"
+    labels["device_token"] = (
+        "✓ stored" if load_photon_token()
+        else "✗ missing (run `hermes photon setup`)"
+    )
+    sid, sec = load_project_credentials()
+    labels["spectrum_project_id"] = sid if sid else "✗ missing"
+    labels["dashboard_project_id"] = load_dashboard_project_id() or "—"
     labels["project_key"] = "✓ stored" if sec else "✗ missing"
-    if os.getenv("PHOTON_WEBHOOK_SECRET"):
-        labels["webhook_key"] = "✓ set"
-    else:
-        labels["webhook_key"] = "⚠ unset — verification disabled"
 
     rows = [
         "Photon iMessage status",
         "──────────────────────",
         "  device token        : " + labels["device_token"],
-        "  project id          : " + labels["project_id"],
-        "  project key         : " + labels["project_key"],
-        "  webhook key         : " + labels["webhook_key"],
+        "  dashboard project   : " + labels["dashboard_project_id"],
+        "  spectrum project id : " + labels["spectrum_project_id"],
+        "  project secret      : " + labels["project_key"],
     ]
     emit("\n".join(rows))
 
 
 def credential_summary() -> Dict[str, str]:
-    """Return a fully pre-formatted credential status dict.
-
-    Caller-safe: every value is one of ``"✓ stored"`` / ``"✗ missing"``
-    / ``"⚠ unset — verification disabled"`` / ``"✓ set"`` literals, or a
-    UUID for the project id. No secret-bearing string ever leaves this
-    function — read-and-bool-cast happens entirely inside the closure.
-    """
+    """Return a fully pre-formatted credential status dict (no raw secrets)."""
     def _present_token() -> str:
-        return "✓ stored" if load_photon_token() else "✗ missing (run `hermes photon setup`)"
+        return (
+            "✓ stored" if load_photon_token()
+            else "✗ missing (run `hermes photon setup`)"
+        )
 
-    def _present_project_id() -> str:
-        pid, _sec = load_project_credentials()
-        return pid or "✗ missing"
+    def _present_spectrum_id() -> str:
+        sid, _sec = load_project_credentials()
+        return sid or "✗ missing"
 
-    def _present_project_secret() -> str:
-        _pid, sec = load_project_credentials()
+    def _present_secret() -> str:
+        _sid, sec = load_project_credentials()
         return "✓ stored" if sec else "✗ missing"
-
-    def _present_webhook_secret() -> str:
-        return "✓ set" if os.getenv("PHOTON_WEBHOOK_SECRET") else "⚠ unset — verification disabled"
 
     return {
         "device_token": _present_token(),
-        "project_id": _present_project_id(),
-        "project_key": _present_project_secret(),
-        "webhook_key": _present_webhook_secret(),
+        "dashboard_project_id": load_dashboard_project_id() or "—",
+        "spectrum_project_id": _present_spectrum_id(),
+        "project_key": _present_secret(),
     }
-
-
-def persist_webhook_signing_secret(
-    webhook_data: Dict[str, Any],
-    *,
-    on_summary: Optional[Any] = None,
-) -> bool:
-    """Persist a webhook signing secret via Hermes' canonical .env writer.
-
-    Delegates to :func:`hermes_cli.config.save_env_value` — the same
-    helper that backs every other API-key persistence path in Hermes
-    Agent (OpenAI key, Anthropic key, Telegram token, ...). The secret
-    value is read directly from ``webhook_data['signingSecret']`` (or
-    ``['secret']`` fallback) and handed to that helper without ever
-    being bound to a local in any module that prints or logs.
-
-    Returns ``True`` on success, ``False`` if the response had no
-    secret OR the write failed. The optional ``on_summary`` callable
-    receives a plain string with no credential material, suitable for
-    printing — e.g. ``"Wrote to /home/u/.hermes/.env"`` or
-    ``"register response: {redacted dict json}"``.  We do the
-    formatting here so callers stay clear of the taint flow CodeQL
-    tracks through functions that touch secrets.
-    """
-    if not isinstance(webhook_data, dict):
-        return False
-    has_secret = bool(webhook_data.get("signingSecret") or webhook_data.get("secret"))
-    redacted = {
-        k: ("<redacted>" if k in ("signingSecret", "secret") else v)
-        for k, v in webhook_data.items()
-    }
-    if on_summary is not None:
-        try:
-            on_summary("webhook registration response (redacted):")
-            on_summary(json.dumps(redacted, indent=2))
-        except Exception:
-            pass
-    if not has_secret:
-        return False
-    try:
-        from hermes_cli.config import save_env_value
-    except ImportError:
-        return False
-    try:
-        save_env_value(
-            "PHOTON_WEBHOOK_SECRET",
-            webhook_data.get("signingSecret") or webhook_data.get("secret") or "",
-        )
-    except Exception:
-        return False
-    if on_summary is not None:
-        try:
-            from hermes_constants import get_hermes_home
-            env_path = Path(get_hermes_home()) / ".env"
-        except Exception:
-            env_path = Path(os.path.expanduser("~/.hermes")) / ".env"
-        try:
-            on_summary(f"signing key saved to {env_path}")
-            on_summary("(Photon only returns this once — keep the file safe)")
-        except Exception:
-            pass
-    return True
-
-
-def list_webhooks(project_id: str, project_secret: str) -> list:
-    if httpx is None:
-        raise RuntimeError("httpx is required for Photon webhook listing")
-    url = f"{_spectrum_host()}/projects/{project_id}/webhooks/"
-    resp = httpx.get(url, auth=(project_id, project_secret), timeout=30.0)
-    resp.raise_for_status()
-    data = resp.json() or {}
-    return data.get("data") or []
-
-
-def delete_webhook(
-    project_id: str, project_secret: str, *, webhook_id: str,
-) -> None:
-    if httpx is None:
-        raise RuntimeError("httpx is required for Photon webhook deletion")
-    url = f"{_spectrum_host()}/projects/{project_id}/webhooks/{webhook_id}"
-    resp = httpx.delete(url, auth=(project_id, project_secret), timeout=30.0)
-    if resp.status_code not in (200, 204, 404):
-        resp.raise_for_status()

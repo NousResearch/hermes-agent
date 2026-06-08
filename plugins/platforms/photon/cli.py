@@ -7,19 +7,18 @@ Subcommands:
     setup              full first-time setup (device login + project + user + sidecar)
     status             show login + project + sidecar dep state
     install-sidecar    npm install inside plugins/platforms/photon/sidecar/
-    webhook register   register the local webhook URL with Photon
-    webhook list       list registered webhooks
-    webhook delete     delete a webhook by id
 
 The device-code login runs automatically as the first step of ``setup``;
 there is no standalone ``login`` verb (matching how every other Hermes
 gateway channel onboards through a single setup surface).
+
+Photon uses the spectrum-ts gRPC stream for inbound — there is no webhook
+to register, so there are no webhook subcommands.
 """
 from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import os
 import shutil
 import subprocess
@@ -38,9 +37,14 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     """Wire up `hermes photon ...` subcommands."""
     subs = parser.add_subparsers(dest="photon_command", required=False)
 
-    p_setup = subs.add_parser("setup", help="First-time setup (device login + project + user + sidecar)")
-    p_setup.add_argument("--project-name", default=None, help="Project name (default: 'Hermes Agent')")
-    p_setup.add_argument("--phone", default=None, help="Your E.164 phone number (e.g. +15551234567)")
+    p_setup = subs.add_parser(
+        "setup",
+        help="First-time setup (device login + project + user + sidecar)",
+    )
+    p_setup.add_argument("--project-name", default=None,
+                         help="Project name (default: 'Hermes Agent')")
+    p_setup.add_argument("--phone", default=None,
+                         help="Your E.164 phone number (e.g. +15551234567)")
     p_setup.add_argument("--first-name", default=None)
     p_setup.add_argument("--last-name", default=None)
     p_setup.add_argument("--email", default=None)
@@ -51,14 +55,6 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
 
     subs.add_parser("status", help="Show login + project + sidecar dep state")
     subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
-
-    p_hook = subs.add_parser("webhook", help="Manage Photon webhook registrations")
-    hook_subs = p_hook.add_subparsers(dest="photon_webhook_command", required=True)
-    p_hook_reg = hook_subs.add_parser("register", help="Register a webhook URL")
-    p_hook_reg.add_argument("url", help="Publicly reachable URL Photon should POST to")
-    hook_subs.add_parser("list", help="List registered webhooks for the current project")
-    p_hook_del = hook_subs.add_parser("delete", help="Delete a webhook by id")
-    p_hook_del.add_argument("webhook_id")
 
     parser.set_defaults(func=dispatch)
 
@@ -77,8 +73,6 @@ def dispatch(args: argparse.Namespace) -> int:
         return _cmd_status(args)
     if sub == "install-sidecar":
         return _cmd_install_sidecar(args)
-    if sub == "webhook":
-        return _cmd_webhook(args)
     print(f"unknown subcommand: {sub}", file=sys.stderr)
     return 2
 
@@ -122,7 +116,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # 1. Login (skip if we already have a token).
     token = photon_auth.load_photon_token()
     if not token:
-        print("[1/4] No Photon token found — running device login...")
+        print("[1/5] No Photon token found — running device login...")
         rc = _run_device_login(args)
         if rc != 0:
             return rc
@@ -131,85 +125,121 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print("login completed but token was not stored", file=sys.stderr)
             return 1
     else:
-        print("[1/4] Reusing existing Photon token")
+        print("[1/5] Reusing existing Photon token")
 
-    # 2. Create (or surface existing) project.
-    existing_id, existing_secret = photon_auth.load_project_credentials()
-    project_id: str
-    project_secret: str
-    if existing_id and existing_secret:
-        project_id, project_secret = existing_id, existing_secret
-        # `project_id` is a Photon-assigned UUID, not a secret — but we
-        # keep the print terse to avoid CodeQL flow noise.
-        print("[2/4] Reusing existing Photon project")
-    else:
-        name = args.project_name or "Hermes Agent"
-        print(f"[2/4] Creating Photon project '{name}' (spectrum=true, imessage)...")
-        try:
-            data = photon_auth.create_project(token, name=name)
-        except Exception as e:
-            print(f"create-project failed: {e}", file=sys.stderr)
-            return 1
-        project_id = data.get("spectrumProjectId") or data.get("id") or ""
-        project_secret = data.get("projectSecret") or ""
-        if not project_id or not project_secret:
-            print(
-                "create-project did not return spectrumProjectId + "
-                "projectSecret. Re-run after enabling Spectrum on the "
-                "project, or open https://app.photon.codes/ to fetch the "
-                "secret manually.",
-                file=sys.stderr,
-            )
-            return 1
-        photon_auth.store_project_credentials(project_id, project_secret, name=name)
-        print("  ✓ project provisioned (run `hermes photon status` to see the id)")
+    # 2. Find or create the "Hermes Agent" project.
+    name = args.project_name or photon_auth.DEFAULT_PROJECT_NAME
+    dashboard_id = photon_auth.load_dashboard_project_id()
+    try:
+        if dashboard_id:
+            print("[2/5] Reusing configured Photon project")
+        else:
+            existing = photon_auth.find_project_by_name(token, name)
+            if existing and existing.get("id"):
+                dashboard_id = existing["id"]
+                print(f"[2/5] Found existing project '{name}'")
+            else:
+                print(f"[2/5] Creating Photon project '{name}'...")
+                created = photon_auth.create_project(token, name=name)
+                dashboard_id = created.get("id")
+                print("  ✓ project created")
+    except Exception as e:
+        print(f"project setup failed: {e}", file=sys.stderr)
+        return 1
+    if not dashboard_id:
+        print("could not resolve a Photon project id", file=sys.stderr)
+        return 1
 
-    # 3. Create a Spectrum user for the operator.
+    # 3. Enable Spectrum, fetch the spectrum project id, rotate the secret,
+    #    and persist both (runtime creds -> ~/.hermes/.env, ids -> auth.json).
+    try:
+        print("[3/5] Enabling Spectrum and provisioning credentials...")
+        proj = photon_auth.ensure_spectrum_enabled(token, dashboard_id)
+        spectrum_id = proj.get("spectrumProjectId")
+        if not spectrum_id:
+            print("spectrum provisioning failed: no spectrum project id", file=sys.stderr)
+            return 1
+        spectrum_id = str(spectrum_id)
+        secret = photon_auth.regenerate_project_secret(token, dashboard_id)
+        photon_auth.store_project_credentials(
+            spectrum_project_id=spectrum_id,
+            project_secret=secret,
+            dashboard_project_id=dashboard_id,
+            name=name,
+        )
+        # spectrum_id is an opaque non-secret id; safe to show.
+        print(f"  ✓ Spectrum enabled (project id {spectrum_id}) — secret saved")
+    except Exception as e:
+        print(f"spectrum provisioning failed: {e}", file=sys.stderr)
+        return 1
+
+    # 4. Register the operator's phone number as a Spectrum user (idempotent).
     phone = args.phone or _prompt(
-        "Your iMessage phone number (E.164, e.g. +15551234567): "
+        "[4/5] Your iMessage phone number (E.164, e.g. +15551234567): "
     )
     if not phone:
-        print("[3/4] Skipped user creation (no phone given). Re-run with --phone later.")
+        print("      Skipped user registration (no phone given). Re-run with --phone later.")
     else:
-        print("[3/4] Creating shared Spectrum user...")
+        first_name = args.first_name
+        email = args.email
+        # The dashboard may require a name/email; prompt interactively when
+        # we have a TTY and they weren't supplied, but allow skipping.
+        if first_name is None:
+            first_name = _prompt("      First name (optional, Enter to skip): ") or None
+        if email is None:
+            email = _prompt("      Email (optional, Enter to skip): ") or None
         try:
-            photon_auth.create_user(
-                project_id, project_secret,
+            _user, created = photon_auth.register_user_if_absent(
+                token, dashboard_id,
                 phone_number=phone,
-                first_name=args.first_name,
+                first_name=first_name,
                 last_name=args.last_name,
-                email=args.email,
+                email=email,
             )
-        except Exception as e:
-            print(f"create-user failed: {e}", file=sys.stderr)
+        except ValueError as e:
+            print(f"      invalid phone number: {e}", file=sys.stderr)
             return 1
-        print("  ✓ user created — check `hermes photon status` or the dashboard for the assigned iMessage line")
+        except Exception as e:
+            print(f"      user registration failed: {e}", file=sys.stderr)
+            return 1
+        print("  ✓ phone registered" if created else "  ✓ phone already registered")
 
-    # 4. Sidecar deps.
-    if args.skip_sidecar_install:
-        print("[4/4] Skipping sidecar npm install (--skip-sidecar-install)")
+    # 5. Surface the assigned iMessage line (the number to text the agent).
+    try:
+        line = photon_auth.get_imessage_line(token, dashboard_id)
+    except Exception as e:
+        line = None
+        print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
+    if line and line.get("phoneNumber"):
+        status = line.get("status") or "active"
+        print()
+        print("┌─ Your agent's iMessage number ───────────────────────────────")
+        print(f"│  📱 {line['phoneNumber']}   ({status})")
+        print("│  Text this number from your phone to talk to your agent.")
+        print("└──────────────────────────────────────────────────────────────")
     else:
-        print("[4/4] Installing Node sidecar deps (spectrum-ts)...")
+        print("      No iMessage line assigned yet — check the Photon dashboard.")
+
+    # 6. Sidecar deps (spectrum-ts).
+    if args.skip_sidecar_install:
+        print("[5/5] Skipping sidecar npm install (--skip-sidecar-install)")
+    else:
+        print("[5/5] Installing Node sidecar deps (spectrum-ts)...")
         rc = _install_sidecar()
         if rc != 0:
             return rc
 
     print()
     print("✓ Photon setup complete.")
-    print("  Next: register a webhook URL Photon can reach:")
-    print("        hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook")
-    print("  Then start the gateway:")
-    print("        hermes gateway start --platform photon")
+    print("  Start the gateway:  hermes gateway start --platform photon")
     return 0
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
-    # Defer the whole table to auth.print_credential_summary — its emit
+    # Defer the credential rows to auth.print_credential_summary — its emit
     # callback is the only sink that sees credential-derived strings, so
     # cli.py keeps zero taint flow according to CodeQL.
     photon_auth.print_credential_summary(print)
-    # The two non-credential rows live here so the helper stays purely
-    # about credentials.
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
     sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
@@ -218,8 +248,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
 
 
 def _cmd_install_sidecar(_args: argparse.Namespace) -> int:
-    rc = _install_sidecar()
-    return rc
+    return _install_sidecar()
 
 
 def _install_sidecar() -> int:
@@ -240,64 +269,6 @@ def _install_sidecar() -> int:
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
     return proc.returncode
-
-
-def _cmd_webhook(args: argparse.Namespace) -> int:
-    sub = getattr(args, "photon_webhook_command", None)
-    project_id, project_secret = photon_auth.load_project_credentials()
-    if not (project_id and project_secret):
-        print(
-            "no Photon project configured — run `hermes photon setup` first",
-            file=sys.stderr,
-        )
-        return 1
-
-    if sub == "register":
-        try:
-            data = photon_auth.register_webhook(
-                project_id, project_secret, webhook_url=args.url
-            )
-        except Exception as e:
-            print(f"register failed: {e}", file=sys.stderr)
-            return 1
-        # The helper does all the formatting + writing; cli.py never
-        # touches the signing-secret value, the path it was written
-        # to, or even the redacted-response dict. on_summary is a
-        # plain printer callback.
-        ok = photon_auth.persist_webhook_signing_secret(data, on_summary=print)
-        if not ok:
-            print(
-                "‼  Photon returned no signing secret in the response, "
-                "or the file write failed. Inspect your home directory "
-                "permissions and re-run; do not retry without first "
-                "deleting the orphaned webhook from the Photon dashboard.",
-                file=sys.stderr,
-            )
-            return 1
-        return 0
-
-    if sub == "list":
-        try:
-            data = photon_auth.list_webhooks(project_id, project_secret)
-        except Exception as e:
-            print(f"list failed: {e}", file=sys.stderr)
-            return 1
-        print(json.dumps(data, indent=2))
-        return 0
-
-    if sub == "delete":
-        try:
-            photon_auth.delete_webhook(
-                project_id, project_secret, webhook_id=args.webhook_id
-            )
-        except Exception as e:
-            print(f"delete failed: {e}", file=sys.stderr)
-            return 1
-        print(f"deleted webhook {args.webhook_id}")
-        return 0
-
-    print(f"unknown webhook subcommand: {sub}", file=sys.stderr)
-    return 2
 
 
 # ---------------------------------------------------------------------------

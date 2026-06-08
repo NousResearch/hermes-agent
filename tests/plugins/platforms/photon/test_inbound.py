@@ -1,12 +1,13 @@
 """Inbound dispatch + dedup tests for PhotonAdapter.
 
-These tests bypass the aiohttp server — they call ``_dispatch_inbound``
-and ``_is_duplicate`` directly. That keeps them fast and means we can
-exercise the message-shape parsing logic without binding ports.
+These bypass the loopback HTTP stream — they call ``_dispatch_inbound`` /
+``_on_inbound_line`` / ``_is_duplicate`` directly, exercising the
+sidecar-event parsing without spawning the Node sidecar or binding ports.
 """
 from __future__ import annotations
 
-from typing import List
+import json
+from typing import Any, Dict, List
 
 import pytest
 
@@ -16,38 +17,39 @@ from plugins.platforms.photon.adapter import PhotonAdapter
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
-    # Avoid touching real auth.json / env.
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
-    monkeypatch.delenv("PHOTON_WEBHOOK_SECRET", raising=False)
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
 
 
-@pytest.mark.asyncio
-async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
-    adapter = _make_adapter(monkeypatch)
+def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[MessageEvent]:
     captured: List[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
 
     monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    return captured
 
-    payload = {
-        "event": "messages",
-        "space": {"id": "any;-;+15551234567", "platform": "iMessage"},
-        "message": {
-            "id": "spc-msg-abc",
-            "platform": "iMessage",
-            "direction": "inbound",
-            "timestamp": "2026-05-14T19:06:32.000Z",
-            "sender": {"id": "+15551234567", "platform": "iMessage"},
-            "space": {"id": "any;-;+15551234567", "platform": "iMessage"},
-            "content": {"type": "text", "text": "hello world"},
-        },
+
+def _dm_event(text: str, msg_id: str = "spc-msg-abc") -> Dict[str, Any]:
+    return {
+        "messageId": msg_id,
+        "platform": "iMessage",
+        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
+        "sender": {"id": "+15551234567"},
+        "content": {"type": "text", "text": text},
+        "timestamp": "2026-05-14T19:06:32.000Z",
     }
-    await adapter._dispatch_inbound(payload)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_dm_event("hello world"))
 
     assert len(captured) == 1
     event = captured[0]
@@ -57,70 +59,73 @@ async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     src = event.source
     assert src is not None
     assert src.platform == Platform("photon")
-    assert src.chat_id == "any;-;+15551234567"
+    assert src.chat_id == "+15551234567"
     assert src.chat_type == "dm"
     assert src.user_id == "+15551234567"
 
 
 @pytest.mark.asyncio
-async def test_dispatch_group_id_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_dispatch_group_type(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
-    captured: List[MessageEvent] = []
+    captured = _capture(adapter, monkeypatch)
 
-    async def fake_handle(event: MessageEvent) -> None:
-        captured.append(event)
-
-    monkeypatch.setattr(adapter, "handle_message", fake_handle)
-
-    payload = {
-        "event": "messages",
-        "space": {"id": "any;+;group-guid-xyz", "platform": "iMessage"},
-        "message": {
-            "id": "spc-msg-grp",
-            "timestamp": "2026-05-14T19:06:32.000Z",
-            "sender": {"id": "+15551234567"},
-            "space": {"id": "any;+;group-guid-xyz"},
-            "content": {"type": "text", "text": "hi group"},
-        },
+    event = {
+        "messageId": "spc-msg-grp",
+        "space": {"id": "group-guid-xyz", "type": "group", "phone": None},
+        "sender": {"id": "+15551234567"},
+        "content": {"type": "text", "text": "hi group"},
+        "timestamp": "2026-05-14T19:06:32.000Z",
     }
-    await adapter._dispatch_inbound(payload)
+    await adapter._dispatch_inbound(event)
     assert captured[0].source.chat_type == "group"
 
 
 @pytest.mark.asyncio
-async def test_dispatch_attachment_surfaces_marker(
+async def test_dispatch_attachment_surfaces_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = {
+        "messageId": "spc-msg-att",
+        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
+        "sender": {"id": "+15551234567"},
+        "content": {
+            "type": "attachment",
+            "name": "IMG_4127.HEIC",
+            "mimeType": "image/heic",
+            "size": 12345,
+        },
+        "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+    await adapter._dispatch_inbound(event)
+    assert len(captured) == 1
+    assert "Photon attachment received" in captured[0].text
+    assert "IMG_4127.HEIC" in captured[0].text
+    assert captured[0].message_type == MessageType.PHOTO
+
+
+@pytest.mark.asyncio
+async def test_on_inbound_line_dispatches_and_dedups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _make_adapter(monkeypatch)
-    captured: List[MessageEvent] = []
+    captured = _capture(adapter, monkeypatch)
 
-    async def fake_handle(event: MessageEvent) -> None:
-        captured.append(event)
+    line = json.dumps(_dm_event("ping", msg_id="dup-1"))
+    await adapter._on_inbound_line(line)
+    await adapter._on_inbound_line(line)  # same messageId -> deduped
 
-    monkeypatch.setattr(adapter, "handle_message", fake_handle)
-
-    payload = {
-        "event": "messages",
-        "message": {
-            "id": "spc-msg-att",
-            "timestamp": "2026-05-14T19:06:32.000Z",
-            "sender": {"id": "+15551234567"},
-            "space": {"id": "any;-;+15551234567"},
-            "content": {
-                "type": "attachment",
-                "name": "IMG_4127.HEIC",
-                "mimeType": "image/heic",
-                "size": 12345,
-            },
-        },
-    }
-    await adapter._dispatch_inbound(payload)
     assert len(captured) == 1
-    event = captured[0]
-    # Attachment carries metadata marker; mime → MessageType.PHOTO.
-    assert "Photon attachment received" in event.text
-    assert "IMG_4127.HEIC" in event.text
-    assert event.message_type == MessageType.PHOTO
+    assert captured[0].text == "ping"
+
+
+@pytest.mark.asyncio
+async def test_on_inbound_line_ignores_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._on_inbound_line("{not json")
+    assert captured == []
 
 
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:

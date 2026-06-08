@@ -1088,6 +1088,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
+    ProviderEntry("upstage",        "Upstage Solar",            "Upstage (Solar API)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/

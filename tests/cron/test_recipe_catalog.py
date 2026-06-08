@@ -143,20 +143,41 @@ class TestCommandHandler:
     def test_bare_lists_catalog(self, isolated_home):
         from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
 
-        out = handle_cron_recipe_command("")
-        assert "morning-brief" in out and "Cron Recipes" in out
+        res = handle_cron_recipe_command("")
+        assert "morning-brief" in res.text and "Cron Recipes" in res.text
+        assert res.agent_seed is None
 
-    def test_show_recipe_fields(self, isolated_home):
+    def test_name_seeds_agent(self, isolated_home):
         from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
 
-        out = handle_cron_recipe_command("morning-brief")
-        assert "Fields:" in out and "time" in out
+        # `/cron-recipe <name>` (no inline slots) now seeds the agent to ask
+        # the user for each value conversationally instead of dumping fields.
+        res = handle_cron_recipe_command("morning-brief")
+        assert res.agent_seed is not None
+        assert "morning-brief" in res.agent_seed
+        assert "cronjob tool" in res.agent_seed
+        # the schedule template is handed to the agent to build the cron expr
+        assert "* * *" in res.agent_seed
+
+    def test_name_match_is_forgiving(self, isolated_home):
+        from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command, match_recipe
+
+        # prefix match
+        r, cands = match_recipe("morning")
+        assert r is not None and r.key == "morning-brief"
+        # fuzzy / typo
+        r2, _ = match_recipe("mornning-brief")
+        assert r2 is not None and r2.key == "morning-brief"
+        # a forgiving name still seeds the agent
+        res = handle_cron_recipe_command("morning")
+        assert res.agent_seed is not None
 
     def test_fill_creates_job(self, isolated_home):
         from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
 
-        out = handle_cron_recipe_command("morning-brief time=07:30 deliver=telegram")
-        assert "Scheduled" in out
+        res = handle_cron_recipe_command("morning-brief time=07:30 deliver=telegram")
+        assert "Scheduled" in res.text
+        assert res.agent_seed is None
         jobs = isolated_home.load_jobs()
         assert len(jobs) == 1
         assert (jobs[0].get("schedule_display") or jobs[0].get("schedule")) == "30 7 * * *"
@@ -165,14 +186,16 @@ class TestCommandHandler:
     def test_unknown_recipe(self, isolated_home):
         from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
 
-        out = handle_cron_recipe_command("does-not-exist")
-        assert "No cron recipe" in out
+        res = handle_cron_recipe_command("zzz-nope-nothing")
+        assert "No cron recipe" in res.text
+        assert res.agent_seed is None
 
     def test_bad_value_names_slot(self, isolated_home):
         from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
 
-        out = handle_cron_recipe_command("morning-brief time=99:99")
-        assert "Can't set up" in out and "time" in out
+        res = handle_cron_recipe_command("morning-brief time=99:99")
+        assert "Can't set up" in res.text and "time" in res.text
+        assert res.agent_seed is None
 
 
 class TestDocsGenerator:

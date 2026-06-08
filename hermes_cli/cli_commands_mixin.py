@@ -1279,10 +1279,12 @@ class CLICommandsMixin:
     def _handle_cron_recipe_command(self, cmd: str):
         """Handle /cron-recipe — set up an automation from a recipe template.
 
-        Delegates to the shared handler so CLI, TUI, and gateway never drift.
-        The user pastes a pre-filled command (from the docs/dashboard or a bare
-        ``/cron-recipe`` listing), edits the slot values, and sends; the handler
-        validates and creates the cron job, or names the slot that's missing.
+        Delegates to the shared handler. A bare ``/cron-recipe`` lists the
+        catalog; ``/cron-recipe <name>`` name-matches a recipe and seeds the
+        agent to ask the user for each value conversationally (the result's
+        ``agent_seed``); ``/cron-recipe <name> slot=val …`` creates the job
+        directly. When a seed is returned it is stashed as a one-shot pending
+        message the interactive loop runs as the next agent turn.
         """
         import shlex
 
@@ -1293,10 +1295,16 @@ class CLICommandsMixin:
         args = " ".join(shlex.quote(t) for t in tokens)
         try:
             from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
-            output = handle_cron_recipe_command(args)
+            result = handle_cron_recipe_command(args)
         except Exception as e:
-            output = f"Cron recipe command failed: {e}"
-        self._console_print(output)
+            self._console_print(f"Cron recipe command failed: {e}")
+            return
+        self._console_print(result.text)
+        seed = getattr(result, "agent_seed", None)
+        if seed:
+            # One-shot: the interactive loop picks this up right after the
+            # slash command returns and runs it as a normal agent turn.
+            self._pending_agent_seed = seed
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.

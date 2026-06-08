@@ -39,6 +39,8 @@ SEMANTIC_WRITE_RECEIPT_PACKET_TYPES = {
 }
 SUPPORTED_RESULT_PACKET_TYPES = {
     "durable_graph_validation",
+    "lifecycle_proposal_draft.packet",
+    "lifecycle_review.packet",
     "publication_observation",
     "request.receipt",
     "report_admission_receipt",
@@ -49,6 +51,7 @@ DESCRIPTOR_READONLY_TARGET_KINDS = {
     "component",
     "dashboard_surface",
     "event",
+    "lifecycle_candidate",
     "object_graph",
     "proposal_queue",
     "publication",
@@ -59,7 +62,9 @@ DESCRIPTOR_READONLY_TARGET_KINDS = {
     "sync",
     "todo",
 }
-DESCRIPTOR_WRITE_TARGET_KINDS = DESCRIPTOR_READONLY_TARGET_KINDS.difference({"dashboard_surface", "run"})
+DESCRIPTOR_WRITE_TARGET_KINDS = DESCRIPTOR_READONLY_TARGET_KINDS.difference(
+    {"dashboard_surface", "lifecycle_candidate", "run"}
+)
 
 
 def _sanitize_component(value: str) -> str:
@@ -386,6 +391,226 @@ def _render_graph_validation_packet(packet: dict[str, Any]) -> dict[str, Any]:
         )
     lines.extend(_warning_lines(packet.get("warnings"), limit=5))
     return {"title": "KB Graph Validation", "text": "\n".join(lines), "actions": []}
+
+
+def _lifecycle_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if not isinstance(value, list):
+        return []
+    values: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            found = ""
+            for key in ("ref", "id", "target_ref", "path", "title", "summary", "message"):
+                found = _short(item.get(key), "")
+                if found:
+                    break
+            if found:
+                values.append(found)
+        else:
+            text = str(item).strip()
+            if text:
+                values.append(text)
+    return _dedupe_list(values)
+
+
+def _is_lifecycle_proposal_descriptor(descriptor: dict[str, Any]) -> bool:
+    if not isinstance(descriptor, dict):
+        return False
+    if descriptor.get("dashboard_owned_write") is True:
+        return False
+    preview_tool = str(descriptor.get("preview_tool") or descriptor.get("method") or "").strip()
+    action_id = str(descriptor.get("action_id") or "").strip()
+    target_kind = str(descriptor.get("target_kind") or "").strip()
+    return (
+        target_kind == "lifecycle_candidate"
+        or action_id.startswith("lifecycle.")
+        or preview_tool.startswith("lifecycle.proposal_")
+    ) and bool(preview_tool)
+
+
+def _lifecycle_candidate_descriptor(candidate: dict[str, Any]) -> dict[str, Any]:
+    descriptor = candidate.get("action_descriptor")
+    if isinstance(descriptor, dict) and _is_lifecycle_proposal_descriptor(descriptor):
+        return dict(descriptor)
+    descriptors = candidate.get("action_descriptors")
+    if isinstance(descriptors, list):
+        for item in descriptors:
+            if isinstance(item, dict) and _is_lifecycle_proposal_descriptor(item):
+                return dict(item)
+    return {}
+
+
+def _render_lifecycle_proposal_draft_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    workflow = _short(packet.get("workflow"), "Lifecycle Review")
+    stewardship = _short(packet.get("stewardship_area"), "")
+    proposals = packet.get("proposals") if isinstance(packet.get("proposals"), list) else []
+    proposal_count = packet.get("proposal_count")
+    if proposal_count is None:
+        proposal_count = len(proposals)
+    lines = [
+        "Lifecycle Proposal Draft",
+        f"Workflow: {workflow}",
+    ]
+    if stewardship:
+        lines.append(f"Stewardship: {stewardship}")
+    if packet.get("mutation_performed") is not None:
+        lines.append("Mutation: " + ("performed" if packet.get("mutation_performed") else "none"))
+    lines.append(f"Proposals: {_short(proposal_count, '0')}")
+    for index, proposal in enumerate(proposals[:5], start=1):
+        if not isinstance(proposal, dict):
+            lines.append(f"{index}. {_clip(proposal, 180)}")
+            continue
+        title = _short(
+            proposal.get("proposal_id")
+            or proposal.get("id")
+            or proposal.get("target_ref")
+            or proposal.get("title"),
+            "proposal",
+        )
+        lines.append(f"{index}. {title}")
+        action = _short(proposal.get("recommended_action") or proposal.get("action"), "")
+        target_ref = _short(proposal.get("target_ref"), "")
+        summary = _short(proposal.get("summary") or proposal.get("preview") or proposal.get("description"), "")
+        if action:
+            lines.append(f"   Action: {action}")
+        if target_ref:
+            lines.append(f"   Target: {target_ref}")
+        if summary:
+            lines.append(f"   Summary: {_clip(summary, 180)}")
+    if len(proposals) > 5:
+        lines.append(f"... {len(proposals) - 5} more proposal(s)")
+    lines.append("No durable write has been made.")
+    return {"title": "Lifecycle Proposal Draft", "text": "\n".join(lines), "actions": []}
+
+
+def _render_lifecycle_descriptor_preview(
+    ctx: Any,
+    target: str,
+    *,
+    descriptor: dict[str, Any],
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    del callback_ctx
+    label = _short(descriptor.get("label") or descriptor.get("action_id") or "Lifecycle proposal", "Lifecycle proposal")
+    preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool") or descriptor.get("method"))
+    payload = _result_payload(ctx.dispatch_tool(preview_tool, _descriptor_params(descriptor)))
+    if isinstance(payload, dict) and payload.get("error"):
+        return {"title": label, "text": f"{label}\n{payload['error']}", "actions": []}
+    packet_card = _render_supported_result_packet(payload, ctx=ctx, target=target)
+    if packet_card is not None:
+        packet_card["actions"] = []
+        if "No durable write has been made." not in packet_card["text"]:
+            packet_card["text"] += "\nNo durable write has been made."
+        return packet_card
+    if not isinstance(payload, dict):
+        return {"title": label, "text": f"{label}\n{_short(payload, 'No proposal preview returned.')}", "actions": []}
+    lines = [
+        "Lifecycle Proposal Preview",
+        f"Status: {_short(payload.get('status') or payload.get('state'), 'preview')}",
+    ]
+    summary = _short(payload.get("summary") or payload.get("message"), "")
+    if summary:
+        lines.append("Summary: " + _clip(summary, 260))
+    target_ref = _short(payload.get("target_ref") or descriptor.get("target_ref"), "")
+    if target_ref:
+        lines.append(f"Target: {target_ref}")
+    lines.append("No durable write has been made.")
+    return {"title": label, "text": "\n".join(lines), "actions": []}
+
+
+def _lifecycle_descriptor_action(ctx: Any, target: str, descriptor: dict[str, Any]) -> Any | None:
+    if not _is_lifecycle_proposal_descriptor(descriptor):
+        return None
+    try:
+        from tools.kb_callback_registry import KbAction
+    except Exception:
+        return None
+    label = _short(descriptor.get("label") or descriptor.get("action_id") or "Lifecycle proposal", "Lifecycle proposal")
+    action_id = _short(descriptor.get("action_id") or label, label)
+    preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool") or descriptor.get("method"))
+    return KbAction(
+        label=label,
+        action_id=f"{action_id}.preview",
+        handler=lambda callback_ctx, d=dict(descriptor): _render_lifecycle_descriptor_preview(
+            ctx,
+            target,
+            descriptor=d,
+            callback_ctx=callback_ctx,
+        ),
+        metadata={
+            "target_kind": descriptor.get("target_kind") or "lifecycle_candidate",
+            "target_ref": descriptor.get("target_ref"),
+            "preview_tool": preview_tool,
+            "preview_required": True,
+            "durable_write": False,
+        },
+    )
+
+
+def _lifecycle_candidate_actions(ctx: Any | None, target: str, candidates: list[Any]) -> list[Any]:
+    if ctx is None or not target:
+        return []
+    actions: list[Any] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        descriptor = _lifecycle_candidate_descriptor(candidate)
+        action = _lifecycle_descriptor_action(ctx, target, descriptor)
+        if action is not None:
+            actions.append(action)
+        if len(actions) >= 4:
+            break
+    return actions
+
+
+def _render_lifecycle_review_packet(
+    packet: dict[str, Any],
+    *,
+    ctx: Any | None = None,
+    target: str = "",
+) -> dict[str, Any]:
+    workflow = _short(packet.get("workflow"), "Lifecycle Review")
+    stewardship = _short(packet.get("stewardship_area"), "")
+    candidates = packet.get("candidates") if isinstance(packet.get("candidates"), list) else []
+    lines = [workflow]
+    if stewardship:
+        lines.append(f"Stewardship: {stewardship}")
+    review_target = _short(packet.get("target") or packet.get("target_ref") or packet.get("scope"), "")
+    if review_target:
+        lines.append(f"Target: {review_target}")
+    if packet.get("mutation_performed") is not None:
+        lines.append("Mutation: " + ("performed" if packet.get("mutation_performed") else "none"))
+    lines.append(f"Candidates: {len(candidates)}")
+    for index, candidate in enumerate(candidates[:5], start=1):
+        if not isinstance(candidate, dict):
+            lines.append(f"{index}. {_clip(candidate, 180)}")
+            continue
+        title = _short(candidate.get("title") or candidate.get("name") or candidate.get("target_ref"), "candidate")
+        lines.append(f"{index}. {title}")
+        action = _short(candidate.get("recommended_action"), "")
+        target_ref = _short(candidate.get("target_ref") or candidate.get("object_ref"), "")
+        if action:
+            lines.append(f"   Action: {action}")
+        if target_ref:
+            lines.append(f"   Target: {target_ref}")
+        evidence_refs = _lifecycle_values(candidate.get("evidence_refs"))
+        evidence_gaps = _lifecycle_values(candidate.get("evidence_gaps"))
+        if evidence_refs:
+            lines.append(_id_line("   Evidence", evidence_refs, limit=3))
+        if evidence_gaps:
+            lines.append(_id_line("   Gaps", evidence_gaps, limit=3))
+    if len(candidates) > 5:
+        lines.append(f"... {len(candidates) - 5} more candidate(s)")
+    if packet.get("mutation_performed") is False:
+        lines.append("No durable write has been made.")
+    return {
+        "title": "Lifecycle Review",
+        "text": "\n".join(lines),
+        "actions": _lifecycle_candidate_actions(ctx, target, candidates),
+    }
 
 
 def _render_publication_observation_packet(packet: dict[str, Any]) -> dict[str, Any]:
@@ -879,6 +1104,10 @@ def _render_supported_result_packet(
         return _render_report_admission_packet(packet)
     if packet_type == "durable_graph_validation":
         return _render_graph_validation_packet(packet)
+    if packet_type == "lifecycle_review.packet":
+        return _render_lifecycle_review_packet(packet, ctx=ctx, target=target)
+    if packet_type == "lifecycle_proposal_draft.packet":
+        return _render_lifecycle_proposal_draft_packet(packet)
     if packet_type == "publication_observation":
         return _render_publication_observation_packet(packet)
     if packet_type in SEMANTIC_WRITE_RECEIPT_PACKET_TYPES:
@@ -1322,6 +1551,8 @@ def _workbench_compact_card_lines(
     lines = [f"{index}. {title}"]
     if kind == "situation":
         lines.append("   Surface: Situation Review")
+    elif kind == "lifecycle_candidate":
+        lines.append("   Surface: Lifecycle Review")
     elif section_title:
         lines.append(f"   Surface: {section_title}")
     if detail:
@@ -1333,6 +1564,8 @@ def _workbench_compact_card_lines(
         lines.append("   Rail: " + ", ".join(labels[:6]))
     if kind == "situation":
         lines.append("   Writes: handoff-only until kb-engine returns a confirmed workflow.")
+    if kind == "lifecycle_candidate":
+        lines.append("   Writes: proposal preview only; no Hermes durable write.")
     return lines
 
 
@@ -1359,7 +1592,10 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
                 action_id = _short(descriptor.get("action_id") or label, label)
                 mutation = _short(descriptor.get("mutation"), "read_only")
                 target_kind = str(descriptor.get("target_kind") or "").strip()
-                if mutation == "read_only":
+                lifecycle_action = _lifecycle_descriptor_action(ctx, target, descriptor_copy)
+                if lifecycle_action is not None:
+                    actions.append(lifecycle_action)
+                elif mutation == "read_only":
                     if target_kind not in DESCRIPTOR_READONLY_TARGET_KINDS:
                         continue
                     if not (descriptor.get("preview_tool") or descriptor.get("method")):
@@ -5216,6 +5452,42 @@ def _render_queue(
     }
 
 
+def _lifecycle_review_args(args: str) -> dict[str, Any]:
+    text = str(args or "").strip()
+    if text.lower().startswith("lifecycle "):
+        text = text.split(maxsplit=1)[1].strip()
+    if text.lower().startswith("for "):
+        text = text.split(maxsplit=1)[1].strip()
+    return {
+        "target": text or "situations",
+        "dry_run": True,
+    }
+
+
+def _render_lifecycle_review_command(ctx: Any, target: str, args: str) -> dict[str, Any]:
+    _, data, errors = _dispatch_first(
+        ctx,
+        target,
+        [("lifecycle.review", _lifecycle_review_args(args))],
+    )
+    if data is None:
+        return _render_error("Lifecycle Review", target, errors)
+    packet_card = _render_supported_result_packet(data, ctx=ctx, target=target)
+    if packet_card is not None:
+        return packet_card
+    return _render_lifecycle_review_packet(
+        {
+            "packet_type": "lifecycle_review.packet",
+            "workflow": "Lifecycle Review",
+            "mutation_performed": False,
+            "candidates": [],
+            "summary": data,
+        },
+        ctx=ctx,
+        target=target,
+    )
+
+
 def _kb_root_command(args: str) -> tuple[str, str]:
     text = (args or "").strip()
     if not text:
@@ -5240,7 +5512,12 @@ def _kb_root_command(args: str) -> tuple[str, str]:
     if key in {"queue", "q"}:
         return "kbqueue", rest
     if key == "review":
+        review_head, _, review_tail = rest.partition(" ")
+        if review_head.strip().lower() in {"lifecycle", "stewardship"}:
+            return "kblifecycle", review_tail.strip()
         return "kbqueue", f"review {rest}".strip() if rest else ""
+    if key in {"lifecycle", "stewardship"}:
+        return "kblifecycle", rest
     if key in {"publish", "publication"}:
         return "kbpublish", rest
     if key in {"run", "workflow"}:
@@ -5265,6 +5542,7 @@ def _kb_command_help() -> dict[str, Any]:
                 "/kb queue reject 1 - preview a decision",
                 "Confirm queue decisions from the preview button when available",
                 "/kb queue reject 1 confirm - text fallback for a previewed decision",
+                "/kb review lifecycle [target] - read-only lifecycle review",
                 "/kb publish - preview KB Git publication",
                 "/kb publish confirm - commit and push after preview",
                 "/kb status - lane, Hermes/KB reasoning, readiness, publication",
@@ -5431,6 +5709,8 @@ def _card_for_command(
                 session_id=queue_session_id,
             )
         return _render_queue(data, ctx=ctx, target=target, session_id=queue_session_id)
+    if command == "kblifecycle":
+        return _render_lifecycle_review_command(ctx, target, args)
     if command == "kbpublish":
         return _render_publish_command(ctx, target, args)
     if command == "kbmeeting":

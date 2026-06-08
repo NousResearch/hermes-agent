@@ -821,6 +821,109 @@ def test_dashboard_report_descriptor_renders_preview_confirm_receipts(monkeypatc
     assert ctx.calls[-1][1]["actor"] == "telegram:user-1"
 
 
+def test_kb_review_lifecycle_renders_readonly_packet_and_descriptor_preview(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    descriptor = {
+        "packet_type": "dashboard_action_descriptor",
+        "schema_version": 2,
+        "action_id": "lifecycle.archive_proposal",
+        "label": "Draft archive proposal",
+        "method": "lifecycle.proposal_preview",
+        "mutation": "proposal_preview",
+        "target_kind": "lifecycle_candidate",
+        "target_ref": "situations/2026-04-old-launch",
+        "preview_tool": "lifecycle.proposal_preview",
+        "confirm_tool": "lifecycle.proposal_confirmed",
+        "requires_canonical_tool": True,
+        "params": {
+            "candidate_id": "cand_1",
+            "target_ref": "situations/2026-04-old-launch",
+            "recommended_action": "archive",
+        },
+    }
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_lifecycle_review": {
+                "result": {
+                    "packet_type": "lifecycle_review.packet",
+                    "workflow": "Lifecycle Review",
+                    "stewardship_area": "KB Stewardship",
+                    "target": "situations",
+                    "mutation_performed": False,
+                    "candidates": [
+                        {
+                            "candidate_id": "cand_1",
+                            "title": "Old launch situation",
+                            "target_ref": "situations/2026-04-old-launch",
+                            "recommended_action": "archive",
+                            "evidence_refs": ["source:launch-retro"],
+                            "evidence_gaps": ["No active owner found"],
+                            "action_descriptor": descriptor,
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_lifecycle_proposal_preview": {
+                "result": {
+                    "packet_type": "lifecycle_proposal_draft.packet",
+                    "workflow": "Lifecycle Review",
+                    "stewardship_area": "KB Stewardship",
+                    "mutation_performed": False,
+                    "proposal_count": 1,
+                    "proposals": [
+                        {
+                            "proposal_id": "draft_archive_old_launch",
+                            "target_ref": "situations/2026-04-old-launch",
+                            "recommended_action": "archive",
+                            "summary": "Draft an archive proposal for reviewer approval.",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb review lifecycle"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls == [("mcp_kb_engine_prod_lifecycle_review", {"target": "situations", "dry_run": True})]
+    text = adapter.sent[0]["text"]
+    assert "Lifecycle Review" in text
+    assert "Stewardship: KB Stewardship" in text
+    assert "Mutation: none" in text
+    assert "Old launch situation" in text
+    assert "Action: archive" in text
+    assert "Target: situations/2026-04-old-launch" in text
+    assert "Evidence: source:launch-retro" in text
+    assert "Gaps: No active owner found" in text
+    assert [action.label for action in adapter.sent[0]["actions"]] == ["Draft archive proposal"]
+    assert adapter.sent[0]["actions"][0].metadata["durable_write"] is False
+    assert "confirm_tool" not in adapter.sent[0]["actions"][0].metadata
+
+    preview_card = adapter.sent[0]["actions"][0].handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(preview_card):
+        preview_card = asyncio.run(preview_card)
+
+    assert "Lifecycle Proposal Draft" in preview_card["text"]
+    assert "Proposals: 1" in preview_card["text"]
+    assert "draft_archive_old_launch" in preview_card["text"]
+    assert "No durable write has been made." in preview_card["text"]
+    assert preview_card["actions"] == []
+    assert ctx.calls[-1] == (
+        "mcp_kb_engine_prod_lifecycle_proposal_preview",
+        {
+            "candidate_id": "cand_1",
+            "target_ref": "situations/2026-04-old-launch",
+            "recommended_action": "archive",
+        },
+    )
+
+
 def test_dashboard_proposal_queue_descriptor_uses_generic_preview_confirm_with_lease(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 

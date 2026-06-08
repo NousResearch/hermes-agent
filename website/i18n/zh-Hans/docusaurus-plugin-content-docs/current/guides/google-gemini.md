@@ -77,7 +77,7 @@ Hermes 检测到该端点后会创建原生 Gemini 适配器。在内部，Herme
 - 流式响应 → 供 Hermes 循环使用的 OpenAI 格式流式数据块
 
 :::note Gemini 3 思维签名
-对于 Gemini 3 的工具调用，Hermes 会保留附加在函数调用部分的 `thoughtSignature` 值，并在下一个工具轮次中重放。这覆盖了多步骤 Agent 工作流中验证关键路径的需求。
+对于 Gemini 3 的工具调用，Hermes 会保留附加在函数调用部分的 `thoughtSignature` 值，并在下一个工具轮次中重放。这覆盖了多步骤智能体工作流中验证关键路径的需求。
 
 Gemini 3 也可能在其他响应部分附加思维签名。Hermes 的原生适配器目前针对 Agent 工具循环进行了优化，尚未以完整的部分级保真度重放所有非工具调用签名。
 :::
@@ -104,8 +104,8 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 
 | 模型 | ID | 说明 |
 |------|----|------|
-| Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | 可用时最强大的预览模型 |
-| Gemini 3 Pro Preview | `gemini-3-pro-preview` | 强大的推理和编码模型 |
+| Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | 可用时能力最强的预览模型 |
+| Gemini 3 Pro Preview | `gemini-3-pro-preview` | 推理和写代码能力都不错的模型 |
 | Gemini 3 Flash Preview | `gemini-3-flash-preview` | 推荐的默认选项，速度与能力均衡 |
 | Gemini 3.1 Flash Lite Preview | `gemini-3.1-flash-lite-preview` | 可用时速度最快、成本最低的选项 |
 

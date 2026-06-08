@@ -33,7 +33,7 @@ hermes setup --portal
 1. 打开浏览器跳转至 portal.nousresearch.com 进行 OAuth 登录
 2. 将 refresh token 存储至 `~/.hermes/auth.json`
 3. 在 `~/.hermes/config.yaml` 中设置 `model.provider: nous`
-4. 选择一个默认的 agentic 模型（`anthropic/claude-sonnet-4.6` 或类似模型）
+4. 选择一个适合智能体任务的默认模型（`anthropic/claude-sonnet-4.6` 或类似模型）
 5. 为网页搜索、图像生成、TTS 和浏览器自动化开启 Tool Gateway
 
 命令执行完毕后，你将回到终端，可以直接开始对话。
@@ -98,7 +98,7 @@ Hey, search the web for "Hermes Agent release notes" and summarize the top 3 hit
 `hermes setup --portal` 会在设置过程中让你选择模型，但订阅的意义在于可以访问完整的模型目录——随时可在会话中使用 `/model` 切换：
 
 ```bash
-/model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
+/model anthropic/claude-sonnet-4.6     # 最适合通用智能体任务的模型
 /model openai/gpt-5.4                  # 强推理 + 工具调用
 /model google/gemini-2.5-pro           # 超大上下文窗口
 /model deepseek/deepseek-v3.2          # 高性价比编程模型
@@ -118,7 +118,7 @@ Hey, search the web for "Hermes Agent release notes" and summarize the top 3 hit
 hermes config set model.default anthropic/claude-sonnet-4.6
 ```
 
-### 不要在 agent 任务中使用 Hermes-4
+### 不要在智能体任务中使用 Hermes-4
 
 Hermes-4-70B 和 Hermes-4-405B 在 Portal 上以大幅折扣提供，但它们是**对话/推理模型**，并非针对工具调用优化的模型。它们在多步骤 agent 循环中表现不佳。请通过[订阅代理](/user-guide/features/subscription-proxy)从非 agent 工具中将它们用于对话或研究工作。对于 Hermes Agent 本身，请坚持使用上述前沿 agentic 模型。
 

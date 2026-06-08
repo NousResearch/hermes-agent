@@ -280,7 +280,7 @@ terminal:
   file_sync_enabled: true   # 默认 —— 设为 false 可完全跳过同步
 ```
 
-这是从会话结束后被销毁的临时云沙箱中恢复结果的方式，无需告诉 agent 显式地 `scp` 或 `modal volume put` 每个工件。
+这是从会话结束后被销毁的临时云沙箱中恢复结果的方式，无需告诉智能体显式地 `scp` 或 `modal volume put` 每个工件。
 
 ### Docker 卷挂载
 

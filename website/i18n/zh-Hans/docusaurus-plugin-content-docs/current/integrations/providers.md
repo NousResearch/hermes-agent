@@ -1185,7 +1185,7 @@ extra_body:
 
 #### Together AI
 
-托管开源模型（Llama、MiniMax、Gemma、DeepSeek、Qwen），价格显著低于一方 API。适合多模型场景的默认选择。
+托管开源模型（Llama、MiniMax、Gemma、DeepSeek、Qwen），通常比官方 API 便宜不少。适合需要同时使用多个模型的场景。
 
 ```yaml
 # ~/.hermes/config.yaml

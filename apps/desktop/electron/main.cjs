@@ -1902,12 +1902,36 @@ function resolveWebDist() {
   const unpackedDist = path.join(unpackedPathFor(APP_ROOT), 'dist')
   if (directoryExists(unpackedDist)) return unpackedDist
 
-  return path.join(APP_ROOT, 'dist')
+  // Final fallback: APP_ROOT/dist. When packaged with asar:true this lives
+  // INSIDE app.asar — not a servable filesystem directory — so the embedded
+  // dashboard backend 404s on static routes (see #41327, #39472). The durable
+  // fix is unpacking dist/ (PR #41411 adds dist/** to asarUnpack so the tier-2
+  // unpackedDist above resolves). If we still land here while packaged, log it
+  // so the cause isn't silent.
+  const fallback = path.join(APP_ROOT, 'dist')
+  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !directoryExists(fallback)) {
+    rememberLog(
+      `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
+        `is not a real directory: ${fallback}. Static routes will 404. ` +
+        `Ensure dist/** is unpacked (asarUnpack) or set HERMES_DESKTOP_WEB_DIST.`
+    )
+  }
+  return fallback
 }
 
 function resolveRendererIndex() {
   const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
-  return candidates.find(fileExists) || candidates[0]
+  const found = candidates.find(fileExists)
+  if (found) return found
+  // Nothing on disk. A packaged build with no renderer bundle blank-pages with
+  // a bare ERR_FILE_NOT_FOUND and no clue why (see #39484). Surface the cause
+  // and the fix before Electron loads the missing file.
+  rememberLog(
+    `[renderer] index.html not found — the desktop app was packaged without a ` +
+      `renderer bundle. Tried: ${candidates.join(', ')}. ` +
+      `Rebuild with: hermes desktop --force-build`
+  )
+  return candidates[0]
 }
 
 function resolveHermesCwd() {

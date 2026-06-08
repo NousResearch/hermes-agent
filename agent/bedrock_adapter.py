@@ -438,6 +438,13 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+# Placeholder text for empty/missing content blocks. Bedrock Converse rejects
+# both empty strings ("text content blocks must be non-empty", #9486) AND
+# whitespace-only strings ("text content blocks must contain non-whitespace
+# text", #39829). Use a minimal non-whitespace placeholder that satisfies both.
+_EMPTY_CONTENT_PLACEHOLDER = "(no content)"
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
@@ -450,9 +457,9 @@ def _convert_content_to_converse(content) -> List[Dict]:
     "text content blocks must be non-empty"). Ref: issue #9486.
     """
     if content is None:
-        return [{"text": " "}]
+        return [{"text": _EMPTY_CONTENT_PLACEHOLDER}]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": content}] if content.strip() else [{"text": _EMPTY_CONTENT_PLACEHOLDER}]
     if isinstance(content, list):
         blocks = []
         for part in content:
@@ -464,7 +471,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append({"text": text if text and text.strip() else _EMPTY_CONTENT_PLACEHOLDER})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -486,7 +493,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
+        return blocks if blocks else [{"text": _EMPTY_CONTENT_PLACEHOLDER}]
     return [{"text": str(content)}]
 
 
@@ -574,7 +581,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [{"text": _EMPTY_CONTENT_PLACEHOLDER}]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -600,11 +607,11 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": _EMPTY_CONTENT_PLACEHOLDER}]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": _EMPTY_CONTENT_PLACEHOLDER}]})
 
     return (system_blocks if system_blocks else None, converse_msgs)
 

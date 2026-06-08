@@ -342,6 +342,18 @@ export function ChatSidebar({
     [sessionPresence]
   )
 
+  // Lookup: session_id → presence record (from other devices)
+  const presenceBySession = useMemo(() => {
+    const map = new Map<string, SessionPresenceRecord>()
+    for (const rec of sessionPresence) {
+      const key = rec.session_key || rec.session_id
+      if (key && !map.has(key)) {
+        map.set(key, rec)
+      }
+    }
+    return map
+  }, [sessionPresence])
+
   const workingSessionIdSet = useMemo(
     () =>
       new Set([
@@ -761,6 +773,8 @@ export function ChatSidebar({
             rootClassName="min-h-0 flex-1 p-0"
             sessions={searchResults}
             workingSessionIdSet={workingSessionIdSet}
+            presenceBySession={presenceBySession}
+            showSourceBadge={showAllProfiles || visibleSessionPresence.length > 0}
           />
         )}
 
@@ -806,6 +820,8 @@ export function ChatSidebar({
                 onResumeSession={onResumeSession}
                 workingSessionIdSet={workingSessionIdSet}
                 dndSensors={dndSensors}
+                presenceBySession={presenceBySession}
+                showSourceBadge={showAllProfiles || visibleSessionPresence.length > 0}
               />
             )}
 
@@ -845,6 +861,8 @@ export function ChatSidebar({
               sessions={agentSessions}
               sortable={!showAllProfiles && agentSessions.length > 1}
               workingSessionIdSet={workingSessionIdSet}
+              presenceBySession={presenceBySession}
+              showSourceBadge={showAllProfiles || visibleSessionPresence.length > 0}
             />
           </div>
         )}
@@ -1103,6 +1121,10 @@ interface SidebarSessionsSectionProps {
   sortable?: boolean
   onReorder?: (event: DragEndEvent) => void
   dndSensors?: ReturnType<typeof useSensors>
+  /** Show profile source badge on each row. */
+  showSourceBadge?: boolean
+  /** Presence lookup map for device nicknames. */
+  presenceBySession?: Map<string, SessionPresenceRecord>
 }
 
 function SidebarSessionsSection({
@@ -1128,7 +1150,9 @@ function SidebarSessionsSection({
   labelMeta,
   sortable = false,
   onReorder,
-  dndSensors
+  dndSensors,
+  showSourceBadge = false,
+  presenceBySession,
 }: SidebarSessionsSectionProps) {
   const showEmptyState = forceEmptyState || sessions.length === 0
   const dndActive = sortable && !!onReorder
@@ -1142,7 +1166,9 @@ function SidebarSessionsSection({
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
-      session
+      session,
+      showSourceBadge,
+      presence: presenceBySession?.get(session.id),
     }
 
     return sortable ? (

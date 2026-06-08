@@ -73,6 +73,14 @@ optional_env:
     description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: PHOTON_REQUIRE_MENTION
+    description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
+    prompt: "Require a mention in group chats?"
+    password: false
+  - name: PHOTON_MENTION_PATTERNS
+    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
+    prompt: "Group mention patterns"
+    password: false
   - name: PHOTON_HOME_CHANNEL
     description: "Default Spectrum space ID for cron / notification delivery"
     prompt: "Home space ID"

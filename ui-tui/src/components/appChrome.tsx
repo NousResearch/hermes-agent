@@ -1,3 +1,4 @@
+import { tr } from '../i18n.js'
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
@@ -183,7 +184,7 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
 }
 
 function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+  return `${count} ${count === 1 ? tr('session') : tr('sessions')}`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its
@@ -523,7 +524,7 @@ export function StatusRule({
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
-              {status}
+              {tr(status)}
             </Text>
           )}
         </Box>
@@ -583,7 +584,7 @@ export function StatusRule({
             wrap="truncate-end"
           >
             {' │ '}
-            {voiceLabel}
+            {tr(voiceLabel||"")}
           </Text>
         ) : null}
         {showSessionCount ? sessionCountNode : null}

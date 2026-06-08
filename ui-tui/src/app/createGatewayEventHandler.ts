@@ -23,7 +23,7 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
-const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
+const statusFromBusy = () => (getUiState().busy ? 'running...' : 'ready')
 
 const applySkin = (s: GatewaySkin) =>
   patchUiState({
@@ -503,35 +503,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'notification.show': {
-        // Credits/usage notice from the gateway. Payload is snake_case on the
-        // wire and stays snake_case in UiState.notice (no mapping layer). The
-        // text already carries its own glyph; turnController decides whether to
-        // show now or hold until turn end (FaceTicker wins while busy).
-        const p = ev.payload
-
-        if (!p?.text) {
-          return
-        }
-
-        turnController.showNotice({
-          id: p.id,
-          key: p.key,
-          kind: p.kind ?? 'sticky',
-          level: p.level ?? 'info',
-          text: p.text,
-          ttl_ms: p.ttl_ms ?? null
-        })
-
-        return
-      }
-
-      case 'notification.clear':
-        // Key-matched clear only — a stale/late clear must not wipe a newer
-        // notice (turnController guards the key match).
-        turnController.clearNotice(ev.payload?.key)
-
-        return
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 
@@ -884,7 +855,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
         }
 
-        setStatus('ready')
+        setStatus(t('ready'))
 
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
@@ -909,7 +880,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
 
           sys(`error: ${message}`)
-          setStatus('ready')
+          setStatus(t('ready'))
         }
     }
   }

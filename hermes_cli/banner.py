@@ -54,6 +54,62 @@ def _skin_color(key: str, fallback: str) -> str:
         return get_active_skin().get_color(key, fallback)
     except Exception:
         return fallback
+
+
+def _skin_branding(key: str, fallback: str) -> str:
+    """Get a branding string from the active skin, or return fallback."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_branding(key, fallback)
+    except Exception:
+        return fallback
+
+
+def _detect_cli_language() -> str:
+    """Detect the configured language from approvals.language or display.language setting."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        # Check approvals.language first (existing convention)
+        lang = (config.get("approvals") or {}).get("language", "")
+        if lang:
+            return lang.lower()
+        # Also check display.language as fallback
+        lang = (config.get("display") or {}).get("language", "")
+        if lang:
+            return lang.lower()
+    except Exception:
+        pass
+    return "en"
+
+
+# Chinese translations for banner text
+_BANNER_ZH = {
+    "available_tools": "可用工具",
+    "available_skills": "可用技能",
+    "mcp_servers": "MCP 服务器",
+    "and_more_toolsets": "更多工具集",
+    "and_more": "更多",
+    "tools": "工具",
+    "skills": "技能",
+    "mcp_server_count": "MCP 服务器",
+    "help_for_commands": "输入 /help 查看命令",
+    "profile": "配置 profile",
+    "commit_behind": "落后",
+    "commits_behind": "个提交",
+    "run_to_update": "运行以更新",
+    "no_skills_installed": "未安装技能",
+    "connected": "已连接",
+    "failed": "失败",
+    "tool_count": "个工具",
+    "skill_count": "个技能",
+    "server_count": "个服务器",
+    "session": "会话",
+    "context": "上下文",
+    "disabled": "已禁用",
+}
+
+
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -554,23 +610,34 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     except Exception:
         _bskin = None
         _hero = HERMES_CADUCEUS
+    # Detect language for banner text (needed early for Session label)
+    _lang = _detect_cli_language()
+
+    def _t(key: str) -> str:
+        """Translate banner text to Chinese if configured."""
+        if _lang.startswith("zh"):
+            return _BANNER_ZH.get(key, key)
+        return key
+
     left_lines = ["", _hero, ""]
     model_short = model.split("/")[-1] if "/" in model else model
     if model_short.endswith(".gguf"):
         model_short = model_short[:-5]
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
-    ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+    ctx_word = _t("context") if _lang.startswith("zh") else "context"
+    ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} {ctx_word}[/]" if context_length else ""
     left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
     left_lines.append(f"[dim {dim}]{cwd}[/]")
     if session_id:
-        left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
+        session_label = _t("session") if _lang.startswith("zh") else "Session"
+        left_lines.append(f"[dim {session_color}]{session_label}: {session_id}[/]")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]Available Tools[/]"]
+    right_lines = [f"[bold {accent}]{_t('available_tools')}[/]"]
     toolsets_dict: Dict[str, list] = {}
 
     for tool in tools:
@@ -627,7 +694,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
 
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
+        if _lang.startswith("zh"):
+            right_lines.append(f"[dim {dim}]（还有{remaining_toolsets} {_t('and_more_toolsets')}...)[/]")
+        else:
+            right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
 
     # MCP Servers section (only if configured)
     try:
@@ -638,26 +708,31 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     if mcp_status:
         right_lines.append("")
-        right_lines.append(f"[bold {accent}]MCP Servers[/]")
+        mcp_label = _t('mcp_servers') if _lang.startswith("zh") else "MCP Servers"
+        right_lines.append(f"[bold {accent}]{mcp_label}[/]")
         for srv in mcp_status:
             if srv["connected"]:
+                connected_label = _t('connected') if _lang.startswith("zh") else ""
+                tool_word = _t('tool_count') if _lang.startswith("zh") else "tool(s)"
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
-                    f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                    f"[dim {dim}]—[/] [{text}]{srv['tools']} {tool_word}{connected_label}[/]"
                 )
             elif srv.get("disabled"):
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[dim {dim}]— disabled[/]"
+                    "[dim {dim}]— " + _t("disabled") + "[/]"
                 )
             else:
+                failed_label = _t('failed') if _lang.startswith("zh") else "failed"
                 right_lines.append(
                     f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[red]— failed[/]"
+                    f"[red]— {failed_label}[/]"
                 )
 
     right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills[/]")
+    skills_label = _t('available_skills') if _lang.startswith("zh") else "Available Skills"
+    right_lines.append(f"[bold {accent}]{skills_label}[/]")
     skills_by_category = get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
 
@@ -666,21 +741,26 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             skill_names = sorted(skills_by_category[category])
             if len(skill_names) > 8:
                 display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
+                more_count = len(skill_names) - 8
+                if _lang.startswith("zh"):
+                    skills_str = ", ".join(display_names) + f" +{more_count} {_t('and_more')}"
+                else:
+                    skills_str = ", ".join(display_names) + f" +{more_count} more"
             else:
                 skills_str = ", ".join(skill_names)
             if len(skills_str) > 50:
                 skills_str = skills_str[:47] + "..."
             right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
     else:
-        right_lines.append(f"[dim {dim}]No skills installed[/]")
+        no_skills_text = _t('no_skills_installed') if _lang.startswith("zh") else "No skills installed"
+        right_lines.append(f"[dim {dim}]{no_skills_text}[/]")
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
-    summary_parts = [f"{len(tools)} tools", f"{total_skills} skills"]
+    summary_parts = [f"{len(tools)} " + _t("tools"), f"{total_skills} " + _t("skills")]
     if mcp_connected:
-        summary_parts.append(f"{mcp_connected} MCP servers")
-    summary_parts.append("/help for commands")
+        summary_parts.append(f"{mcp_connected} MCP " + _t("skills"))
+    summary_parts.append(_t("help_for_commands"))
     # Indicate when the codex_app_server runtime is active so users
     # understand why tool counts may not match what's actually reachable
     # (codex builds its own tool list inside the spawned subprocess).
@@ -694,12 +774,14 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             )
     except Exception:
         pass
+
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
-            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+            profile_label = _t('profile') if _lang.startswith("zh") else "Profile"
+            right_lines.append(f"[bold {accent}]{profile_label}:[/] [{text}]{_profile_name}[/]")
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 
@@ -711,11 +793,16 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         if behind is not None and behind != 0:
             from hermes_cli.config import get_managed_update_command, recommended_update_command
             if behind > 0:
-                commits_word = "commit" if behind == 1 else "commits"
-                right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                    f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
-                )
+                if _lang.startswith("zh"):
+                    update_msg = f"[bold yellow]⚠ {behind} {_t('commits_behind')}[/]"
+                    update_msg += f"[dim yellow] — [bold]{recommended_update_command()}[/bold] {_t('run_to_update')}[/]"
+                else:
+                    commits_word = _t("commits_behind") if _lang.startswith("zh") else ("commit" if behind == 1 else "commits")
+                    update_msg = (
+                        f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                        f"[dim yellow] — [bold]{recommended_update_command()}[/bold] run to update[/]"
+                    )
+                right_lines.append(update_msg)
             else:
                 # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
                 # exists but not by how much, and we don't know how the user

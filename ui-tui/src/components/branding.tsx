@@ -6,6 +6,7 @@ import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
+import { tr } from '../i18n.js'
 
 const LOADER_TICK_MS = 120
 
@@ -198,7 +199,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const skillsBody = () => {
     if (info.lazy && skillEntries.length === 0) {
-      return <InlineLoader label="scanning skills" t={t} />
+      return <InlineLoader label={tr("scanning skills")} t={t} />
     }
 
     const shown = skillEntries.slice(0, SKILLS_MAX)
@@ -213,7 +214,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
+          <Text color={t.color.muted}>(tr("and") + " " + String(overflow) + " " + tr("more categories…"))</Text>
         )}
       </>
     )
@@ -236,7 +237,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
+          <Text color={t.color.muted}>(tr("and") + " " + String(overflow) + " " + tr("more toolsets…"))</Text>
         )}
       </>
     )
@@ -255,7 +256,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               {s.tools} tool{s.tools === 1 ? '' : 's'}
             </Text>
           ) : (
-            <Text color={t.color.error}>failed</Text>
+            <Text color={t.color.error}>{tr("failed")}</Text>
           )}
         </Text>
       ))}
@@ -267,7 +268,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const systemBody = () => {
     if (sysPromptLen === 0) {
-      return <Text color={t.color.muted}>No system prompt loaded.</Text>
+      return <Text color={t.color.muted}>{tr("No system prompt loaded.")}</Text>
     }
 
     return (
@@ -295,7 +296,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
           {sid && (
             <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionLabel}>{tr("Session: ")}</Text>
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
           )}
@@ -324,7 +325,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             </Text>
             {sid && (
               <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
+                <Text color={t.color.sessionLabel}>{tr("Session: ")}</Text>
                 <Text color={t.color.sessionBorder}>{sid}</Text>
               </Text>
             )}
@@ -337,7 +338,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             onToggle={() => setToolsOpen(v => !v)}
             open={toolsOpen}
             t={t}
-            title="Available Tools"
+            title={tr("Available Tools")}
           />
           {toolsOpen && toolsBody()}
         </Box>
@@ -350,7 +351,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             open={skillsOpen}
             suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
             t={t}
-            title="Available Skills"
+            title={tr("Available Skills")}
           />
           {skillsOpen && skillsBody()}
         </Box>
@@ -361,9 +362,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <CollapseToggle
               onToggle={() => setSystemOpen(v => !v)}
               open={systemOpen}
-              suffix={`— ${sysPromptLen.toLocaleString()} chars`}
+              suffix={`${tr("—")} ${sysPromptLen.toLocaleString()}${tr(" chars")}`}
               t={t}
-              title="System Prompt"
+              title={tr("System Prompt")}
             />
             {systemOpen && systemBody()}
           </Box>
@@ -376,9 +377,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               count={info.mcp_servers.length}
               onToggle={() => setMcpOpen(v => !v)}
               open={mcpOpen}
-              suffix="connected"
+              suffix={tr("connected")}
               t={t}
-              title="MCP Servers"
+              title={tr("MCP Servers")}
             />
             {mcpOpen && mcpBody()}
           </Box>
@@ -387,9 +388,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text />
 
         <Text color={t.color.text}>
-          {toolsTotal} tools{' · '}
-          {skillsTotal} skills
-          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
+          {toolsTotal} {tr(" tools")}{' · '}
+          {skillsTotal} {tr(" skills")}
+          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length}` + tr(" MCP") : ''}
           {' · '}
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>
@@ -399,14 +400,14 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              - run{' '}
+               {tr("- run")}{' '}
             </Text>
             <Text bold color={t.color.warn}>
               {info.update_command || 'hermes update'}
             </Text>
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              to update
+               {tr("to update")}
             </Text>
           </Text>
         )}

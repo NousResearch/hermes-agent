@@ -85,6 +85,16 @@ _HARDLINE_BLOCK = [
     "exec shutdown",
     "nohup reboot",
     "setsid poweroff",
+    # Bare subshell `(...)` and brace-group `{ ...; }` openers are ordinary
+    # command-start positions too. They were missing from the command-position
+    # anchor, so the hardline floor silently let them through.
+    "(reboot)",
+    "( reboot )",
+    "(shutdown -h now)",
+    "{ reboot; }",
+    "{ poweroff; }",
+    "(systemctl reboot)",
+    "(init 0)",
 ]
 
 
@@ -197,6 +207,25 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
         r2 = check_all_command_guards(cmd, "local")
         assert r2["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_all_command_guards)"
         assert r2.get("hardline") is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    ["(reboot)", "{ shutdown -h now; }", "(poweroff)", "{ systemctl reboot; }"],
+)
+def test_subshell_and_brace_group_cannot_bypass_hardline(cmd):
+    """A bare `(...)` subshell or `{ ...; }` brace group is a command-start
+    position. Wrapping a shutdown/reboot in one must NOT escape the hardline
+    floor — previously the command-position anchor only recognized `;`, `&`,
+    `|`, newline, backtick and `$(`, so `(reboot)` slipped through entirely.
+    """
+    is_hl, desc = detect_hardline_command(cmd)
+    assert is_hl, f"expected hardline to match {cmd!r}"
+    assert desc
+
+    result = check_all_command_guards(cmd, "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True
 
 
 def test_session_yolo_cannot_bypass_hardline(clean_session):

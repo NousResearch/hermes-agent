@@ -235,10 +235,16 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # a shell would begin parsing a new command).  Used by shutdown/reboot
 # patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
 # Matches: start of string, after command separators (; && || | newline),
-# after subshell openers ( `$(` or backtick ), optionally consuming
-# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+# after subshell openers ( `$(`, a bare `(` subshell, or backtick ), after a
+# `{ ...; }` brace-group opener, optionally consuming leading wrapper
+# commands (sudo, env VAR=VAL, exec, nohup, setsid).
+#
+# The `(` and `{` openers matter: `(reboot)` and `{ reboot; }` are ordinary
+# shell command-start positions, but without them in the class the hardline
+# floor never fired — so `(reboot)` / `{ shutdown -h now; }` slipped past the
+# unconditional block that is supposed to stop host shutdown even under --yolo.
 _CMDPOS = (
-    r'(?:^|[;&|\n`]|\$\()'         # start position
+    r'(?:^|[;&|\n`({]|\$\()'       # start position
     r'\s*'                          # optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs

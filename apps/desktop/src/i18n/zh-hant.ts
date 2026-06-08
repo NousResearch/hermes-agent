@@ -1365,7 +1365,15 @@ export const zhHant = defineLocale({
     applyingClose: 'Hermes 將關閉以套用更新。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
-    notNow: '暫不'
+    notNow: '暫不',
+    applyStatus: {
+      preparing: '正在更新後端…',
+      pulling: '後端更新中…',
+      restarting: '後端正在重新啟動以載入更新…',
+      notAvailable: '此後端無法更新。',
+      failed: '後端更新失敗。',
+      noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
+    }
   },
 
   install: {

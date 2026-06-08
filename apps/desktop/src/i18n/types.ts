@@ -959,6 +959,14 @@ export interface Translations {
     errorTitle: string
     errorBody: string
     notNow: string
+    applyStatus: {
+      preparing: string
+      pulling: string
+      restarting: string
+      notAvailable: string
+      failed: string
+      noReturn: string
+    }
   }
 
   install: {

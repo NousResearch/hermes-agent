@@ -1258,7 +1258,15 @@ export const en: Translations = {
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
-    notNow: 'Not now'
+    notNow: 'Not now',
+    applyStatus: {
+      preparing: 'Updating backend…',
+      pulling: 'Backend updating…',
+      restarting: 'Backend restarting to load the update…',
+      notAvailable: 'Update not available for this backend.',
+      failed: 'Backend update failed.',
+      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+    }
   },
 
   install: {

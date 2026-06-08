@@ -126,8 +126,12 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'[/\\]\.(?:npmrc|pypirc|netrc|pgpass)(?:\s|$|[/\\])', "sensitive_path_cred", "strict"),
     (r'[/\\]credentials(?:\.[a-zA-Z]+)?(?:\s|$|[/\\])', "sensitive_path_cred_file", "strict"),
     (r'[/\\]AppData(?:[/\\]|$)', "sensitive_path_appdata", "strict"),
-    # Paths containing secret/credential/token/key/config in the name
-    (r'[/\\](?:secret|credential|token|apikey|private[_-]?key|config)[/\\]', "sensitive_path_keyword", "strict"),
+    # Sensitive path segments — exact match only (no substring false positives).
+    # Matches /secrets/ or /secret/ but NOT /secret-santa/.
+    # Negative lookahead excludes common compound words (secret-santa, token-spec, etc.)
+    (r'[/\\](?:secrets?|credentials?|apikeys?|private[_-]?keys?)[/\\](?!.*[-_](?:santa|spec|management|store|rotation))', "sensitive_path_keyword", "strict"),
+    # Sensitive filenames anywhere in path
+    (r'[/\\](?:private_key|api_key|secret_key|access_token)\s*\.[a-zA-Z]+(?:\s|$|[/\\])', "sensitive_path_file", "strict"),
 ]
 
 # Invisible / bidirectional unicode characters used in injection attacks.
@@ -245,7 +249,7 @@ def _check_structural_content(content: str) -> Optional[str]:
 
     Checks:
     - Large code blocks (>10 lines inside ``` fences)
-    - Large log/text dumps (>20 lines with Traceback or ERROR or File ")
+    - Large log/text dumps (>=15 lines with Traceback or ERROR or File ")
 
     Returns error string if blocked, None if clean.
     """
@@ -281,7 +285,7 @@ def _check_structural_content(content: str) -> Optional[str]:
                 file_ref_count += 1
         # Lower threshold for log dump: many Traceback OR moderate error density
         if trace_count >= 2 or (file_ref_count >= 3 and error_count >= 1):
-            return "Blocked: content appears to be a log/traceback dump (>20 lines with error patterns). Write a summary instead."
+            return "Blocked: content appears to be a log/traceback dump (>=15 lines with error patterns). Write a summary instead."
 
     return None
 
@@ -311,7 +315,8 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
         "sensitive_path_cred": "Sensitive credential file path detected. Do not store paths to credential files.",
         "sensitive_path_cred_file": "Sensitive credential file path detected. Do not store paths to credential files.",
         "sensitive_path_appdata": "AppData path detected. Do not store system directory paths in memory.",
-        "sensitive_path_keyword": "Sensitive path keyword detected. Do not store paths containing secret/credential/token/config.",
+        "sensitive_path_keyword": "Sensitive path keyword detected. Do not store paths containing secret/credential/apikey/private_key.",
+        "sensitive_path_file": "Sensitive filename detected (e.g. private_key, api_key, secret_key). Do not store paths to key/secret files.",
     }
     category = category_map.get(pid)
     if category:

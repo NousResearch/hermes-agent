@@ -79,6 +79,46 @@ class TestSensitivePaths:
         msg = first_threat_message("File at /path/secret/config.json", scope="strict")
         assert msg is not None
 
+    # ── False positive regression: reviewer-reported normal paths ──
+
+    def test_config_path_not_blocked(self):
+        """config as a path segment should NOT trigger sensitive_path_keyword."""
+        msg = first_threat_message("File at /home/user/config/app.py", scope="strict")
+        assert msg is None
+
+    def test_secret_santa_not_blocked(self):
+        """secret-santa is a compound word, not a sensitive path."""
+        msg = first_threat_message("Data at /opt/secret-santa/data", scope="strict")
+        assert msg is None
+
+    def test_token_spec_not_blocked(self):
+        """token-spec is a compound word, not a sensitive path."""
+        msg = first_threat_message("Doc at /usr/share/doc/token-spec", scope="strict")
+        assert msg is None
+
+    def test_apikey_management_not_blocked(self):
+        """apikey-management is a compound word, not a sensitive path."""
+        msg = first_threat_message("App at /var/app/apikey-management/", scope="strict")
+        assert msg is None
+
+    # ── Positive: must still block ──
+
+    def test_secrets_dir_blocked(self):
+        msg = first_threat_message("Config at /app/secrets/db.yaml", scope="strict")
+        assert msg is not None
+
+    def test_credentials_dir_blocked(self):
+        msg = first_threat_message("Creds at /app/credentials/aws", scope="strict")
+        assert msg is not None
+
+    def test_private_key_file_blocked(self):
+        msg = first_threat_message("Key at /home/user/.ssh/id_rsa", scope="strict")
+        assert msg is not None
+
+    def test_env_file_blocked(self):
+        msg = first_threat_message("Env at /project/.env", scope="strict")
+        assert msg is not None
+
 
 # =========================================================================
 # Structural content (code blocks, log dumps)

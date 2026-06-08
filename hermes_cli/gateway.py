@@ -6301,6 +6301,12 @@ def _gateway_command_inner(args):
             print()
             print("To run the gateway: hermes gateway run")
             sys.exit(0)
+        elif supports_openrc_services():
+            openrc_install(
+                force=args.force,
+                start_now=args.start_now,
+                system=system,
+            )
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
@@ -6772,3 +6778,106 @@ def _gateway_command_inner(args):
             print("Legacy unit migration only applies to systemd-based Linux hosts.")
             return
         remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
+
+# --- OpenRC support -------------------------------------------------------
+import shutil
+
+def supports_openrc_services() -> bool:
+    """Return True when OpenRC’s rc-service is available."""
+    try:
+        return shutil.which("rc-service") is not None
+    except Exception:
+        return False
+
+def openrc_is_running() -> bool:
+    """Check whether the hermes-gateway OpenRC service is up."""
+    import subprocess
+    result = subprocess.run(
+        ["rc-service", "hermes-gateway", "status"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+def openrc_start() -> None:
+    import subprocess
+    subprocess.run(["rc-service", "hermes-gateway", "start"], check=True)
+
+def openrc_stop() -> None:
+    import subprocess
+    subprocess.run(["rc-service", "hermes-gateway", "stop"], check=True)
+
+def openrc_restart() -> None:
+    import subprocess
+    subprocess.run(["rc-service", "hermes-gateway", "restart"], check=True)
+
+def openrc_install(
+    force: bool = False,
+    start_now: bool | None = None,
+    system: bool = False,
+) -> None:
+    """Install an OpenRC init script for the Hermes gateway."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    if os.geteuid() != 0:
+        print(
+            "Error: installing a system service requires root. Re-run with sudo.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    init_path = Path("/etc/init.d/hermes-gateway")
+    confd_path = Path("/etc/conf.d/hermes-gateway")
+
+    if init_path.exists() and not force:
+        print(
+            "Error: /etc/init.d/hermes-gateway already exists. Use --force to overwrite.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Default paths - these will be read from conf.d if present
+    default_venv = "/root/.hermes/venv"
+    default_home = "/root/.hermes"
+
+    init_script = f
+supervisor=supervise-daemon
+"""#!/sbin/openrc-run
+description="Hermes Gateway"
+# Load config if present
+[ -f /etc/conf.d/hermes-gateway ] && . /etc/conf.d/hermes-gateway
+: ${{HERMES_HOME:={default_home}}}
+export HERMES_HOME
+
+# Use the virtualenv hermes binary
+command="{default_venv}/bin/hermes"
+command_args="gateway run"
+"""
+
+    init_path.write_text(init_script)
+    init_path.chmod(0o755)
+
+    # Write default conf.d if it doesn't exist
+    if not confd_path.exists():
+        confd_path.write_text(
+            f"""# Hermes Gateway OpenRC configuration
+HERMES_HOME="{default_home}"
+VIRTUAL_ENV="{default_venv}"
+"""
+        )
+
+    # Enable at boot
+    subprocess.run(
+        ["rc-update", "add", "hermes-gateway", "default"],
+        check=True,
+    )
+
+    if start_now is not False:
+        openrc_start()
+
+    print("OpenRC service installed and enabled.")
+    print("Manage with: rc-service hermes-gateway {start|stop|restart}")
+

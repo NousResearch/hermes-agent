@@ -41,6 +41,7 @@ from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
+from utils import get_httpx_proxies
 import sys
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 timeout=_VISION_DOWNLOAD_TIMEOUT,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
+                proxies=get_httpx_proxies(),
             ) as client:
                 response = await client.get(
                     image_url,

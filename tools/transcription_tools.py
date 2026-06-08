@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
 
-from utils import is_truthy_value
+from utils import is_truthy_value, get_requests_proxies
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
@@ -1486,6 +1486,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                 },
                 data=data,
                 timeout=120,
+                proxies=get_requests_proxies(),
             )
 
         if response.status_code != 200:
@@ -1568,6 +1569,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
                 files={"file": (Path(file_path).name, audio_file)},
                 data=data,
                 timeout=120,
+                proxies=get_requests_proxies(),
             )
 
         if response.status_code != 200:

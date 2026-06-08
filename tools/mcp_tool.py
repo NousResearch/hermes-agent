@@ -92,8 +92,13 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+from utils import get_httpx_proxies
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level proxy configuration for HTTP-transport MCP servers
+_httpx_proxies: dict | None = get_httpx_proxies()
 
 
 # ---------------------------------------------------------------------------
@@ -1517,6 +1522,7 @@ class MCPServerTask:
             "verify": ssl_verify,
             "follow_redirects": True,
             "timeout": _httpx.Timeout(timeout),
+            "proxies": _httpx_proxies,
         }
         if client_cert is not None:
             client_kwargs["cert"] = client_cert
@@ -1692,6 +1698,7 @@ class MCPServerTask:
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
                 "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "proxies": _httpx_proxies,
             }
             if headers:
                 client_kwargs["headers"] = headers

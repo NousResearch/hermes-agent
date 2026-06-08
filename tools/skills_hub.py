@@ -38,8 +38,35 @@ from tools.skills_guard import (
 )
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
+from utils import get_httpx_proxies
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Proxy-aware fetch helpers ──────────────────────────────────────────
+
+
+_HTTPX_PROXIES: dict | None = get_httpx_proxies()
+
+
+def _proxy_get(url: str, **kwargs: Any) -> httpx.Response:
+    """Wrapper around ``httpx.get`` that passes the configured proxy.
+
+    Falls back to bare ``httpx.get`` when no proxy is configured so that
+    mock patches on ``tools.skills_hub.httpx.get`` still work in tests.
+    """
+    if _HTTPX_PROXIES:
+        with httpx.Client(proxies=_HTTPX_PROXIES) as client:
+            return client.get(url, **kwargs)
+    return httpx.get(url, **kwargs)  # bare call — keeps wrapper non-recursive
+
+
+def _proxy_post(url: str, **kwargs: Any) -> httpx.Response:
+    """Wrapper around ``httpx.post`` that passes the configured proxy."""
+    if _HTTPX_PROXIES:
+        with httpx.Client(proxies=_HTTPX_PROXIES) as client:
+            return client.post(url, **kwargs)
+    return httpx.post(url, **kwargs)  # bare call — keeps wrapper non-recursive
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +235,7 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = httpx.get(current_url, timeout=timeout, follow_redirects=False)
+            resp = _proxy_get(current_url, timeout=timeout, follow_redirects=False)
         except httpx.HTTPError as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
@@ -337,7 +364,7 @@ class GitHubAuth:
             }
             encoded_jwt = jwt.encode(payload, private_key, algorithm="RS256")
 
-            resp = httpx.post(
+            resp = _proxy_post(
                 f"https://api.github.com/app/installations/{installation_id}/access_tokens",
                 headers={
                     "Authorization": f"Bearer {encoded_jwt}",
@@ -551,7 +578,7 @@ class GitHubSource(SkillSource):
 
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         try:
-            resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
+            resp = _proxy_get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
             if resp.status_code != 200:
                 return []
         except httpx.HTTPError:
@@ -605,7 +632,7 @@ class GitHubSource(SkillSource):
 
         # Resolve default branch
         try:
-            resp = httpx.get(
+            resp = _proxy_get(
                 f"https://api.github.com/repos/{repo}",
                 headers=headers, timeout=15, follow_redirects=True,
             )
@@ -618,7 +645,7 @@ class GitHubSource(SkillSource):
 
         # Fetch recursive tree
         try:
-            resp = httpx.get(
+            resp = _proxy_get(
                 f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
                 params={"recursive": "1"},
                 headers=headers, timeout=30, follow_redirects=True,
@@ -709,7 +736,7 @@ class GitHubSource(SkillSource):
         """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         try:
-            resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
+            resp = _proxy_get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
             if resp.status_code != 200:
                 logger.debug("Contents API returned %d for %s/%s", resp.status_code, repo, path)
                 return {}
@@ -769,7 +796,7 @@ class GitHubSource(SkillSource):
         """Fetch a single file's content from GitHub."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         try:
-            resp = httpx.get(
+            resp = _proxy_get(
                 url,
                 headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
                 timeout=15, follow_redirects=True,
@@ -1340,7 +1367,7 @@ class SkillsShSource(SkillSource):
             return [SkillMeta(**item) for item in cached][:limit]
 
         try:
-            resp = httpx.get(
+            resp = _proxy_get(
                 self.SEARCH_URL,
                 params={"q": query, "limit": limit},
                 timeout=20,
@@ -1417,7 +1444,7 @@ class SkillsShSource(SkillSource):
         # Step 1: fetch the sitemap index → list of skill-sitemap URLs.
         skill_sitemap_urls: List[str] = []
         try:
-            resp = httpx.get(
+            resp = _proxy_get(
                 self.SITEMAP_INDEX_URL,
                 timeout=20,
                 follow_redirects=True,
@@ -1441,7 +1468,7 @@ class SkillsShSource(SkillSource):
         results: List[SkillMeta] = []
         for sitemap_url in skill_sitemap_urls:
             try:
-                resp = httpx.get(
+                resp = _proxy_get(
                     sitemap_url,
                     timeout=30,
                     follow_redirects=True,
@@ -1491,7 +1518,7 @@ class SkillsShSource(SkillSource):
             return [SkillMeta(**item) for item in cached][:limit]
 
         try:
-            resp = httpx.get(self.BASE_URL, timeout=20)
+            resp = _proxy_get(self.BASE_URL, timeout=20)
             if resp.status_code != 200:
                 return []
         except httpx.HTTPError:
@@ -1567,7 +1594,7 @@ class SkillsShSource(SkillSource):
             return cached
 
         try:
-            resp = httpx.get(f"{self.BASE_URL}/{identifier}", timeout=20)
+            resp = _proxy_get(f"{self.BASE_URL}/{identifier}", timeout=20)
             if resp.status_code != 200:
                 return None
         except httpx.HTTPError:
@@ -1653,7 +1680,7 @@ class SkillsShSource(SkillSource):
         # Fallback: scan repo root for directories that might contain skills
         try:
             root_url = f"https://api.github.com/repos/{repo}/contents/"
-            resp = httpx.get(root_url, headers=self.github.auth.get_headers(),
+            resp = _proxy_get(root_url, headers=self.github.auth.get_headers(),
                              timeout=15, follow_redirects=True)
             if resp.status_code == 200:
                 entries = resp.json()
@@ -2058,7 +2085,7 @@ class ClawHubSource(SkillSource):
             )
 
         try:
-            resp = httpx.get(
+            resp = _proxy_get(
                 f"{self.BASE_URL}/skills",
                 params={"search": query, "limit": limit},
                 timeout=15,
@@ -2189,7 +2216,7 @@ class ClawHubSource(SkillSource):
                 params["cursor"] = cursor
 
             try:
-                resp = httpx.get(f"{self.BASE_URL}/skills", params=params, timeout=30)
+                resp = _proxy_get(f"{self.BASE_URL}/skills", params=params, timeout=30)
                 if resp.status_code != 200:
                     break
                 data = resp.json()
@@ -2226,7 +2253,7 @@ class ClawHubSource(SkillSource):
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
         try:
-            resp = httpx.get(url, timeout=timeout)
+            resp = _proxy_get(url, timeout=timeout)
             if resp.status_code != 200:
                 return None
             return resp.json()
@@ -2295,7 +2322,7 @@ class ClawHubSource(SkillSource):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                resp = httpx.get(
+                resp = _proxy_get(
                     f"{self.BASE_URL}/download",
                     params={"slug": slug, "version": version},
                     timeout=30,
@@ -2438,7 +2465,7 @@ class ClaudeMarketplaceSource(SkillSource):
 
         url = f"https://api.github.com/repos/{repo}/contents/.claude-plugin/marketplace.json"
         try:
-            resp = httpx.get(
+            resp = _proxy_get(
                 url,
                 headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
                 timeout=15,
@@ -2556,7 +2583,7 @@ class LobeHubSource(SkillSource):
             return cached
 
         try:
-            resp = httpx.get(self.INDEX_URL, timeout=30)
+            resp = _proxy_get(self.INDEX_URL, timeout=30)
             if resp.status_code != 200:
                 return None
             data = resp.json()
@@ -2570,7 +2597,7 @@ class LobeHubSource(SkillSource):
         """Fetch a single agent's JSON file."""
         url = f"https://chat-agents.lobehub.com/{agent_id}.json"
         try:
-            resp = httpx.get(url, timeout=15)
+            resp = _proxy_get(url, timeout=15)
             if resp.status_code == 200:
                 return resp.json()
         except (httpx.HTTPError, json.JSONDecodeError) as e:
@@ -2645,7 +2672,7 @@ class BrowseShSource(SkillSource):
         if cached is not None:
             return cached
         try:
-            resp = httpx.get(self.CATALOG_URL, timeout=20)
+            resp = _proxy_get(self.CATALOG_URL, timeout=20)
             if resp.status_code != 200:
                 return []
             data = resp.json()
@@ -2731,7 +2758,7 @@ class BrowseShSource(SkillSource):
         if not md_url:
             return None
         try:
-            resp = httpx.get(md_url, timeout=20, follow_redirects=True)
+            resp = _proxy_get(md_url, timeout=20, follow_redirects=True)
             if resp.status_code != 200:
                 return None
             content = resp.text
@@ -2762,7 +2789,7 @@ class BrowseShSource(SkillSource):
         ``sourceUrl`` (some entries may), use it directly.
         """
         try:
-            detail = httpx.get(
+            detail = _proxy_get(
                 self.SKILL_DETAIL_URL.format(slug=slug),
                 timeout=20,
                 follow_redirects=True,
@@ -3415,7 +3442,7 @@ def _load_hermes_index() -> Optional[dict]:
 
     # Fetch from docs site
     try:
-        resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True)
+        resp = _proxy_get(HERMES_INDEX_URL, timeout=15, follow_redirects=True)
         if resp.status_code != 200:
             logger.debug("Hermes index fetch returned %d", resp.status_code)
             return _load_stale_index_cache()

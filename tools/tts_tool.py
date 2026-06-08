@@ -53,6 +53,7 @@ from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
+from utils import get_requests_proxies
 
 logger = logging.getLogger(__name__)
 def get_env_value(name, default=None):
@@ -1165,6 +1166,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         },
         json=payload,
         timeout=60,
+        proxies=get_requests_proxies(),
     )
     response.raise_for_status()
 
@@ -1257,7 +1259,8 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
             "voice_id": voice_id,
         }
 
-    response = requests.post(base_url, json=payload, headers=headers, timeout=60)
+    response = requests.post(base_url, json=payload, headers=headers, timeout=60,
+                             proxies=get_requests_proxies())
 
     if is_t2a_v2:
         # t2a_v2 returns JSON with hex-encoded audio
@@ -1445,6 +1448,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         headers={"Content-Type": "application/json"},
         json=payload,
         timeout=60,
+        proxies=get_requests_proxies(),
     )
     if response.status_code != 200:
         # Surface the API error message when present

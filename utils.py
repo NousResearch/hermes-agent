@@ -317,12 +317,18 @@ def normalize_proxy_url(proxy_url: str | None) -> str | None:
     WSL/Clash-style environments often export SOCKS proxies as
     ``socks://127.0.0.1:PORT``. httpx rejects that alias and expects the
     explicit ``socks5://`` scheme instead.
+
+    Also normalises ``socks5h://`` to ``socks5://`` because:
+    * httpx/requests do not support the ``socks5h`` scheme at all.
+    * Chromium-based tools reject ``socks5h://`` with
+      ``ERR_NO_SUPPORTED_PROXIES``; only plain ``socks5://`` works.
     """
     candidate = str(proxy_url or "").strip()
     if not candidate:
         return None
-    if candidate.lower().startswith("socks://"):
-        return f"socks5://{candidate[len('socks://'):]}"
+    lowered = candidate.lower()
+    if lowered.startswith("socks://") or lowered.startswith("socks5h://"):
+        return f"socks5://{candidate.split('://', 1)[1]}"
     return candidate
 
 
@@ -374,3 +380,54 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+# ─── Proxy helpers for internal tool HTTP calls ─────────────────────────
+
+
+def get_httpx_proxies() -> dict | None:
+    """Return a proxy URL string for ``httpx.AsyncClient(proxies=...)``.
+
+    Reads ``HTTPS_PROXY``, ``HTTP_PROXY``, ``ALL_PROXY`` (and lowercase
+    variants) from the environment and returns the first non-empty value.
+
+    Returns ``None`` when no proxy is configured so callers can pass the
+    result directly to ``httpx.AsyncClient(proxies=proxies)`` — ``httpx``
+    treats ``None`` the same as omitting the parameter.
+    """
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return normalize_proxy_url(value)
+    return None
+
+
+def get_requests_proxies() -> dict[str, str] | None:
+    """Return a ``proxies`` dict suitable for ``requests.post(proxies=...)``.
+
+    ``requests`` expects a ``{"http": ..., "https": ...}`` dict or
+    ``{"all": ...}``.  This helper builds one from environment variables so
+    that ``requests``-based tools honour the same proxy config as
+    ``httpx``-based tools and the model API client.
+
+    Returns ``None`` (not ``{}``) when no proxy is configured so callers
+    can simply pass the result to ``requests.post(proxies=proxies)``.
+    """
+    https = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or ""
+    http = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or ""
+    all_ = os.environ.get("ALL_PROXY") or os.environ.get("all_proxy") or ""
+
+    if not https and not http and not all_:
+        return None
+
+    proxies: dict[str, str] = {}
+    if https := https.strip():
+        proxies["https"] = normalize_proxy_url(https)
+    if http := http.strip():
+        proxies["http"] = normalize_proxy_url(http)
+    # ``all`` is a requests-specific catch-all key.
+    if all_ := all_.strip():
+        proxies["all"] = normalize_proxy_url(all_)
+
+    return proxies or None

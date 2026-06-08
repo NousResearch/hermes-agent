@@ -2140,8 +2140,8 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
-    delegation_profile: Optional[str] = None,
     parent_agent=None,
+    delegation_profile: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.

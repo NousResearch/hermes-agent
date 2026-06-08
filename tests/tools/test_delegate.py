@@ -2412,6 +2412,59 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
 
+    def test_dispatch_helper_forwards_top_level_delegation_profile(self):
+        """Agent-loop dispatch must not drop the top-level profile selector."""
+        from run_agent import AIAgent
+
+        parent = _make_mock_parent(depth=0)
+        args = {
+            "goal": "repo scan",
+            "context": "read only",
+            "toolsets": ["file_readonly"],
+            "delegation_profile": "deepseek_aux",
+            "role": "leaf",
+        }
+
+        with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as mock_delegate:
+            result = AIAgent._dispatch_delegate_task(parent, args)
+
+        self.assertEqual(result, '{"results": []}')
+        mock_delegate.assert_called_once_with(
+            goal="repo scan",
+            context="read only",
+            toolsets=["file_readonly"],
+            tasks=None,
+            max_iterations=None,
+            acp_command=None,
+            acp_args=None,
+            role="leaf",
+            delegation_profile="deepseek_aux",
+            parent_agent=parent,
+        )
+
+    def test_delegate_task_positional_parent_agent_back_compat(self):
+        """Adding delegation_profile must not steal positional parent_agent."""
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            result = json.loads(
+                delegate_task("test", None, None, None, None, None, None, None, parent)
+            )
+
+        self.assertIn("results", result)
+        self.assertEqual(result["results"][0]["status"], "completed")
+
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_acp_args_forwarded(self, mock_creds, mock_cfg):

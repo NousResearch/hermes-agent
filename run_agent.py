@@ -5040,6 +5040,7 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
+            delegation_profile=function_args.get("delegation_profile"),
             parent_agent=self,
         )
 

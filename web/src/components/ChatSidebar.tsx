@@ -72,9 +72,14 @@ const STATE_TONE: Record<
 interface ChatSidebarProps {
   channel: string;
   className?: string;
+  resumeSessionId?: string | null;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+export function ChatSidebar({
+  channel,
+  className,
+  resumeSessionId = null,
+}: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -112,21 +117,33 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       }
     });
 
-    // Adopt whichever session the gateway hands us. session.create on the
-    // sidecar is independent of the PTY pane's session by design — we
-    // only need a sid to drive the model picker's slash.exec calls.
+    // Mirror the active PTY session when resuming a historical chat so the
+    // sidebar model badge / picker reflect the current conversation rather
+    // than a detached helper session's defaults.
     gw.connect()
       .then(() => {
         if (cancelled) {
           return;
         }
-        return gw.request<{ session_id: string }>("session.create", {});
+        if (resumeSessionId) {
+          return gw.request<{ info?: SessionInfo; session_id: string }>(
+            "session.resume",
+            { session_id: resumeSessionId },
+          );
+        }
+        return gw.request<{ info?: SessionInfo; session_id: string }>(
+          "session.create",
+          {},
+        );
       })
-      .then((created) => {
-        if (cancelled || !created?.session_id) {
+      .then((session) => {
+        if (cancelled || !session?.session_id) {
           return;
         }
-        setSessionId(created.session_id);
+        if (session.info) {
+          setInfo(session.info);
+        }
+        setSessionId(session.session_id);
       })
       .catch((e: Error) => {
         if (!cancelled) {
@@ -141,7 +158,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       offError();
       gw.close();
     };
-  }, [gw]);
+  }, [gw, resumeSessionId]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +

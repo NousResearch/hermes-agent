@@ -120,6 +120,16 @@ AUTH_TIMEOUT_SECONDS = 10.0
 MAX_RECONNECT_ATTEMPTS = 100
 DEFAULT_SEND_TIMEOUT = 30.0  # WS biz request timeout
 
+# Upper bound on the WS close handshake during teardown (#40383). The
+# websockets connection's own close_timeout (5s) blocks until the server
+# echoes the close frame; an idle/unresponsive server never replies, stalling
+# gateway shutdown by the full timeout. Bounding the close await here keeps
+# teardown fast — a responsive server completes the handshake in well under a
+# second, so this only caps the pathological hang. Also bounds the reconnect /
+# connect-failure cleanup paths that reuse _cleanup_ws(), where a graceful
+# close is unnecessary anyway (the socket is being discarded to redial).
+WS_CLOSE_TIMEOUT_S = 1.0
+
 # Close codes that indicate permanent errors — do NOT reconnect.
 NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4014, 4018, 4019, 4021}
 
@@ -3445,12 +3455,22 @@ class ConnectionManager:
         return False
 
     async def _cleanup_ws(self) -> None:
-        """Close and clear the WebSocket connection."""
+        """Close and clear the WebSocket connection, bounded by
+        ``WS_CLOSE_TIMEOUT_S`` so an unresponsive server can't stall teardown
+        (see the constant's definition for the full rationale)."""
         ws = self._ws
         self._ws = None
         if ws is not None:
             try:
-                await ws.close()
+                await asyncio.wait_for(ws.close(), timeout=WS_CLOSE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                # Server never echoed the close frame within the bound; drop the
+                # connection. websockets force-closes the transport on cancel,
+                # and at shutdown the loop is tearing down anyway.
+                logger.debug(
+                    "[%s] WS close handshake exceeded %.1fs — dropping connection",
+                    self._adapter.name, WS_CLOSE_TIMEOUT_S,
+                )
             except Exception:
                 pass
 

@@ -19,6 +19,7 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `list` | List all profiles. |
 | `use` | Set the active (default) profile. |
 | `create` | Create a new profile. |
+| `describe` | Read or set a profile's description (used by the kanban orchestrator for routing). |
 | `delete` | Delete a profile. |
 | `show` | Show details about a profile. |
 | `alias` | Regenerate the shell alias for a profile. |

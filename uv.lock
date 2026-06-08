@@ -1390,7 +1390,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
@@ -1398,8 +1398,10 @@ dependencies = [
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
+    { name = "markdown" },
     { name = "openai" },
     { name = "pathspec" },
+    { name = "pillow" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
@@ -1502,7 +1504,6 @@ matrix = [
     { name = "aiohttp-socks" },
     { name = "aiosqlite" },
     { name = "asyncpg" },
-    { name = "markdown" },
     { name = "mautrix", extra = ["encryption"] },
 ]
 mcp = [
@@ -1562,9 +1563,6 @@ termux-all = [
 ]
 tts-premium = [
     { name = "elevenlabs" },
-]
-vision = [
-    { name = "pillow" },
 ]
 voice = [
     { name = "faster-whisper" },
@@ -1642,7 +1640,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.5.3" },
-    { name = "markdown", marker = "extra == 'matrix'", specifier = "==3.10.2" },
+    { name = "markdown", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.0" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==1.26.0" },
@@ -1654,7 +1652,7 @@ requires-dist = [
     { name = "openai", specifier = "==2.24.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pathspec", specifier = "==1.1.1" },
-    { name = "pillow", marker = "extra == 'vision'", specifier = "==12.2.0" },
+    { name = "pillow", specifier = "==12.2.0" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },

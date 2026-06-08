@@ -8,7 +8,8 @@ import {
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
-  saveOnboardingLocalEndpoint
+  saveOnboardingLocalEndpoint,
+  submitOnboardingCode
 } from './onboarding'
 
 function provider(id: string, name = id): OAuthProvider {
@@ -30,6 +31,7 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
     providers: null,
     reason: null,
     requested: false,
+    firstRunSkipped: false,
     manual: false,
     ...overrides
   }
@@ -142,6 +144,100 @@ describe('refreshOnboarding', () => {
     await Promise.all([first, second])
 
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['shared'])
+  })
+})
+
+describe('OAuth onboarding', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  it('clears stale readiness errors after OAuth succeeds and model confirmation is shown', async () => {
+    const model = 'anthropic/claude-opus-4.8'
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/oauth/nous/submit') {
+        return { ok: true, status: 'approved' }
+      }
+
+      if (path === '/api/model/options') {
+        return {
+          providers: [
+            {
+              name: 'Nous Portal',
+              slug: 'nous',
+              models: [model]
+            }
+          ]
+        }
+      }
+
+      if (path.startsWith('/api/model/recommended-default?')) {
+        return { provider: 'nous', model, free_tier: false }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'nous', model, gateway_tools: [] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const requestGateway: OnboardingContext['requestGateway'] = async method => {
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          status: 'awaiting_user',
+          provider: provider('nous', 'Nous Portal'),
+          start: {
+            auth_url: 'https://portal.example/auth',
+            expires_in: 600,
+            flow: 'pkce',
+            session_id: 'portal-session'
+          },
+          code: 'fresh-code'
+        },
+        reason:
+          'No access token found for Nous Portal login. setup.status reports configured credentials, but runtime resolution still failed.',
+        requested: true
+      })
+    )
+
+    await submitOnboardingCode(onboardingContext(requestGateway))
+
+    const state = $desktopOnboarding.get()
+    expect(state.reason).toBeNull()
+    expect(state.flow.status).toBe('confirming_model')
+    if (state.flow.status === 'confirming_model') {
+      expect(state.flow.label).toBe('Nous Portal')
+      expect(state.flow.currentModel).toBe(model)
+    }
+    expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
   })
 })
 

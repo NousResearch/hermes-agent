@@ -97,6 +97,10 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
+export function shouldSuppressClipboardFallbackForDashboard(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.HERMES_DASHBOARD_TUI === '1'
+}
+
 export function useComposerState({
   gw,
   onClipboardPaste,
@@ -254,6 +258,15 @@ export function useComposerState({
         return readPreferredText.then(async preferredText => {
           if (isUsableClipboardText(preferredText)) {
             return handleResolvedPaste({ bracketed: false, cursor, text: preferredText, value })
+          }
+
+          if (shouldSuppressClipboardFallbackForDashboard()) {
+            // Browser-embedded chat cannot safely read the user's local clipboard
+            // from the server-side Ink process. If a paste chord leaks through
+            // here, the dashboard's browser handler missed it; do not fall into
+            // the image-clipboard path, which only produces the misleading
+            // "No image found in clipboard" curse instead of inserting text.
+            return null
           }
 
           void onClipboardPaste(false)

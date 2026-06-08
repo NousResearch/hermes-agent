@@ -86,6 +86,17 @@ function ptyAttachToken(rotate = false): string {
   return t;
 }
 
+interface DashboardKeyEvent {
+  ctrlKey: boolean;
+  key: string;
+  metaKey: boolean;
+}
+
+export function isDashboardPasteShortcut(ev: DashboardKeyEvent, isMac: boolean): boolean {
+  if (ev.key.toLowerCase() !== "v") return false;
+  return isMac ? ev.metaKey || ev.ctrlKey : ev.ctrlKey;
+}
+
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
 // channel — the previous PTY child terminates with the old WS, and its
@@ -618,9 +629,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
       // without a selection it passes through to the TUI so agents can still
       // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+      // Paste: Cmd+V on macOS, Ctrl+V / Ctrl+Shift+V elsewhere.
+      //
+      // The embedded dashboard TUI runs on the server, so if bare Ctrl+V is
+      // allowed through to the PTY the inner Ink app receives ``\x16`` and
+      // tries to read *the server's* clipboard. Browser/macOS dictation tools
+      // such as Wispr Flow can emit Ctrl+V even on Macs; without intercepting
+      // that here, dictated text is swallowed and Hermes reports the cursed
+      // "No image found in clipboard" fallback. Always read the browser
+      // clipboard for paste chords before bytes reach the PTY.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -640,7 +658,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // (or the bare ev if the user used a different modifier).
       }
 
-      if (pasteModifier && ev.key.toLowerCase() === "v") {
+      if (isDashboardPasteShortcut(ev, isMac)) {
         // preventDefault suppresses the DOM paste event, so image paste must
         // be handled here via clipboard.read() — readText() alone misses
         // image-only clipboards (the Discord / #24860 failure mode).

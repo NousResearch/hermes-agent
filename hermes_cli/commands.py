@@ -1422,7 +1422,9 @@ class SlashCommandCompleter(Completer):
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:
-                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        rel = self._project_relative_path(p, cwd)
+                        if rel is None:
+                            continue
                         files.append(rel)
                     break
             except (subprocess.TimeoutExpired, OSError):
@@ -1432,6 +1434,18 @@ class SlashCommandCompleter(Completer):
         self._file_cache_time = now
         self._file_cache_cwd = cwd
         return files
+
+    @staticmethod
+    def _project_relative_path(path: str, cwd: str) -> str | None:
+        """Return a project-relative path, or None for invalid tool output."""
+        if not path:
+            return None
+        if not os.path.isabs(path):
+            return path
+        try:
+            return os.path.relpath(path, cwd)
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _score_path(filepath: str, query: str) -> int:

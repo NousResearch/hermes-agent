@@ -1,5 +1,7 @@
 """Tests for the central command registry and autocomplete."""
 
+import subprocess
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -603,6 +605,34 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/no-desc")
         assert len(completions) == 1
         assert "Skill command" in completions[0].display_meta_text
+
+    def test_project_file_cache_skips_relpath_errors(self, monkeypatch, tmp_path):
+        """Windows device paths can make relpath raise; autocomplete should continue."""
+        completer = SlashCommandCompleter()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("hermes_cli.commands.shutil.which", lambda _tool: "rg")
+
+        def fake_run(*_args, **_kwargs):
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="\\\\.\\nul\nC:\\repo\\ok.py\nrelative.md\n",
+                stderr="",
+            )
+
+        def fake_isabs(path):
+            return path.startswith("\\\\") or path.startswith("C:")
+
+        def fake_relpath(path, _cwd):
+            if path.startswith("\\\\.\\"):
+                raise ValueError("path is on mount '\\\\.\\nul', start on mount 'C:'")
+            return "ok.py"
+
+        monkeypatch.setattr("hermes_cli.commands.subprocess.run", fake_run)
+        monkeypatch.setattr("hermes_cli.commands.os.path.isabs", fake_isabs)
+        monkeypatch.setattr("hermes_cli.commands.os.path.relpath", fake_relpath)
+
+        assert completer._get_project_files() == ["ok.py", "relative.md"]
 
 
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────

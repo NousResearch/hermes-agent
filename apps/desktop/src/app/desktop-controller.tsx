@@ -78,6 +78,7 @@ import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
+import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
@@ -167,10 +168,10 @@ export function DesktopController() {
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
-  // Below 600px there's no room for a docked rail — collapse both sidebars
-  // (without touching their stored open state) so the hover-reveal overlay
-  // becomes the way in. Restores to the saved layout once it's wide again.
-  const narrowViewport = useMediaQuery('(max-width: 600px)')
+  // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
+  // collapse both sidebars (without touching their stored open state) so the
+  // hover-reveal overlay becomes the way in. Restores once it's wide again.
+  const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`

@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useI18n } from '@/i18n'
 import {
   Activity,
   AlertCircle,
@@ -16,12 +17,11 @@ import {
   Zap,
   ZapFilled
 } from '@/lib/icons'
-import { useI18n } from '@/i18n'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setSessionYolo } from '@/lib/yolo-session'
+import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
@@ -44,7 +44,7 @@ import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } fr
 import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
-import type { StatusbarItem } from '../statusbar-controls'
+import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -105,22 +105,39 @@ export function useStatusbarItems({
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
   // path applies it once the backend session exists.
-  const toggleYolo = useCallback(async () => {
-    const next = !$yoloActive.get()
-    const sid = $activeSessionId.get()
+  //
+  // Shift+click flips the GLOBAL approvals.mode instead — a persistent,
+  // all-sessions/CLI/TUI/cron bypass that survives restarts.
+  const toggleYolo = useCallback(
+    async (modifiers?: StatusbarSelectModifiers) => {
+      const next = !$yoloActive.get()
 
-    setYoloActive(next)
+      setYoloActive(next)
 
-    if (!sid) {
-      return
-    }
+      if (modifiers?.shiftKey) {
+        try {
+          await setGlobalYolo(requestGateway, next)
+        } catch {
+          setYoloActive(!next)
+        }
 
-    try {
-      await setSessionYolo(requestGateway, sid, next)
-    } catch {
-      setYoloActive(!next)
-    }
-  }, [requestGateway])
+        return
+      }
+
+      const sid = $activeSessionId.get()
+
+      if (!sid) {
+        return
+      }
+
+      try {
+        await setSessionYolo(requestGateway, sid, next)
+      } catch {
+        setYoloActive(!next)
+      }
+    },
+    [requestGateway]
+  )
 
   const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
 
@@ -333,7 +350,7 @@ export function useStatusbarItems({
           <Zap className="size-3.5 shrink-0 opacity-70" />
         ),
         id: 'yolo',
-        onSelect: () => void toggleYolo(),
+        onSelect: modifiers => void toggleYolo(modifiers),
         title: yoloActive ? copy.yoloOn : copy.yoloOff,
         variant: 'action'
       },

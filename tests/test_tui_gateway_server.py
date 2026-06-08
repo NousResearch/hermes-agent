@@ -1454,6 +1454,66 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
+    """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp_on = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global"},
+        }
+    )
+    assert resp_on["result"]["value"] == "1"
+    assert resp_on["result"]["scope"] == "global"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+    resp_off = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global"},
+        }
+    )
+    assert resp_off["result"]["value"] == "0"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
+
+
+def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
+    """An explicit value pins global approvals.mode regardless of prior state."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global", "value": "1"},
+        }
+    )
+    assert resp["result"]["value"] == "1"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+    # Setting it on again is idempotent — stays off.
+    resp_again = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global", "value": "1"},
+        }
+    )
+    assert resp_again["result"]["value"] == "1"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     writes = []
     emits = []

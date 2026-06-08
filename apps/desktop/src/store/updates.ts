@@ -336,7 +336,7 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
     applying: false,
     stage: 'error',
     error: 'apply-failed',
-    message: 'Backend updated but did not come back online. Check the backend host.'
+    message: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
   })
 
   return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }

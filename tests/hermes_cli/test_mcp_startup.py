@@ -222,3 +222,29 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+# ---------------------------------------------------------------------------
+# ACP adapter — uses background MCP discovery, not blocking
+# ---------------------------------------------------------------------------
+
+
+def test_acp_entry_uses_background_mcp_discovery(monkeypatch):
+    """ACP startup must call start_background_mcp_discovery, not blocking discover_mcp_tools."""
+    import ast
+    from pathlib import Path
+
+    acp_entry = Path(__file__).resolve().parent.parent.parent / "acp_adapter" / "entry.py"
+    source = acp_entry.read_text()
+
+    assert "from hermes_cli.mcp_startup import start_background_mcp_discovery" in source
+
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "discover_mcp_tools":
+                pytest.fail(
+                    "acp_adapter/entry.py calls blocking discover_mcp_tools() directly; "
+                    "should use start_background_mcp_discovery() instead"
+                )

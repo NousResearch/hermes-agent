@@ -770,9 +770,92 @@ def _start_agent_build(sid: str, session: dict) -> None:
     threading.Thread(target=_build, daemon=True).start()
 
 
+def _recover_session_from_db(sid: str, params: dict) -> dict | None:
+    """Try to recover a session from state.db when it's not found in the
+    in-memory ``_sessions`` dict (e.g. after a gateway restart).
+
+    Returns the rebuilt session dict on success, or None if the session
+    doesn't exist in state.db either."""
+    db = _get_db()
+    if db is None:
+        return None
+    try:
+        found = db.get_session(sid)
+    except Exception:
+        return None
+    if not found:
+        return None
+    # Rebuild the session from state.db — same shape as session.create
+    key = found.get("id") or sid
+    try:
+        history = db.get_messages_as_conversation(sid)
+    except Exception:
+        history = []
+    cols = int(params.get("cols", 80))
+    now = time.time()
+    raw_cwd = str(params.get("cwd") or "").strip()
+    try:
+        explicit_cwd = bool(raw_cwd) and os.path.isdir(
+            os.path.abspath(os.path.expanduser(raw_cwd))
+        )
+    except Exception:
+        explicit_cwd = False
+    resolved_cwd = _completion_cwd(params)
+    ready = threading.Event()
+    with _sessions_lock:
+        _sessions[sid] = {
+            "agent": None,
+            "agent_error": None,
+            "agent_ready": ready,
+            "attached_images": [],
+            "cols": cols,
+            "created_at": now,
+            "edit_snapshots": {},
+            "explicit_cwd": explicit_cwd,
+            "history": history,
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "image_counter": 0,
+            "cwd": resolved_cwd,
+            "inflight_turn": None,
+            "last_active": now,
+            "pending_title": None,
+            "profile_home": None,
+            "running": False,
+            "session_key": key,
+            "show_reasoning": _load_show_reasoning(),
+            "slash_worker": None,
+            "tool_progress_mode": _load_tool_progress_mode(),
+            "tool_started_at": {},
+            "transport": current_transport() or _stdio_transport,
+        }
+        _register_session_cwd(_sessions[sid])
+    _enable_gateway_prompts()
+    # Build the agent in the background (mirrors session.create)
+    def _deferred_build() -> None:
+        session = _sessions.get(sid)
+        if session is not None:
+            _start_agent_build(sid, session)
+    build_timer = threading.Timer(0.05, _deferred_build)
+    build_timer.daemon = True
+    build_timer.start()
+    ready.set()
+    return _sessions[sid]
+
+
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
-    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+    if s is not None:
+        return (s, None)
+    # Session not in memory — try recovering from state.db (e.g. after
+    # gateway restart). #38704: when the dashboard backend restarts,
+    # active sessions are lost from the in-memory _sessions dict.
+    # Recover them from the persistent SQLite store so the Desktop app
+    # can continue the conversation seamlessly.
+    s = _recover_session_from_db(params.get("session_id") or "", params)
+    if s is not None:
+        return (s, None)
+    return (None, _err(rid, 4001, "session not found"))
 
 
 def _sess(params, rid):

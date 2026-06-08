@@ -140,6 +140,19 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
 
+    def test_npm_install_uses_workspace_web_scope(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_ok):
+            result = _build_web_ui(web_dir)
+        assert result is True
+        install_cmd = mock_run.call_args[0][0]
+        assert "--workspace" in install_cmd
+        assert install_cmd[install_cmd.index("--workspace") + 1] == "web"
+
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
         """npm run build now goes through _run_with_idle_timeout (issue #33788).
 
@@ -163,6 +176,50 @@ class TestBuildWebUISkipsWhenFresh:
         # Positional: [npm, "run", "build"]; cwd passed as kwarg.
         assert args[0] == ["/usr/bin/npm", "run", "build"]
         assert kwargs["cwd"] == web_dir
+
+    def test_termux_web_install_is_workspace_scoped(self, tmp_path, monkeypatch):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("TERMUX_VERSION", "1")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == [
+            "/usr/bin/npm",
+            "ci",
+            "--workspace",
+            "web",
+            "--include-workspace-root=false",
+            "--silent",
+        ]
+        assert kwargs["cwd"] == tmp_path
+
+    def test_desktop_web_install_uses_existing_workspace_root(
+        self, tmp_path, monkeypatch
+    ):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
+        assert kwargs["cwd"] == tmp_path
 
 
 class TestBuildWebUIRetryAndStaleFallback:

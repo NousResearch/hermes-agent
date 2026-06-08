@@ -317,6 +317,7 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -2290,7 +2291,38 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            # Channel message session scoping.
+            #
+            # Three cases:
+            #   (a) genuine thread reply   → scope session per thread
+            #   (b) top-level, reply_in_thread=true (the default)  →
+            #       legacy behaviour: each top-level message becomes its
+            #       own thread, so the UX still "replies in a thread"
+            #       and sessions are keyed per thread root
+            #   (c) top-level, reply_in_thread=false → scope one session
+            #       across the whole channel so context accumulates across
+            #       messages (#15421 bug 1)
+            event_thread_ts_raw = event.get("thread_ts")
+            # Align with ``is_thread_reply`` below — a ``thread_ts ==
+            # ts`` payload (some thread-root shapes) is not a real reply
+            # and must not prevent the shared-session path from taking
+            # effect.  Matching the same invariant here keeps the two
+            # branches in sync even if Slack introduces new payload
+            # variants (Copilot on #15464).
+            if event_thread_ts_raw and event_thread_ts_raw != ts:
+                thread_ts = event_thread_ts_raw
+            elif self.config.extra.get("reply_in_thread", True):
+                # Legacy default: treat ts as a synthetic thread root so
+                # this top-level message gets its own session.
+                thread_ts = ts
+            else:
+                # reply_in_thread=false: no thread key → session manager
+                # groups by (platform, channel_id, None) and the channel
+                # shares one conversation.  reply_to_message_id at the
+                # outbound side is already gated on ``thread_ts != ts``
+                # so None here produces a non-threaded reply without
+                # further changes.
+                thread_ts = None
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
@@ -2797,6 +2829,55 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    def _is_interactive_user_authorized(
+        self,
+        user_id: str,
+        *,
+        channel_id: str = "",
+        user_name: Optional[str] = None,
+    ) -> bool:
+        """Return whether a Slack interactive caller may perform gated actions."""
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+
+                source = SessionSource(
+                    platform=Platform.SLACK,
+                    chat_id=str(channel_id or normalized_user_id),
+                    chat_type="dm" if str(channel_id or "").startswith("D") else "group",
+                    user_id=normalized_user_id,
+                    user_name=str(user_name).strip() if user_name else None,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "[Slack] Falling back to env-only interactive auth for user %s",
+                    normalized_user_id,
+                    exc_info=True,
+                )
+
+        if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+
+        allowed_ids = set()
+        platform_allowlist = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if platform_allowlist:
+            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
+        if allowed_ids:
+            return "*" in allowed_ids or normalized_user_id in allowed_ids
+
+        return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:
         """Handle a slash-confirm button click from Block Kit."""
         await ack()
@@ -2808,9 +2889,19 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = body.get("channel", {}).get("id", "")
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized slash-confirm click by %s (%s) - ignoring",
+                user_name, user_id,
+            )
+            return
 
         # Authorization — reuse the exec-approval allowlist.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        allowed_csv = ""  # Interactive auth already ran above.
         if allowed_csv:
             allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
             if "*" not in allowed_ids and user_id not in allowed_ids:
@@ -2917,10 +3008,21 @@ class SlackAdapter(BasePlatformAdapter):
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
 
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized approval click by %s (%s) - ignoring",
+                user_name, user_id,
+            )
+            return
+
         # Only authorized users may click approval buttons.  Button clicks
         # bypass the normal message auth flow in gateway/run.py, so we must
         # check here as well.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        allowed_csv = ""  # Interactive auth already ran above.
         if allowed_csv:
             allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
             if "*" not in allowed_ids and user_id not in allowed_ids:

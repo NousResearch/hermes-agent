@@ -1139,6 +1139,16 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
+        "codex_gpt55_autoraise": True,  # When True, gpt-5.5 on the ChatGPT Codex OAuth
+                                      # route raises its compaction trigger to 85% (vs the
+                                      # global `threshold` above). Codex hard-caps gpt-5.5
+                                      # at a 272K window, so the default 50% would compact
+                                      # at ~136K and waste half the usable context. Set to
+                                      # False to opt back down to the global threshold
+                                      # (e.g. 0.50) for Codex gpt-5.5 sessions. Only this
+                                      # exact route is affected — gpt-5.5 on OpenAI's
+                                      # direct API, OpenRouter, and Copilot keep the
+                                      # global threshold regardless.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -1677,9 +1687,9 @@ DEFAULT_CONFIG = {
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
-        # and _get_orchestrator_enabled).  Values are clamped to [1, 3] with a
-        # warning log if out of range.
-        "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
+        # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
+        # raise deliberately, each level multiplies API cost.
+        "max_spawn_depth": 1,        # depth (1 = flat [default], 2 = orchestrator→leaf, 3+ = deeper)
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
         # When a subagent hits a dangerous-command approval prompt, the parent's
         # prompt_toolkit TUI owns stdin — a thread-local input() call from the
@@ -1841,6 +1851,28 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # Voice-channel audio effects (the continuous mixer). OFF by default.
+        # When enabled, the bot installs a software mixer on the outgoing voice
+        # stream so a low ambient "thinking" bed, verbal acknowledgements, and
+        # TTS replies can OVERLAP (ducking the ambient under speech) instead of
+        # stop-and-swap — the Grok-voice-mode feel. discord.py ships no mixer;
+        # this is implemented in plugins/platforms/discord/voice_mixer.py.
+        "voice_fx": {
+            "enabled": False,         # master switch for the mixer subsystem
+            "ambient_enabled": True,  # play the idle "thinking" bed while tools run
+            "ambient_path": "",       # custom loop audio file; "" = synthesised pad
+            "ambient_gain": 0.18,     # idle bed loudness, 0.0–1.0
+            "duck_gain": 0.06,        # ambient loudness while speech plays
+            "speech_gain": 1.0,       # TTS / ack loudness, 0.0–1.0
+            "ack_enabled": True,      # speak a short phrase before the first tool call
+            "ack_phrases": [          # picked at random; set [] to disable phrases
+                "Let me look into that.",
+                "One moment.",
+                "Checking on that now.",
+                "Give me a sec.",
+                "On it.",
+            ],
+        },
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -1994,11 +2026,11 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
-        # Profile that decomposes tasks in the Triage column. When unset,
-        # falls back to the default profile (the one `hermes` launches with
-        # no -p flag). Set this to a dedicated 'orchestrator' profile if you
-        # want decomposition to use a different model/skills from your main
-        # working profile.
+        # Profile assigned to the root/orchestration task after Triage
+        # decomposition. When unset, falls back to the default profile (the
+        # one `hermes` launches with no -p flag). This does not control the
+        # decomposer prompt, model, or skills; configure that LLM path under
+        # auxiliary.kanban_decomposer.
         "orchestrator_profile": "",
         # Where a child task lands if the orchestrator can't match an
         # assignee to any installed profile. When unset, falls back to the
@@ -2236,6 +2268,12 @@ DEFAULT_CONFIG = {
     # never fires again.  Users can wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
+        # Structured profile-build path offered on the very first gateway
+        # message ever. "ask" (default) -> offer to build a user profile
+        # (opt-in, consent-gated; the agent asks before any lookup and never
+        # reads connected accounts silently). "off" -> plain intro only.
+        # The offer fires at most once (latched under onboarding.seen).
+        "profile_build": "ask",
     },
 
     # ``hermes update`` behaviour.
@@ -2253,6 +2291,22 @@ DEFAULT_CONFIG = {
         # disable backups entirely, set ``pre_update_backup: false`` above
         # rather than ``backup_keep: 0``.
         "backup_keep": 5,
+        # What `hermes update` does with uncommitted local changes to the
+        # source tree when it runs NON-interactively — i.e. triggered from
+        # the desktop/chat app or the gateway, where there's no TTY to answer
+        # a restore prompt. Interactive (terminal) updates are unaffected:
+        # they always stash the changes and ask whether to restore, exactly
+        # as they always have.
+        #   "stash"   — auto-stash the changes, pull, then auto-restore them
+        #               on top of the updated code (the safe default; nothing
+        #               is ever lost — conflicts are preserved in a git stash).
+        #   "discard" — auto-stash the changes and throw the stash away after
+        #               the pull. Use this only if you never intend to keep
+        #               local edits to the source tree on this machine.
+        #               Stash-and-drop (not `reset --hard` + `clean -fd`) so
+        #               ignored paths — node_modules, venv, build outputs —
+        #               are never touched.
+        "non_interactive_local_changes": "stash",
     },
 
     # Language Server Protocol — semantic diagnostics from real
@@ -2382,7 +2436,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 26,
+    "_config_version": 28,
 }
 
 # =============================================================================
@@ -3755,6 +3809,42 @@ def _normalize_custom_provider_entry(
     return normalized
 
 
+def _custom_provider_entry_to_provider_config(
+    entry: Any,
+    *,
+    provider_key: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Translate a legacy custom provider entry to the v12 providers shape."""
+    normalized = _normalize_custom_provider_entry(
+        dict(entry) if isinstance(entry, dict) else entry,
+        provider_key=provider_key,
+    )
+    if normalized is None:
+        return None
+
+    provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
+
+    for field in (
+        "name",
+        "api_key",
+        "key_env",
+        "models",
+        "context_length",
+        "rate_limit_delay",
+        "discover_models",
+        "extra_body",
+    ):
+        if field in normalized:
+            provider_entry[field] = normalized[field]
+
+    if "model" in normalized:
+        provider_entry["default_model"] = normalized["model"]
+    if "api_mode" in normalized:
+        provider_entry["transport"] = normalized["api_mode"]
+
+    return provider_entry
+
+
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
     """Normalize ``providers`` config entries into the legacy custom-provider shape."""
     if not isinstance(providers_dict, dict):
@@ -3937,7 +4027,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming",
+    "sessions", "streaming", "updates",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -4261,8 +4351,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not isinstance(entry, dict):
                     continue
                 old_name = entry.get("name", "")
-                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
-                old_key = entry.get("api_key", "")
+                old_url = entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "") or ""
                 if not old_url:
                     continue  # skip entries with no URL
 
@@ -4282,20 +4371,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         key = f"endpoint-{migrated_count}"
 
                 # Don't overwrite existing entries
-                if key in providers_dict:
-                    key = f"{key}-{migrated_count}"
+                base_key = key
+                suffix = migrated_count
+                while key in providers_dict:
+                    key = f"{base_key}-{suffix}"
+                    suffix += 1
 
-                new_entry = {"api": old_url}
-                if old_name:
-                    new_entry["name"] = old_name
-                if old_key and old_key not in {"no-key", "no-key-required", ""}:
-                    new_entry["api_key"] = old_key
-
-                # Carry over model and api_mode if present
-                if entry.get("model"):
-                    new_entry["default_model"] = entry["model"]
-                if entry.get("api_mode"):
-                    new_entry["transport"] = entry["api_mode"]
+                new_entry = _custom_provider_entry_to_provider_config(
+                    entry,
+                    provider_key=key,
+                )
+                if new_entry is None:
+                    continue
+                if not old_name:
+                    new_entry.pop("name", None)
+                if new_entry.get("api_key") in {"no-key", "no-key-required", ""}:
+                    new_entry.pop("api_key", None)
 
                 providers_dict[key] = new_entry
                 migrated_count += 1

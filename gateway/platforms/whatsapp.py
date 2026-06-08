@@ -231,7 +231,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     
     Configuration:
     - bridge_script: Path to the Node.js bridge script
-    - bridge_port: Port for HTTP communication (default: 3000)
+    - bridge_port: Port for HTTP communication (default: 3099)
     - session_path: Path to store WhatsApp session data
     - dm_policy: "open" | "allowlist" | "disabled" — how DMs are handled (default: "open")
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
@@ -244,6 +244,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
     DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_BRIDGE_PORT = 3099
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -251,7 +252,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
         self._bridge_process: Optional[subprocess.Popen] = None
-        self._bridge_port: int = config.extra.get("bridge_port", 3000)
+        self._bridge_port: int = config.extra.get("bridge_port", self.DEFAULT_BRIDGE_PORT)
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),

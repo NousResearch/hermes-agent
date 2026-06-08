@@ -33,6 +33,7 @@ from tools.send_message_tool import (
     _send_signal,
     _send_telegram,
     _send_to_platform,
+    _send_whatsapp,
     send_message_tool,
 )
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -847,6 +848,21 @@ class TestSendToPlatformChunking:
 
 
 class TestSendToPlatformWhatsapp:
+    @staticmethod
+    def _build_mock(response_status=200, response_data=None, response_text="error body"):
+        mock_resp = MagicMock()
+        mock_resp.status = response_status
+        mock_resp.json = AsyncMock(return_value=response_data or {"messageId": "msg123"})
+        mock_resp.text = AsyncMock(return_value=response_text)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+        return mock_session, mock_resp
+
     def test_whatsapp_routes_via_local_bridge_sender(self):
         chat_id = "test-user@lid"
         async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "abc123"})
@@ -863,6 +879,16 @@ class TestSendToPlatformWhatsapp:
 
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+    def test_whatsapp_sender_default_port_matches_adapter(self):
+        mock_session, _ = self._build_mock()
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_whatsapp({}, "test-user@lid", "hello"))
+
+        assert result["success"] is True
+        call_url = mock_session.post.call_args.args[0]
+        assert call_url == "http://localhost:3099/send"
 
 
 class TestSendTelegramHtmlDetection:

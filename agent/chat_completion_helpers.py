@@ -139,6 +139,15 @@ def interruptible_api_call(agent, api_kwargs: dict):
     result = {"response": None, "error": None}
     request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
+    # Request-local cancellation flag. Distinct from agent._interrupt_requested
+    # because that flag is cleared at run_conversation() turn boundaries, but
+    # this daemon worker thread can outlive the turn (the gateway caches
+    # AIAgent instances per session). Tracks whether THIS specific request was
+    # cancelled by the main thread's interrupt handler, so the transport error
+    # that is the expected consequence of our own force-close isn't misread as
+    # a network bug and surfaced to the caller. (PR #6600 — cascading interrupt
+    # hang.)
+    _request_cancelled = {"value": False}
 
     def _set_request_client(client):
         with request_client_lock:
@@ -229,6 +238,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
                 result["response"] = request_client.chat.completions.create(**api_kwargs)
         except Exception as e:
+            # If the request was cancelled by the main thread's interrupt
+            # handler, the transport error is the expected consequence of our
+            # own force-close, NOT a network bug. Swallow it instead of
+            # surfacing — the main thread raises InterruptedError. (#6600)
+            if _request_cancelled["value"]:
+                logger.debug(
+                    "Non-streaming worker caught %s after request cancellation — "
+                    "exiting without surfacing a network error.",
+                    type(e).__name__,
+                )
+                return
             result["error"] = e
         finally:
             _close_request_client_once("request_complete")
@@ -506,6 +526,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
             break
 
         if agent._interrupt_requested:
+            # Mark THIS request cancelled before force-closing so the worker's
+            # exception handler recognizes the forced transport error as a
+            # cancel and exits cleanly instead of surfacing a network error or
+            # (in the streaming path) burning full retry cycles. (#6600)
+            _request_cancelled["value"] = True
+            logger.debug(
+                "Force-closing httpx client due to interrupt (not a network error)."
+            )
             # Force-close the in-flight worker-local HTTP connection to stop
             # token generation without poisoning the shared client used to
             # seed future retries.
@@ -1625,6 +1653,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     result = {"response": None, "error": None, "partial_tool_names": []}
     request_client_holder = {"client": None, "diag": None, "owner_tid": None}
     request_client_lock = threading.Lock()
+    # Request-local cancellation flag — see interruptible_api_call for the full
+    # rationale. The streaming retry loop is where the 7-minute cascading-
+    # interrupt hang originated: a force-close raised RemoteProtocolError, the
+    # loop classified it as a transient network error, and burned full retry
+    # cycles (and emitted "reconnecting" noise) on a request the user already
+    # cancelled. The token lets the worker recognize its own forced close and
+    # exit immediately instead of retrying. (PR #6600.)
+    _request_cancelled = {"value": False}
 
     def _set_request_client(client):
         with request_client_lock:
@@ -2078,6 +2114,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         result["response"] = _call_chat_completions()
                     return  # success
                 except Exception as e:
+                    # If the main poll loop force-closed this request because
+                    # of an interrupt, the resulting transport error is the
+                    # expected consequence of our own close — NOT a transient
+                    # network error. Exit immediately: no retry, no fallback,
+                    # no "reconnecting" status. The outer poll loop raises
+                    # InterruptedError. This is the fix for the cascading-
+                    # interrupt hang where doomed retries burned full
+                    # stream-stale-timeout cycles. (#6600)
+                    if _request_cancelled["value"]:
+                        logger.debug(
+                            "Streaming worker caught %s after request "
+                            "cancellation — exiting without retry.",
+                            type(e).__name__,
+                        )
+                        return
                     _is_timeout = isinstance(
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
                     )
@@ -2387,6 +2438,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
 
         if agent._interrupt_requested:
+            # Mark THIS request cancelled before force-closing so the worker's
+            # exception handler recognizes the forced transport error as a
+            # cancel and exits without retrying or surfacing a network error.
+            # (#6600)
+            _request_cancelled["value"] = True
+            logger.debug(
+                "Force-closing streaming httpx client due to interrupt "
+                "(not a network error)."
+            )
             try:
                 if agent.api_mode == "anthropic_messages":
                     agent._anthropic_client.close()

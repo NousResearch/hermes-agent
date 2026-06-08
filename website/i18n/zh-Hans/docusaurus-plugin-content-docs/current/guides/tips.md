@@ -210,7 +210,7 @@ $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 ### 命令审批是你的安全防线
 
-Hermes 在执行每条命令前都会与一份精心维护的危险模式列表进行比对，包括递归删除、SQL DROP、curl 管道到 shell 等。不要在生产环境中禁用此功能——它的存在有充分的理由。
+Hermes 在执行每条命令前都会与一份精心维护的危险模式列表进行比对，包括递归删除、SQL DROP、将 curl 输出直接通过管道传给 shell 等。不要在生产环境中禁用此功能——它的存在有充分的理由。
 
 :::warning
 在容器后端（Docker、Singularity、Modal、Daytona）中运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。请确保你的容器镜像已妥善加固。

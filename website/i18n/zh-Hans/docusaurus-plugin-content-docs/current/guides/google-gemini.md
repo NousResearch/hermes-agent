@@ -77,7 +77,7 @@ Hermes 检测到该端点后会创建原生 Gemini 适配器。在内部，Herme
 - 流式响应 → 供 Hermes 循环使用的 OpenAI 格式流式数据块
 
 :::note Gemini 3 思维签名
-对于 Gemini 3 的工具调用，Hermes 会保留附加在函数调用部分的 `thoughtSignature` 值，并在下一个工具轮次中重放。这覆盖了多步骤智能体工作流中验证关键路径的需求。
+对于 Gemini 3 的工具调用，Hermes 会保留附加在函数调用部分的 `thoughtSignature` 值，并在下一个工具轮次中重放。这满足了多步骤智能体工作流中验证关键路径的需求。
 
 Gemini 3 也可能在其他响应部分附加思维签名。Hermes 的原生适配器目前针对 Agent 工具循环进行了优化，尚未以完整的部分级保真度重放所有非工具调用签名。
 :::

@@ -98,7 +98,7 @@ hermes setup --portal
 
 如果还没有订阅，请先在 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册。
 
-### 已有安装——在现有提供商旁添加 Portal
+### 已有安装——将 Portal 添加为另一个提供商
 
 如果你已经配置了 OpenRouter、Anthropic 或其他提供商，想在此基础上添加 Portal：
 

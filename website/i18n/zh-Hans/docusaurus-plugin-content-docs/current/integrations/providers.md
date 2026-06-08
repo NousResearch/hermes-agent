@@ -133,7 +133,7 @@ model:
 
 ### GitHub Copilot
 
-Hermes 以一等提供商身份支持 GitHub Copilot，提供两种模式：
+Hermes 原生支持 GitHub Copilot 作为提供商，并提供两种模式：
 
 **`copilot` — 直连 Copilot API**（推荐）。使用你的 GitHub Copilot 订阅，通过 Copilot API 访问 GPT-5.x、Claude、Gemini 等模型。
 
@@ -196,7 +196,7 @@ model:
 | `HERMES_COPILOT_ACP_COMMAND` | 覆盖 Copilot CLI 二进制路径（默认：`copilot`） |
 | `HERMES_COPILOT_ACP_ARGS` | 覆盖 ACP 参数（默认：`--acp --stdio`） |
 
-### 一等 API Key 提供商
+### 原生 API Key 提供商
 
 这些提供商内置支持，具有专属提供商 ID。设置 API key 后使用 `--provider` 选择：
 
@@ -316,7 +316,7 @@ model:
 模型目录从 `ollama.com/v1/models` 动态获取，缓存一小时。`model:tag` 格式（如 `qwen3-coder:480b-cloud`）在规范化过程中保留——不要使用连字符。
 
 :::tip Ollama Cloud 与本地 Ollama
-两者使用相同的 OpenAI 兼容 API。Cloud 是一等提供商（`--provider ollama-cloud`，`OLLAMA_API_KEY`）；本地 Ollama 通过自定义端点流程访问（基础 URL `http://localhost:11434/v1`，无需 key）。对于无法在本地运行的大模型使用 Cloud；对于隐私保护或离线工作使用本地。
+两者使用相同的 OpenAI 兼容 API。Cloud 是原生支持的提供商（`--provider ollama-cloud`，`OLLAMA_API_KEY`）；本地 Ollama 通过自定义端点流程访问（基础 URL `http://localhost:11434/v1`，无需 key）。对于无法在本地运行的大模型使用 Cloud；对于隐私保护或离线工作使用本地。
 :::
 
 ### AWS Bedrock
@@ -379,7 +379,7 @@ model:
 
 ### 阿里云（Coding Plan）
 
-如果你订阅了阿里巴巴的 **Coding Plan**（独立于标准 DashScope API 访问的计费 SKU），Hermes 将其作为独立的一等提供商暴露：`alibaba-coding-plan`。端点：`https://coding-intl.dashscope.aliyuncs.com/v1`。与常规 `alibaba` 提供商一样兼容 OpenAI，但基础 URL 和计费面不同。
+如果你订阅了阿里巴巴的 **Coding Plan**（独立于标准 DashScope API 访问的计费 SKU），Hermes 将其作为独立的原生提供商暴露：`alibaba-coding-plan`。端点：`https://coding-intl.dashscope.aliyuncs.com/v1`。与常规 `alibaba` 提供商一样兼容 OpenAI，但基础 URL 和计费面不同。
 
 ```yaml
 model:
@@ -1298,7 +1298,7 @@ model:
 | **成本优化** | ClawRouter 或带 `sort: "price"` 的 OpenRouter |
 | **最大隐私保护** | Ollama、vLLM 或 llama.cpp（完全本地） |
 | **企业 / Azure** | Azure OpenAI 加自定义端点 |
-| **中国 AI 模型** | z.ai（GLM）、Kimi/Moonshot（`kimi-coding` 或 `kimi-coding-cn`）、MiniMax、小米 MiMo 或腾讯 TokenHub（一等提供商） |
+| **中国 AI 模型** | z.ai（GLM）、Kimi/Moonshot（`kimi-coding` 或 `kimi-coding-cn`）、MiniMax、小米 MiMo 或腾讯 TokenHub（原生支持的提供商） |
 
 :::tip
 可以随时使用 `hermes model` 切换提供商——无需重启。无论使用哪个提供商，你的对话历史、记忆和技能都会保留。

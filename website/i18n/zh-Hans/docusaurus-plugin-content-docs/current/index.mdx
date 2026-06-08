@@ -11,7 +11,7 @@ import Link from "@docusaurus/Link";
 
 # Hermes Agent
 
-由 [Nous Research](https://nousresearch.com) 构建的自我改进 AI 智能体。唯一内置学习循环的智能体——它从经验中创建技能，在使用过程中持续改进，主动提示自身持久化知识，并在会话间不断深化对你的建模。
+由 [Nous Research](https://nousresearch.com) 构建的自我改进 AI 智能体。唯一一个内置学习循环的智能体——它从经验中创建技能，在使用过程中持续改进，主动提醒自己持久化知识，并在会话之间不断加深对你的理解。
 
 <div
   style={{
@@ -65,7 +65,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 **Android（Termux）** — 与 Linux 相同的 curl 一行命令；安装程序会自动检测 Termux。
 
-请参阅完整的 **[安装指南](/getting-started/installation)**，了解安装程序的具体操作、按用户与 root 的目录布局以及 Windows 相关说明。
+请参阅完整的 **[安装指南](/getting-started/installation)**，了解安装程序的具体操作、普通用户安装与 root 安装的目录布局以及 Windows 相关说明。
 
 ## Hermes Agent 是什么？
 
@@ -98,8 +98,8 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 - **闭环学习循环** — 智能体管理的记忆，配合定期提示、自主技能创建、使用中的技能自我改进、基于 FTS5 的跨会话召回与 LLM 摘要，以及 [Honcho](https://github.com/plastic-labs/honcho) 辩证式用户建模
 - **随处运行，不限于本地** — 6 种终端后端：本地、Docker、SSH、Daytona、Singularity、Modal。Daytona 和 Modal 提供 serverless 持久化——环境闲置时休眠，几乎零成本
-- **在你所在的地方** — CLI、Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost、Email、SMS、DingTalk、Feishu、WeCom、Weixin、QQ Bot、Yuanbao、BlueBubbles、Home Assistant、Microsoft Teams、Google Chat 等——通过一个网关支持 20+ 平台
-- **由模型训练者构建** — 由 [Nous Research](https://nousresearch.com) 创建，该实验室是 Hermes、Nomos 和 Psyche 背后的团队。支持 [Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)、OpenAI 或任意端点
+- **在你常用的平台上** — CLI、Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost、Email、SMS、DingTalk、Feishu、WeCom、Weixin、QQ Bot、Yuanbao、BlueBubbles、Home Assistant、Microsoft Teams、Google Chat 等——通过一个网关支持 20+ 平台
+- **由模型训练者构建** — 由 [Nous Research](https://nousresearch.com) 创建，该实验室是 Hermes、Nomos 和 Psyche 背后的团队。支持 [Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)、OpenAI 或任意兼容端点
 - **定时自动化** — 内置 cron，可向任意平台投递
 - **委托与并行** — 派生隔离的子智能体以并行处理多个工作流。通过 `execute_code` 实现程序化工具调用，将多步骤流水线压缩为单次推理调用
 - **开放标准技能** — 兼容 [agentskills.io](https://agentskills.io)。技能可移植、可共享，并通过 Skills Hub 接受社区贡献

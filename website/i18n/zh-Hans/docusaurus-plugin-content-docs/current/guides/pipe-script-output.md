@@ -14,7 +14,7 @@ description: "使用 `hermes send` 将任意 shell 脚本、cron 任务、CI hoo
 - CI/CD 通知（部署完成、测试失败）
 - 需要将结果推送给你的 cron 脚本
 - 从终端发送一次性消息
-- 将任意工具的输出管道到任意平台（`make | hermes send --to slack:#builds`）
+- 将任意工具的输出通过管道传输到任意平台（`make | hermes send --to slack:#builds`）
 
 该命令复用 `hermes gateway` 已有的凭据和平台适配器，无需维护第二套配置。
 

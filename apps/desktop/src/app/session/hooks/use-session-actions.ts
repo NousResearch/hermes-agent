@@ -495,6 +495,14 @@ export function useSessionActions({
       activeSessionIdRef.current = null
       busyRef.current = true
       setBusy(true)
+      // Safety kill switch: reset busy after 30s if resume stalls or navigated away.
+      // Without this, a gateway session.resume that hangs, or an isCurrentResume()
+      // guard that blocks the finally-reset, leaves the composer send button stuck
+      // in "running" state permanently.
+      const resumeBusyTimer = setTimeout(() => {
+        busyRef.current = false
+        setBusy(false)
+      }, 30_000)
       setAwaitingResponse(false)
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
@@ -607,6 +615,7 @@ export function useSessionActions({
         setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
         notifyError(err, copy.resumeFailed)
       } finally {
+        clearTimeout(resumeBusyTimer)
         if (isCurrentResume()) {
           busyRef.current = false
           setBusy(false)

@@ -1232,6 +1232,88 @@ class TestEventBridgePollE2E:
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
 
+    def test_poll_rescans_when_only_sessions_index_changes(self, tmp_path, monkeypatch):
+        """A conversation newly indexed in sessions.json must be scanned even
+        when state.db's mtime has not advanced.
+
+        Regression test for the early-return guard: it compared the
+        sessions.json mtime against the field it had just overwritten, so the
+        sessions.json clause was always true and a sessions.json-only change
+        was wrongly treated as 'nothing changed'. The shared state.db already
+        holds the new conversation's messages (its mtime reflects an earlier
+        write), so without re-scanning those messages are never delivered.
+        """
+        import mcp_serve
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        sid_a = "20260329_150000_idx_a"
+        sid_b = "20260329_150000_idx_b"
+        db_path = tmp_path / "state.db"
+
+        # Both conversations' messages already live in the shared DB.
+        _create_test_db(db_path, sid_a, [
+            {"role": "user", "content": "hi from A", "timestamp": "2026-03-29T15:00:01"},
+        ])
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            (sid_b, "user", "hi from B", "2026-03-29T15:00:02"),
+        )
+        conn.commit()
+        conn.close()
+
+        sessions_file = sessions_dir / "sessions.json"
+        # Initially only conversation A is indexed.
+        sessions_file.write_text(json.dumps({
+            "agent:main:telegram:dm:a": {
+                "session_id": sid_a, "platform": "telegram",
+                "origin": {"platform": "telegram", "chat_id": "a"},
+            },
+        }))
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+
+        db = TestDB()
+        bridge = mcp_serve.EventBridge()
+
+        bridge._poll_once(db)
+        first = bridge.poll_events(after_cursor=0)
+        assert [e["content"] for e in first["events"]] == ["hi from A"]
+
+        # Index conversation B, bump sessions.json mtime, and pin state.db's
+        # mtime so it does NOT advance (its messages landed earlier).
+        db_mtime = db_path.stat().st_mtime
+        sessions_file.write_text(json.dumps({
+            "agent:main:telegram:dm:a": {
+                "session_id": sid_a, "platform": "telegram",
+                "origin": {"platform": "telegram", "chat_id": "a"},
+            },
+            "agent:main:telegram:dm:b": {
+                "session_id": sid_b, "platform": "telegram",
+                "origin": {"platform": "telegram", "chat_id": "b"},
+            },
+        }))
+        os.utime(sessions_file, (db_mtime + 10, db_mtime + 10))
+        os.utime(db_path, (db_mtime, db_mtime))
+
+        bridge._poll_once(db)
+        after = bridge.poll_events(after_cursor=first["next_cursor"])
+        contents = [e["content"] for e in after["events"]]
+        assert "hi from B" in contents, (
+            "newly indexed conversation B should be scanned when sessions.json "
+            "changes even though state.db mtime did not advance"
+        )
+
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL

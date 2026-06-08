@@ -153,7 +153,7 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
 
 
 def test_write_json_drops_detached_ws_frames(monkeypatch):
-    out = _ThreadUnsafeStdout()
+    out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)
     server._sessions["detached-sid"] = {"transport": server._detached_ws_transport}
     try:

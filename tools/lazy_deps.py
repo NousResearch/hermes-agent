@@ -127,11 +127,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
     # uploaded to the Discord gateway fails to decode at att.read() with
     # "Can not decode content-encoding: br" — see #12511 / #15744.
-    "platform.discord": ("discord.py[voice]==2.7.1", "brotlicffi==1.2.0.1"),
+    "platform.discord": (
+        "discord.py==2.7.1",
+        "PyNaCl==1.6.2",
+        "davey==0.1.4",
+        "brotlicffi==1.2.0.1",
+    ),
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
+        "aiohttp==3.14.0",  # CVE-2026-47265, CVE-2026-34993
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",

@@ -45,12 +45,20 @@ endpoint we'll retire the sidecar in a follow-up release.
 
 ## First-time setup
 
+Either run the unified gateway wizard and pick **Photon iMessage**:
+
+```bash
+hermes gateway setup
+```
+
+…or run the Photon setup directly (the wizard calls the same flow):
+
 ```bash
 # Device-code login + project + user + sidecar deps, all in one
 hermes photon setup --phone +15551234567
 ```
 
-The wizard:
+The setup:
 
 1. Opens `https://app.photon.codes/` for device approval
 2. Creates a Spectrum-enabled project under your account
@@ -61,6 +69,36 @@ The wizard:
 Credentials are stored in `~/.hermes/auth.json` under
 `credential_pool.photon` (bearer token) and
 `credential_pool.photon_project` (project id + secret).
+
+## Authorizing users
+
+Photon uses the same authorization model as every other Hermes
+channel. Choose one approach:
+
+**DM pairing (default).** When an unknown number messages your Photon
+line, Hermes replies with a pairing code. Approve it with:
+
+```bash
+hermes pairing approve photon <CODE>
+```
+
+Use `hermes pairing list` to see pending codes and approved users.
+
+**Pre-authorize specific numbers** (in `~/.hermes/.env`):
+
+```bash
+PHOTON_ALLOWED_USERS=+15551234567,+15559876543
+```
+
+**Open access** (dev only, in `~/.hermes/.env`):
+
+```bash
+PHOTON_ALLOW_ALL_USERS=true
+```
+
+When `PHOTON_ALLOWED_USERS` is set, unknown senders are silently
+ignored rather than offered a pairing code (the allowlist signals you
+deliberately restricted access).
 
 ## Registering the webhook
 
@@ -109,17 +147,17 @@ Photon iMessage status
 ──────────────────────
   device token        : ✓ stored
   project id          : 3c90c3cc-0d44-4b50-...
-  project secret      : ✓ stored
+  project key         : ✓ stored
+  webhook key         : ✓ set
   node binary         : /usr/bin/node
   sidecar deps        : ✓ installed
-  webhook secret      : ✓ set
 ```
 
 Common issues:
 
 - **`sidecar deps : ✗ run hermes photon install-sidecar`** — Node is
   installed but `spectrum-ts` isn't. Run the suggested command.
-- **`webhook secret : ⚠ unset — verification disabled`** — the
+- **`webhook key : ⚠ unset — verification disabled`** — the
   plugin will accept ANY POST to the webhook URL, which is unsafe.
   Re-run `hermes photon webhook register` and store the secret.
 - **`PHOTON_WEBHOOK_PORT` already in use** — set a different port via
@@ -160,8 +198,11 @@ hermes photon webhook delete <webhook-id>   # remove one
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space ID for cron / notifications  |
+| `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
+| `PHOTON_API_HOST`         | `spectrum.photon.codes` | Override the Spectrum management API host |
+| `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 
 [photon]: https://photon.codes/
 [app]: https://app.photon.codes/

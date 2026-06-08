@@ -301,6 +301,31 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Gateway-setup entry point
+#
+# `hermes gateway setup` discovers platforms via the registry and calls each
+# entry's zero-arg ``setup_fn``. Photon registers this function so it appears
+# in the unified setup wizard alongside every other channel — same onboarding
+# surface, no Photon-specific detour. It runs the identical device-login +
+# project + user + sidecar flow as ``hermes photon setup`` with interactive
+# defaults (phone is prompted when stdin is a TTY).
+
+def gateway_setup() -> None:
+    """Run Photon first-time setup from the `hermes gateway setup` wizard."""
+    args = argparse.Namespace(
+        photon_command="setup",
+        project_name=None,
+        phone=None,
+        first_name=None,
+        last_name=None,
+        email=None,
+        no_browser=False,
+        skip_sidecar_install=False,
+    )
+    _cmd_setup(args)
+
+
+# ---------------------------------------------------------------------------
 # Small interactive helpers
 
 def _prompt(prompt: str, *, secret: bool = False) -> str:

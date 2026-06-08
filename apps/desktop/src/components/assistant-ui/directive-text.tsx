@@ -7,6 +7,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -327,25 +328,32 @@ export const DirectiveText: TextMessagePartComponent = ({ text }: TextMessagePar
  * messages render after the backend embeds the data URL, so the UX is stable
  * across initial send and refresh. */
 const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
-  const remote = /^(?:https?|data):/i.test(id)
-  const [src, setSrc] = useState<string | null>(remote ? id : null)
+  const isUrl = /^(?:https?|data):/i.test(id)
+  const [src, setSrc] = useState<string | null>(isUrl ? id : null)
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    if (remote || !id) {
+    if (isUrl || !id) {
       return
     }
 
     let alive = true
-    void window.hermesDesktop
-      ?.readFileDataUrl(id)
-      .then(url => alive && setSrc(url))
+
+    // Remote gateway: the image lives on the gateway's disk, not ours — fetch
+    // it over the authenticated API. Local: read it straight off this disk.
+    const load =
+      window.hermesDesktop && isRemoteGateway()
+        ? gatewayMediaDataUrl(id)
+        : window.hermesDesktop?.readFileDataUrl(id)
+
+    void Promise.resolve(load)
+      .then(url => alive && url && setSrc(url))
       .catch(() => alive && setFailed(true))
 
     return () => {
       alive = false
     }
-  }, [id, remote])
+  }, [id, isUrl])
 
   if (failed) {
     return <DirectiveChip id={id} label={label} type="image" />

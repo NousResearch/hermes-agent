@@ -740,6 +740,7 @@ def run_doctor(args):
 
             # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
             provider_for_policy = runtime_provider or catalog_provider
+            provider_policy_id = str(provider_for_policy or "").strip().lower()
             providers_accepting_vendor_slugs = {
                 "openrouter",
                 "custom",
@@ -753,8 +754,9 @@ def run_doctor(args):
             if (
                 default_model
                 and "/" in default_model
-                and provider_for_policy
-                and provider_for_policy not in providers_accepting_vendor_slugs
+                and provider_policy_id
+                and provider_policy_id not in providers_accepting_vendor_slugs
+                and not provider_policy_id.startswith("custom:")
             ):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",

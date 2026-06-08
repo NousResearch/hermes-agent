@@ -675,6 +675,31 @@ class QQAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            # Best-effort cleanup: _open_ws() may have created a session
+            # or WebSocket before failing, leaving stale references that
+            # leak resources or confuse the next reconnect attempt.
+            # Capture refs, null fields early, then close independently
+            # so one failure does not skip the other.
+            ws = self._ws
+            session = self._session
+            self._ws = None
+            self._session = None
+            if ws and not ws.closed:
+                try:
+                    await ws.close()
+                except Exception as cleanup_exc:
+                    logger.debug(
+                        "[%s] Failed to close stale WebSocket: %s",
+                        self._log_tag, cleanup_exc,
+                    )
+            if session and not session.closed:
+                try:
+                    await session.close()
+                except Exception as cleanup_exc:
+                    logger.debug(
+                        "[%s] Failed to close stale session: %s",
+                        self._log_tag, cleanup_exc,
+                    )
             return False
 
     async def _read_events(self) -> None:

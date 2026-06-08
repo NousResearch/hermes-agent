@@ -4371,6 +4371,19 @@ def _(rid, params: dict) -> dict:
                     db.replace_messages(session["session_key"], truncated)
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+            # After truncating the transcript we must reset the agent's DB-flush
+            # watermark, or _flush_messages_to_session_db (run_agent.py) keeps the
+            # stale `_last_flushed_db_idx` from before the truncation and skips
+            # persisting the regenerated turn: flush_from = max(len(history),
+            # stale_idx) overshoots the now-shorter message list. The classic CLI
+            # already does this after its rewrite ops (cli.py:
+            # `_last_flushed_db_idx = len(self.conversation_history)`); this
+            # truncate path was the one rewrite site that missed it. Without the
+            # reset, regenerate / edit-resend looks fine live but the new turn is
+            # silently lost on cold resume.
+            agent = session.get("agent")
+            if agent is not None and hasattr(agent, "_last_flushed_db_idx"):
+                agent._last_flushed_db_idx = len(truncated)
         session["running"] = True
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)

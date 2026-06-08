@@ -140,6 +140,43 @@ def test_cli_get_tool_definitions_briefly_waits_for_fast_mcp_thread(monkeypatch)
     assert not thread.is_alive()
 
 
+def test_default_wait_covers_slow_reachable_mcp_thread():
+    """A reachable-but-slow server (e.g. Notion's ~2.6s OAuth handshake) must
+    land in the first tool snapshot.  The DEFAULT wait — no explicit timeout —
+    has to outlast such a thread, so a thread that finishes at ~1.1s is joined
+    to completion rather than abandoned mid-connect (regression: the old 0.75s
+    default snapshotted before Notion connected, hiding all 14 of its tools)."""
+    thread = threading.Thread(target=lambda: time.sleep(1.1), daemon=True)
+    thread.start()
+    mcp_startup._mcp_discovery_thread = thread
+
+    start = time.monotonic()
+    mcp_startup.wait_for_mcp_discovery()  # default timeout, no override
+    elapsed = time.monotonic() - start
+
+    assert not thread.is_alive()  # default wait outlasted the slow connect
+    assert elapsed >= 1.0
+
+
+def test_explicit_short_timeout_still_bounds_hung_mcp_thread():
+    """A raised default must NOT remove the override: passing an explicit short
+    timeout for a hung/dead server still returns near that bound, never the
+    (now larger) default — startup stays non-blocking on dead servers."""
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait, daemon=True)
+    thread.start()
+    mcp_startup._mcp_discovery_thread = thread
+
+    try:
+        start = time.monotonic()
+        mcp_startup.wait_for_mcp_discovery(timeout=0.3)
+        elapsed = time.monotonic() - start
+        assert 0.25 <= elapsed < 1.0  # bounded by the explicit override
+        assert thread.is_alive()  # we did not block on the hung thread
+    finally:
+        stop.set()
+
+
 def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     waited = {"done": False}
 

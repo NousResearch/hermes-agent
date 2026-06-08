@@ -425,10 +425,10 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
             agent.close()
     except Exception:
         pass
-    # NOTE: the slash-worker subprocess is already closed inside
-    # _finalize_session (the single _finalized-guarded chokepoint on main).
-    # No second worker.close() here — it would be redundant (poll()-guarded,
-    # harmless, but dead).
+    # NOTE: the slash-worker is closed inside _finalize_session (the single
+    # _finalized-guarded chokepoint that main folded it into), exactly once.
+    # We deliberately do NOT re-close it here — _teardown_session's job beyond
+    # finalize is unregistering the notifier and closing the in-process agent.
 
 
 def _attach_worker(sid: str, session: dict, worker) -> None:

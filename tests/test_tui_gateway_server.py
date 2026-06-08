@@ -6200,10 +6200,16 @@ def test_close_session_by_id_is_idempotent_and_full(monkeypatch):
         def close(self):
             calls["agent"] += 1
 
-    monkeypatch.setattr(
-        server, "_finalize_session",
-        lambda s, end_reason="tui_close": calls.__setitem__("finalize", calls["finalize"] + 1),
-    )
+    def _fake_finalize(s, end_reason="tui_close"):
+        # Real _finalize_session is the single chokepoint that closes the
+        # slash-worker; mirror that here so the test exercises the actual
+        # teardown contract (worker close lives in finalize, not the caller).
+        calls["finalize"] += 1
+        w = s.get("slash_worker")
+        if w:
+            w.close()
+
+    monkeypatch.setattr(server, "_finalize_session", _fake_finalize)
     monkeypatch.setattr(
         "tools.approval.unregister_gateway_notify",
         lambda key: calls.__setitem__("unreg", calls["unreg"] + 1), raising=False,
@@ -6307,6 +6313,9 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
         server, "_close_session_by_id",
         lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
     )
+    # Detached session "b" would schedule a real grace-reap threading.Timer that
+    # outlives the test; grace=0 short-circuits it so no thread lingers.
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
     transport = object()  # the disconnecting transport
     server._sessions.clear()
     server._sessions["a"] = {"transport": transport, "close_on_disconnect": True}
@@ -6314,7 +6323,7 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
-        assert server._sessions["b"]["transport"] is server._stdio_transport  # re-pointed
+        assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
     finally:
         server._sessions.clear()
 
@@ -6360,7 +6369,7 @@ def _idle_evictable_session(now):
     return {
         "running": False,
         "agent_ready": ready,
-        "transport": server._stdio_transport,  # dead/detached
+        "transport": server._detached_ws_transport,  # dead/detached
         "last_active": old,
         "created_at": old,
     }

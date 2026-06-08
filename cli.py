@@ -5947,12 +5947,13 @@ class HermesCLI:
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
     def _handle_stop_command(self):
-        """Handle /stop — kill all running background processes.
+        """Handle /stop — kill all running background processes and clean up Docker sandboxes.
 
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
         """
         from tools.process_registry import process_registry
+        from tools.terminal_tool import cleanup_all_environments
 
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
@@ -5964,6 +5965,10 @@ class HermesCLI:
         print(f"  Stopping {len(running)} background process(es)...")
         killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
+
+        cleaned = cleanup_all_environments()
+        if cleaned > 0:
+            print(f"  ✅ Cleaned {cleaned} sandbox environment(s).")
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""

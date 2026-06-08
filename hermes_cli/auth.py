@@ -1182,6 +1182,24 @@ def _store_provider_state(
         auth_store["active_provider"] = provider_id
 
 
+def mark_provider_active_if_unset(provider_id: str) -> None:
+    """Set ``active_provider`` to *provider_id* only when none is set yet.
+
+    Used by ``hermes auth add`` OAuth paths that create credential-pool
+    entries directly (no singleton ``providers.<id>`` block). Adding the
+    very first credential for a provider should make it the active provider
+    so the setup wizard's ``_model_section_has_credentials()`` check (which
+    consults ``get_active_provider()``) does not report "No inference
+    provider configured". Subsequent adds for an already-active setup leave
+    the user's chosen active provider untouched.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        if not (auth_store.get("active_provider") or "").strip():
+            auth_store["active_provider"] = provider_id
+            _save_auth_store(auth_store)
+
+
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
     return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES

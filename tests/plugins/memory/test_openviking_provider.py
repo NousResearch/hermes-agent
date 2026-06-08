@@ -1208,6 +1208,7 @@ def test_tool_search_sends_limit_not_legacy_top_k():
     payload = provider._client.post.call_args.args[1]
     assert payload["limit"] == 7
     assert "top_k" not in payload
+    assert "mode" not in payload
 
 
 def test_tool_search_uses_find_for_normal_search():
@@ -1222,6 +1223,7 @@ def test_tool_search_uses_find_for_normal_search():
     provider._client.post.assert_called_once_with("/api/v1/search/find", {
         "query": "simple lookup",
     })
+    assert "mode" not in provider._client.post.call_args.args[1]
 
 
 def test_tool_search_uses_session_search_for_deep_search():
@@ -1238,6 +1240,7 @@ def test_tool_search_uses_session_search_for_deep_search():
         "query": "connect facts",
         "session_id": "session-123",
     })
+    assert "mode" not in provider._client.post.call_args.args[1]
 
 
 def test_tool_add_resource_uploads_existing_local_file(tmp_path):
@@ -2922,17 +2925,17 @@ def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
     assert provider._prefetch_result == ""
 
 
-def test_queue_prefetch_sends_limit_not_legacy_top_k():
+def test_queue_prefetch_sends_contract_safe_memory_context_payload():
     provider = _make_prefetch_provider()
 
-    captured_payloads = []
+    captured_calls = []
 
     class StubClient:
         def __init__(self, *a, **kw):
             pass
 
         def post(self, path, payload=None, **kwargs):
-            captured_payloads.append(payload)
+            captured_calls.append((path, payload))
             return {"result": {"memories": [], "resources": []}}
 
     import plugins.memory.openviking as _mod
@@ -2945,8 +2948,21 @@ def test_queue_prefetch_sends_limit_not_legacy_top_k():
     finally:
         _mod._VikingClient = real_client_cls
 
-    assert captured_payloads == [{"query": "anything", "limit": 5}]
-    assert "top_k" not in captured_payloads[0]
+    assert captured_calls == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "anything",
+                "limit": 24,
+                "score_threshold": 0,
+                "context_type": "memory",
+            },
+        )
+    ]
+    payload = captured_calls[0][1]
+    assert "top_k" not in payload
+    assert "mode" not in payload
+    assert "target_uri" not in payload
 
 
 def test_queue_prefetch_uses_session_search_when_session_id_available():
@@ -2987,10 +3003,20 @@ def test_queue_prefetch_uses_session_search_when_session_id_available():
     assert captured_calls == [
         (
             "/api/v1/search/search",
-            {"query": "anything", "limit": 5, "session_id": "sid-123"},
+            {
+                "query": "anything",
+                "limit": 24,
+                "score_threshold": 0,
+                "context_type": "memory",
+                "session_id": "sid-123",
+            },
         )
     ]
-    assert "session-aware memory" in provider._prefetch_result
+    payload = captured_calls[0][1]
+    assert "top_k" not in payload
+    assert "mode" not in payload
+    assert "target_uri" not in payload
+    assert "session-aware memory" in provider.prefetch("anything", session_id="sid-123")
 
 
 def test_queue_prefetch_falls_back_to_find_when_session_search_fails():
@@ -3033,17 +3059,32 @@ def test_queue_prefetch_falls_back_to_find_when_session_search_fails():
     assert captured_calls == [
         (
             "/api/v1/search/search",
-            {"query": "anything", "limit": 5, "session_id": "sid-123"},
+            {
+                "query": "anything",
+                "limit": 24,
+                "score_threshold": 0,
+                "context_type": "memory",
+                "session_id": "sid-123",
+            },
         ),
         (
             "/api/v1/search/find",
-            {"query": "anything", "limit": 5},
+            {
+                "query": "anything",
+                "limit": 24,
+                "score_threshold": 0,
+                "context_type": "memory",
+            },
         ),
     ]
-    assert "non-session fallback" in provider._prefetch_result
+    for _path, payload in captured_calls:
+        assert "top_k" not in payload
+        assert "mode" not in payload
+        assert "target_uri" not in payload
+    assert "non-session fallback" in provider.prefetch("anything", session_id="sid-123")
 
 
-def test_queue_prefetch_reads_bounded_snippet_for_empty_abstracts_and_includes_skills():
+def test_queue_prefetch_reads_l2_content_and_ignores_skills_by_default():
     provider = _make_prefetch_provider()
 
     captured_reads = []
@@ -3059,7 +3100,9 @@ def test_queue_prefetch_reads_bounded_snippet_for_empty_abstracts_and_includes_s
                         {
                             "uri": "viking://user/peers/hermes/memories/events/mem_3.md",
                             "score": 0.9,
-                            "abstract": "",
+                            "level": 2,
+                            "category": "events",
+                            "abstract": "short abstract",
                         },
                     ],
                     "resources": [],
@@ -3075,7 +3118,7 @@ def test_queue_prefetch_reads_bounded_snippet_for_empty_abstracts_and_includes_s
 
         def get(self, path, params=None, **kwargs):
             captured_reads.append((path, params or {}))
-            return {"result": {"content": "raw memory content\nwith useful context"}}
+            return {"result": {"content": "full memory content\nwith useful context"}}
 
     import plugins.memory.openviking as _mod
     real_client_cls = _mod._VikingClient
@@ -3090,18 +3133,16 @@ def test_queue_prefetch_reads_bounded_snippet_for_empty_abstracts_and_includes_s
     assert captured_reads == [
         (
             "/api/v1/content/read",
-            {
-                "uri": "viking://user/peers/hermes/memories/events/mem_3.md",
-                "offset": 0,
-                "limit": 50,
-            },
+            {"uri": "viking://user/peers/hermes/memories/events/mem_3.md"},
         )
     ]
-    assert "raw memory content with useful context" in provider._prefetch_result
-    assert "skill context" in provider._prefetch_result
+    context = provider.prefetch("anything")
+    assert "full memory content" in context
+    assert "short abstract" not in context
+    assert "skill context" not in context
 
 
-def test_queue_prefetch_caps_empty_abstract_reads_and_keeps_unread_uris():
+def test_queue_prefetch_reads_empty_abstract_content_within_budget():
     provider = _make_prefetch_provider()
 
     captured_reads = []
@@ -3114,9 +3155,11 @@ def test_queue_prefetch_caps_empty_abstract_reads_and_keeps_unread_uris():
             return {
                 "result": {
                     "memories": [
-                        {"uri": "viking://memories/one.md", "score": 0.9, "abstract": ""},
-                        {"uri": "viking://memories/two.md", "score": 0.8, "abstract": ""},
-                        {"uri": "viking://memories/three.md", "score": 0.7, "abstract": ""},
+                        {
+                            "uri": "viking://user/peers/hermes/memories/one.md",
+                            "score": 0.9,
+                            "abstract": "",
+                        },
                     ],
                     "resources": [],
                     "skills": [],
@@ -3139,9 +3182,9 @@ def test_queue_prefetch_caps_empty_abstract_reads_and_keeps_unread_uris():
         _mod._VikingClient = real_client_cls
 
     assert [params["uri"] for _path, params in captured_reads] == [
-        "viking://memories/one.md",
-        "viking://memories/two.md",
+        "viking://user/peers/hermes/memories/one.md",
     ]
-    assert "content for viking://memories/one.md" in provider._prefetch_result
-    assert "content for viking://memories/two.md" in provider._prefetch_result
-    assert "- [0.70] (viking://memories/three.md)" in provider._prefetch_result
+    assert (
+        "content for viking://user/peers/hermes/memories/one.md"
+        in provider.prefetch("anything")
+    )

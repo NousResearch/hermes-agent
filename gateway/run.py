@@ -15706,7 +15706,12 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        # Append the crash *cause* when the previous run died unexpectedly — it rides along
+        # with the "back online" message users already get (best-effort, "" on a clean restart
+        # or any failure; gated below by gateway_restart_notification like the rest).
+        from hermes_cli.crash_diagnostics import restart_notice
+
+        message = "♻️ Gateway online — Hermes is back and ready." + restart_notice()
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)

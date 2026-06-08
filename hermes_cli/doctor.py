@@ -991,6 +991,21 @@ def run_doctor(args):
     except Exception as _xai_check_err:
         check_warn("xAI retirement check skipped", f"({_xai_check_err})")
 
+    _section("Recent Crashes")
+
+    try:
+        from hermes_cli.crash_diagnostics import doctor_section, summarize
+
+        crashes = doctor_section()  # last 7 days, python processes
+        if not crashes:
+            check_ok("No crashes in the last 7 days")
+        else:
+            check_warn(f"{len(crashes)} crash(es) in the last 7 days — why each died:")
+            for crash in crashes:
+                check_info(summarize(crash).replace("\n", "\n      "))
+    except Exception as _crash_check_err:
+        check_warn("Crash diagnostics skipped", f"({_crash_check_err})")
+
     _section("Auth Providers")
 
     try:

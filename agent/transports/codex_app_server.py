@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -28,6 +29,12 @@ from typing import Any, Optional
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+
+_MACOS_CODEX_APP_BINARY = "/Applications/Codex.app/Contents/Resources/codex"
+_CODEX_BINARY_CANDIDATES = (
+    os.path.expanduser("~/.local/bin/codex"),
+    _MACOS_CODEX_APP_BINARY,
+)
 
 
 @dataclass
@@ -47,6 +54,30 @@ class _Pending:
     queue: queue.Queue
     method: str
     sent_at: float = field(default_factory=time.time)
+
+
+def resolve_codex_binary(codex_bin: str = "codex") -> str:
+    """Return an executable path for Codex.
+
+    Desktop-launched Hermes does not inherit the user's interactive shell PATH,
+    so `codex` can be installed and usable in Terminal while subprocess.Popen
+    still raises FileNotFoundError. Resolve the known desktop install locations
+    before spawning the app-server.
+    """
+    requested = (codex_bin or "codex").strip() or "codex"
+    if os.path.sep in requested:
+        return requested
+
+    found = shutil.which(requested)
+    if found:
+        return found
+
+    if requested == "codex":
+        for candidate in _CODEX_BINARY_CANDIDATES:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+
+    return requested
 
 
 class CodexAppServerClient:
@@ -73,7 +104,7 @@ class CodexAppServerClient:
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
     ) -> None:
-        self._codex_bin = codex_bin
+        self._codex_bin = resolve_codex_binary(codex_bin)
         spawn_env = os.environ.copy()
         if env:
             spawn_env.update(env)
@@ -110,7 +141,7 @@ class CodexAppServerClient:
                 ]
             )
 
-        cmd = [codex_bin, "app-server"] + app_server_args
+        cmd = [self._codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
@@ -372,16 +403,17 @@ def check_codex_binary(
     """Verify codex CLI is installed and meets minimum version.
 
     Returns (ok, message). Used by setup wizard and runtime startup."""
+    resolved_bin = resolve_codex_binary(codex_bin)
     try:
         proc = subprocess.run(
-            [codex_bin, "--version"],
+            [resolved_bin, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except FileNotFoundError:
         return False, (
-            f"codex CLI not found at {codex_bin!r}. Install with: "
+            f"codex CLI not found at {codex_bin!r}. Install Codex.app or "
             f"npm i -g @openai/codex"
         )
     except subprocess.TimeoutExpired:

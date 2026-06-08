@@ -113,6 +113,7 @@ class TestCodexAppServerModule:
         assert codex_app_server.MIN_CODEX_VERSION >= (0, 1, 0)
         assert callable(codex_app_server.parse_codex_version)
         assert callable(codex_app_server.check_codex_binary)
+        assert callable(codex_app_server.resolve_codex_binary)
 
     def test_parse_codex_version_valid(self) -> None:
         from agent.transports.codex_app_server import parse_codex_version
@@ -134,6 +135,30 @@ class TestCodexAppServerModule:
         ok, msg = check_codex_binary(codex_bin="/nonexistent/codex/binary/path")
         assert ok is False
         assert "not found" in msg.lower() or "no such" in msg.lower()
+
+    def test_resolve_codex_binary_uses_path(self, monkeypatch, tmp_path) -> None:
+        from agent.transports import codex_app_server as cas
+
+        fake = tmp_path / "codex"
+        fake.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake.chmod(0o755)
+        monkeypatch.setattr(cas.shutil, "which", lambda name: str(fake))
+
+        assert cas.resolve_codex_binary("codex") == str(fake)
+
+    def test_resolve_codex_binary_uses_known_desktop_location(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from agent.transports import codex_app_server as cas
+
+        fake = tmp_path / "Codex.app" / "Contents" / "Resources" / "codex"
+        fake.parent.mkdir(parents=True)
+        fake.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake.chmod(0o755)
+        monkeypatch.setattr(cas.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cas, "_CODEX_BINARY_CANDIDATES", (str(fake),))
+
+        assert cas.resolve_codex_binary("codex") == str(fake)
 
     def test_codex_error_class_is_runtimeerror(self) -> None:
         from agent.transports.codex_app_server import CodexAppServerError
@@ -288,7 +313,8 @@ class TestSpawnEnvIsolation:
         client._closed = True
 
         cmd = captured["cmd"]
-        assert cmd[:2] == ["codex", "app-server"]
+        assert cmd[0].endswith("codex")
+        assert cmd[1] == "app-server"
         assert 'sandbox_mode="workspace-write"' in cmd
         assert (
             'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'

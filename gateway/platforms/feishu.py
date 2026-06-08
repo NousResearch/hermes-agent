@@ -3122,11 +3122,22 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Fix #20548 / #29466: only use thread_id, never root_id as fallback.
+        # Feishu's root_id is set on ALL replies (both regular replies and thread
+        # replies), while thread_id is only set for genuine forum-topic threads.
+        # Falling back to root_id caused every reply to create a new session keyed
+        # by the replied-to message ID, splitting context across sessions.
+        #
+        # Fix (2026-06-07): also remove root_id from reply_to_message_id fallback.
+        # root_id points to the reply-chain root (the topic anchor), NOT the
+        # immediate parent. When a user replies to message B in a forum topic,
+        # parent_id=B but root_id=A (the topic seed). Using root_id here caused
+        # _reply_anchor_for_event() to attach the bot response to the wrong
+        # message (A instead of B).
+        thread_id = getattr(message, "thread_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None

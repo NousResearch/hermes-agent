@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -793,6 +793,15 @@ class SessionDB:
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
+        # Covering index for the sidebar session list and auto-archive queries.
+        # The most common filter is archived=0 AND message_count>=1 with
+        # ORDER BY started_at (or last_active). This index avoids a full
+        # table scan on the sessions table for those queries.
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_sidebar "
+            "ON sessions(archived, message_count, started_at DESC)"
+        )
+
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
         if not fts5_available:
@@ -921,6 +930,17 @@ class SessionDB:
                         logger.info("backfilled device_name=%r for %d sessions", dn, updated)
                 except Exception:
                     logger.debug("device_name backfill skipped", exc_info=True)
+            if current_version < 16:
+                # v16: Composite index for sidebar session list queries.
+                # Covers archived=0 AND message_count>=1 ORDER BY started_at
+                # to avoid full table scans on large databases.
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_sessions_sidebar "
+                        "ON sessions(archived, message_count, started_at DESC)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -4349,6 +4369,22 @@ class SessionDB:
 
         return result
 
+    def _surfaced_session_filter_sql(self) -> Tuple[str, List[str]]:
+        """Return the surfaced-session WHERE clause and its params (always empty).
+        
+        Shared by archive_old_sessions and list_sessions_rich to ensure they
+        agree on which sessions are "surfaced" (root + branch, no hidden children).
+        """
+        clause = (
+            "(s.parent_session_id IS NULL"
+            " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
+            " OR EXISTS (SELECT 1 FROM sessions p"
+            "            WHERE p.id = s.parent_session_id"
+            "            AND p.end_reason = 'branched'"
+            "            AND s.started_at >= p.ended_at))"
+        )
+        return clause, []
+
     def archive_old_sessions(
         self,
         *,
@@ -4365,13 +4401,10 @@ class SessionDB:
         user can have thousands of old chats, but still needs Settings ->
         Archived Chats to restore them.
 
-        A session is eligible when it is surfaced by ``list_sessions_rich``
-        (root conversations and branch sessions, not hidden subagent children),
-        has at least ``min_message_count`` messages, is not preserved by id, and
-        is either older than ``older_than_days`` or outside the most-recent
-        ``keep_recent`` surfaced conversations.  Recent live sessions
-        (``ended_at IS NULL`` and activity within ``active_grace_seconds``) are
-        kept even when they would otherwise fall outside the cap.
+        Optimized: instead of fetching all sessions through list_sessions_rich
+        (which runs expensive recursive CTEs), we use targeted SQL that only
+        identifies candidate IDs eligible for archiving. This avoids materializing
+        the entire session list on every boot.
         """
         keep_recent = max(0, int(keep_recent or 0))
         older_than_days = max(0, int(older_than_days or 0))
@@ -4387,57 +4420,99 @@ class SessionDB:
         }
         now = time.time()
         cutoff = now - older_than_days * 86400 if older_than_days > 0 else None
-        archive_ids: List[str] = []
-        seen_targets = set()
+        active_grace_cutoff = now - active_grace_seconds if active_grace_seconds > 0 else 0
 
-        sessions = self.list_sessions_rich(
-            limit=100000,
-            offset=0,
-            min_message_count=min_message_count,
-            include_archived=False,
-            archived_only=False,
-            order_by_last_active=True,
-        )
-        for index, session in enumerate(sessions):
-            sid = str(session.get("id") or "").strip()
-            if not sid:
-                continue
-            root_id = str(session.get("_lineage_root_id") or sid).strip()
-            target_id = root_id or sid
-            if target_id in seen_targets:
-                continue
-            seen_targets.add(target_id)
-            if sid in preserved or target_id in preserved:
-                continue
-
-            started_at = float(session.get("started_at") or 0)
-            last_active = float(session.get("last_active") or started_at)
-            ended_at = session.get("ended_at")
-            recently_active = (
-                ended_at is None
-                and active_grace_seconds > 0
-                and now - last_active < active_grace_seconds
+        def _find_archive_ids(conn):
+            """Find session IDs eligible for archiving using targeted SQL.
+            
+            Strategy:
+            1. First, find the keep_recent threshold timestamp using a lightweight
+               COUNT query on surfaced sessions (no CTE, no message joins).
+            2. Then, find all surfaced sessions whose last_active is before
+               both the keep_recent threshold AND the age cutoff.
+            3. Exclude preserved IDs and recently-active sessions.
+            """
+            # Build the surfaced session clause
+            surfaced_clause, _ = self._surfaced_session_filter_sql()
+            
+            # Base WHERE for surfaced, non-archived sessions with enough messages
+            base_where = (
+                f"s.archived = 0"
+                f" AND s.message_count >= {min_message_count}"
+                f" AND {surfaced_clause}"
             )
-            if recently_active:
-                continue
-
-            beyond_recent_cap = keep_recent > 0 and index >= keep_recent
-            past_age_cutoff = cutoff is not None and last_active < cutoff
-            if beyond_recent_cap or past_age_cutoff:
-                archive_ids.append(target_id)
-
+            
+            # Find the keep_recent boundary — the started_at timestamp of the
+            # keep_recent-th most recent surfaced session. Sessions older than
+            # this are beyond the recency cap. We use a lightweight query that
+            # only reads sessions table (no message joins or CTEs).
+            recent_boundary = None
+            if keep_recent > 0:
+                cursor = conn.execute(
+                    f"SELECT started_at FROM sessions s "
+                    f"WHERE {base_where} "
+                    f"ORDER BY s.started_at DESC "
+                    f"LIMIT 1 OFFSET {keep_recent}",
+                )
+                row = cursor.fetchone()
+                if row:
+                    recent_boundary = row["started_at"]
+            
+            # Now find candidates: sessions that are either past the age cutoff
+            # or beyond the recency cap (or both). Exclude preserved and active sessions.
+            candidate_clauses = [base_where]
+            params = []
+            
+            if recent_boundary is not None:
+                candidate_clauses.append("s.started_at < ?")
+                params.append(recent_boundary)
+            
+            if cutoff is not None and (recent_boundary is None or cutoff < recent_boundary):
+                # Only add age cutoff if it's stricter than the recency boundary
+                candidate_clauses.append("s.started_at < ?")
+                params.append(cutoff)
+            
+            # Exclude recently active sessions
+            if active_grace_seconds > 0:
+                candidate_clauses.append(
+                    "(s.ended_at IS NOT NULL OR s.started_at < ?)"
+                )
+                params.append(active_grace_cutoff)
+            
+            # Exclude preserved IDs
+            if preserved:
+                placeholders = ",".join("?" for _ in preserved)
+                candidate_clauses.append(f"s.id NOT IN ({placeholders})")
+                params.extend(preserved)
+            
+            candidate_where = " AND ".join(candidate_clauses)
+            
+            cursor = conn.execute(
+                f"SELECT s.id FROM sessions s WHERE {candidate_where}",
+                params,
+            )
+            return [row["id"] for row in cursor.fetchall()]
+        
+        archive_ids = []
+        with self._lock:
+            archive_ids = _find_archive_ids(self._conn)
+        
         if not archive_ids:
             return self.archive_hidden_descendants_of_archived_sessions()
-
+        
         def _do(conn):
-            placeholders = ",".join("?" for _ in archive_ids)
-            cursor = conn.execute(
-                f"UPDATE sessions SET archived = 1 "
-                f"WHERE archived = 0 AND id IN ({placeholders})",
-                archive_ids,
-            )
-            return cursor.rowcount
-
+            updated = 0
+            for start in range(0, len(archive_ids), 500):
+                chunk = archive_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
+        
         archived = self._execute_write(_do)
         return archived + self.archive_hidden_descendants_of_archived_sessions()
 

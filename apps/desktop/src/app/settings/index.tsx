@@ -124,6 +124,13 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 nested
                 onClick={() => openProviderView('keys')}
               />
+              <OverlayNavItem
+                active={providerView === 'custom-endpoints'}
+                icon={Globe}
+                label={t.settings.nav.providerCustomEndpoints}
+                nested
+                onClick={() => openProviderView('custom-endpoints')}
+              />
             </div>
           )}
           <OverlayNavItem
@@ -220,7 +227,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               onMainModelChanged={onMainModelChanged}
             />
           ) : activeView === 'providers' ? (
-            <ProvidersSettings onViewChange={setProviderView} view={providerView} />
+            <ProvidersSettings
+              onConfigSaved={onConfigSaved}
+              onMainModelChanged={onMainModelChanged}
+              onViewChange={setProviderView}
+              view={providerView}
+            />
           ) : activeView === 'keys' ? (
             <KeysSettings view={keysView} />
           ) : activeView === 'mcp' ? (

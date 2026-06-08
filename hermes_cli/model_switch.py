@@ -1957,6 +1957,42 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # Bare direct custom config:
+    #
+    #   model:
+    #     provider: custom
+    #     base_url: http://host/v1
+    #     default: my-model
+    #
+    # is a valid runtime configuration, but it has no providers:/custom_providers
+    # inventory entry. Surface it as a callable picker row so the Desktop can
+    # keep using the direct endpoint instead of hiding the active provider.
+    current_provider_norm = str(current_provider or "").strip().lower()
+    current_base_url_norm = _norm_url(current_base_url)
+    if (
+        current_provider_norm == "custom"
+        and current_base_url_norm
+        and current_model
+        and not any(
+            str(row.get("slug", "")).strip().lower() == "custom"
+            or (
+                bool(row.get("is_current"))
+                and _norm_url(row.get("api_url", "")) == current_base_url_norm
+            )
+            for row in results
+        )
+    ):
+        results.append({
+            "slug": "custom",
+            "name": "Custom",
+            "is_current": True,
+            "is_user_defined": True,
+            "models": [current_model],
+            "total_models": 1,
+            "source": "direct-config",
+            "api_url": current_base_url,
+        })
+
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 

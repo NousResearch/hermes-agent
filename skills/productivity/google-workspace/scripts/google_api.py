@@ -58,6 +58,12 @@ SCOPES = [
     "https://www.googleapis.com/auth/tasks.readonly",
 ]
 
+_SCOPE_IMPLICATIONS = {
+    "https://www.googleapis.com/auth/tasks": {
+        "https://www.googleapis.com/auth/tasks.readonly",
+    },
+}
+
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
     normalized = dict(payload)
@@ -73,15 +79,68 @@ def _ensure_authenticated():
         sys.exit(1)
 
 
-def _stored_token_scopes() -> list[str]:
+def _scope_list(raw) -> list[str]:
+    if not raw:
+        return []
+    values = raw.split() if isinstance(raw, str) else raw
+    return [s.strip() for s in values if isinstance(s, str) and s.strip()]
+
+
+def _expand_granted_scopes(scopes: list[str]) -> set[str]:
+    expanded = set(scopes)
+    for scope in list(expanded):
+        expanded.update(_SCOPE_IMPLICATIONS.get(scope, set()))
+    return expanded
+
+
+def _stored_token_payload() -> dict:
     try:
-        data = json.loads(TOKEN_PATH.read_text())
+        return json.loads(TOKEN_PATH.read_text())
     except Exception:
-        return list(SCOPES)
-    scopes = data.get("scopes")
-    if isinstance(scopes, list) and scopes:
-        return scopes
+        return {}
+
+
+def _stored_token_scope_list() -> list[str]:
+    data = _stored_token_payload()
+    scopes = data.get("scopes") or data.get("scope")
+    if scopes:
+        return _scope_list(scopes)
     return list(SCOPES)
+
+
+def _stored_token_scopes() -> list[str]:
+    return _stored_token_scope_list()
+
+
+def _normalized_scope_payload_for_save(creds, *, existing_payload: dict | None = None) -> dict:
+    token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
+    actually_granted = []
+    if hasattr(creds, "granted_scopes") and creds.granted_scopes:
+        actually_granted = _scope_list(list(creds.granted_scopes))
+    if actually_granted:
+        token_payload["scopes"] = actually_granted
+        return token_payload
+
+    existing_scopes = _scope_list((existing_payload or {}).get("scopes") or (existing_payload or {}).get("scope"))
+    if existing_scopes:
+        token_payload["scopes"] = existing_scopes
+    return token_payload
+
+
+def _require_scopes(required_scopes: list[str]):
+    granted = _expand_granted_scopes(_stored_token_scope_list())
+    missing = [scope for scope in required_scopes if scope not in granted]
+    if missing:
+        joined = ", ".join(missing)
+        print(
+            f"ERROR: Token missing required Google Workspace scopes for this operation: {joined}",
+            file=sys.stderr,
+        )
+        print(
+            f"Re-run: python {Path(__file__).parent / 'setup.py'} --revoke && python {Path(__file__).parent / 'setup.py'} --auth-url",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _gws_binary() -> str | None:
@@ -195,7 +254,7 @@ def get_credentials():
         creds.refresh(Request())
         TOKEN_PATH.write_text(
             json.dumps(
-                _normalize_authorized_user_payload(json.loads(creds.to_json())),
+                _normalized_scope_payload_for_save(creds, existing_payload=_stored_token_payload()),
                 indent=2,
             )
         )
@@ -1083,6 +1142,7 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 
 def tasks_tasklists_list(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks.readonly"])
     service = build_service("tasks", "v1")
     result = service.tasklists().list(maxResults=args.max).execute()
     tasklists = [_normalize_tasklist_resource(tl) for tl in result.get("items", [])]
@@ -1090,6 +1150,7 @@ def tasks_tasklists_list(args):
 
 
 def tasks_tasklists_create(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     result = service.tasklists().insert(body={"title": args.title}).execute()
     print(json.dumps({
@@ -1099,6 +1160,7 @@ def tasks_tasklists_create(args):
 
 
 def tasks_tasklists_update(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     result = service.tasklists().patch(
         tasklist=args.tasklist_id,
@@ -1111,6 +1173,7 @@ def tasks_tasklists_update(args):
 
 
 def tasks_tasklists_delete(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     service.tasklists().delete(tasklist=args.tasklist_id).execute()
     print(json.dumps({
@@ -1120,6 +1183,7 @@ def tasks_tasklists_delete(args):
 
 
 def tasks_tasks_list(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks.readonly"])
     service = build_service("tasks", "v1")
     params = {
         "tasklist": args.tasklist_id,
@@ -1138,6 +1202,7 @@ def tasks_tasks_list(args):
 
 
 def tasks_tasks_create(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     body = {"title": args.title}
     if args.notes:
@@ -1159,6 +1224,7 @@ def tasks_tasks_create(args):
 
 
 def tasks_tasks_update(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     body = {}
     if args.title:
@@ -1192,6 +1258,7 @@ def tasks_tasks_update(args):
 
 
 def tasks_tasks_delete(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     service.tasks().delete(tasklist=args.tasklist_id, task=args.task_id).execute()
     print(json.dumps({
@@ -1202,6 +1269,7 @@ def tasks_tasks_delete(args):
 
 
 def tasks_tasks_move(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     params = {"tasklist": args.tasklist_id, "task": args.task_id}
     if args.parent:
@@ -1216,6 +1284,7 @@ def tasks_tasks_move(args):
 
 
 def tasks_tasks_clear(args):
+    _require_scopes(["https://www.googleapis.com/auth/tasks"])
     service = build_service("tasks", "v1")
     service.tasks().clear(tasklist=args.tasklist_id).execute()
     print(json.dumps({

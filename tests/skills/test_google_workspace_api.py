@@ -486,9 +486,101 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert saved["type"] == "authorized_user"
 
 
+def test_api_get_credentials_refresh_preserves_existing_scopes(api_module, monkeypatch):
+    token_path = api_module.TOKEN_PATH
+    _write_token(
+        token_path,
+        token="ya29.old",
+        scopes=["https://www.googleapis.com/auth/tasks"],
+    )
+
+    class FakeCredentials:
+        def __init__(self):
+            self.expired = True
+            self.refresh_token = "1//refresh"
+            self.valid = True
+            self.granted_scopes = None
+
+        def refresh(self, request):
+            self.expired = False
+
+        def to_json(self):
+            return json.dumps({
+                "token": "ya29.refreshed",
+                "refresh_token": "1//refresh",
+                "client_id": "123.apps.googleusercontent.com",
+                "client_secret": "secret",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            })
+
+    class FakeCredentialsModule:
+        @staticmethod
+        def from_authorized_user_file(filename, scopes):
+            assert filename == str(token_path)
+            assert scopes == ["https://www.googleapis.com/auth/tasks"]
+            return FakeCredentials()
+
+    google_module = types.ModuleType("google")
+    oauth2_module = types.ModuleType("google.oauth2")
+    credentials_module = types.ModuleType("google.oauth2.credentials")
+    credentials_module.Credentials = FakeCredentialsModule
+    transport_module = types.ModuleType("google.auth.transport")
+    requests_module = types.ModuleType("google.auth.transport.requests")
+    requests_module.Request = lambda: object()
+
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport", transport_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
+
+    api_module.get_credentials()
+
+    saved = json.loads(token_path.read_text())
+    assert saved["token"] == "ya29.refreshed"
+    assert saved["scopes"] == ["https://www.googleapis.com/auth/tasks"]
+
+
 def test_api_scopes_include_google_tasks(api_module):
     assert "https://www.googleapis.com/auth/tasks" in api_module.SCOPES
     assert "https://www.googleapis.com/auth/tasks.readonly" in api_module.SCOPES
+
+
+def test_api_tasks_create_rejects_readonly_token(api_module, monkeypatch, capsys):
+    api_module.TOKEN_PATH.write_text(
+        json.dumps(
+            {
+                "token": "ya29.test",
+                "scopes": ["https://www.googleapis.com/auth/tasks.readonly"],
+            }
+        )
+    )
+
+    called = {"build_service": False}
+
+    def fail_if_called(*args, **kwargs):
+        called["build_service"] = True
+        raise AssertionError("build_service should not be called when scopes are insufficient")
+
+    api_module.build_service = fail_if_called
+    args = api_module.argparse.Namespace(
+        tasklist_id="tl-1",
+        title="Buy milk",
+        notes="",
+        due="",
+        parent="",
+        previous="",
+        func=api_module.tasks_tasks_create,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        api_module.tasks_tasks_create(args)
+
+    assert exc_info.value.code == 1
+    assert called["build_service"] is False
+    err = capsys.readouterr().err
+    assert "missing required google workspace scopes" in err.lower()
+    assert "https://www.googleapis.com/auth/tasks" in err
 
 
 def test_api_tasks_tasklists_list_uses_python_service_even_when_gws_is_present(api_module, capsys):

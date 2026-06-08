@@ -541,6 +541,47 @@ enabled = true
     assert "hermes-session-s2" in scope_push_names
 
 
+def test_nemo_relay_plugin_retries_plugins_toml_after_clear_failure(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    initialize_calls = 0
+
+    async def _counting_initialize(config):
+        nonlocal initialize_calls
+        initialize_calls += 1
+        fake.events.append(("plugin.initialize.attempt", initialize_calls, config))
+        return {"diagnostics": []}
+
+    async def _failing_clear():
+        fake.events.append(("plugin.clear.failed",))
+        raise RuntimeError("boom")
+
+    fake.plugin.initialize = _counting_initialize
+    fake.plugin.clear = _failing_clear
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    plugin.on_session_start(session_id="s2")
+
+    event_names = [event[0] for event in fake.events]
+    assert event_names.count("plugin.initialize.attempt") == 2
+    assert event_names.count("plugin.clear.failed") == 1
+    scope_push_names = [event[1] for event in fake.events if event[0] == "scope.push"]
+    assert "hermes-session-s2" in scope_push_names
+
+
 def test_nemo_relay_plugin_disables_direct_atif_when_plugins_toml_owns_atif(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)

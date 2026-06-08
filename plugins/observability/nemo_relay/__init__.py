@@ -93,9 +93,11 @@ class _Runtime:
         clear = getattr(plugin_mod, "clear", None)
         if not callable(clear):
             return
-        _resolve_awaitable(clear())
-        self._plugin_config_initialized = False
-        self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+        try:
+            _resolve_awaitable(clear())
+        finally:
+            self._plugin_config_initialized = False
+            self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
 
     def _activate_direct_fallbacks(self) -> None:
         self._plugin_config_needs_reinit = False

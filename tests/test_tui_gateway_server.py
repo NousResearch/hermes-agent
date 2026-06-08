@@ -1454,6 +1454,66 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
+    """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp_on = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global"},
+        }
+    )
+    assert resp_on["result"]["value"] == "1"
+    assert resp_on["result"]["scope"] == "global"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+    resp_off = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global"},
+        }
+    )
+    assert resp_off["result"]["value"] == "0"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
+
+
+def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
+    """An explicit value pins global approvals.mode regardless of prior state."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global", "value": "1"},
+        }
+    )
+    assert resp["result"]["value"] == "1"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+    # Setting it on again is idempotent — stays off.
+    resp_again = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global", "value": "1"},
+        }
+    )
+    assert resp_again["result"]["value"] == "1"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     writes = []
     emits = []
@@ -5774,3 +5834,215 @@ def test_notification_event_dedup_key_keeps_completions_one_shot():
     assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
         replay
     )
+
+
+# --- image.attach_bytes / pdf.attach (remote-client byte upload) -------------
+
+# Smallest valid 1x1 PNG, base64-encoded.
+_PNG_1X1_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _attach_bytes_cli(monkeypatch):
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+
+def test_image_attach_bytes_writes_to_gateway_dir(monkeypatch, tmp_path):
+    """Remote client uploads base64 bytes; gateway writes them to its own disk."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "abx",
+                "content_base64": _PNG_1X1_B64,
+                "filename": "shot.png",
+            },
+        }
+    )
+
+    res = resp["result"]
+    assert res["attached"] is True
+    written = Path(res["path"])
+    assert written.is_file()
+    assert written.parent == tmp_path / "images"
+    assert written.read_bytes().startswith(b"\x89PNG")
+    assert len(server._sessions["abx"]["attached_images"]) == 1
+    assert res["bytes"] > 0
+
+
+def test_image_attach_bytes_accepts_data_url_prefix(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx2"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "abx2",
+                "content_base64": f"data:image/png;base64,{_PNG_1X1_B64}",
+            },
+        }
+    )
+    assert resp["result"]["attached"] is True
+
+
+def test_image_attach_bytes_data_alias_and_magic_sniff(monkeypatch, tmp_path):
+    """Older desktop builds send `data` (not content_base64); ext sniffed from bytes."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx3"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "abx3", "data": _PNG_1X1_B64},
+        }
+    )
+    res = resp["result"]
+    assert res["attached"] is True
+    assert Path(res["path"]).suffix == ".png"  # sniffed from magic bytes
+
+
+def test_image_attach_bytes_rejects_invalid_base64(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx4"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "abx4", "content_base64": "!!!not base64!!!"},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4017
+
+
+def test_image_attach_bytes_rejects_oversize(monkeypatch, tmp_path):
+    import base64 as _b64
+
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_ATTACH_BYTES_MAX_BYTES", 10)
+    server._sessions["abx5"] = _session()
+
+    big = _b64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 100).decode("ascii")
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "abx5", "content_base64": big},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+
+
+def test_image_attach_bytes_rejects_unsupported_extension(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx6"] = _session()
+
+    # filename hint forces a non-image extension; magic sniff is bypassed by hint
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "abx6",
+                "content_base64": _PNG_1X1_B64,
+                "filename": "evil.exe",
+            },
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4016
+
+
+def test_pdf_attach_requires_poppler(monkeypatch, tmp_path):
+    """Without pdftoppm on PATH, pdf.attach returns a clear 5028."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    server._sessions["pdf1"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdf1", "content_base64": "JVBERi0xLjQK"},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 5028
+
+
+def test_pdf_attach_rejects_non_pdf_bytes(monkeypatch, tmp_path):
+    import base64 as _b64
+
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdf2"] = _session()
+
+    not_pdf = _b64.b64encode(b"this is not a pdf").decode("ascii")
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdf2", "content_base64": not_pdf},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4017
+
+
+def test_pdf_attach_requires_path_or_bytes(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdf3"] = _session()
+
+    resp = server.handle_request(
+        {"id": "1", "method": "pdf.attach", "params": {"session_id": "pdf3"}}
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4015
+
+
+def test_decode_attach_base64_helper():
+    import base64 as _b64
+
+    raw = _b64.b64encode(b"hello").decode("ascii")
+    assert server._decode_attach_base64(raw, mime_prefix="image/") == b"hello"
+    assert (
+        server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/")
+        == b"hello"
+    )
+    # whitespace inside payload is tolerated
+    assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/") == b"hello"
+    assert server._decode_attach_base64("@@@", mime_prefix="image/") is None
+
+
+def test_sniff_image_ext_magic_and_filename():
+    assert server._sniff_image_ext(b"\x89PNG\r\n\x1a\n") == ".png"
+    assert server._sniff_image_ext(b"\xff\xd8\xff\xe0") == ".jpg"
+    assert server._sniff_image_ext(b"GIF89a....") == ".gif"
+    assert server._sniff_image_ext(b"RIFF1234WEBPxxxx") == ".webp"
+    assert server._sniff_image_ext(b"BM......") == ".bmp"
+    assert server._sniff_image_ext(b"unknown") == ".png"  # fallback
+    # filename hint wins over magic bytes
+    assert server._sniff_image_ext(b"\x89PNG", "photo.jpeg") == ".jpeg"

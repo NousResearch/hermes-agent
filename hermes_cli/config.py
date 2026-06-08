@@ -5404,17 +5404,78 @@ def invalidate_env_cache() -> None:
     _env_cache = None
 
 
+def _split_concatenated_env_pairs(stripped: str, known_keys: set) -> Optional[list]:
+    """Split a line that is a concatenation of >=2 known ``KEY=VALUE`` pairs.
+
+    Returns the list of ``"KEY=VALUE"`` segments, or ``None`` when the line is
+    not *safely* splittable so the caller can leave it untouched.
+
+    Splitting on a known ``KEY=`` found at an arbitrary position corrupts
+    perfectly valid single-value lines: a secret whose value legitimately
+    embeds a known key name (URL query strings, passwords) was being
+    truncated and a phantom entry fabricated. Two rules keep that from
+    happening:
+
+    * **Anchor the first segment to position 0.** The line must START with a
+      known ``KEY=``; otherwise it is not a recognizable concatenation and we
+      return ``None`` (the caller emits it verbatim). This also stops the old
+      behaviour of silently dropping any text before the first match.
+    * **Never split inside a URL value.** A following known ``KEY=`` is only
+      accepted as a boundary when the value accumulated so far is not URL-like
+      (does not contain ``"://"``). URL query strings embed ``name=value``
+      pairs whose names may collide with Hermes key names, and splitting there
+      would mangle the URL.
+
+    Overlapping suffix collisions are handled by dropping matches fully
+    contained inside a longer needle (e.g. ``LM_API_KEY=`` inside
+    ``GLM_API_KEY=``).
+    """
+    match_ranges: list[tuple[int, int]] = []
+    for key_name in known_keys:
+        needle = key_name + "="
+        idx = stripped.find(needle)
+        while idx >= 0:
+            match_ranges.append((idx, idx + len(needle)))
+            idx = stripped.find(needle, idx + len(needle))
+
+    starts = sorted({
+        s for s, e in match_ranges
+        if not any(
+            s2 <= s and e2 >= e and (s2, e2) != (s, e)
+            for s2, e2 in match_ranges
+        )
+    })
+
+    # The line must begin with a known key for us to treat it as concatenated
+    # pairs. Anything else is left verbatim.
+    if not starts or starts[0] != 0:
+        return None
+
+    segments: list[str] = []
+    seg_start = 0
+    for nxt in starts[1:]:
+        # Don't break a URL value (its query string can embed key-like names).
+        if "://" in stripped[seg_start:nxt]:
+            continue
+        segments.append(stripped[seg_start:nxt])
+        seg_start = nxt
+    segments.append(stripped[seg_start:])
+
+    cleaned = [seg.strip() for seg in segments if seg.strip()]
+    return cleaned if len(cleaned) >= 2 else None
+
+
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
-    Handles two known corruption patterns:
-    1. Concatenated KEY=VALUE pairs on a single line (missing newline between
-       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
-    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+    Handles the known corruption pattern of concatenated KEY=VALUE pairs on a
+    single line (missing newline between entries, e.g.
+    ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
 
     Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
-    split on real Hermes env var names, avoiding false positives from values
-    that happen to contain uppercase text with ``=``.
+    split on real Hermes env var names, and only when the line is safely
+    recognizable as a concatenation (see :func:`_split_concatenated_env_pairs`)
+    — valid single-value lines are never altered.
     """
     # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
     # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
@@ -5430,36 +5491,12 @@ def _sanitize_env_lines(lines: list) -> list:
             sanitized.append(raw + "\n")
             continue
 
-        # Detect concatenated KEY=VALUE pairs on one line.
-        # Search for known KEY= patterns at any position in the line.
-        # We collect full needle ranges so we can drop matches that are
-        # fully contained within a longer overlapping needle. Without this,
-        # suffix collisions corrupt the file: e.g. LM_API_KEY= inside
-        # GLM_API_KEY= would otherwise split the line into "G\nLM_API_KEY=...".
-        match_ranges: list[tuple[int, int]] = []
-        for key_name in known_keys:
-            needle = key_name + "="
-            idx = stripped.find(needle)
-            while idx >= 0:
-                match_ranges.append((idx, idx + len(needle)))
-                idx = stripped.find(needle, idx + len(needle))
-
-        split_positions = sorted({
-            s for s, e in match_ranges
-            if not any(
-                s2 <= s and e2 >= e and (s2, e2) != (s, e)
-                for s2, e2 in match_ranges
-            )
-        })
-
-        if len(split_positions) > 1:
-            for i, pos in enumerate(split_positions):
-                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                part = stripped[pos:end].strip()
-                if part:
-                    sanitized.append(part + "\n")
-        else:
+        segments = _split_concatenated_env_pairs(stripped, known_keys)
+        if segments is None:
             sanitized.append(stripped + "\n")
+        else:
+            for part in segments:
+                sanitized.append(part + "\n")
 
     return sanitized
 

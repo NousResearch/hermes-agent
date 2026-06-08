@@ -63,6 +63,55 @@ def test_load_env_normal_file_unchanged():
         env_path.unlink(missing_ok=True)
 
 
+def test_load_env_preserves_url_value_with_embedded_key():
+    """A valid single value whose URL embeds a known KEY= must not be split.
+
+    Regression: ``_sanitize_env_lines`` used to scan for any known ``KEY=``
+    at any position, so a URL query string like
+    ``...?TELEGRAM_HOME_CHANNEL=123`` was treated as a concatenation boundary.
+    The URL got truncated and a phantom ``TELEGRAM_HOME_CHANNEL`` entry was
+    fabricated.
+    """
+    from hermes_cli.config import load_env
+
+    url = "http://localhost:8080/v1/send?TELEGRAM_HOME_CHANNEL=123"
+    content = f"SIGNAL_HTTP_URL={url}\n"
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(content)
+        env_path = Path(f.name)
+
+    try:
+        with patch("hermes_cli.config.get_env_path", return_value=env_path):
+            result = load_env()
+        assert result.get("SIGNAL_HTTP_URL") == url, (
+            f"URL should round-trip intact, got {result.get('SIGNAL_HTTP_URL')!r}"
+        )
+        # The embedded query parameter must NOT become its own env var.
+        assert "TELEGRAM_HOME_CHANNEL" not in result
+    finally:
+        env_path.unlink(missing_ok=True)
+
+
+def test_sanitize_does_not_drop_leading_text():
+    """Text before the first known key must never be silently dropped.
+
+    Regression: when a line contained two or more known keys but did not
+    start with one (e.g. an ``export `` prefix), the splitter began at the
+    first match position and discarded everything before it.
+    """
+    from hermes_cli.config import _sanitize_env_lines
+
+    line = "export OPENAI_API_KEY=sk-aOPENAI_BASE_URL=https://example.test\n"
+    out = _sanitize_env_lines([line])
+
+    assert out == [line.rstrip("\r\n") + "\n"], (
+        f"Line not starting with a known key must be left verbatim, got {out!r}"
+    )
+
+
 def test_env_loader_sanitizes_before_dotenv():
     """Verify env_loader._sanitize_env_file_if_needed fixes corrupted files."""
     from hermes_cli.env_loader import _sanitize_env_file_if_needed

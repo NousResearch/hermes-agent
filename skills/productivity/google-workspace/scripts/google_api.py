@@ -18,6 +18,9 @@ Usage:
   python google_api.py sheets update SHEET_ID RANGE --values '[[...]]'
   python google_api.py sheets append SHEET_ID RANGE --values '[[...]]'
   python google_api.py docs get DOC_ID
+  python google_api.py tasks tasklists list [--max 20]
+  python google_api.py tasks tasks list TASKLIST_ID [--max 50]
+  python google_api.py tasks tasks create TASKLIST_ID --title "Buy milk"
 """
 
 import argparse
@@ -51,6 +54,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/tasks.readonly",
 ]
 
 
@@ -204,6 +209,32 @@ def build_service(api, version):
     from googleapiclient.discovery import build
 
     return build(api, version, credentials=get_credentials())
+
+
+def _normalize_task_resource(task: dict) -> dict:
+    return {
+        "id": task.get("id", ""),
+        "title": task.get("title", ""),
+        "status": task.get("status", ""),
+        "notes": task.get("notes", ""),
+        "due": task.get("due", ""),
+        "completed": task.get("completed", ""),
+        "updated": task.get("updated", ""),
+        "deleted": bool(task.get("deleted", False)),
+        "hidden": bool(task.get("hidden", False)),
+        "position": task.get("position", ""),
+        "parent": task.get("parent", ""),
+        "selfLink": task.get("selfLink", ""),
+    }
+
+
+def _normalize_tasklist_resource(tasklist: dict) -> dict:
+    return {
+        "id": tasklist.get("id", ""),
+        "title": tasklist.get("title", ""),
+        "updated": tasklist.get("updated", ""),
+        "selfLink": tasklist.get("selfLink", ""),
+    }
 
 
 # =========================================================================
@@ -1047,6 +1078,153 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 
 # =========================================================================
+# Tasks
+# =========================================================================
+
+
+def tasks_tasklists_list(args):
+    service = build_service("tasks", "v1")
+    result = service.tasklists().list(maxResults=args.max).execute()
+    tasklists = [_normalize_tasklist_resource(tl) for tl in result.get("items", [])]
+    print(json.dumps(tasklists, indent=2, ensure_ascii=False))
+
+
+def tasks_tasklists_create(args):
+    service = build_service("tasks", "v1")
+    result = service.tasklists().insert(body={"title": args.title}).execute()
+    print(json.dumps({
+        "status": "created",
+        "tasklist": _normalize_tasklist_resource(result),
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_tasklists_update(args):
+    service = build_service("tasks", "v1")
+    result = service.tasklists().patch(
+        tasklist=args.tasklist_id,
+        body={"title": args.title},
+    ).execute()
+    print(json.dumps({
+        "status": "updated",
+        "tasklist": _normalize_tasklist_resource(result),
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_tasklists_delete(args):
+    service = build_service("tasks", "v1")
+    service.tasklists().delete(tasklist=args.tasklist_id).execute()
+    print(json.dumps({
+        "status": "deleted",
+        "tasklistId": args.tasklist_id,
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_tasks_list(args):
+    service = build_service("tasks", "v1")
+    params = {
+        "tasklist": args.tasklist_id,
+        "maxResults": args.max,
+        "showCompleted": args.show_completed,
+        "showHidden": args.show_hidden,
+        "showDeleted": args.show_deleted,
+    }
+    if args.due_min:
+        params["dueMin"] = _datetime_with_timezone(args.due_min)
+    if args.due_max:
+        params["dueMax"] = _datetime_with_timezone(args.due_max)
+    result = service.tasks().list(**params).execute()
+    tasks = [_normalize_task_resource(task) for task in result.get("items", [])]
+    print(json.dumps(tasks, indent=2, ensure_ascii=False))
+
+
+def tasks_tasks_create(args):
+    service = build_service("tasks", "v1")
+    body = {"title": args.title}
+    if args.notes:
+        body["notes"] = args.notes
+    if args.due:
+        body["due"] = _datetime_with_timezone(args.due)
+
+    params = {"tasklist": args.tasklist_id, "body": body}
+    if args.parent:
+        params["parent"] = args.parent
+    if args.previous:
+        params["previous"] = args.previous
+
+    result = service.tasks().insert(**params).execute()
+    print(json.dumps({
+        "status": "created",
+        "task": _normalize_task_resource(result),
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_tasks_update(args):
+    service = build_service("tasks", "v1")
+    body = {}
+    if args.title:
+        body["title"] = args.title
+    if args.notes:
+        body["notes"] = args.notes
+    if args.due:
+        body["due"] = _datetime_with_timezone(args.due)
+    if args.clear_due:
+        body["due"] = None
+    if args.status:
+        body["status"] = args.status
+    if args.completed:
+        body["completed"] = _datetime_with_timezone(args.completed)
+    if args.clear_completed:
+        body["completed"] = None
+    if args.deleted is not None:
+        body["deleted"] = args.deleted
+    if args.hidden is not None:
+        body["hidden"] = args.hidden
+
+    result = service.tasks().patch(
+        tasklist=args.tasklist_id,
+        task=args.task_id,
+        body=body,
+    ).execute()
+    print(json.dumps({
+        "status": "updated",
+        "task": _normalize_task_resource(result),
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_tasks_delete(args):
+    service = build_service("tasks", "v1")
+    service.tasks().delete(tasklist=args.tasklist_id, task=args.task_id).execute()
+    print(json.dumps({
+        "status": "deleted",
+        "taskId": args.task_id,
+        "tasklistId": args.tasklist_id,
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_tasks_move(args):
+    service = build_service("tasks", "v1")
+    params = {"tasklist": args.tasklist_id, "task": args.task_id}
+    if args.parent:
+        params["parent"] = args.parent
+    if args.previous:
+        params["previous"] = args.previous
+    result = service.tasks().move(**params).execute()
+    print(json.dumps({
+        "status": "moved",
+        "task": _normalize_task_resource(result),
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_tasks_clear(args):
+    service = build_service("tasks", "v1")
+    service.tasks().clear(tasklist=args.tasklist_id).execute()
+    print(json.dumps({
+        "status": "cleared",
+        "tasklistId": args.tasklist_id,
+    }, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
 # CLI parser
 # =========================================================================
 
@@ -1216,6 +1394,84 @@ def main():
     p.add_argument("doc_id")
     p.add_argument("--text", required=True, help="Text to append to the end of the document")
     p.set_defaults(func=docs_append)
+
+    # --- Tasks ---
+    tasks = sub.add_parser("tasks")
+    tasks_sub = tasks.add_subparsers(dest="resource", required=True)
+
+    tasklists = tasks_sub.add_parser("tasklists")
+    tasklists_sub = tasklists.add_subparsers(dest="action", required=True)
+
+    p = tasklists_sub.add_parser("list")
+    p.add_argument("--max", type=int, default=20)
+    p.set_defaults(func=tasks_tasklists_list)
+
+    p = tasklists_sub.add_parser("create")
+    p.add_argument("--title", required=True, help="Task list title")
+    p.set_defaults(func=tasks_tasklists_create)
+
+    p = tasklists_sub.add_parser("update")
+    p.add_argument("tasklist_id")
+    p.add_argument("--title", required=True, help="New task list title")
+    p.set_defaults(func=tasks_tasklists_update)
+
+    p = tasklists_sub.add_parser("delete")
+    p.add_argument("tasklist_id")
+    p.set_defaults(func=tasks_tasklists_delete)
+
+    task_items = tasks_sub.add_parser("tasks")
+    task_items_sub = task_items.add_subparsers(dest="action", required=True)
+
+    p = task_items_sub.add_parser("list")
+    p.add_argument("tasklist_id")
+    p.add_argument("--max", type=int, default=50)
+    p.add_argument("--show-completed", action="store_true")
+    p.add_argument("--show-hidden", action="store_true")
+    p.add_argument("--show-deleted", action="store_true")
+    p.add_argument("--due-min", default="", help="Only tasks due on or after this ISO 8601 timestamp")
+    p.add_argument("--due-max", default="", help="Only tasks due on or before this ISO 8601 timestamp")
+    p.set_defaults(func=tasks_tasks_list)
+
+    p = task_items_sub.add_parser("create")
+    p.add_argument("tasklist_id")
+    p.add_argument("--title", required=True)
+    p.add_argument("--notes", default="")
+    p.add_argument("--due", default="", help="Due time (ISO 8601)")
+    p.add_argument("--parent", default="", help="Parent task ID for subtasks")
+    p.add_argument("--previous", default="", help="Insert after this sibling task ID")
+    p.set_defaults(func=tasks_tasks_create)
+
+    p = task_items_sub.add_parser("update")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.add_argument("--title", default="")
+    p.add_argument("--notes", default="")
+    p.add_argument("--due", default="", help="Due time (ISO 8601)")
+    p.add_argument("--clear-due", action="store_true", help="Clear the due timestamp")
+    p.add_argument("--status", choices=["needsAction", "completed"], default="")
+    p.add_argument("--completed", default="", help="Completion timestamp (ISO 8601)")
+    p.add_argument("--clear-completed", action="store_true", help="Clear the completed timestamp")
+    p.add_argument("--deleted", dest="deleted", action="store_true", default=None)
+    p.add_argument("--not-deleted", dest="deleted", action="store_false")
+    p.add_argument("--hidden", dest="hidden", action="store_true", default=None)
+    p.add_argument("--not-hidden", dest="hidden", action="store_false")
+    p.set_defaults(func=tasks_tasks_update)
+
+    p = task_items_sub.add_parser("delete")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.set_defaults(func=tasks_tasks_delete)
+
+    p = task_items_sub.add_parser("move")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.add_argument("--parent", default="", help="New parent task ID")
+    p.add_argument("--previous", default="", help="Insert after this sibling task ID")
+    p.set_defaults(func=tasks_tasks_move)
+
+    p = task_items_sub.add_parser("clear")
+    p.add_argument("tasklist_id")
+    p.set_defaults(func=tasks_tasks_clear)
 
     args = parser.parse_args()
     args.func(args)

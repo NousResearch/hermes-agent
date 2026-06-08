@@ -484,3 +484,216 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_api_scopes_include_google_tasks(api_module):
+    assert "https://www.googleapis.com/auth/tasks" in api_module.SCOPES
+    assert "https://www.googleapis.com/auth/tasks.readonly" in api_module.SCOPES
+
+
+def test_api_tasks_tasklists_list_uses_python_service_even_when_gws_is_present(api_module, capsys):
+    captured = {}
+
+    class FakeTasklistsResource:
+        def list(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(execute=lambda: {
+                "items": [
+                    {"id": "tl-1", "title": "Personal", "updated": "2026-06-09T10:00:00.000Z"},
+                ]
+            })
+
+    class FakeTasksService:
+        def tasklists(self):
+            return FakeTasklistsResource()
+
+    api_module.build_service = lambda api, version: FakeTasksService()
+    args = api_module.argparse.Namespace(max=25, func=api_module.tasks_tasklists_list)
+
+    api_module.tasks_tasklists_list(args)
+
+    assert captured["kwargs"] == {"maxResults": 25}
+    result = json.loads(capsys.readouterr().out)
+    assert result == [
+        {"id": "tl-1", "title": "Personal", "updated": "2026-06-09T10:00:00.000Z", "selfLink": ""}
+    ]
+
+
+def test_api_tasks_list_returns_normalized_items(api_module, capsys):
+    captured = {}
+
+    class FakeTasksResource:
+        def list(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(execute=lambda: {
+                "items": [
+                    {
+                        "id": "task-1",
+                        "title": "Buy milk",
+                        "status": "needsAction",
+                        "notes": "2%",
+                        "due": "2026-06-10T18:00:00.000Z",
+                        "updated": "2026-06-09T10:00:00.000Z",
+                        "position": "0001",
+                        "parent": "parent-1",
+                    }
+                ]
+            })
+
+    class FakeTasksService:
+        def tasks(self):
+            return FakeTasksResource()
+
+    api_module.build_service = lambda api, version: FakeTasksService()
+    args = api_module.argparse.Namespace(
+        tasklist_id="tl-1",
+        max=50,
+        show_completed=False,
+        show_hidden=False,
+        show_deleted=False,
+        due_min="",
+        due_max="",
+        func=api_module.tasks_tasks_list,
+    )
+
+    api_module.tasks_tasks_list(args)
+
+    assert captured["kwargs"] == {
+        "tasklist": "tl-1",
+        "maxResults": 50,
+        "showCompleted": False,
+        "showHidden": False,
+        "showDeleted": False,
+    }
+    result = json.loads(capsys.readouterr().out)
+    assert result == [
+        {
+            "id": "task-1",
+            "title": "Buy milk",
+            "status": "needsAction",
+            "notes": "2%",
+            "due": "2026-06-10T18:00:00.000Z",
+            "completed": "",
+            "updated": "2026-06-09T10:00:00.000Z",
+            "deleted": False,
+            "hidden": False,
+            "position": "0001",
+            "parent": "parent-1",
+            "selfLink": "",
+        }
+    ]
+
+
+def test_api_tasks_create_passes_due_and_parent(api_module, capsys):
+    captured = {}
+
+    class FakeTasksResource:
+        def insert(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(execute=lambda: {
+                "id": "task-1",
+                "title": "Buy milk",
+                "status": "needsAction",
+            })
+
+    class FakeTasksService:
+        def tasks(self):
+            return FakeTasksResource()
+
+    api_module.build_service = lambda api, version: FakeTasksService()
+    args = api_module.argparse.Namespace(
+        tasklist_id="tl-1",
+        title="Buy milk",
+        notes="2%",
+        due="2026-06-10T18:00:00Z",
+        parent="parent-1",
+        previous="prev-1",
+        func=api_module.tasks_tasks_create,
+    )
+
+    api_module.tasks_tasks_create(args)
+
+    assert captured["kwargs"] == {
+        "tasklist": "tl-1",
+        "parent": "parent-1",
+        "previous": "prev-1",
+        "body": {
+            "title": "Buy milk",
+            "notes": "2%",
+            "due": "2026-06-10T18:00:00Z",
+        },
+    }
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "created"
+    assert result["task"]["id"] == "task-1"
+
+
+def test_api_tasks_update_only_sends_fields_the_user_provided(api_module, capsys):
+    captured = {}
+
+    class FakeTasksResource:
+        def patch(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(execute=lambda: {
+                "id": "task-1",
+                "title": "Buy oat milk",
+                "status": "completed",
+                "completed": "2026-06-10T18:05:00.000Z",
+            })
+
+    class FakeTasksService:
+        def tasks(self):
+            return FakeTasksResource()
+
+    api_module.build_service = lambda api, version: FakeTasksService()
+    args = api_module.argparse.Namespace(
+        tasklist_id="tl-1",
+        task_id="task-1",
+        title="Buy oat milk",
+        notes="",
+        due="",
+        clear_due=False,
+        status="completed",
+        completed="2026-06-10T18:05:00Z",
+        clear_completed=False,
+        deleted=None,
+        hidden=None,
+        func=api_module.tasks_tasks_update,
+    )
+
+    api_module.tasks_tasks_update(args)
+
+    assert captured["kwargs"] == {
+        "tasklist": "tl-1",
+        "task": "task-1",
+        "body": {
+            "title": "Buy oat milk",
+            "status": "completed",
+            "completed": "2026-06-10T18:05:00Z",
+        },
+    }
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "updated"
+    assert result["task"]["status"] == "completed"
+
+
+def test_api_tasks_delete_calls_python_service(api_module, capsys):
+    captured = {}
+
+    class FakeTasksResource:
+        def delete(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(execute=lambda: None)
+
+    class FakeTasksService:
+        def tasks(self):
+            return FakeTasksResource()
+
+    api_module.build_service = lambda api, version: FakeTasksService()
+    args = api_module.argparse.Namespace(tasklist_id="tl-1", task_id="task-1", func=api_module.tasks_tasks_delete)
+
+    api_module.tasks_tasks_delete(args)
+
+    assert captured["kwargs"] == {"tasklist": "tl-1", "task": "task-1"}
+    result = json.loads(capsys.readouterr().out)
+    assert result == {"status": "deleted", "taskId": "task-1", "tasklistId": "tl-1"}

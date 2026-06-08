@@ -108,7 +108,8 @@ dashboard 进程崩溃，s6-overlay 会在短暂退避后自动
 重启它——你会看到新的 PID，无需重启容器。日志和崩溃输出可通过
 `docker logs <container>` 查看（s6 将服务的 stdout/stderr 转发至此）。
 
-当独立的 dashboard 容器与宿主机共享 PID 与网络命名空间时（例如 `network_mode: host`，正如仓库自带的 `docker-compose.yml` 中的 `dashboard` 服务那样），**是**支持将 dashboard 作为独立容器运行的。其 gateway 存活检测需要与 gateway 进程共享 PID 命名空间，因此该限制仅适用于在隔离的 bridge 网络容器中、且未共享 PID 命名空间的 dashboard。
+不支持将 dashboard 作为独立容器运行：其
+gateway 存活检测需要与 gateway 进程共享 PID 命名空间。
 :::
 
 ## 交互式运行（CLI 聊天）

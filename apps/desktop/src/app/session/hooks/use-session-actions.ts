@@ -2,11 +2,12 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { bulkArchiveSessions, deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { sessionArchivePreserveIds } from '@/lib/session-eligibility'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearComposerAttachments, clearComposerDraft } from '@/store/composer'
 import { clearQueuedPrompts } from '@/store/composer-queue'
@@ -16,8 +17,11 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
+  $desktopYoloDefault,
   $messages,
   $sessions,
+  $sessionsTotal,
+  $workingSessionIds,
   $yoloActive,
   getRememberedWorkspaceCwd,
   sessionPinId,
@@ -44,7 +48,13 @@ import {
   setYoloActive
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type {
+  SessionCreateResponse,
+  SessionInfo,
+  SessionPresenceRecord,
+  SessionResumeResponse,
+  UsageStats
+} from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
@@ -210,6 +220,18 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
 }
 
+function presenceMetadataString(record: SessionPresenceRecord, key: string): string {
+  const value = record.metadata?.[key]
+
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function presenceRouteProfile(record: SessionPresenceRecord): string | null {
+  const routed = presenceMetadataString(record, 'route_profile') || record.profile?.trim() || ''
+
+  return routed ? normalizeProfileKey(routed) : null
+}
+
 function applyRuntimeInfo(
   info: SessionCreateResponse['info'] | undefined
 ): Partial<Pick<ClientSessionState, 'branch' | 'cwd'>> | null {
@@ -314,6 +336,7 @@ export function useSessionActions({
       // New chats inherit the current workspace.
       setCurrentCwd(getRememberedWorkspaceCwd())
       setCurrentBranch('')
+      setYoloActive($desktopYoloDefault.get())
       clearComposerDraft()
       clearComposerAttachments()
       setFreshDraftReady(true)
@@ -337,11 +360,13 @@ export function useSessionActions({
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (
@@ -627,6 +652,104 @@ export function useSessionActions({
     ]
   )
 
+  const openPresenceSession = useCallback(
+    async (record: SessionPresenceRecord) => {
+      const runtimeTarget = record.session_id?.trim()
+      const storedTarget = record.session_key?.trim() || runtimeTarget
+
+      if (!runtimeTarget || !storedTarget) {
+        return
+      }
+
+      const requestId = resumeRequestRef.current + 1
+      resumeRequestRef.current = requestId
+      const routeProfile = presenceRouteProfile(record)
+
+      const isCurrentOpen = () =>
+        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedTarget
+
+      try {
+        await ensureGatewayProfile(routeProfile)
+
+        setFreshDraftReady(false)
+        setActiveSessionId(null)
+        activeSessionIdRef.current = null
+        busyRef.current = true
+        setBusy(true)
+        setAwaitingResponse(false)
+        clearNotifications()
+        setSelectedStoredSessionId(storedTarget)
+        selectedStoredSessionIdRef.current = storedTarget
+        setSessionStartedAt(Date.now())
+        setMessages([])
+        clearComposerDraft()
+        clearComposerAttachments()
+
+        let opened: SessionResumeResponse
+
+        try {
+          opened = await requestGateway<SessionResumeResponse>('session.activate', {
+            cols: 96,
+            session_id: runtimeTarget
+          })
+        } catch {
+          opened = await requestGateway<SessionResumeResponse>('session.resume', {
+            cols: 96,
+            session_id: storedTarget
+          })
+        }
+
+        if (!isCurrentOpen()) {
+          return
+        }
+
+        const routedSessionId = opened.session_key?.trim() || storedTarget
+        const openedMessages = toChatMessages(opened.messages || [])
+        const runtimeInfo = applyRuntimeInfo(opened.info)
+
+        runtimeIdByStoredSessionIdRef.current.set(routedSessionId, opened.session_id)
+        setSelectedStoredSessionId(routedSessionId)
+        selectedStoredSessionIdRef.current = routedSessionId
+        setActiveSessionId(opened.session_id)
+        activeSessionIdRef.current = opened.session_id
+        setMessages(openedMessages)
+        patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
+        updateSessionState(
+          opened.session_id,
+          state => ({
+            ...state,
+            ...(runtimeInfo ?? {}),
+            awaitingResponse: false,
+            busy: false,
+            messages: openedMessages
+          }),
+          routedSessionId
+        )
+        navigate(sessionRoute(routedSessionId))
+      } catch (err) {
+        if (isCurrentOpen()) {
+          notifyError(err, copy.resumeFailed)
+        }
+      } finally {
+        if (isCurrentOpen()) {
+          busyRef.current = false
+          setBusy(false)
+          setAwaitingResponse(false)
+        }
+      }
+    },
+    [
+      activeSessionIdRef,
+      busyRef,
+      copy,
+      navigate,
+      requestGateway,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
+  )
+
   const branchCurrentSession = useCallback(
     async (messageId?: string): Promise<boolean> => {
       const sourceSessionId = activeSessionIdRef.current
@@ -871,12 +994,51 @@ export function useSessionActions({
     [copy, selectedStoredSessionId, startFreshSessionDraft]
   )
 
+  const archiveAllSessions = useCallback(async () => {
+    clearNotifications()
+
+    const previousSessions = $sessions.get()
+    const previousTotal = $sessionsTotal.get()
+
+    const preserveIds = sessionArchivePreserveIds(previousSessions, {
+      activeSessionId,
+      pinnedSessionIds: $pinnedSessionIds.get(),
+      selectedSessionId: selectedStoredSessionId,
+      workingSessionIds: $workingSessionIds.get()
+    })
+
+    const shouldPreserve = (session: SessionInfo) =>
+      preserveIds.has(session.id) || (session._lineage_root_id != null && preserveIds.has(session._lineage_root_id))
+
+    const keptSessions = previousSessions.filter(shouldPreserve)
+    setSessions(keptSessions)
+    setSessionsTotal(keptSessions.length)
+
+    try {
+      const result = await bulkArchiveSessions([...preserveIds])
+      notify({
+        durationMs: 2_500,
+        kind: 'success',
+        message: result.archived === 1 ? 'Archived 1 session' : `Archived ${result.archived} sessions`
+      })
+
+      return result
+    } catch (err) {
+      setSessions(previousSessions)
+      setSessionsTotal(previousTotal)
+      notifyError(err, 'Archive all failed')
+      throw err
+    }
+  }, [activeSessionId, selectedStoredSessionId])
+
   return {
+    archiveAllSessions,
     archiveSession,
     branchCurrentSession,
     closeSettings,
     createBackendSessionForSend,
     openSettings,
+    openPresenceSession,
     removeSession,
     resumeSession,
     selectSidebarItem,

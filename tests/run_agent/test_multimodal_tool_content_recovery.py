@@ -181,20 +181,16 @@ class TestToolResultContentShortCircuit:
                      "png_bytes": 1024},
         }
 
-    def test_returns_text_summary_for_xiaomi_proactively(self, monkeypatch):
-        """Xiaomi MiMo rejects list-type tool content, so even with an
-        empty cache, _tool_result_content_for_active_model should
-        proactively downgrade to a text summary."""
+    def test_returns_list_when_cache_empty_and_vision_supported(self, monkeypatch):
         agent = _make_agent(provider="xiaomi", model="mimo-v2.5")
         agent._no_list_tool_content_models = set()  # explicit empty
         monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
         out = agent._tool_result_content_for_active_model(
             "computer_use", self._multimodal_result()
         )
-        # Proactive downgrade: text summary instead of list with images.
-        assert isinstance(out, str)
-        assert "data:image" not in out
-        assert "image_url" not in out
+        # Native multimodal path: returns the content parts list.
+        assert isinstance(out, list)
+        assert any(p.get("type") == "image_url" for p in out)
 
     def test_returns_text_summary_when_model_in_cache(self, monkeypatch):
         agent = _make_agent(provider="xiaomi", model="mimo-v2.5")
@@ -208,31 +204,29 @@ class TestToolResultContentShortCircuit:
         assert "data:image" not in out
         assert "image_url" not in out
 
-    def test_xiaomi_any_model_gets_text_summary(self, monkeypatch):
-        """All Xiaomi models reject list-type tool content, so even a
-        different model on the same provider gets a text summary."""
+    def test_cache_miss_on_different_model(self, monkeypatch):
+        """Cache is per (provider, model). A cached entry for mimo-v2.5
+        must NOT affect a session running on a different model.
+        """
         agent = _make_agent(provider="xiaomi", model="mimo-v2.5-pro")
         agent._no_list_tool_content_models = {("xiaomi", "mimo-v2.5")}
         monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
         out = agent._tool_result_content_for_active_model(
             "computer_use", self._multimodal_result()
         )
-        assert isinstance(out, str)
-        assert "data:image" not in out
+        assert isinstance(out, list)
 
     def test_missing_cache_attribute_falls_through(self, monkeypatch):
-        """Agents built via ``object.__new__`` without calling ``__init__``
-        must not crash — the cache attribute may be absent. Xiaomi still
-        gets a text summary because the provider profile says so."""
-        agent = _make_agent(provider="xiaomi", model="mimo-v2.5")
+        """Tests that build agents via ``object.__new__`` without calling
+        ``__init__`` must not crash — the cache attribute may be absent.
+        """
+        agent = _make_agent()
         # Deliberately do not assign _no_list_tool_content_models.
         monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
         out = agent._tool_result_content_for_active_model(
             "computer_use", self._multimodal_result()
         )
-        # Xiaomi proactively downgrades regardless of cache state.
-        assert isinstance(out, str)
-        assert "data:image" not in out
+        assert isinstance(out, list)
 
 
 # ─── Classifier ──────────────────────────────────────────────────────────────

@@ -6,19 +6,6 @@ import path from 'path'
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
-  css: {
-    // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
-    // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
-    // without this, Vite's `postcss-load-config` walks UP the filesystem
-    // looking for a stray `postcss.config.*` / `tailwind.config.*`. The desktop
-    // build runs from inside the user's home tree (e.g.
-    // `C:\Users\<name>\AppData\Local\hermes\hermes-agent\apps\desktop`), so an
-    // unrelated Tailwind v3 config higher up the tree gets picked up and
-    // reprocesses our v4 stylesheet, failing the build with
-    // "`@layer base` is used but no matching `@tailwind base` directive is
-    // present." Pinning the config makes the build hermetic.
-    postcss: { plugins: [] }
-  },
   build: {
     // Keep desktop packaging stable: Shiki ships many dynamic chunks by
     // default, and electron-builder can OOM scanning thousands of files.

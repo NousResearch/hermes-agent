@@ -1,49 +1,33 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { listAllProfileSessions, listSessions } from './hermes'
+import { bulkArchiveSessions } from './hermes'
 
-const emptySessionsResponse = {
-  limit: 0,
-  offset: 0,
-  sessions: [],
-  total: 0
-}
-
-describe('Hermes REST session helpers', () => {
-  let api: ReturnType<typeof vi.fn>
-
-  beforeEach(() => {
-    api = vi.fn().mockResolvedValue(emptySessionsResponse)
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { api }
-    })
-  })
+describe('bulkArchiveSessions', () => {
+  const originalHermesDesktop = window.hermesDesktop
 
   afterEach(() => {
     vi.restoreAllMocks()
-    Reflect.deleteProperty(window, 'hermesDesktop')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: originalHermesDesktop,
+      writable: true
+    })
   })
 
-  it('uses a longer timeout for the single-profile session list', async () => {
-    await listSessions(50, 1)
+  it('posts deduped preserve ids to the manual bulk archive endpoint', async () => {
+    const api = vi.fn().mockResolvedValue({ ok: true, archived: 12 })
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api },
+      writable: true
+    })
 
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent',
-        timeoutMs: 60_000
-      })
-    )
-  })
+    await expect(bulkArchiveSessions(['pin', '', 'current', 'pin'])).resolves.toEqual({ ok: true, archived: 12 })
 
-  it('uses a longer timeout for the all-profile session list', async () => {
-    await listAllProfileSessions(50, 1)
-
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent&profile=all',
-        timeoutMs: 60_000
-      })
-    )
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/bulk-archive',
+      method: 'POST',
+      body: { preserve_ids: ['pin', 'current'] }
+    })
   })
 })

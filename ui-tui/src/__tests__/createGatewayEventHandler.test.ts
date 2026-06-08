@@ -105,6 +105,33 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('updates usage from token.usage before message.complete', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    patchUiState({ sid: 'session-1' })
+    onEvent({
+      payload: {
+        context_length: 131_072,
+        context_pct: 49.9,
+        context_tokens: 65_432,
+        input_tokens: 1_200,
+        output_tokens: 34,
+        total_tokens: 1_234
+      },
+      session_id: 'session-1',
+      type: 'token.usage'
+    })
+
+    expect(getUiState().usage).toMatchObject({
+      context_max: 131_072,
+      context_percent: 49.9,
+      context_used: 65_432,
+      input: 1_200,
+      output: 34,
+      total: 1_234
+    })
+  })
+
   it('keeps the current todo list visible when the next message starts', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]

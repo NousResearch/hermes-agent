@@ -33,7 +33,6 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
-  SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
@@ -43,7 +42,6 @@ import type {
 } from '@/types/hermes'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
-const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
 export type {
   ActionResponse,
@@ -139,8 +137,7 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
-    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
   })
 
   return {
@@ -150,38 +147,39 @@ export async function listSessions(
   }
 }
 
+export function autoArchiveOldSessions(
+  preserveIds: string[] = []
+): Promise<{ ok: boolean; archived: number; skipped?: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number; skipped?: boolean }>({
+    path: '/api/sessions/auto-archive',
+    method: 'POST',
+    body: { preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000) }
+  })
+}
+
+export function bulkArchiveSessions(preserveIds: string[] = []): Promise<{ ok: boolean; archived: number }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number }>({
+    path: '/api/sessions/bulk-archive',
+    method: 'POST',
+    body: { preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000) }
+  })
+}
+
 // Unified, read-only session list aggregated across ALL profiles. Served by the
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged
 // profile="default".
-// Source scoping lets callers split the unified list into independent slices:
-// recents pass `excludeSources: ['cron']`, the cron-jobs section passes
-// `source: 'cron'`. Without this a burst of (always-newest) cron sessions
-// consumes the whole recents page and starves real conversations.
-export interface SessionSourceFilter {
-  source?: string
-  excludeSources?: string[]
-}
-
 export async function listAllProfileSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
-  profile: 'all' | (string & {}) = 'all',
-  filter: SessionSourceFilter = {}
+  profile: 'all' | (string & {}) = 'all'
 ): Promise<PaginatedSessions> {
-  const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
-
-  const excludeParam = filter.excludeSources?.length
-    ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
-    : ''
-
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
-    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}`
   })
 
   return {
@@ -465,15 +463,6 @@ export function selectToolsetProvider(
   })
 }
 
-export function runToolsetPostSetup(name: string, key: string): Promise<ActionResponse & { key: string }> {
-  return window.hermesDesktop.api<ActionResponse & { key: string }>({
-    ...profileScoped(),
-    path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
-    method: 'POST',
-    body: { key }
-  })
-}
-
 export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
     path: '/api/messaging/platforms'
@@ -508,14 +497,6 @@ export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
-}
-
-export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
-  const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
-  })
-
-  return runs ?? []
 }
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {

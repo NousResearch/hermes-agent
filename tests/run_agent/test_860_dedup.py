@@ -46,30 +46,28 @@ class TestFlushDeduplication:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
 
-                conversation_history = [
-                    {"role": "user", "content": "old message"},
-                ]
-                messages = list(conversation_history) + [
-                    {"role": "user", "content": "new question"},
-                    {"role": "assistant", "content": "new answer"},
-                ]
+            agent = self._make_agent(db)
 
-                # First flush — should write 2 new messages
-                agent._flush_messages_to_session_db(messages, conversation_history)
+            conversation_history = [
+                {"role": "user", "content": "old message"},
+            ]
+            messages = list(conversation_history) + [
+                {"role": "user", "content": "new question"},
+                {"role": "assistant", "content": "new answer"},
+            ]
 
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 2, f"Expected 2 messages, got {len(rows)}"
+            # First flush — should write 2 new messages
+            agent._flush_messages_to_session_db(messages, conversation_history)
 
-                # Second flush with SAME messages — should write 0 new messages
-                agent._flush_messages_to_session_db(messages, conversation_history)
+            rows = db.get_messages(agent.session_id)
+            assert len(rows) == 2, f"Expected 2 messages, got {len(rows)}"
 
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 2, f"Expected still 2 messages after second flush, got {len(rows)}"
-            finally:
-                db.close()
+            # Second flush with SAME messages — should write 0 new messages
+            agent._flush_messages_to_session_db(messages, conversation_history)
+
+            rows = db.get_messages(agent.session_id)
+            assert len(rows) == 2, f"Expected still 2 messages after second flush, got {len(rows)}"
 
     def test_flush_writes_incrementally(self):
         """Messages added between flushes are written exactly once."""
@@ -78,29 +76,27 @@ class TestFlushDeduplication:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
 
-                conversation_history = []
-                messages = [
-                    {"role": "user", "content": "hello"},
-                ]
+            agent = self._make_agent(db)
 
-                # First flush — 1 message
-                agent._flush_messages_to_session_db(messages, conversation_history)
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 1
+            conversation_history = []
+            messages = [
+                {"role": "user", "content": "hello"},
+            ]
 
-                # Add more messages
-                messages.append({"role": "assistant", "content": "hi there"})
-                messages.append({"role": "user", "content": "follow up"})
+            # First flush — 1 message
+            agent._flush_messages_to_session_db(messages, conversation_history)
+            rows = db.get_messages(agent.session_id)
+            assert len(rows) == 1
 
-                # Second flush — should write only 2 new messages
-                agent._flush_messages_to_session_db(messages, conversation_history)
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
-            finally:
-                db.close()
+            # Add more messages
+            messages.append({"role": "assistant", "content": "hi there"})
+            messages.append({"role": "user", "content": "follow up"})
+
+            # Second flush — should write only 2 new messages
+            agent._flush_messages_to_session_db(messages, conversation_history)
+            rows = db.get_messages(agent.session_id)
+            assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
 
     def test_persist_session_multiple_calls_no_duplication(self):
         """Multiple _persist_session calls don't duplicate DB entries."""
@@ -109,25 +105,23 @@ class TestFlushDeduplication:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
 
-                conversation_history = [{"role": "user", "content": "old"}]
-                messages = list(conversation_history) + [
-                    {"role": "user", "content": "q1"},
-                    {"role": "assistant", "content": "a1"},
-                    {"role": "user", "content": "q2"},
-                    {"role": "assistant", "content": "a2"},
-                ]
+            agent = self._make_agent(db)
 
-                # Simulate multiple persist calls (like the agent's many exit paths)
-                for _ in range(5):
-                    agent._persist_session(messages, conversation_history)
+            conversation_history = [{"role": "user", "content": "old"}]
+            messages = list(conversation_history) + [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+                {"role": "assistant", "content": "a2"},
+            ]
 
-                rows = db.get_messages(agent.session_id)
-                assert len(rows) == 4, f"Expected 4 messages, got {len(rows)} (duplication bug!)"
-            finally:
-                db.close()
+            # Simulate multiple persist calls (like the agent's many exit paths)
+            for _ in range(5):
+                agent._persist_session(messages, conversation_history)
+
+            rows = db.get_messages(agent.session_id)
+            assert len(rows) == 4, f"Expected 4 messages, got {len(rows)} (duplication bug!)"
 
     def test_flush_reset_after_compression(self):
         """After compression creates a new session, flush index resets."""
@@ -136,38 +130,36 @@ class TestFlushDeduplication:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
 
-                # Write some messages
-                messages = [
-                    {"role": "user", "content": "msg1"},
-                    {"role": "assistant", "content": "reply1"},
-                ]
-                agent._flush_messages_to_session_db(messages, [])
+            agent = self._make_agent(db)
 
-                old_session = agent.session_id
-                assert agent._last_flushed_db_idx == 2
+            # Write some messages
+            messages = [
+                {"role": "user", "content": "msg1"},
+                {"role": "assistant", "content": "reply1"},
+            ]
+            agent._flush_messages_to_session_db(messages, [])
 
-                # Simulate what _compress_context does: new session, reset idx
-                agent.session_id = "compressed-session-new"
-                db.create_session(session_id=agent.session_id, source="test")
-                agent._last_flushed_db_idx = 0
+            old_session = agent.session_id
+            assert agent._last_flushed_db_idx == 2
 
-                # Now flush compressed messages to new session
-                compressed_messages = [
-                    {"role": "user", "content": "summary of conversation"},
-                ]
-                agent._flush_messages_to_session_db(compressed_messages, [])
+            # Simulate what _compress_context does: new session, reset idx
+            agent.session_id = "compressed-session-new"
+            db.create_session(session_id=agent.session_id, source="test")
+            agent._last_flushed_db_idx = 0
 
-                new_rows = db.get_messages(agent.session_id)
-                assert len(new_rows) == 1
+            # Now flush compressed messages to new session
+            compressed_messages = [
+                {"role": "user", "content": "summary of conversation"},
+            ]
+            agent._flush_messages_to_session_db(compressed_messages, [])
 
-                # Old session should still have its 2 messages
-                old_rows = db.get_messages(old_session)
-                assert len(old_rows) == 2
-            finally:
-                db.close()
+            new_rows = db.get_messages(agent.session_id)
+            assert len(new_rows) == 1
+
+            # Old session should still have its 2 messages
+            old_rows = db.get_messages(old_session)
+            assert len(old_rows) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -35,14 +35,10 @@ export interface StatusbarItem {
   menuClassName?: string
   menuContent?: ReactNode
   menuItems?: readonly StatusbarMenuItem[]
-  onSelect?: (modifiers: StatusbarSelectModifiers) => void
+  onSelect?: () => void
   title?: string
   to?: string
   variant?: 'action' | 'link' | 'menu' | 'text'
-}
-
-export interface StatusbarSelectModifiers {
-  shiftKey: boolean
 }
 
 export type StatusbarItemSide = 'left' | 'right'
@@ -174,12 +170,12 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     <button
       className={cn(STATUSBAR_ACTION_CLASS, item.className)}
       disabled={item.disabled}
-      onClick={event => {
+      onClick={() => {
         if (item.to) {
           navigate(item.to)
         }
 
-        item.onSelect?.({ shiftKey: event.shiftKey })
+        item.onSelect?.()
       }}
       type="button"
     >

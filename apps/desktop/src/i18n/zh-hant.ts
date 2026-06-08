@@ -234,11 +234,7 @@ export const zhHant = defineLocale({
         backend: '執行後端',
         timeout: '指令逾時',
         persistentShell: '持久化 Shell',
-        envPassthrough: '環境變數傳遞',
-        dockerImage: 'Docker 映像',
-        singularityImage: 'Singularity 映像',
-        modalImage: 'Modal 映像',
-        daytonaImage: 'Daytona 映像'
+        envPassthrough: '環境變數傳遞'
       },
       fileReadMaxChars: '檔案讀取上限',
       toolOutput: {
@@ -279,15 +275,6 @@ export const zhHant = defineLocale({
           model: '本機轉寫模型',
           language: '轉寫語言'
         },
-        openai: {
-          model: 'OpenAI STT 模型'
-        },
-        groq: {
-          model: 'Groq STT 模型'
-        },
-        mistral: {
-          model: 'Mistral STT 模型'
-        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 語言',
@@ -307,33 +294,6 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
-        },
-        xai: {
-          voiceId: 'xAI (Grok) 語音',
-          language: 'xAI 語言'
-        },
-        minimax: {
-          model: 'MiniMax TTS 模型',
-          voiceId: 'MiniMax 語音'
-        },
-        mistral: {
-          model: 'Mistral TTS 模型',
-          voiceId: 'Mistral 語音'
-        },
-        gemini: {
-          model: 'Gemini TTS 模型',
-          voice: 'Gemini 語音'
-        },
-        neutts: {
-          model: 'NeuTTS 模型',
-          device: 'NeuTTS 裝置'
-        },
-        kittentts: {
-          model: 'KittenTTS 模型',
-          voice: 'KittenTTS 語音'
-        },
-        piper: {
-          voice: 'Piper 語音'
         }
       },
       memory: {
@@ -662,15 +622,7 @@ export const zhHant = defineLocale({
       ready: '就緒',
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',
       noApiKeyRequired: '不需要 API 金鑰。',
-      postSetupHint: step => `此後端需要一次性安裝 (${step})。將在此機器上執行，可能需要幾分鐘。`,
-      postSetupRun: '執行設定',
-      postSetupRunning: '安裝中…',
-      postSetupStarting: '啟動中…',
-      postSetupCompleteTitle: '設定完成',
-      postSetupCompleteMessage: step => `已安裝 ${step}。`,
-      postSetupErrorTitle: '設定完成但有錯誤',
-      postSetupErrorMessage: step => `請檢查 ${step} 日誌。`,
-      postSetupFailed: step => `執行 ${step} 設定失敗`
+      postSetup: step => `此提供方需要額外設定步驟 (${step})。暫時請在 CLI 中執行 hermes tools。`
     }
   },
 
@@ -1007,6 +959,8 @@ export const zhHant = defineLocale({
   cron: {
     close: '關閉排程',
     search: '搜尋排程工作…',
+    refresh: '重新整理排程工作',
+    refreshing: '正在重新整理排程工作',
     loading: '正在載入排程工作…',
     states: {
       enabled: '已啟用',
@@ -1059,7 +1013,9 @@ export const zhHant = defineLocale({
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每個整點',
     everyHourAt: minute => `每小時的 :${minute}`,
+    active: (enabled, total) => `${enabled}/${total} 個啟用`,
     newCron: '新排程工作',
+    createFirst: '建立第一個排程工作',
     emptyDescNew:
       '按 cron 表達式排程一個提示詞。Hermes 會執行它，並將結果傳送至您選擇的目的地。',
     emptyDescSearch: '請嘗試更廣泛的搜尋詞。',
@@ -1067,11 +1023,6 @@ export const zhHant = defineLocale({
     emptyTitleSearch: '無相符項目',
     last: '上次：',
     next: '下次：',
-    noRuns: '尚無執行',
-    manage: '管理',
-    showRuns: '顯示執行記錄',
-    hideRuns: '隱藏執行記錄',
-    runHistory: '執行記錄',
     actionsFor: title => `${title} 的動作`,
     actionsTitle: '排程工作動作',
     resume: '繼續',
@@ -1163,7 +1114,6 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
-    cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     groupTitleGrouped: '取消分組',
@@ -1584,8 +1534,8 @@ export const zhHant = defineLocale({
       contextUsage: '上下文使用量',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
-      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
-      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。Shift+點擊可全域切換。',
+      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。',
+      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。',
       modelNone: '無',
       noModel: '無模型',
       switchModel: '切換模型',

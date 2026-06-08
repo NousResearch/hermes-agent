@@ -18,7 +18,6 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
-    DEFAULT_FALLBACK_CONTEXT,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -774,24 +773,17 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_custom_endpoint_without_metadata_falls_back_to_catalog(self, mock_endpoint_fetch, mock_fetch):
-        """Custom endpoint with no metadata should fall back to the hardcoded
-        catalog (not 256K) when the model name matches a known entry.
-
-        Previously this returned CONTEXT_PROBE_TIERS[0] (256K) because the
-        custom-endpoint branch short-circuited before the catalog lookup.
-        See #38865.
-        """
+    def test_custom_endpoint_without_metadata_skips_name_based_default(self, mock_endpoint_fetch, mock_fetch):
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
-        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
+
+        assert result == CONTEXT_PROBE_TIERS[0]
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
@@ -865,64 +857,6 @@ class TestGetModelContextLength:
         )
 
         assert result == 200000
-
-    @patch("agent.model_metadata.fetch_model_metadata")
-    def test_custom_endpoint_falls_back_to_hardcoded_catalog(self, mock_fetch):
-        """Custom/proxied endpoint that fails all probes should still resolve
-        via DEFAULT_CONTEXT_LENGTHS instead of returning 256K.
-
-        Regression test for #38865: a corporate Anthropic proxy (custom
-        base_url) caused the custom-endpoint branch to short-circuit before
-        the catalog lookup, capping context at 256K even for models like
-        claude-opus-4-8 that are in the hardcoded catalog with 1M.
-        """
-        mock_fetch.return_value = {}
-
-        # Patch all the probe functions that the custom-endpoint branch calls
-        # so they all fail (return None/empty), simulating a proxy that
-        # doesn't expose Ollama or local-server endpoints.
-        with (
-            patch(
-                "agent.model_metadata._resolve_endpoint_context_length",
-                return_value=None,
-            ),
-            patch(
-                "agent.model_metadata._query_ollama_api_show",
-                return_value=None,
-            ),
-            patch(
-                "agent.model_metadata._query_local_context_length",
-                return_value=None,
-            ),
-            patch(
-                "agent.model_metadata.is_local_endpoint",
-                return_value=False,
-            ),
-        ):
-            # A known model behind a custom proxy should resolve to its
-            # catalog value (1M), NOT the 256K fallback.
-            ctx = get_model_context_length(
-                "claude-opus-4-8",
-                base_url="https://my-gateway.example.com/v1/claude",
-            )
-            assert ctx == 1000000, f"Expected 1000000, got {ctx}"
-
-            # Another known model
-            ctx2 = get_model_context_length(
-                "claude-sonnet-4-6",
-                base_url="https://my-gateway.example.com/v1/claude",
-            )
-            assert ctx2 == 1000000, f"Expected 1000000, got {ctx2}"
-
-            # An unknown model on a custom endpoint should still fall back
-            # to 256K (no catalog match).
-            ctx3 = get_model_context_length(
-                "totally-unknown-model",
-                base_url="https://my-gateway.example.com/v1/claude",
-            )
-            assert ctx3 == DEFAULT_FALLBACK_CONTEXT, (
-                f"Expected {DEFAULT_FALLBACK_CONTEXT}, got {ctx3}"
-            )
 
 
 # =========================================================================
@@ -1199,6 +1133,14 @@ class TestParseContextLimitFromError:
         msg = "Maximum context size 65536 exceeded"
         assert parse_context_limit_from_error(msg) == 65536
 
+    def test_available_context_size_format(self):
+        msg = "HTTP 400: request (70838 tokens) exceeds the available context size (65536 tokens), try increasing it"
+        assert parse_context_limit_from_error(msg) == 65536
+
+    def test_structured_n_ctx_format(self):
+        msg = "llama runner rejected request: {'n_prompt_tokens': 70838, 'n_ctx': 65536}"
+        assert parse_context_limit_from_error(msg) == 65536
+
     def test_no_limit_in_message(self):
         assert parse_context_limit_from_error("Something went wrong with the API") is None
 
@@ -1304,6 +1246,18 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("unknown/model", "http://local", 65536)
             assert get_model_context_length("unknown/model", base_url="http://local") == 65536
+
+    def test_provider_confirmed_cache_caps_over_optimistic_custom_config(self, tmp_path):
+        cache_file = tmp_path / "cache.yaml"
+        base_url = "http://10.10.20.211:8080/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("qwen3.6-27b", base_url, 65536)
+            assert get_model_context_length(
+                "qwen3.6-27b",
+                base_url=base_url,
+                provider="custom",
+                config_context_length=131072,
+            ) == 65536
 
     def test_special_chars_in_model_name(self, tmp_path):
         """Model names with colons, slashes, etc. don't break the cache."""

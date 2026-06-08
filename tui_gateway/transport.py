@@ -183,6 +183,80 @@ class StdioTransport:
         return None
 
 
+class FanoutTransport:
+    """Best-effort event fanout for one live session.
+
+    Request/response RPCs still use the request's context-bound transport.
+    A session stores this wrapper only for async session events, allowing
+    multiple clients to watch the same live session without the newest client
+    stealing the stream from earlier clients.
+    """
+
+    __slots__ = ("_lock", "_transports")
+
+    def __init__(self, *transports: "Transport") -> None:
+        self._lock = threading.Lock()
+        self._transports: list[Transport] = []
+        for transport in transports:
+            self.attach(transport)
+
+    def attach(self, transport: "Transport") -> bool:
+        if transport is self:
+            return False
+        with self._lock:
+            if transport in self._transports:
+                return False
+            self._transports.append(transport)
+            return True
+
+    def detach(self, transport: "Transport") -> bool:
+        with self._lock:
+            try:
+                self._transports.remove(transport)
+                return True
+            except ValueError:
+                return False
+
+    def contains(self, transport: "Transport") -> bool:
+        with self._lock:
+            return transport in self._transports
+
+    def transports(self) -> tuple["Transport", ...]:
+        with self._lock:
+            return tuple(self._transports)
+
+    def has_transports(self, *, excluding: set[int] | None = None) -> bool:
+        excluding = excluding or set()
+        with self._lock:
+            return any(id(transport) not in excluding for transport in self._transports)
+
+    def write(self, obj: dict) -> bool:
+        ok = False
+        stale: list[Transport] = []
+        for transport in self.transports():
+            try:
+                if transport.write(obj):
+                    ok = True
+                else:
+                    stale.append(transport)
+            except Exception:
+                logger.debug("FanoutTransport write failed", exc_info=True)
+                stale.append(transport)
+        if stale:
+            with self._lock:
+                self._transports = [
+                    transport for transport in self._transports if transport not in stale
+                ]
+        return ok
+
+    def close(self) -> None:
+        for transport in self.transports():
+            try:
+                transport.close()
+            except Exception:
+                pass
+
+
 class TeeTransport:
     """Mirrors writes to one primary plus N best-effort secondaries.
 

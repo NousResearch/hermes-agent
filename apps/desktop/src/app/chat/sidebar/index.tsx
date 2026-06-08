@@ -19,9 +19,16 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
@@ -39,30 +46,22 @@ import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { profileColor } from '@/lib/profile-color'
+import { computeSessionEligibility, sessionArchivePreserveIds } from '@/lib/session-eligibility'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $cronJobs } from '@/store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
-  $sidebarCronOpen,
   $sidebarOpen,
-  $sidebarOverlayMounted,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
-  $sidebarSessionOrderIds,
-  $sidebarWorkspaceOrderIds,
   pinSession,
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setSidebarAgentsGrouped,
-  setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
-  setSidebarSessionOrderIds,
-  setSidebarWorkspaceOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '@/store/layout'
@@ -75,8 +74,9 @@ import {
   normalizeProfileKey
 } from '@/store/profile'
 import {
-  $cronSessions,
+  $activeSessionId,
   $selectedStoredSessionId,
+  $sessionPresence,
   $sessionProfileTotals,
   $sessions,
   $sessionsLoading,
@@ -84,12 +84,12 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
+import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
-import { SidebarCronJobsSection } from './cron-jobs-section'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -123,14 +123,10 @@ const WORKSPACE_PAGE = 5
 // ALL-profiles view: show only the latest N per profile up front to keep the
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
-const GROUP_DND_ID_PREFIX = 'group:'
-const LOCAL_SESSION_SOURCES = new Set(['cli', 'desktop', 'local', 'tui'])
+const WS_ID_PREFIX = 'workspace:'
 
-const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
-
-const parseGroupDndId = (id: string) =>
-  id.startsWith(GROUP_DND_ID_PREFIX) ? id.slice(GROUP_DND_ID_PREFIX.length) : null
-
+const wsId = (id: string) => `${WS_ID_PREFIX}${id}`
+const parseWsId = (id: string) => (id.startsWith(WS_ID_PREFIX) ? id.slice(WS_ID_PREFIX.length) : null)
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
 
@@ -159,33 +155,6 @@ function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[
   }
 
   return out
-}
-
-function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
-  if (!currentIds.length) {
-    return []
-  }
-
-  if (!orderIds.length) {
-    return currentIds
-  }
-
-  const current = new Set(currentIds)
-  const next = orderIds.filter(id => current.has(id))
-  const known = new Set(next)
-
-  for (const id of currentIds) {
-    if (!known.has(id)) {
-      next.push(id)
-      known.add(id)
-    }
-  }
-
-  return next
-}
-
-function sameIds(left: string[], right: string[]) {
-  return left.length === right.length && left.every((item, index) => item === right[index])
 }
 
 const baseName = (path: string) =>
@@ -221,71 +190,28 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
   }
 }
 
-function workspaceGroupsFor(
-  sessions: SessionInfo[],
-  noWorkspaceLabel: string,
-  options: { preserveSessionOrder?: boolean } = {}
-): SidebarSessionGroup[] {
+function workspaceGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[] {
   const groups = new Map<string, SidebarSessionGroup>()
 
   for (const session of sessions) {
     const path = session.cwd?.trim() || ''
     const id = path || '__no_workspace__'
-    const label = baseName(path) || path || noWorkspaceLabel
+    const label = baseName(path) || path || 'No workspace'
 
     const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
     group.sessions.push(session)
     groups.set(id, group)
   }
 
-  if (!options.preserveSessionOrder) {
-    // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-    // input, so an active project floats up), but rows *within* a group sort by
-    // creation time so they don't reshuffle every time a message lands — keeps
-    // muscle memory intact.
-    for (const group of groups.values()) {
-      group.sessions.sort((a, b) => b.started_at - a.started_at)
-    }
+  // Groups keep recency order (Map insertion = first-seen in the recency-sorted
+  // input, so an active project floats up), but rows *within* a group sort by
+  // creation time so they don't reshuffle every time a message lands — keeps
+  // muscle memory intact.
+  for (const group of groups.values()) {
+    group.sessions.sort((a, b) => b.started_at - a.started_at)
   }
 
   return [...groups.values()]
-}
-
-function sourceSessionGroupsFor(sessions: SessionInfo[]): {
-  localSessions: SessionInfo[]
-  sourceGroups: SidebarSessionGroup[]
-} {
-  const groups = new Map<string, SidebarSessionGroup>()
-  const localSessions: SessionInfo[] = []
-
-  for (const session of sessions) {
-    const sourceId = normalizeSessionSource(session.source)
-
-    if (!sourceId || LOCAL_SESSION_SOURCES.has(sourceId)) {
-      localSessions.push(session)
-
-      continue
-    }
-
-    const label = sessionSourceLabel(sourceId) ?? sourceId
-
-    const group = groups.get(sourceId) ?? {
-      id: `source:${sourceId}`,
-      label,
-      mode: 'source',
-      path: null,
-      sessions: [],
-      sourceId
-    }
-
-    group.sessions.push(session)
-    groups.set(sourceId, group)
-  }
-
-  return {
-    localSessions,
-    sourceGroups: [...groups.values()].sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }
 }
 
 function useSortableBindings(id: string) {
@@ -296,11 +222,7 @@ function useSortableBindings(id: string) {
     dragHandleProps: { ...attributes, ...listeners },
     ref: setNodeRef,
     reorderable: true as const,
-    style: {
-      transform: CSS.Transform.toString(transform),
-      transition: isDragging ? undefined : transition,
-      willChange: isDragging ? 'transform' : undefined
-    }
+    style: { transform: CSS.Transform.toString(transform), transition }
   }
 }
 
@@ -308,47 +230,43 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => void
+  onArchiveAllSessions: () => Promise<void> | void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
+  onOpenPresenceSession: (record: SessionPresenceRecord) => void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
-  onManageCronJob: (jobId: string) => void
-  onTriggerCronJob: (jobId: string) => void
 }
 
 export function ChatSidebar({
   currentView,
   onNavigate,
   onLoadMoreSessions,
+  onArchiveAllSessions,
   onLoadMoreProfileSessions,
+  onOpenPresenceSession,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
-  onNewSessionInWorkspace,
-  onManageCronJob,
-  onTriggerCronJob
+  onNewSessionInWorkspace
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const sidebarOpen = useStore($sidebarOpen)
-  // Collapsed-but-overlay-mounted → render the full sidebar, not just the nav rail.
-  const overlayMounted = useStore($sidebarOverlayMounted)
-  const contentVisible = sidebarOpen || overlayMounted
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
-  const cronOpen = useStore($sidebarCronOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
-  const cronSessions = useStore($cronSessions)
-  const cronJobs = useStore($cronJobs)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
+  const sessionPresence = useStore($sessionPresence)
   const workingSessionIds = useStore($workingSessionIds)
+  const activeSessionId = useStore($activeSessionId)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -358,11 +276,14 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const agentOrderIds = useStore($sidebarSessionOrderIds)
-  const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
+  const [agentOrderIds, setAgentOrderIds] = useState<string[]>([])
+  const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
+  const [archiveAllOpen, setArchiveAllOpen] = useState(false)
+  const [archiveAllSubmitting, setArchiveAllSubmitting] = useState(false)
+  const [liveOpen, setLiveOpen] = useState(true)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
@@ -416,17 +337,26 @@ export function ChatSidebar({
     [visibleSessions]
   )
 
-  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
+  const visibleSessionPresence = useMemo(
+    () => [...sessionPresence].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)),
+    [sessionPresence]
+  )
+
+  const workingSessionIdSet = useMemo(
+    () =>
+      new Set([
+        ...workingSessionIds,
+        ...visibleSessionPresence.map(record => record.session_key || record.session_id).filter(Boolean)
+      ]),
+    [visibleSessionPresence, workingSessionIds]
+  )
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
-    // Cron sessions are listed separately but can still be pinned, so index
-    // them too — otherwise a pinned cron job can't resolve into the Pinned
-    // section. Recents take precedence on id collisions (set last).
-    for (const s of [...cronSessions, ...visibleSessions]) {
+    for (const s of visibleSessions) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
@@ -435,7 +365,7 @@ export function ChatSidebar({
     }
 
     return map
-  }, [visibleSessions, cronSessions])
+  }, [visibleSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -513,40 +443,14 @@ export function ChatSidebar({
     [sortedSessions, pinnedRealIdSet]
   )
 
-  useEffect(() => {
-    const next = reconcileOrderIds(
-      unpinnedAgentSessions.map(s => s.id),
-      agentOrderIds
-    )
-
-    if (!sameIds(next, agentOrderIds)) {
-      setSidebarSessionOrderIds(next)
-    }
-  }, [agentOrderIds, unpinnedAgentSessions])
-
   const agentSessions = useMemo(
     () => orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds),
     [unpinnedAgentSessions, agentOrderIds]
   )
 
-  const { localSessions: localAgentSessions, sourceGroups } = useMemo(
-    () => sourceSessionGroupsFor(agentSessions),
-    [agentSessions]
-  )
-
-  const orderedSourceGroups = useMemo(
-    () => orderByIds(sourceGroups, g => g.id, workspaceOrderIds),
-    [sourceGroups, workspaceOrderIds]
-  )
-
   const agentGroups = useMemo(
-    () =>
-      orderByIds(
-        workspaceGroupsFor(localAgentSessions, s.noWorkspace, { preserveSessionOrder: sourceGroups.length > 0 }),
-        g => g.id,
-        workspaceOrderIds
-      ),
-    [localAgentSessions, s.noWorkspace, sourceGroups.length, workspaceOrderIds]
+    () => orderByIds(workspaceGroupsFor(agentSessions), g => g.id, workspaceOrderIds),
+    [agentSessions, workspaceOrderIds]
   )
 
   const loadMoreForProfileGroup = useCallback(
@@ -559,7 +463,9 @@ export function ChatSidebar({
 
       void Promise.resolve(onLoadMoreProfileSessions(profile))
         .catch(() => undefined)
-        .finally(() => setProfileLoadMorePending(({ [profile]: _done, ...rest }) => rest))
+        .finally(() =>
+          setProfileLoadMorePending(({ [profile]: _done, ...rest }) => rest)
+        )
     },
     [onLoadMoreProfileSessions]
   )
@@ -590,17 +496,15 @@ export function ChatSidebar({
       groups.set(key, group)
     }
 
-    return (
-      [...groups.values()]
-        .map(group => ({
-          ...group,
-          loadingMore: Boolean(profileLoadMorePending[group.id]),
-          onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
-          totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
-        }))
-        // default (root) first, then the rest alphabetically.
-        .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
-    )
+    return [...groups.values()]
+      .map(group => ({
+        ...group,
+        loadingMore: Boolean(profileLoadMorePending[group.id]),
+        onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
+        totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
+      }))
+      // default (root) first, then the rest alphabetically.
+      .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
   }, [
     showAllProfiles,
     agentSessions,
@@ -610,57 +514,8 @@ export function ChatSidebar({
     sessionProfileTotals
   ])
 
-  const displayAgentSessions = sourceGroups.length ? localAgentSessions : agentSessions
-
-  const displayAgentGroups = useMemo(() => {
-    if (orderedSourceGroups.length) {
-      const localGroups = agentsGrouped
-        ? agentGroups
-        : localAgentSessions.length
-          ? [
-              {
-                id: 'local-sessions',
-                label: 'Local',
-                mode: 'workspace' as const,
-                path: null,
-                sessions: localAgentSessions
-              }
-            ]
-          : []
-
-      return orderByIds([...orderedSourceGroups, ...localGroups], g => g.id, workspaceOrderIds)
-    }
-
-    return showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
-  }, [
-    agentGroups,
-    agentsGrouped,
-    localAgentSessions,
-    orderedSourceGroups,
-    profileGroups,
-    showAllProfiles,
-    workspaceOrderIds
-  ])
-
-  useEffect(() => {
-    if (!displayAgentGroups?.length || showAllProfiles) {
-      return
-    }
-
-    const next = reconcileOrderIds(
-      displayAgentGroups.map(g => g.id),
-      workspaceOrderIds
-    )
-
-    if (!sameIds(next, workspaceOrderIds)) {
-      setSidebarWorkspaceOrderIds(next)
-    }
-  }, [displayAgentGroups, showAllProfiles, workspaceOrderIds])
-
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
-
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
-
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
   // loaded rows against that profile's total — otherwise a huge default profile
@@ -679,6 +534,20 @@ export function ChatSidebar({
   const remainingSessionCount = Math.max(0, knownSessionTotal - loadedSessionCount)
 
   const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
+  const archiveAllDisabled = sessionsLoading || agentSessions.length === 0 || archiveAllSubmitting
+
+  // Compute eligibility summary for the archive-all dialog so it can show
+  // a precise breakdown of what will be archived vs what is protected.
+  const archiveAllSummary = useMemo(() => {
+    const preserveIds = sessionArchivePreserveIds(agentSessions, {
+      activeSessionId,
+      pinnedSessionIds,
+      selectedSessionId,
+      workingSessionIds
+    })
+
+    return computeSessionEligibility(agentSessions, preserveIds)
+  }, [agentSessions, pinnedSessionIds, workingSessionIds, selectedSessionId, activeSessionId])
 
   const handlePinnedDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) {
@@ -704,24 +573,23 @@ export function ChatSidebar({
 
     const activeId = String(active.id)
     const overId = String(over.id)
-    const activeGroup = parseGroupDndId(activeId)
-    const overGroup = parseGroupDndId(overId)
+    const activeWs = parseWsId(activeId)
+    const overWs = parseWsId(overId)
 
-    if (activeGroup && overGroup) {
-      const groups = displayAgentGroups ?? []
-      const oldIdx = groups.findIndex(g => g.id === activeGroup)
-      const newIdx = groups.findIndex(g => g.id === overGroup)
+    if (activeWs && overWs) {
+      const oldIdx = agentGroups.findIndex(g => g.id === activeWs)
+      const newIdx = agentGroups.findIndex(g => g.id === overWs)
 
       if (oldIdx < 0 || newIdx < 0) {
         return
       }
 
-      setSidebarWorkspaceOrderIds(arrayMove(groups, oldIdx, newIdx).map(g => g.id))
+      setWorkspaceOrderIds(arrayMove(agentGroups, oldIdx, newIdx).map(g => g.id))
 
       return
     }
 
-    if (activeGroup || overGroup) {
+    if (activeWs || overWs) {
       return
     }
 
@@ -732,8 +600,63 @@ export function ChatSidebar({
       return
     }
 
-    setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
+    setAgentOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
   }
+
+  const handleArchiveAll = async () => {
+    if (archiveAllSubmitting) {
+      return
+    }
+
+    setArchiveAllSubmitting(true)
+
+    try {
+      await onArchiveAllSessions()
+      setArchiveAllOpen(false)
+    } catch {
+      // The caller owns the error toast/rollback; keep the dialog open.
+    } finally {
+      setArchiveAllSubmitting(false)
+    }
+  }
+
+  const sessionsHeaderAction =
+    agentSessions.length > 0 ? (
+      <div className="flex items-center gap-0.5">
+        <Button
+          aria-label="Archive all unpinned sessions"
+          className="text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100"
+          disabled={archiveAllDisabled}
+          onClick={event => {
+            event.stopPropagation()
+            setSidebarRecentsOpen(true)
+            setArchiveAllOpen(true)
+          }}
+          size="icon-xs"
+          title="Archive all sessions"
+          variant="ghost"
+        >
+          <Codicon name={archiveAllSubmitting ? 'loading' : 'archive'} size="0.75rem" spinning={archiveAllSubmitting} />
+        </Button>
+        <Button
+          aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+          className={cn(
+            'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+          )}
+          onClick={event => {
+            event.stopPropagation()
+            setSidebarRecentsOpen(true)
+            setSidebarAgentsGrouped(!agentsGrouped)
+          }}
+          size="icon-xs"
+          title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
+          variant="ghost"
+        >
+          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+        </Button>
+      </div>
+    ) : null
 
   return (
     <Sidebar
@@ -742,11 +665,7 @@ export function ChatSidebar({
         panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
         sidebarOpen
           ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
-          : 'pointer-events-none border-transparent bg-transparent opacity-0',
-        // While floated by PaneShell's hover-reveal, force visible + interactive
-        // — on hover (group-hover/reveal) or when keyboard-pinned (data-forced).
-        'in-data-[pane-hover-reveal=open]:pointer-events-auto in-data-[pane-hover-reveal=open]:border-(--sidebar-edge-border) in-data-[pane-hover-reveal=open]:bg-(--ui-sidebar-surface-background) in-data-[pane-hover-reveal=open]:opacity-100',
-        'group-hover/reveal:pointer-events-auto group-hover/reveal:border-(--sidebar-edge-border) group-hover/reveal:bg-(--ui-sidebar-surface-background) group-hover/reveal:opacity-100'
+          : 'pointer-events-none border-transparent bg-transparent opacity-0'
       )}
       collapsible="none"
     >
@@ -786,18 +705,16 @@ export function ChatSidebar({
 
                         onNavigate(item)
                       }}
-                      tooltip={s.nav[item.id] ?? item.label}
+                      tooltip={item.label}
                       type="button"
                     >
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
-                      {contentVisible && (
+                      {sidebarOpen && (
                         <>
-                          <span className="min-w-0 flex-1 truncate">
-                            {s.nav[item.id] ?? item.label}
-                          </span>
+                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{item.label}</span>
                           {isNewSession && (
                             <KbdGroup
-                              className={cn('ml-auto', newSessionKbdFlash && 'opacity-100!')}
+                              className={cn('ml-auto max-[46.25rem]:hidden', newSessionKbdFlash && 'opacity-100!')}
                               keys={[...NEW_SESSION_KBD]}
                             />
                           )}
@@ -811,28 +728,28 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {contentVisible && showSessionSections && (
+        {sidebarOpen && showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
               inputRef={searchInputRef}
               onChange={setSearchQuery}
-              placeholder={s.searchPlaceholder}
+              placeholder="Search sessions…"
               value={searchQuery}
             />
           </div>
         )}
 
-        {contentVisible && showSessionSections && trimmedQuery && (
+        {sidebarOpen && showSessionSections && trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
             emptyState={
               <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                {s.noMatch(trimmedQuery)}
+                No sessions match “{trimmedQuery}”.
               </div>
             }
-            label={s.results}
+            label="Results"
             labelMeta={String(searchResults.length)}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
@@ -847,13 +764,24 @@ export function ChatSidebar({
           />
         )}
 
-        {contentVisible && showSessionSections && !trimmedQuery && (
+        {sidebarOpen && !trimmedQuery && visibleSessionPresence.length > 0 && (
+          <SidebarPresenceSection
+            activeSessionId={activeSidebarSessionId}
+            labelMeta={String(visibleSessionPresence.length)}
+            onOpenPresenceSession={onOpenPresenceSession}
+            onToggle={() => setLiveOpen(!liveOpen)}
+            open={liveOpen}
+            records={visibleSessionPresence}
+          />
+        )}
+
+        {sidebarOpen && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
             dndSensors={dndSensors}
             emptyState={<SidebarPinnedEmptyState />}
-            label={s.pinned}
+            label="Pinned"
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onReorder={handlePinnedDragEnd}
@@ -869,7 +797,7 @@ export function ChatSidebar({
           />
         )}
 
-        {contentVisible && showSessionSections && !trimmedQuery && (
+        {sidebarOpen && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName={cn(
@@ -893,38 +821,9 @@ export function ChatSidebar({
               ) : null
             }
             forceEmptyState={showSessionSkeletons}
-            groups={displayAgentGroups}
-            headerAction={
-              // Always reserve the icon-xs (size-6) slot so the header keeps the
-              // same height whether or not the toggle renders — otherwise the
-              // "Sessions" label jumps when switching to the ALL-profiles view.
-              // Grouping operates on unpinned recents; if everything is pinned
-              // the toggle does nothing, and it's irrelevant in the ALL-profiles
-              // view (always grouped by profile), so hide the button (not the slot).
-              <div className="grid size-6 shrink-0 place-items-center">
-                {!showAllProfiles && localAgentSessions.length > 0 ? (
-                  <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
-                    <Button
-                      aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
-                      className={cn(
-                        'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                        agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                      )}
-                      onClick={event => {
-                        event.stopPropagation()
-                        setSidebarRecentsOpen(true)
-                        setSidebarAgentsGrouped(!agentsGrouped)
-                      }}
-                      size="icon-xs"
-                      variant="ghost"
-                    >
-                      <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-                    </Button>
-                  </Tip>
-                ) : null}
-              </div>
-            }
-            label={s.sessions}
+            groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined}
+            headerAction={sessionsHeaderAction}
+            label="Sessions"
             labelMeta={recentsMeta}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
@@ -936,33 +835,76 @@ export function ChatSidebar({
             open={agentsOpen}
             pinned={false}
             rootClassName="min-h-0 flex-1 p-0"
-            sessions={displayAgentSessions}
+            sessions={agentSessions}
             sortable={!showAllProfiles && agentSessions.length > 1}
             workingSessionIdSet={workingSessionIdSet}
           />
         )}
 
-        {contentVisible && !trimmedQuery && cronJobs.length > 0 && (
-          <SidebarCronJobsSection
-            jobs={cronJobs}
-            label={s.cronJobs}
-            onManageJob={onManageCronJob}
-            onOpenRun={onResumeSession}
-            onToggle={() => setSidebarCronOpen(!cronOpen)}
-            onTriggerJob={onTriggerCronJob}
-            open={cronOpen}
-          />
-        )}
+        {sidebarOpen && !showSessionSections && <div className="min-h-0 flex-1" />}
 
-        {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
-
-        {contentVisible && (
+        {sidebarOpen && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
             <ProfileRail />
           </div>
         )}
       </SidebarContent>
+      <ArchiveAllSessionsDialog
+        onConfirm={handleArchiveAll}
+        onOpenChange={setArchiveAllOpen}
+        open={archiveAllOpen}
+        submitting={archiveAllSubmitting}
+        summary={archiveAllSummary}
+      />
     </Sidebar>
+  )
+}
+
+interface ArchiveAllSessionsDialogProps {
+  open: boolean
+  summary: ReturnType<typeof computeSessionEligibility>
+  onConfirm: () => void | Promise<void>
+  onOpenChange: (open: boolean) => void
+  submitting: boolean
+}
+
+function ArchiveAllSessionsDialog({ summary, open, onConfirm, onOpenChange, submitting }: ArchiveAllSessionsDialogProps) {
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Archive all sessions</DialogTitle>
+          <DialogDescription>
+            Archive unpinned sessions from the sidebar. Pinned chats, the current chat, and running sessions stay
+            visible.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-3 py-2 text-xs text-(--ui-text-secondary)">
+          {summary.total > 0 ? (
+            <div className="space-y-1">
+              <div>
+                <span className="font-medium">{summary.eligible}</span> session{summary.eligible === 1 ? '' : 's'} will be archived.
+              </div>
+              {summary.protected > 0 && (
+                <div className="text-(--ui-text-muted)">
+                  <span className="font-medium">{summary.protected}</span> session{summary.protected === 1 ? '' : 's'} protected (pinned, active, or recently modified).
+                </div>
+              )}
+            </div>
+          ) : (
+            'No sessions to archive.'
+          )}
+        </div>
+        <DialogFooter>
+          <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
+            Cancel
+          </Button>
+          <Button disabled={submitting} onClick={() => void onConfirm()} type="button" variant="destructive">
+            {submitting ? 'Archiving…' : 'Archive all'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1007,26 +949,111 @@ function SidebarSessionSkeletons() {
   )
 }
 
-function SidebarAllPinnedState() {
-  const { t } = useI18n()
-
-  return (
-    <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
-      {t.sidebar.allPinned}
-    </div>
-  )
-}
+const SidebarAllPinnedState = () => (
+  <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
+    Everything here is pinned. Unpin a chat to show it in recents.
+  </div>
+)
 
 function SidebarPinnedEmptyState() {
-  const { t } = useI18n()
-
   return (
     <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
-      <span>{t.sidebar.shiftClickHint}</span>
+      <span>Shift-click a chat to pin</span>
     </div>
+  )
+}
+
+interface SidebarPresenceSectionProps {
+  activeSessionId: null | string
+  labelMeta: React.ReactNode
+  onOpenPresenceSession: (record: SessionPresenceRecord) => void
+  onToggle: () => void
+  open: boolean
+  records: SessionPresenceRecord[]
+}
+
+function SidebarPresenceSection({
+  activeSessionId,
+  labelMeta,
+  onOpenPresenceSession,
+  onToggle,
+  open,
+  records
+}: SidebarPresenceSectionProps) {
+  return (
+    <SidebarGroup className="shrink-0 p-0 pb-1">
+      <SidebarSectionHeader label="Live" meta={labelMeta} onToggle={onToggle} open={open} />
+      {open && (
+        <SidebarGroupContent className="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1">
+          {records.map(record => {
+            const target = record.session_key?.trim() || record.session_id
+
+            return (
+              <SidebarPresenceRow
+                active={target === activeSessionId}
+                key={`${record.instance_id || record.host || 'instance'}:${record.session_id}`}
+                onOpen={() => onOpenPresenceSession(record)}
+                record={record}
+              />
+            )
+          })}
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
+  )
+}
+
+function SidebarPresenceRow({
+  active,
+  onOpen,
+  record
+}: {
+  active: boolean
+  onOpen: () => void
+  record: SessionPresenceRecord
+}) {
+  const title = record.title?.trim() || record.session_key?.trim() || record.session_id
+  const model = record.model?.trim()
+  const origin = [record.host, record.client || record.source].filter(Boolean).join(' / ')
+  const detail = [model, origin].filter(Boolean).join('  ')
+  const status = record.status?.trim().toLowerCase() || 'idle'
+  const working = status !== 'idle' && status !== 'current'
+
+  return (
+    <button
+      aria-label={`Open live session ${title}`}
+      className={cn(
+        'group flex min-h-9 flex-col justify-center rounded-md bg-transparent px-2 py-1 text-left transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+        active && 'bg-(--ui-row-active-background)'
+      )}
+      onClick={onOpen}
+      title={origin ? `${title} (${origin})` : title}
+      type="button"
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="grid w-3.5 shrink-0 place-items-center">
+          <span
+            className={cn(
+              'rounded-full',
+              working
+                ? 'relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)]'
+                : 'size-1 bg-(--ui-text-quaternary) opacity-80'
+            )}
+          />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground">
+          {title}
+        </span>
+      </span>
+      {detail && (
+        <span className="ml-5 min-w-0 truncate text-[0.625rem] leading-3 text-(--ui-text-tertiary)">
+          {detail}
+        </span>
+      )}
+    </button>
   )
 }
 
@@ -1038,9 +1065,8 @@ interface SidebarSessionGroup {
   // Profile color for the ALL-profiles view; absent for workspace groups.
   color?: null | string
   loadingMore?: boolean
-  mode?: 'profile' | 'source' | 'workspace'
+  mode?: 'profile' | 'workspace'
   onLoadMore?: () => void
-  sourceId?: string
   totalCount?: number
 }
 
@@ -1095,8 +1121,7 @@ function SidebarSessionsSection({
   onReorder,
   dndSensors
 }: SidebarSessionsSectionProps) {
-  const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
-  const showEmptyState = forceEmptyState || (!hasGroupedSessions && sessions.length === 0)
+  const showEmptyState = forceEmptyState || sessions.length === 0
   const dndActive = sortable && !!onReorder
 
   const renderRow = (session: SessionInfo) => {
@@ -1129,25 +1154,12 @@ function SidebarSessionsSection({
       renderRows(items)
     )
 
-  const renderNestedSessionList = (items: SessionInfo[]) =>
-    dndActive ? (
-      <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
-        <SortableContext items={items.map(s => s.id)} strategy={verticalListSortingStrategy}>
-          {renderRows(items)}
-        </SortableContext>
-      </DndContext>
-    ) : (
-      renderRows(items)
-    )
-
   const flatVirtualized = !showEmptyState && !groups?.length && sessions.length >= VIRTUALIZE_THRESHOLD
 
   let inner: React.ReactNode
-  let bodyOwnsDndContext = dndActive && !showEmptyState
 
   if (showEmptyState) {
     inner = emptyState
-    bodyOwnsDndContext = false
   } else if (groups?.length) {
     const groupNodes = groups.map(group =>
       dndActive ? (
@@ -1155,7 +1167,7 @@ function SidebarSessionsSection({
           group={group}
           key={group.id}
           onNewSession={onNewSessionInWorkspace}
-          renderRows={renderNestedSessionList}
+          renderRows={renderSessionList}
         />
       ) : (
         <SidebarWorkspaceGroup
@@ -1168,15 +1180,12 @@ function SidebarSessionsSection({
     )
 
     inner = dndActive ? (
-      <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
-        <SortableContext items={groups.map(g => groupDndId(g.id))} strategy={verticalListSortingStrategy}>
-          {groupNodes}
-        </SortableContext>
-      </DndContext>
+      <SortableContext items={groups.map(g => wsId(g.id))} strategy={verticalListSortingStrategy}>
+        {groupNodes}
+      </SortableContext>
     ) : (
       groupNodes
     )
-    bodyOwnsDndContext = false
   } else if (flatVirtualized) {
     inner = (
       <VirtualSessionList
@@ -1195,13 +1204,14 @@ function SidebarSessionsSection({
     inner = renderSessionList(sessions)
   }
 
-  const body = bodyOwnsDndContext ? (
-    <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
-      {inner}
-    </DndContext>
-  ) : (
-    inner
-  )
+  const body =
+    dndActive && !showEmptyState ? (
+      <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
+        {inner}
+      </DndContext>
+    ) : (
+      inner
+    )
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow
   // to avoid a double scroll container.
@@ -1241,10 +1251,7 @@ function SidebarWorkspaceGroup({
   ref,
   ...rest
 }: SidebarWorkspaceGroupProps) {
-  const { t } = useI18n()
-  const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
-  const isSourceGroup = group.mode === 'source'
   const pageStep = isProfileGroup ? PROFILE_INITIAL_PAGE : WORKSPACE_PAGE
   const [open, setOpen] = useState(true)
   const [visibleCount, setVisibleCount] = useState(pageStep)
@@ -1270,16 +1277,7 @@ function SidebarWorkspaceGroup({
   }
 
   return (
-    <div
-      className={cn(
-        'grid gap-px data-[dragging=true]:z-10 data-[dragging=true]:opacity-70 data-[dragging=true]:will-change-transform',
-        className
-      )}
-      data-dragging={dragging ? 'true' : undefined}
-      ref={ref}
-      style={style}
-      {...rest}
-    >
+    <div className={cn('grid gap-px', dragging && 'z-10 opacity-60', className)} ref={ref} style={style} {...rest}>
       <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
         <button
           className="flex min-w-0 items-center gap-1.5 bg-transparent text-left hover:text-(--ui-text-secondary)"
@@ -1287,18 +1285,7 @@ function SidebarWorkspaceGroup({
           type="button"
         >
           {group.color ? (
-            <span
-              aria-hidden="true"
-              className="size-2 shrink-0 rounded-full"
-              style={{ backgroundColor: group.color }}
-            />
-          ) : null}
-          {isSourceGroup && group.sourceId ? (
-            <PlatformAvatar
-              className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
-              platformId={group.sourceId}
-              platformName={group.label}
-            />
+            <span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ backgroundColor: group.color }} />
           ) : null}
           <span className="truncate">{group.label}</span>
           <SidebarCount>
@@ -1310,9 +1297,9 @@ function SidebarWorkspaceGroup({
           />
         </button>
         {(onNewSession || isProfileGroup) && (
-          <Tip label={s.newSessionIn(group.label)}>
+          <Tip label={`New session in ${group.label}`}>
             <button
-              aria-label={s.newSessionIn(group.label)}
+              aria-label={`New session in ${group.label}`}
               className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
               // Profile groups start a fresh session in that profile but keep the
               // all-profiles browse view (newSessionInProfile leaves the scope
@@ -1327,7 +1314,7 @@ function SidebarWorkspaceGroup({
         {reorderable && (
           <span
             {...dragHandleProps}
-            aria-label={s.reorderWorkspace(group.label)}
+            aria-label={`Reorder workspace ${group.label}`}
             className="ml-auto -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
             onClick={event => event.stopPropagation()}
           >
@@ -1347,15 +1334,11 @@ function SidebarWorkspaceGroup({
           {renderRows(visibleSessions)}
           {hiddenCount > 0 &&
             (isProfileGroup ? (
-              <SidebarLoadMoreRow
-                loading={Boolean(group.loadingMore)}
-                onClick={handleProfileLoadMore}
-                step={nextCount}
-              />
+              <SidebarLoadMoreRow loading={Boolean(group.loadingMore)} onClick={handleProfileLoadMore} step={nextCount} />
             ) : (
-              <Tip label={s.showMoreIn(nextCount, group.label)}>
+              <Tip label={`Show ${nextCount} more in ${group.label}`}>
                 <button
-                  aria-label={s.showMoreIn(nextCount, group.label)}
+                  aria-label={`Show ${nextCount} more in ${group.label}`}
                   className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
                   onClick={() => setVisibleCount(count => count + WORKSPACE_PAGE)}
                   type="button"
@@ -1377,7 +1360,7 @@ interface SortableWorkspaceProps {
 }
 
 function SortableSidebarWorkspaceGroup(props: SortableWorkspaceProps) {
-  return <SidebarWorkspaceGroup {...props} {...useSortableBindings(groupDndId(props.group.id))} />
+  return <SidebarWorkspaceGroup {...props} {...useSortableBindings(wsId(props.group.id))} />
 }
 
 function SidebarCount({ children }: { children: React.ReactNode }) {
@@ -1406,8 +1389,7 @@ interface SidebarLoadMoreRowProps {
 }
 
 function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps) {
-  const { t } = useI18n()
-  const label = loading ? t.sidebar.loading : step > 0 ? t.sidebar.loadCount(step) : t.sidebar.loadMore
+  const label = loading ? 'Loading…' : step > 0 ? `Load ${step} more` : 'Load more'
 
   return (
     <button

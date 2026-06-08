@@ -4,7 +4,7 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistString, storedString } from '@/lib/storage'
-import type { SessionInfo, UsageStats } from '@/types/hermes'
+import type { SessionInfo, SessionPresenceRecord, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
@@ -76,21 +76,13 @@ export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
-// Cron-job sessions (source === 'cron') are fetched as their own list so the
-// scheduler's always-newest sessions never crowd recents out of the page
-// budget. Powers the collapsed "Cron jobs" sidebar section.
-export const $cronSessions = atom<SessionInfo[]>([])
-// Max cron sessions fetched for the sidebar section (single bounded page). When
-// the fetch returns exactly this many rows we know more exist, so the section
-// badge renders "N+". Lives here so the controller (fetch) and sidebar (badge)
-// share one source of truth without a circular import.
-export const CRON_SECTION_LIMIT = 50
 // Listable conversation count per profile (children excluded), keyed by profile
 // name. Lets the sidebar scope its "Load more" footer to the active profile so a
 // huge default profile doesn't keep "Load more" visible while browsing a small
 // one. Empty for single-profile users (fall back to $sessionsTotal).
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
+export const $sessionPresence = atom<SessionPresenceRecord[]>([])
 export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
@@ -103,10 +95,12 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
-// Effective approval-bypass state mirrored from the gateway (session.info).
-// Persistence lives in the backend config (approvals.mode), so this is a plain
-// reflection of the truth the gateway reports rather than its own store.
-export const $yoloActive = atom(false)
+export const DEFAULT_DESKTOP_YOLO_ACTIVE = true
+// Desktop new-chat default. The backend approval bypass remains session-scoped;
+// this preference decides whether desktop applies that bypass to new sessions.
+export const $desktopYoloDefault = atom(DEFAULT_DESKTOP_YOLO_ACTIVE)
+// Effective approval-bypass state for the active desktop session/draft.
+export const $yoloActive = atom(DEFAULT_DESKTOP_YOLO_ACTIVE)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
@@ -128,10 +122,10 @@ export const setConnection = (next: Updater<HermesConnection | null>) => updateA
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
-export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
+export const setSessionPresence = (next: Updater<SessionPresenceRecord[]>) => updateAtom($sessionPresence, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
@@ -144,6 +138,7 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+export const setDesktopYoloDefaultActive = (next: Updater<boolean>) => updateAtom($desktopYoloDefault, next)
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 
 export const setCurrentCwd = (next: Updater<string>) => {

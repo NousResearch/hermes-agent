@@ -34,7 +34,7 @@ The daemon listens on WebSocket at `ws://127.0.0.1:5225` by default.
 ### Via setup wizard
 
 ```bash
-hermes gateway setup
+hermes setup gateway
 ```
 
 Select **SimpleX Chat** and follow the prompts.
@@ -52,7 +52,7 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | Variable | Required | Description |
 |---|---|---|
 | `SIMPLEX_WS_URL` | Yes | WebSocket URL of the simplex-chat daemon |
-| `SIMPLEX_ALLOWED_USERS` | Recommended | Comma-separated allowlist. Each entry can be a numeric `contactId` **or** a display name — both forms work. |
+| `SIMPLEX_ALLOWED_USERS` | Recommended | Comma-separated contact IDs allowed to use the agent |
 | `SIMPLEX_ALLOW_ALL_USERS` | Optional | Set `true` to allow every contact (use carefully) |
 | `SIMPLEX_AUTO_ACCEPT` | Optional | Auto-accept incoming contact requests (default: `true`) |
 | `SIMPLEX_GROUP_ALLOWED` | Optional | Comma-separated group IDs the bot participates in, or `*` for any group. Omit to ignore group messages entirely |
@@ -60,16 +60,16 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
 | `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Optional | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into one event |
 
-## Find your contact ID or display name
+## Find your contact ID
 
-After starting the daemon, open a conversation with your agent contact. The numeric `contactId` appears in session logs or via `hermes send_message action=list`. If you'd rather use the display name shown in the SimpleX UI, that works too — `SIMPLEX_ALLOWED_USERS` accepts either form.
+After starting the daemon, open a conversation with your agent contact. The contact ID will appear in session logs or via `hermes send_message action=list`.
 
 ## Authorization
 
 By default **all contacts are denied**. You must either:
 
-1. Set `SIMPLEX_ALLOWED_USERS` to a comma-separated list of `contactId`s and/or display names (e.g. `SIMPLEX_ALLOWED_USERS=4,alice` matches either contactId 4 or the contact whose display name is "alice"), or
-2. Use **DM pairing** — send any message to the bot and it will reply with a pairing code. Enter that code via `hermes pairing approve simplex <CODE>`.
+1. Set `SIMPLEX_ALLOWED_USERS` to a comma-separated list of contact IDs, or
+2. Use **DM pairing** — send any message to the bot and it will reply with a pairing code. Enter that code via `hermes gateway pair`.
 
 ## Group chats
 

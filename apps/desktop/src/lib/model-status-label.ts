@@ -17,6 +17,10 @@ export function reasoningEffortLabel(effort: string): string {
   return REASONING_LABELS[key] ?? effort
 }
 
+export function defaultReasoningEffortLabel(effort: string): string {
+  return reasoningEffortLabel(effort || 'none') || 'Off'
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()
@@ -95,9 +99,9 @@ export function formatModelStatusLabel(
     parts.push('Fast')
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  // Always surface the effective effort so the status bar makes Thinking-off
+  // visible at a glance, including when startup state arrives empty.
+  parts.push(defaultReasoningEffortLabel(options?.reasoningEffort ?? ''))
 
   return `${name} · ${parts.join(' ')}`
 }

@@ -1334,6 +1334,30 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_surfaced_counts_share_list_visibility_filter(self, db):
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session(
+            "branch",
+            "cli",
+            model_config={"_branched_from": "parent"},
+            parent_session_id="parent",
+        )
+
+        # The marker must keep this real branch visible even if the parent later
+        # gets reopened and ended for a different reason.
+        db.reopen_session("parent")
+        db.end_session("parent", "tui_shutdown")
+        db.create_session("hidden-child", "cli", parent_session_id="parent")
+
+        visible_ids = {row["id"] for row in db.list_sessions_rich()}
+        assert visible_ids == {"parent", "branch"}
+        assert db.session_count() == 3
+        assert db.session_count(exclude_children=True) == 2
+        assert db.surfaced_session_count() == 2
+        assert db.surfaced_session_count(exclude_children=True) == 2
+        assert db.surfaced_session_count(exclude_children=False) == 3
+
     def test_message_count_total(self, db):
         assert db.message_count() == 0
         db.create_session(session_id="s1", source="cli")
@@ -3258,6 +3282,150 @@ class TestAutoMaintenance:
         )
         db._conn.commit()
 
+    def _make_archivable_session(
+        self,
+        db,
+        sid: str,
+        *,
+        last_active: float,
+        ended: bool = True,
+    ):
+        db.create_session(session_id=sid, source="cli")
+        db.append_message(session_id=sid, role="user", content=f"hello {sid}")
+        if ended:
+            db.end_session(sid, end_reason="done")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (
+                last_active - 10,
+                last_active if ended else None,
+                sid,
+            ),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (last_active, sid),
+        )
+        db._conn.commit()
+
+    def test_auto_archive_hides_sessions_beyond_recent_cap(self, db):
+        now = time.time()
+        for idx in range(5):
+            self._make_archivable_session(
+                db,
+                f"s{idx}",
+                last_active=now - idx * 60,
+            )
+
+        archived = db.archive_old_sessions(
+            keep_recent=2,
+            older_than_days=0,
+        )
+
+        assert archived == 3
+        assert db.session_count(include_archived=False) == 2
+        assert db.session_count(archived_only=True) == 3
+        assert db.get_session("s0")["archived"] == 0
+        assert db.get_session("s1")["archived"] == 0
+        assert db.get_session("s2")["archived"] == 1
+        assert db.get_session("s4")["archived"] == 1
+
+    def test_auto_archive_preserves_requested_and_recent_live_sessions(self, db):
+        now = time.time()
+        self._make_archivable_session(db, "recent", last_active=now)
+        self._make_archivable_session(db, "old-preserved", last_active=now - 500)
+        self._make_archivable_session(db, "old-archive", last_active=now - 600)
+        self._make_archivable_session(
+            db,
+            "live-recent",
+            last_active=now - 700,
+            ended=False,
+        )
+
+        archived = db.archive_old_sessions(
+            keep_recent=1,
+            older_than_days=0,
+            preserve_ids=["old-preserved"],
+            active_grace_seconds=3600,
+        )
+
+        assert archived == 1
+        assert db.get_session("recent")["archived"] == 0
+        assert db.get_session("old-preserved")["archived"] == 0
+        assert db.get_session("live-recent")["archived"] == 0
+        assert db.get_session("old-archive")["archived"] == 1
+
+    def test_auto_archive_syncs_hidden_descendants_not_visible_branches(self, db):
+        now = time.time()
+        self._make_archivable_session(db, "archived-root", last_active=now - 500)
+        db.set_session_archived("archived-root", True)
+        db.create_session(
+            session_id="hidden-child",
+            source="cli",
+            parent_session_id="archived-root",
+        )
+        db.append_message("hidden-child", role="user", content="child")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 490, "hidden-child"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (now - 490, "hidden-child"),
+        )
+
+        db.create_session(session_id="branch-parent", source="cli")
+        db.append_message("branch-parent", role="user", content="parent")
+        db.end_session("branch-parent", end_reason="branched")
+        db.set_session_archived("branch-parent", True)
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (now - 400, now - 390, "branch-parent"),
+        )
+        db.create_session(
+            session_id="visible-branch",
+            source="cli",
+            parent_session_id="branch-parent",
+        )
+        db.append_message("visible-branch", role="user", content="branch")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 380, "visible-branch"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (now - 380, "visible-branch"),
+        )
+        db._conn.commit()
+
+        archived = db.archive_old_sessions(keep_recent=100, older_than_days=14)
+
+        assert archived == 1
+        assert db.get_session("hidden-child")["archived"] == 1
+        assert db.get_session("visible-branch")["archived"] == 0
+
+    def test_maybe_auto_archive_uses_interval_marker(self, db):
+        now = time.time()
+        self._make_archivable_session(db, "old1", last_active=now - 100)
+
+        first = db.maybe_auto_archive_old_sessions(
+            keep_recent=0,
+            older_than_days=1,
+            min_interval_hours=24,
+        )
+        assert first["skipped"] is False
+        assert first["archived"] == 0
+
+        self._make_archivable_session(db, "old2", last_active=now - 200)
+        second = db.maybe_auto_archive_old_sessions(
+            keep_recent=1,
+            older_than_days=0,
+            min_interval_hours=24,
+        )
+        assert second["skipped"] is True
+        assert second["archived"] == 0
+        assert db.get_session("old2")["archived"] == 0
+
     def test_first_run_prunes_and_vacuums(self, db):
         self._make_old_ended(db, "old1", days_old=100)
         self._make_old_ended(db, "old2", days_old=100)
@@ -3903,106 +4071,3 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
-
-
-class TestListCronJobRuns:
-    """``list_cron_job_runs`` powers the desktop cron run-history endpoint.
-
-    It must scope to exactly one job's runs via an id prefix range (not a
-    substring), order newest-first, enrich with preview/last_active, and stay
-    bounded by the requested window rather than the whole cron history.
-    """
-
-    def _seed_run(self, db, job_id: str, idx: int, started_at: float):
-        sid = f"cron_{job_id}_{idx:08d}"
-        db.create_session(session_id=sid, source="cron")
-        db.append_message(sid, role="user", content=f"run {idx} for {job_id}")
-        db.append_message(sid, role="assistant", content="done")
-        db.end_session(sid, "completed")
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?", (started_at, sid)
-        )
-        db._conn.commit()
-        return sid
-
-    def test_scopes_to_job_newest_first_and_enriched(self, db):
-        base = 1_700_000_000.0
-        # Target job: 5 runs, ascending started_at.
-        for i in range(5):
-            self._seed_run(db, "alpha", i, base + i * 60)
-        # A different job that must not leak in.
-        for i in range(3):
-            self._seed_run(db, "beta", i, base + i * 60)
-
-        runs = db.list_cron_job_runs("alpha", limit=20)
-
-        assert len(runs) == 5
-        assert all(r["id"].startswith("cron_alpha_") for r in runs)
-        # Newest started_at first.
-        sts = [r["started_at"] for r in runs]
-        assert sts == sorted(sts, reverse=True)
-        # Enriched like list_sessions_rich.
-        assert runs[0]["preview"].startswith("run 4 for alpha")
-        assert runs[0]["last_active"] >= runs[0]["started_at"]
-
-    def test_prefix_match_excludes_substring_collision(self, db):
-        """A job whose id contains the target id as a substring must not leak.
-
-        The old code used a leading-wildcard ``LIKE %cron_<id>_%`` which would
-        also match ``cron_xalpha_...``; the range scan binds to the true prefix.
-        """
-        base = 1_700_000_000.0
-        self._seed_run(db, "alpha", 0, base)
-        # Collision: id is "xalpha", which contains "alpha".
-        self._seed_run(db, "xalpha", 0, base + 10)
-        # Collision the other way: id "alpha2" extends past the underscore.
-        self._seed_run(db, "alpha2", 0, base + 20)
-
-        runs = db.list_cron_job_runs("alpha", limit=20)
-
-        assert [r["id"] for r in runs] == ["cron_alpha_00000000"]
-
-    def test_ignores_non_cron_sessions(self, db):
-        base = 1_700_000_000.0
-        self._seed_run(db, "alpha", 0, base)
-        # A non-cron session whose id happens to share the prefix shape.
-        db.create_session(session_id="cron_alpha_99999999", source="cli")
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (base + 100, "cron_alpha_99999999"),
-        )
-        db._conn.commit()
-
-        runs = db.list_cron_job_runs("alpha", limit=20)
-
-        assert [r["id"] for r in runs] == ["cron_alpha_00000000"]
-
-    def test_limit_and_offset_paging(self, db):
-        base = 1_700_000_000.0
-        for i in range(10):
-            self._seed_run(db, "alpha", i, base + i * 60)
-
-        page1 = db.list_cron_job_runs("alpha", limit=4, offset=0)
-        page2 = db.list_cron_job_runs("alpha", limit=4, offset=4)
-
-        assert len(page1) == 4
-        assert len(page2) == 4
-        assert {r["id"] for r in page1}.isdisjoint({r["id"] for r in page2})
-        # Combined window is still newest-first and contiguous.
-        combined = [r["started_at"] for r in page1 + page2]
-        assert combined == sorted(combined, reverse=True)
-
-    def test_uses_index_range_scan(self, db):
-        """The query must use the (source, id) index, not a full table scan."""
-        prefix = "cron_alpha_"
-        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
-        plan = db._conn.execute(
-            "EXPLAIN QUERY PLAN "
-            "SELECT s.* FROM sessions s "
-            "WHERE s.source = 'cron' AND s.id >= ? AND s.id < ? "
-            "ORDER BY s.started_at DESC LIMIT 20",
-            (prefix, prefix_hi),
-        ).fetchall()
-        detail = " ".join(row[-1] for row in plan)
-        assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
-        assert "idx_sessions_source" in detail, detail

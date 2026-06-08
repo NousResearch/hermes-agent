@@ -1654,8 +1654,6 @@
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
               "Resolved: " + (settings.resolved_orchestrator_profile || "default")),
-            h("div", { className: "text-[10px] text-muted-foreground" },
-              "Owns the root task after fan-out (wakes back up to judge completion). Does not drive how tasks split — configure the decomposer model under auxiliary.kanban_decomposer."),
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
@@ -1697,7 +1695,7 @@
           h(Label, { className: "text-xs text-muted-foreground" },
             "Profile descriptions"),
           h("div", { className: "text-[10px] text-muted-foreground pb-2" },
-            "Descriptions guide the decomposer's routing. Click ⚗ to auto-generate, or edit and save."),
+            "Descriptions guide the orchestrator's routing. Click ⚗ to auto-generate, or edit and save."),
           profiles.length === 0
             ? h("div", { className: "text-xs text-muted-foreground" }, "No profiles installed.")
             : h("div", { className: "flex flex-col gap-2" },
@@ -3746,9 +3744,9 @@
         }, specifyBusy ? "Specifying…" : "✨ Specify")
       : null;
 
-    // "Decompose" is the built-in decomposer fan-out. Like Specify, only
+    // "Decompose" is the orchestrator-driven fan-out. Like Specify, only
     // makes sense on triage-column tasks — elsewhere the backend short-
-    // circuits with ok:false. When the decomposer returns fanout:false
+    // circuits with ok:false. When the orchestrator returns fanout:false
     // we render the same single-task message as Specify; when it fans
     // out we report the child count for quick at-a-glance verification.
     const decomposeButton = (task.status === "triage" && props.onDecompose)

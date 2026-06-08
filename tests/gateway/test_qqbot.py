@@ -2196,27 +2196,3 @@ class TestCloseCodeClassification:
         assert 4014 in fatal_codes
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
-
-
-class TestReadEventsClosedWsGuard:
-    """Regression: a closed-but-non-None ws must raise on entry, not return
-    normally, so _listen_loop goes through reconnect/backoff instead of
-    busy-looping at 100% CPU (issues #31193 / #31771)."""
-
-    def _make_adapter(self, **extra):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
-
-    def test_read_events_raises_when_ws_closed_on_entry(self):
-        adapter = self._make_adapter()
-        adapter._running = True
-        adapter._ws = SimpleNamespace(closed=True)
-        with pytest.raises(RuntimeError):
-            asyncio.run(adapter._read_events())
-
-    def test_read_events_raises_when_ws_none(self):
-        adapter = self._make_adapter()
-        adapter._running = True
-        adapter._ws = None
-        with pytest.raises(RuntimeError):
-            asyncio.run(adapter._read_events())

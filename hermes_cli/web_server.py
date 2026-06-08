@@ -713,8 +713,10 @@ def _apply_main_model_assignment(
     The runtime resolver reads ``model.base_url`` from config (it ignores
     ``OPENAI_BASE_URL``) and only honors it when the configured provider matches
     and the pool entry is on the registry default, so preserving it here is what
-    lets the override actually route. The hardcoded ``context_length`` override
-    is always dropped since the new model may have a different context window.
+    lets the override actually route. ``model.context_length`` is treated as an
+    explicit user override and must survive model switches; local/OpenAI-
+    compatible setups often need a pinned context window regardless of which
+    model name is selected in the UI.
 
     Returns the same dict (coerced to a fresh dict if the input wasn't one) so
     callers can assign it straight back onto the model config.
@@ -732,7 +734,6 @@ def _apply_main_model_assignment(
         # it so the new provider's default endpoint is used. Same-provider
         # re-assignment keeps the user's configured base_url intact.
         model_cfg["base_url"] = ""
-    model_cfg.pop("context_length", None)
     return model_cfg
 
 

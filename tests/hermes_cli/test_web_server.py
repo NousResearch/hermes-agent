@@ -1962,6 +1962,34 @@ class TestConfigRoundTrip:
         assert set(after["model"].keys()) >= original_keys, \
             f"Lost model subkeys: {original_keys - set(after['model'].keys())}"
 
+    def test_set_model_assignment_preserves_context_length_override(self):
+        """Switching the main model should keep an explicit context_length override."""
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {
+                "default": "qwen3.5:14b",
+                "provider": "ollama",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "context_length": 131072,
+            }
+        })
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "ollama",
+                "model": "qwen3.5:32b",
+            },
+        )
+
+        assert resp.status_code == 200
+        after = load_config()
+        assert after["model"]["provider"] == "ollama"
+        assert after["model"]["default"] == "qwen3.5:32b"
+        assert after["model"]["context_length"] == 131072
+
     def test_edit_model_name_preserved(self):
         """Changing the model string should update model.default on disk."""
         from hermes_cli.config import load_config

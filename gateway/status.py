@@ -14,7 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
-import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -173,36 +173,69 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
     test also matched ``hermes_cli.main gateway status`` and even unrelated
     processes like ``python -m tui_gateway`` -- which made ``restart()`` race
     against a still-draining old process and ``status``/``start`` report false
-    positives.  This requires the actual ``gateway`` subcommand to be followed
-    by ``run`` (or the gateway-dedicated entrypoints), excluding the other
+    positives.  This requires the actual ``gateway`` subcommand followed by
+    ``run`` (or one of the gateway-dedicated entrypoints), excluding the other
     ``gateway`` management subcommands and any process that merely contains the
     word "gateway".
+
+    Tokenizes quote-aware (``shlex``) so quoted Windows paths with spaces
+    (``"C:\\Program Files\\...\\hermes-gateway.exe"``) survive, and strips
+    ``--profile``/``-p`` selectors from anywhere in argv -- Hermes's
+    ``_apply_profile_override`` removes them before argparse, so the profile
+    flag (and a profile literally named ``gateway``) can legally appear on
+    either side of the ``gateway`` subcommand.
     """
     if not command:
         return False
-    normalized = command.replace("\\", "/").lower()
+
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    # Strip surrounding quotes, normalize slashes + case per token.
+    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    if not tokens:
+        return False
 
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
-    if re.search(r"(^|[/\s])gateway/run\.py(\s|$)", normalized):
-        return True
-    if re.search(r"(^|[/\s])hermes-gateway(?:\.exe)?(\s|$)", normalized):
-        return True
+    for token in tokens:
+        if token == "gateway/run.py" or token.endswith("/gateway/run.py"):
+            return True
+        basename = token.rsplit("/", 1)[-1]
+        if basename in ("hermes-gateway", "hermes-gateway.exe"):
+            return True
 
+    joined = " ".join(tokens)
     has_gateway_entry = (
-        "hermes_cli.main" in normalized
-        or "hermes_cli/main.py" in normalized
-        or re.search(r"(^|[/\s])hermes(?:\.exe)?(\s|$)", normalized) is not None
+        "hermes_cli.main" in joined
+        or "hermes_cli/main.py" in joined
+        or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
     )
     if not has_gateway_entry:
         return False
 
-    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in command.split()]
-    for i, token in enumerate(tokens):
+    # Drop profile selectors anywhere: --profile X / -p X / --profile=X / -p=X.
+    # This consumes a profile VALUE of "gateway" too, so the real subcommand
+    # token is the one we land on below.
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ("--profile", "-p"):
+            skip_next = True
+            continue
+        if token.startswith("--profile=") or token.startswith("-p="):
+            continue
+        filtered.append(token)
+
+    for i, token in enumerate(filtered):
         if token != "gateway":
             continue
-        if i + 1 >= len(tokens):
+        if i + 1 >= len(filtered):
             return True  # bare `hermes gateway` defaults to `run`
-        return tokens[i + 1] == "run"
+        return filtered[i + 1] == "run"
     return False
 
 

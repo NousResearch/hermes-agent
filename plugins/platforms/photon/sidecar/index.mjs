@@ -12,6 +12,10 @@
 //   - POST /healthz                     -> {"ok": true}
 //   - POST /send                        -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...", "replyTo": "..." | null}
+//   - POST /send-attachment             -> {"ok": true, "messageId": "..."}
+//       body: {"spaceId": "...", "path": "...", "name": "..." | null,
+//              "mimeType": "..." | null, "caption": "..." | null,
+//              "kind": "attachment" | "voice", "replyTo": "..." | null}
 //   - POST /typing                      -> {"ok": true}
 //       body: {"spaceId": "..."}
 //   - POST /shutdown                    -> {"ok": true}; then process exits
@@ -48,9 +52,9 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage;
+let Spectrum, imessage, attachment, voice;
 try {
-  ({ Spectrum } = await import("spectrum-ts"));
+  ({ Spectrum, attachment, voice } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
@@ -177,6 +181,44 @@ const server = http.createServer(async (req, res) => {
       const result = replyTo
         ? await space.send(text, { replyTo })
         : await space.send(text);
+      return ok(res, { messageId: result?.id || result?.messageId || null });
+    }
+    if (req.url === "/send-attachment") {
+      const { spaceId, path, name, mimeType, caption, kind, replyTo } =
+        body || {};
+      if (!spaceId || typeof path !== "string" || !path) {
+        return badRequest(res, "spaceId and path are required");
+      }
+      const space = await resolveSpace(spaceId);
+
+      // spectrum-ts infers name + MIME from the file extension; pass
+      // overrides only when Hermes supplied them so a known-good
+      // inference isn't clobbered with an empty string.
+      const opts = {};
+      if (name) opts.name = name;
+      if (mimeType) opts.mimeType = mimeType;
+      const builder =
+        kind === "voice"
+          ? voice(path, Object.keys(opts).length ? opts : undefined)
+          : attachment(path, Object.keys(opts).length ? opts : undefined);
+
+      const sendOpts = replyTo ? { replyTo } : undefined;
+      const result = sendOpts
+        ? await space.send(builder, sendOpts)
+        : await space.send(builder);
+
+      // iMessage delivers the caption as a separate bubble; send it
+      // after the media so the attachment renders first.
+      if (caption && typeof caption === "string") {
+        try {
+          await space.send(caption);
+        } catch (e) {
+          console.error(
+            "photon-sidecar: attachment sent but caption failed: " +
+              (e && e.stack ? e.stack : String(e))
+          );
+        }
+      }
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/typing") {

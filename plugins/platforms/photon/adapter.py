@@ -14,8 +14,10 @@ Outbound:
     Photon does not currently expose a public HTTP send-message
     endpoint, so the adapter spawns a small Node sidecar (see
     ``sidecar/index.mjs``) that runs the ``spectrum-ts`` SDK.  Each
-    ``send`` / ``send_typing`` call from Hermes is a loopback POST to
-    the sidecar with a shared bearer token.
+    ``send`` / ``send_typing`` / attachment call from Hermes is a
+    loopback POST to the sidecar with a shared bearer token.  Outbound
+    media (images, voice notes, video, documents) goes through
+    spectrum-ts' ``attachment()`` / ``voice()`` content builders.
 
 When Photon ships an HTTP send endpoint we can collapse the sidecar
 into ``_send_via_http`` and drop the Node dependency entirely.
@@ -670,6 +672,99 @@ class PhotonAdapter(BasePlatformAdapter):
     ) -> SendResult:
         return await self._sidecar_send(chat_id, content, reply_to=reply_to)
 
+    # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
+    #
+    # Photon ships outbound attachments via spectrum-ts' `attachment()` /
+    # `voice()` content builders. The sidecar's `/send-attachment` endpoint
+    # wraps `space.send(attachment(path, {...}))`. These overrides mirror
+    # BlueBubbles: URL-based helpers cache to a local path first, file-based
+    # helpers pass the path straight through.
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        try:
+            from gateway.platforms.base import cache_image_from_url
+
+            local_path = await cache_image_from_url(image_url)
+        except Exception:
+            # Couldn't fetch the URL — fall back to sending it as text.
+            return await super().send_image(chat_id, image_url, caption, reply_to)
+        return await self._sidecar_send_attachment(
+            chat_id, local_path, caption=caption, reply_to=reply_to,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._sidecar_send_attachment(
+            chat_id, image_path, caption=caption, reply_to=reply_to,
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._sidecar_send_attachment(
+            chat_id, audio_path, caption=caption, reply_to=reply_to, kind="voice",
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._sidecar_send_attachment(
+            chat_id, video_path, caption=caption, reply_to=reply_to,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._sidecar_send_attachment(
+            chat_id, file_path, name=file_name, caption=caption, reply_to=reply_to,
+        )
+
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        # iMessage renders GIFs inline as ordinary image attachments.
+        return await self.send_image(
+            chat_id, animation_url, caption, reply_to, metadata,
+        )
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         try:
             await self._sidecar_call("/typing", {"spaceId": chat_id})
@@ -700,6 +795,57 @@ class PhotonAdapter(BasePlatformAdapter):
             body["replyTo"] = reply_to
         try:
             data = await self._sidecar_call("/send", body)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=data.get("messageId"))
+
+    async def _sidecar_send_attachment(
+        self,
+        space_id: str,
+        path: str,
+        *,
+        name: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        kind: str = "attachment",
+    ) -> SendResult:
+        """POST a local file to the sidecar's ``/send-attachment`` endpoint.
+
+        ``kind`` is ``"voice"`` for audio sent as a voice note (downgrades
+        to a plain audio attachment on platforms without voice notes),
+        otherwise ``"attachment"``. spectrum-ts infers ``name`` and
+        ``mimeType`` from the file extension; we only pass overrides when
+        Hermes supplied them.
+        """
+        # Defense-in-depth: re-validate the path before handing it to the
+        # Node sidecar. The gateway already filters MEDIA paths, but
+        # send_*_file / cron callers may pass arbitrary strings.
+        safe_path = self.validate_media_delivery_path(str(path))
+        if not safe_path:
+            return SendResult(
+                success=False, error=f"unsafe or missing attachment path: {path}"
+            )
+        if not mime_type:
+            import mimetypes
+
+            guessed, _ = mimetypes.guess_type(safe_path)
+            mime_type = guessed or None
+        body: Dict[str, Any] = {
+            "spaceId": space_id,
+            "path": safe_path,
+            "kind": "voice" if kind == "voice" else "attachment",
+        }
+        if name:
+            body["name"] = name
+        if mime_type:
+            body["mimeType"] = mime_type
+        if caption:
+            body["caption"] = caption
+        if reply_to:
+            body["replyTo"] = reply_to
+        try:
+            data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
         return SendResult(success=True, message_id=data.get("messageId"))
@@ -753,8 +899,8 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,  # noqa: ARG001 — Spectrum has no threads yet
-    media_files: Optional[list] = None,  # noqa: ARG001 — attachment send not supported yet
-    force_document: bool = False,  # noqa: ARG001
+    media_files: Optional[list] = None,
+    force_document: bool = False,  # noqa: ARG001 — iMessage auto-detects file kind
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
         return {"error": "httpx not installed"}
@@ -771,20 +917,54 @@ async def _standalone_send(
                 "cannot spawn the sidecar themselves."
             )
         }
-    body: Dict[str, Any] = {"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]}
+    base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
+    headers = {"X-Hermes-Sidecar-Token": token}
+    last_message_id: Optional[str] = None
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"http://{_DEFAULT_SIDECAR_BIND}:{port}/send",
-                json=body,
-                headers={"X-Hermes-Sidecar-Token": token},
-            )
-        if resp.status_code != 200:
-            return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-        data = resp.json() or {}
-        if not data.get("ok"):
-            return {"error": data.get("error") or "sidecar reported failure"}
-        return {"success": True, "message_id": data.get("messageId")}
+            # 1. Text body first (if any), so it leads the conversation.
+            if message:
+                resp = await client.post(
+                    f"{base}/send",
+                    json={"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]},
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
+                data = resp.json() or {}
+                if not data.get("ok"):
+                    return {"error": data.get("error") or "sidecar reported failure"}
+                last_message_id = data.get("messageId")
+
+            # 2. Each attachment as a separate /send-attachment call.
+            #    media_files is List[Tuple[path, is_voice]] (see
+            #    BasePlatformAdapter.filter_media_delivery_paths).
+            import mimetypes
+
+            for media_path, is_voice in media_files or []:
+                safe_path = BasePlatformAdapter.validate_media_delivery_path(str(media_path))
+                if not safe_path:
+                    logger.warning("[photon] standalone send skipping unsafe path")
+                    continue
+                guessed, _ = mimetypes.guess_type(safe_path)
+                att_body: Dict[str, Any] = {
+                    "spaceId": chat_id,
+                    "path": safe_path,
+                    "kind": "voice" if is_voice else "attachment",
+                }
+                if guessed:
+                    att_body["mimeType"] = guessed
+                resp = await client.post(
+                    f"{base}/send-attachment", json=att_body, headers=headers,
+                )
+                if resp.status_code != 200:
+                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
+                data = resp.json() or {}
+                if not data.get("ok"):
+                    return {"error": data.get("error") or "sidecar reported failure"}
+                last_message_id = data.get("messageId") or last_message_id
+
+        return {"success": True, "message_id": last_message_id}
     except Exception as e:
         return {"error": f"Photon standalone send failed: {e}"}
 

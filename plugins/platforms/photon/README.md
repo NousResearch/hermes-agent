@@ -106,14 +106,16 @@ All env vars are documented in `plugin.yaml`. The most important are:
 
 ## Limitations (current Photon API)
 
-- **Attachments are metadata only.** Inbound webhooks include the
+- **Inbound attachments are metadata only.** Inbound webhooks include the
   filename + MIME type but no download URL. The plugin surfaces a
   text marker (`[Photon attachment received: …]`) so the agent knows
   something arrived, but cannot read the bytes.  Photon's docs note
   an attachment retrieval endpoint is on the roadmap.
-- **Outbound attachments are not supported yet.** Adding them is
-  straightforward once the sidecar wires up `attachment(...)` /
-  `space.send(attachment(...))` from `spectrum-ts`.
+- **Outbound attachments are supported.** Images, voice notes, video,
+  and documents are sent via `space.send(attachment(...))` /
+  `space.send(voice(...))` through the sidecar's `/send-attachment`
+  endpoint. A caption is delivered as a separate text bubble after the
+  media.
 - **Reactions, message effects, polls** — not exposed yet; the
   `spectrum-ts` SDK supports them, and the sidecar is the natural
   place to add them when the agent has reason to use them.

@@ -206,11 +206,14 @@ hermes photon webhook delete <webhook-id>   # remove one
 
 ## Limits today
 
-- **Attachments are metadata-only.** Inbound webhooks carry the
+- **Inbound attachments are metadata-only.** Inbound webhooks carry the
   filename + MIME type but no download URL — Photon documents an
   attachment retrieval endpoint as roadmap.
-- **Outbound attachments not wired yet.** Easy to add in the sidecar
-  once the agent has reason to send them.
+- **Outbound attachments are supported.** Hermes sends images, voice
+  notes, video, and documents through spectrum-ts' `attachment()` /
+  `voice()` content builders via the sidecar's `/send-attachment`
+  endpoint. Captions arrive as a separate iMessage bubble after the
+  media.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.

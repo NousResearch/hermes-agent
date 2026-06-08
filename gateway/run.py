@@ -17346,6 +17346,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                has_tirith = approval_data.get("has_tirith", False)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -17358,7 +17359,8 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata={**(_status_thread_metadata or {}),
+                                           "has_tirith": has_tirith},
                             ),
                             _loop_for_step,
                             logger=logger,

@@ -4309,6 +4309,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                has_tirith=bool(metadata and metadata.get("has_tirith")),
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -5275,12 +5276,19 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            has_tirith: bool = False,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            self.has_tirith = has_tirith
+            # Remove the "Always Allow" button for Tirith findings — the
+            # backend only persists session-level approvals for those,
+            # so the button's "Approved permanently" label is misleading.
+            if has_tirith:
+                self.remove_item(self.allow_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""

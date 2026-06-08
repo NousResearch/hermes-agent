@@ -4,7 +4,9 @@
 #
 # Required secrets (set once with `fly secrets set KEY=value`):
 #   HERMES_OWNER_EMAIL          your admin email
-#   HERMES_STRIPE_PAYMENT_LINK  https://buy.stripe.com/...  (from Stripe Dashboard)
+#   HERMES_STRIPE_STARTER_LINK  https://buy.stripe.com/...  ($19/mo, 3 URLs)
+#   HERMES_STRIPE_PRO_LINK      https://buy.stripe.com/...  ($49/mo, unlimited)
+#   HERMES_STRIPE_PAYMENT_LINK  legacy single-link fallback (optional)
 #   STRIPE_WEBHOOK_SECRET       whsec_...  (from Stripe → Webhooks)
 #   STRIPE_SECRET_KEY           sk_live_...  (from Stripe API keys)
 #   OPENROUTER_API_KEY          or any LLM provider key for AI extraction
@@ -13,6 +15,9 @@
 #   https://<your-app>.fly.dev/api/stripe/webhook
 # Events to send: checkout.session.completed, customer.subscription.deleted,
 #                 invoice.payment_failed, invoice.payment_succeeded
+#
+# First-time volume:
+#   fly volumes create hermes_data --size 3 --region iad
 
 app = "hermes-price-tracker"
 primary_region = "iad"
@@ -20,15 +25,21 @@ primary_region = "iad"
 [build]
 
 [env]
-  PORT = "9119"
   HERMES_HOME = "/opt/data"
-  # Dashboard binds to 0.0.0.0 so Fly's proxy can reach it.
-  # Auth is enforced by the session token injected into the SPA.
-  HERMES_DASHBOARD_HOST = "0.0.0.0"
+  # Enable the web dashboard and bind to 0.0.0.0 so Fly's proxy can reach it.
+  HERMES_DASHBOARD       = "true"
+  HERMES_DASHBOARD_HOST  = "0.0.0.0"
+  HERMES_DASHBOARD_PORT  = "9119"
+  # Public access without OAuth — auth is enforced by the session token
+  # injected into the SPA. Remove once you configure OAuth.
+  HERMES_DASHBOARD_INSECURE = "true"
 
 [http_service]
   internal_port = 9119
   force_https = true
+  # Scale to zero when idle — true free tier. Fly cold-starts the machine
+  # on the next request (~30s). Set min_machines_running = 1 (~$3/mo) once
+  # you want it always warm.
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0

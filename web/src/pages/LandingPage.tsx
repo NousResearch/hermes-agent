@@ -7,9 +7,19 @@ import { fetchJSON } from "@/lib/api";
 
 interface PlansResponse {
   plans: Record<string, { name: string; price_usd: number; url_limit: number; interval: string }>;
+  stripe_starter_link: string;
+  stripe_pro_link: string;
   stripe_payment_link: string;
   configured: boolean;
 }
+
+// url_limit values at or above this sentinel are rendered as "Unlimited".
+const UNLIMITED_URLS = 1_000_000;
+
+const urlLimitLabel = (limit: number | undefined, fallback: number): string => {
+  const n = limit ?? fallback;
+  return n >= UNLIMITED_URLS ? "Unlimited" : `${n}`;
+};
 
 const FEATURES = [
   { icon: Globe, text: "Add any URL — product pages, pricing tables, competitor sites" },
@@ -24,7 +34,8 @@ export default function LandingPage() {
     fetchJSON<PlansResponse>("/api/subscribe/plans").then(setPlans).catch(() => {});
   }, []);
 
-  const stripeLink = plans?.stripe_payment_link ?? "";
+  const starterLink = plans?.stripe_starter_link ?? plans?.stripe_payment_link ?? "";
+  const proLink = plans?.stripe_pro_link ?? "";
   const starter = plans?.plans?.starter;
   const pro = plans?.plans?.pro;
 
@@ -85,14 +96,14 @@ export default function LandingPage() {
                 </div>
                 <div className="flex items-baseline gap-1">
                   <span className="text-3xl font-bold text-foreground">
-                    ${starter?.price_usd ?? 9}
+                    ${starter?.price_usd ?? 19}
                   </span>
                   <span className="text-muted-foreground text-sm">/month</span>
                 </div>
                 <ul className="flex flex-col gap-2 text-sm text-muted-foreground">
                   <li className="flex items-center gap-2">
                     <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-                    {starter?.url_limit ?? 5} tracked URLs
+                    {urlLimitLabel(starter?.url_limit, 3)} tracked URLs
                   </li>
                   <li className="flex items-center gap-2">
                     <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
@@ -107,8 +118,8 @@ export default function LandingPage() {
                     Historical change tracking
                   </li>
                 </ul>
-                {stripeLink ? (
-                  <a href={stripeLink} target="_blank" rel="noopener noreferrer">
+                {starterLink ? (
+                  <a href={starterLink} target="_blank" rel="noopener noreferrer">
                     <Button type="button" className="w-full">
                       <CreditCard className="h-3.5 w-3.5 mr-1.5" />
                       Start Tracking
@@ -133,14 +144,14 @@ export default function LandingPage() {
                 </div>
                 <div className="flex items-baseline gap-1">
                   <span className="text-3xl font-bold text-foreground">
-                    ${pro?.price_usd ?? 19}
+                    ${pro?.price_usd ?? 49}
                   </span>
                   <span className="text-muted-foreground text-sm">/month</span>
                 </div>
                 <ul className="flex flex-col gap-2 text-sm text-muted-foreground">
                   <li className="flex items-center gap-2">
                     <Check className="h-3.5 w-3.5 text-sky-400 shrink-0" />
-                    {pro?.url_limit ?? 15} tracked URLs
+                    {urlLimitLabel(pro?.url_limit, UNLIMITED_URLS)} tracked URLs
                   </li>
                   <li className="flex items-center gap-2">
                     <Check className="h-3.5 w-3.5 text-sky-400 shrink-0" />
@@ -155,9 +166,18 @@ export default function LandingPage() {
                     Email change alerts
                   </li>
                 </ul>
-                <Button type="button" outlined className="w-full" disabled>
-                  Coming Soon
-                </Button>
+                {proLink ? (
+                  <a href={proLink} target="_blank" rel="noopener noreferrer">
+                    <Button type="button" outlined className="w-full">
+                      <CreditCard className="h-3.5 w-3.5 mr-1.5" />
+                      Go Unlimited
+                    </Button>
+                  </a>
+                ) : (
+                  <Button type="button" outlined className="w-full" disabled>
+                    Coming Soon
+                  </Button>
+                )}
               </CardContent>
             </Card>
           </div>

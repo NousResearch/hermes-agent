@@ -47,29 +47,51 @@ function categoryColor(cat: string): string {
 
 
 // ---------------------------------------------------------------------------
-// Stripe banner
+// Stripe pricing
 // ---------------------------------------------------------------------------
 
-function StripeBanner({ link }: { link: string }) {
+interface PricingTier {
+  label: string;
+  price: string;
+  description: string;
+  link: string;
+}
+
+function StripePricingCard({ tiers }: { tiers: PricingTier[] }) {
   return (
     <Card className="border-emerald-500/40 bg-emerald-500/5">
       <CardContent className="py-4">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <CreditCard className="h-5 w-5 text-emerald-400 shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-foreground">Subscribe for full access</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Unlock unlimited scrapes, historical tracking, and CSV/PDF exports.
-              </p>
-            </div>
+        <div className="flex items-center gap-3 mb-4">
+          <CreditCard className="h-5 w-5 text-emerald-400 shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-foreground">Subscribe for full access</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Automated price tracking, historical data, and CSV/PDF exports.
+            </p>
           </div>
-          <a href={link} target="_blank" rel="noopener noreferrer">
-            <Button size="sm" className="whitespace-nowrap">
-              <CreditCard className="h-3.5 w-3.5 mr-1.5" />
-              Subscribe with Stripe
-            </Button>
-          </a>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3">
+          {tiers.map((tier) => (
+            <a
+              key={tier.link}
+              href={tier.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1"
+            >
+              <div className="rounded-lg border border-emerald-500/30 bg-background/60 hover:bg-background/90 transition-colors p-4 h-full flex flex-col gap-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm font-semibold text-foreground">{tier.label}</span>
+                  <span className="text-base font-bold text-emerald-400 whitespace-nowrap">{tier.price}<span className="text-xs text-muted-foreground font-normal">/mo</span></span>
+                </div>
+                <p className="text-xs text-muted-foreground flex-1">{tier.description}</p>
+                <Button size="sm" className="w-full mt-1">
+                  <CreditCard className="h-3.5 w-3.5 mr-1.5" />
+                  Subscribe
+                </Button>
+              </div>
+            </a>
+          ))}
         </div>
       </CardContent>
     </Card>
@@ -83,9 +105,10 @@ function StripeSetupHint() {
         <div className="flex items-center gap-3">
           <CreditCard className="h-5 w-5 text-muted-foreground shrink-0" />
           <p className="text-sm text-muted-foreground">
-            Set <span className="font-mono text-xs bg-muted/50 px-1.5 py-0.5 rounded">HERMES_STRIPE_PAYMENT_LINK</span> in your{" "}
+            Set <span className="font-mono text-xs bg-muted/50 px-1.5 py-0.5 rounded">HERMES_STRIPE_STARTER_LINK</span> and{" "}
+            <span className="font-mono text-xs bg-muted/50 px-1.5 py-0.5 rounded">HERMES_STRIPE_PRO_LINK</span> in your{" "}
             <a href="/env" className="underline hover:text-foreground transition-colors">environment keys</a>{" "}
-            to show a subscription button here.
+            to show subscription options here.
           </p>
         </div>
       </CardContent>
@@ -207,7 +230,8 @@ function ResultsTable({ results }: { results: PriceScraperResult[] }) {
 
 export default function PriceDashboardPage() {
   const [results, setResults] = useState<PriceScraperResult[]>([]);
-  const [stripeLink, setStripeLink] = useState<string>("");
+  const [stripeStarterLink, setStripeStarterLink] = useState<string>("");
+  const [stripeProLink, setStripeProLink] = useState<string>("");
   const [stripeConfigured, setStripeConfigured] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -222,7 +246,8 @@ export default function PriceDashboardPage() {
     ])
       .then(([res, cfg]) => {
         setResults(res.results);
-        setStripeLink(cfg.stripe_payment_link);
+        setStripeStarterLink(cfg.stripe_starter_link);
+        setStripeProLink(cfg.stripe_pro_link);
         setStripeConfigured(cfg.configured);
       })
       .catch((err) => setError(String(err)))
@@ -274,8 +299,25 @@ export default function PriceDashboardPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Stripe banner */}
-      {stripeConfigured === true && stripeLink && <StripeBanner link={stripeLink} />}
+      {/* Stripe pricing */}
+      {stripeConfigured === true && (
+        <StripePricingCard
+          tiers={[
+            ...(stripeStarterLink ? [{
+              label: "Starter",
+              price: "$19",
+              description: "Monitor up to 3 URLs with automated price tracking.",
+              link: stripeStarterLink,
+            }] : []),
+            ...(stripeProLink ? [{
+              label: "Unlimited",
+              price: "$49",
+              description: "Unlimited URL monitoring with full historical tracking.",
+              link: stripeProLink,
+            }] : []),
+          ]}
+        />
+      )}
       {stripeConfigured === false && <StripeSetupHint />}
 
       {/* Stats */}

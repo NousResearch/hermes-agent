@@ -5923,20 +5923,31 @@ async def events_ws(ws: WebSocket) -> None:
 # Stripe subscription webhook + subscriber self-service portal
 # ---------------------------------------------------------------------------
 
+# url_limit values >= UNLIMITED_URLS are rendered as "Unlimited" in the UI.
+UNLIMITED_URLS = 1_000_000
+
 STRIPE_PLANS: dict[str, dict] = {
-    "starter": {"name": "Starter", "price_usd": 9, "url_limit": 5, "interval": "month"},
-    "pro":     {"name": "Pro",     "price_usd": 19, "url_limit": 15, "interval": "month"},
+    "starter": {"name": "Starter", "price_usd": 19, "url_limit": 3, "interval": "month"},
+    "pro":     {"name": "Pro",     "price_usd": 49, "url_limit": UNLIMITED_URLS, "interval": "month"},
 }
 
 
 @app.get("/api/subscribe/plans")
 async def get_subscription_plans():
-    """Public — return available subscription plans and the Stripe payment link."""
-    stripe_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
+    """Public — return available subscription plans and the Stripe payment links."""
+    starter_link = os.environ.get("HERMES_STRIPE_STARTER_LINK", "")
+    pro_link = os.environ.get("HERMES_STRIPE_PRO_LINK", "")
+    # Legacy single-link fallback maps to the Starter checkout.
+    legacy_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
+    if not starter_link and legacy_link:
+        starter_link = legacy_link
     return {
         "plans": STRIPE_PLANS,
-        "stripe_payment_link": stripe_link,
-        "configured": bool(stripe_link),
+        "stripe_starter_link": starter_link,
+        "stripe_pro_link": pro_link,
+        # Back-compat: older clients read stripe_payment_link as the primary CTA.
+        "stripe_payment_link": starter_link,
+        "configured": bool(starter_link or pro_link),
     }
 
 
@@ -6041,15 +6052,20 @@ async def stripe_webhook(request: Request):
         email = (obj.get("customer_email") or obj.get("customer_details", {}).get("email") or "").strip().lower()
         customer_id = obj.get("customer", "")
         subscription_id = obj.get("subscription", "")
+        # Infer the plan from the amount paid so Pro ($49) checkouts get the
+        # unlimited tier rather than the Starter URL cap. amount_total is in
+        # cents; fall back to Starter when it's missing or unrecognized.
+        amount_total = obj.get("amount_total") or 0
+        plan = "pro" if amount_total >= STRIPE_PLANS["pro"]["price_usd"] * 100 else "starter"
         if email:
             upsert_subscriber(
                 email=email,
                 stripe_customer_id=customer_id,
                 stripe_subscription_id=subscription_id,
-                plan="starter",
+                plan=plan,
                 status="active",
             )
-            _log.info("New subscriber: %s", email)
+            _log.info("New %s subscriber: %s", plan, email)
 
     elif event_type in ("customer.subscription.deleted",):
         subscription_id = obj.get("id", "")
@@ -6104,9 +6120,18 @@ async def get_price_scraper_results(domain: Optional[str] = None):
 
 @app.get("/api/price-scraper/config")
 async def get_price_scraper_config():
-    """Return Stripe payment link URL from env."""
-    stripe_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
-    return {"stripe_payment_link": stripe_link, "configured": bool(stripe_link)}
+    """Return Stripe payment link URLs from env."""
+    starter_link = os.environ.get("HERMES_STRIPE_STARTER_LINK", "")
+    pro_link = os.environ.get("HERMES_STRIPE_PRO_LINK", "")
+    # Legacy single-link fallback
+    legacy_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
+    if not starter_link and legacy_link:
+        starter_link = legacy_link
+    return {
+        "stripe_starter_link": starter_link,
+        "stripe_pro_link": pro_link,
+        "configured": bool(starter_link or pro_link),
+    }
 
 
 @app.get("/api/price-scraper/export/csv")

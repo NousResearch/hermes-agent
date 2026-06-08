@@ -1310,6 +1310,7 @@ export interface PriceScraperResultsResponse {
 }
 
 export interface PriceScraperConfig {
-  stripe_payment_link: string;
+  stripe_starter_link: string;
+  stripe_pro_link: string;
   configured: boolean;
 }

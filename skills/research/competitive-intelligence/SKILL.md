@@ -113,6 +113,7 @@ For each valid URL, use `web_extract` to fetch these standard pages (skip any th
 1. Start with the homepage to discover actual path naming conventions (e.g. the site may use `/plans` instead of `/pricing`).
 2. Use `web_search` with query `site:<domain> pricing` or `site:<domain> case studies` to locate pages that don't follow standard paths.
 3. Record the exact URL of every page successfully fetched — these become your source citations.
+4. **Watch for login redirects** — a 302 response is reported as accessible, but if the redirect destination is a login or paywall page, treat the content as inaccessible. Detect this by checking whether `web_extract` returns a login form or error page instead of the expected content, and mark that page as "Not publicly available."
 
 **Example tool calls:**
 
@@ -328,6 +329,60 @@ python scripts/ci_recon.py save_report <slug> < report.md
 Where `<slug>` is a short identifier for the competitor or analysis run (e.g. `acme-corp-2026-06`). The script prints the saved path.
 
 Artifacts are stored under `~/.hermes/competitive-intelligence/<slug>/<date>/`.
+
+---
+
+## Export Options
+
+After saving the report, export it in one or more formats:
+
+### Interactive HTML Artifact
+
+```bash
+python scripts/ci_recon.py export_html <slug>
+```
+
+Generates a self-contained `report.html` alongside `report.md` containing:
+- Sidebar table of contents with smooth scroll
+- Collapsible H2 sections (click heading to toggle)
+- Confidence badges (`[H]` / `[M]` / `[L]`) rendered as colour-coded chips
+- Sortable, striped comparison tables
+- Print stylesheet for clean hard-copy output
+
+The file is fully self-contained (markdown rendered client-side via `marked.js` CDN). Open it in any browser — no server required.
+
+### PDF
+
+```bash
+python scripts/ci_recon.py export_pdf <slug>
+```
+
+Tries `wkhtmltopdf`, then `pandoc`, then falls back to generating the HTML and printing browser-print instructions. The PDF path (or HTML fallback path) is printed to stdout.
+
+### Google Sheets / CSV
+
+**Step 1 — extract tables as CSV:**
+
+```bash
+python scripts/ci_recon.py export_csv <slug>
+```
+
+Writes one `.csv` file per markdown table found in the report (e.g. `feature_comparison.csv`, `pricing_comparison.csv`) into the same artifact directory. Prints a list of paths.
+
+**Step 2 — push to Google Sheets (if Windsor MCP is connected):**
+
+Ask the agent to use the Windsor connector:
+
+```
+Use the Windsor Google Sheets connector to create a new spreadsheet named
+"CI Report — <slug>" and import each CSV file as a separate sheet tab.
+```
+
+**Step 2 (alternative) — manual import:**
+
+1. Open Google Sheets → File → Import → Upload.
+2. Select each `.csv` file; choose "Insert new sheet(s)".
+3. Repeat for each table CSV.
 
 ---
 

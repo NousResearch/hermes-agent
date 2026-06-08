@@ -31,9 +31,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+# Pro is effectively unlimited; a large sentinel keeps the quota logic simple
+# while the UI renders any value >= 1_000_000 as "Unlimited".
 PLAN_LIMITS: dict[str, int] = {
-    "starter": 5,
-    "pro": 15,
+    "starter": 3,
+    "pro": 1_000_000,
 }
 
 

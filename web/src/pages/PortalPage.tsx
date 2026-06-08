@@ -260,7 +260,7 @@ export default function PortalPage() {
                   <a href="/subscribe" className="underline hover:text-foreground">
                     Upgrade to Pro
                   </a>{" "}
-                  for 15 URLs.
+                  for unlimited URLs.
                 </p>
               )}
             </>

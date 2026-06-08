@@ -374,3 +374,53 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+# ─── Path Helpers ─────────────────────────────────────────────────────────────
+
+
+def safe_expanduser(path: Union[str, Path], default: Union[str, Path, None] = None) -> Path:
+    """Expand ``~`` in a path without crashing when HOME cannot be resolved.
+
+    ``pathlib.Path.expanduser()`` and ``os.path.expanduser()`` raise
+    ``RuntimeError`` ("Could not determine home directory") when the
+    process has no ``HOME`` env var **and** ``pwd.getpwuid()`` fails to
+    look up the current uid. Both conditions show up in real deployments:
+
+      * launchd-spawned daemons that omit ``HOME`` from
+        ``EnvironmentVariables`` (every macOS Hermes gateway install
+        before the plist HOME fix; logs surface this as repeated
+        "Could not determine home directory" RuntimeError stacks from
+        ``subdirectory_hints.py``).
+      * Containerized runs (Docker/k8s) where the image's passwd entry
+        was stripped or the uid is unmapped.
+      * ``sudo -E`` invocations that drop ``HOME`` without restoring it.
+
+    The vast majority of callers in this codebase want a best-effort
+    expansion — if HOME cannot be resolved they would rather get back the
+    original path (or an explicit fallback) than crash a background task.
+    Use ``Path.expanduser()`` directly only when an unresolvable HOME is
+    a genuine fatal condition the caller wants to surface.
+
+    Args:
+        path: The path-like value to expand. Strings and ``Path``
+            instances are accepted; non-string non-Path inputs are
+            coerced via ``str()``.
+        default: Value returned (coerced to ``Path``) when expansion
+            fails. When ``None`` (the default), the original ``path``
+            argument is returned unexpanded — preserving the literal
+            ``~`` so callers that later log the value still see the
+            user's intent.
+
+    Returns:
+        A ``Path`` instance. Never raises ``RuntimeError`` from a
+        failed HOME lookup; other ``OSError`` subclasses from filesystem
+        access are also swallowed in favor of *default*.
+    """
+    p = path if isinstance(path, Path) else Path(str(path))
+    try:
+        return p.expanduser()
+    except (RuntimeError, OSError):
+        if default is None:
+            return p
+        return default if isinstance(default, Path) else Path(str(default))

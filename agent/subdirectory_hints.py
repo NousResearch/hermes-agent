@@ -19,6 +19,8 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
+from utils import safe_expanduser
+
 from agent.prompt_builder import _scan_context_content
 
 logger = logging.getLogger(__name__)
@@ -127,7 +129,7 @@ class SubdirectoryHintTracker:
         ``project/src/`` has no hint files of its own.
         """
         try:
-            p = Path(raw_path).expanduser()
+            p = safe_expanduser(raw_path)
             if not p.is_absolute():
                 p = self.working_dir / p
             p = p.resolve()

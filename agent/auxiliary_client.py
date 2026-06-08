@@ -320,11 +320,38 @@ _OR_HEADERS_BASE = {
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
+# Per-component OpenRouter X-Title defaults derived from the auxiliary task name.
+# Vision aux work attributes to Hermes-Aux-Vision; every other auxiliary task
+# (compression, session_search, title_generation, skills_hub, mcp, web_extract,
+# plugin LLM, …) attributes to Hermes-Aux-Text. Callers that are a distinct
+# component (native OCR, MoA, main chat) pass an explicit or_title that wins.
+_OR_TITLE_AUX_TEXT = "Hermes-Aux-Text"
+_OR_TITLE_AUX_VISION = "Hermes-Aux-Vision"
+
+
+def _default_or_title_for_task(task: Optional[str]) -> Optional[str]:
+    """Map an auxiliary *task* name to its default OpenRouter X-Title.
+
+    Why: lets every aux text/vision call self-attribute to its component app
+    without editing each individual call site — the existing ``task`` argument
+    already encodes the component, so the title can be derived from it.
+    What: returns ``Hermes-Aux-Vision`` for ``task == "vision"``,
+    ``Hermes-Aux-Text`` for any other non-empty task, and ``None`` for no task
+    (so untitled calls keep the base ``Hermes Agent`` attribution).
+    Test: assert _default_or_title_for_task("vision") == "Hermes-Aux-Vision",
+    ("compression") == "Hermes-Aux-Text", and (None) is None.
+    """
+    if not task:
+        return None
+    if task == "vision":
+        return _OR_TITLE_AUX_VISION
+    return _OR_TITLE_AUX_TEXT
+
 # Truthy values for boolean env-var parsing.
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
-def build_or_headers(or_config: dict | None = None) -> dict:
+def build_or_headers(or_config: dict | None = None, or_title: str | None = None) -> dict:
     """Build OpenRouter headers, optionally including response-cache headers.
 
     Precedence for response cache: env var > config.yaml > default (enabled).
@@ -338,8 +365,20 @@ def build_or_headers(or_config: dict | None = None) -> dict:
 
     *or_config* is the ``openrouter`` section from config.yaml.  When *None*,
     falls back to reading config from disk via ``load_config()``.
+
+    *or_title* overrides the per-component OpenRouter ``X-Title`` dashboard
+    attribution (e.g. "Hermes-MainChat") for clients built from these
+    ``default_headers``. When *None*, the base ``X-Title: "Hermes Agent"`` is
+    kept. HTTP-Referer and all other base headers are always preserved — this
+    is pure attribution, no behavior change.
+
+    Test: ``build_or_headers(or_title="Hermes-MainChat")["X-Title"] ==
+    "Hermes-MainChat"`` and its ``HTTP-Referer`` is unchanged; calling with no
+    ``or_title`` keeps ``X-Title == "Hermes Agent"``.
     """
     headers = dict(_OR_HEADERS_BASE)
+    if or_title:
+        headers["X-Title"] = or_title
 
     # Resolve config from disk if not provided.
     if or_config is None:
@@ -2732,6 +2771,7 @@ def _retry_same_provider_sync(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    or_title: Optional[str] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -2766,6 +2806,7 @@ def _retry_same_provider_sync(
         timeout=effective_timeout,
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
+        or_title=or_title,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -2789,6 +2830,7 @@ async def _retry_same_provider_async(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    or_title: Optional[str] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -2823,6 +2865,7 @@ async def _retry_same_provider_async(
         timeout=effective_timeout,
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
+        or_title=or_title,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -4896,8 +4939,24 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    or_title: Optional[str] = None,
 ) -> dict:
-    """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    """Build kwargs for .chat.completions.create() with model/provider adjustments.
+
+    Why: OpenRouter attributes traffic to a dashboard app via the ``X-Title``
+    header. The shared client factory stamps a single ``X-Title: "Hermes Agent"``
+    default, so every component lands under one app. Passing ``or_title`` here
+    threads a PER-COMPONENT title as a per-call ``extra_headers`` override
+    (the OpenAI SDK merges ``extra_headers`` over the client ``default_headers``
+    for that one request), splitting components into distinct dashboard apps
+    without reconstructing clients or changing any behavior.
+    What: Adds ``extra_headers={"X-Title": or_title}`` to the create() kwargs
+    when ``or_title`` is set; otherwise leaves headers untouched (the client's
+    default ``X-Title`` attribution still applies — never "unknown").
+    Test: Call with ``or_title="Hermes-MoA"`` and assert the returned kwargs
+    contain ``extra_headers == {"X-Title": "Hermes-MoA"}``; call without it and
+    assert ``"extra_headers"`` is absent.
+    """
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -4971,6 +5030,12 @@ def _build_call_kwargs(
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
+    # Per-component OpenRouter attribution: override only the X-Title for this
+    # one request. extra_headers is merged OVER the client default_headers by
+    # the OpenAI SDK, so HTTP-Referer and every other base header are preserved.
+    if or_title:
+        kwargs["extra_headers"] = {"X-Title": or_title}
+
     return kwargs
 
 
@@ -5019,6 +5084,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    or_title: str = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -5037,6 +5103,8 @@ def call_llm(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
+        or_title: Per-component OpenRouter ``X-Title`` for dashboard attribution
+              (e.g. "Hermes-Aux-Text"). None keeps the client default "Hermes Agent".
 
     Returns:
         Response object with .choices[0].message.content
@@ -5044,6 +5112,11 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
+    # Derive a per-component OpenRouter X-Title from the task when the caller
+    # did not pass one explicitly (explicit or_title from native OCR / MoA /
+    # main chat always wins). Pure attribution — no behavior change.
+    if or_title is None:
+        or_title = _default_or_title_for_task(task)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
@@ -5123,7 +5196,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        base_url=_base_info or resolved_base_url)
+        base_url=_base_info or resolved_base_url, or_title=or_title)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -5300,6 +5373,7 @@ def call_llm(
                     tools=tools,
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    or_title=or_title,
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
@@ -5342,6 +5416,7 @@ def call_llm(
                         tools=tools,
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        or_title=or_title,
                     )
                 except Exception as retry2_err:
                     # The rotated key also hit a quota/auth wall.  Mark it
@@ -5428,7 +5503,8 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    base_url=str(getattr(fb_client, "base_url", "") or ""),
+                    or_title=or_title)
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — emit a single user-visible
@@ -5523,11 +5599,15 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    or_title: str = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
     Same as call_llm() but async. See call_llm() for full documentation.
+    or_title threads a per-component OpenRouter ``X-Title`` (e.g. "Hermes-Aux-Vision").
     """
+    if or_title is None:
+        or_title = _default_or_title_for_task(task)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
@@ -5593,7 +5673,7 @@ async def async_call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        base_url=_client_base or resolved_base_url)
+        base_url=_client_base or resolved_base_url, or_title=or_title)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
@@ -5759,6 +5839,7 @@ async def async_call_llm(
                     tools=tools,
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    or_title=or_title,
                 )
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
@@ -5796,6 +5877,7 @@ async def async_call_llm(
                         tools=tools,
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        or_title=or_title,
                     )
                 except Exception as retry2_err:
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
@@ -5851,7 +5933,8 @@ async def async_call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    base_url=str(getattr(fb_client, "base_url", "") or ""),
+                    or_title=or_title)
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(
                     fb_client, fb_model or "", is_vision=(task == "vision")

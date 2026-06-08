@@ -2650,6 +2650,7 @@ class SlackAdapter(BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        allow_permanent: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
@@ -2663,6 +2664,40 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
+
+            actions = [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Allow Once"},
+                    "style": "primary",
+                    "action_id": "hermes_approve_once",
+                    "value": session_key,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Allow Session"},
+                    "action_id": "hermes_approve_session",
+                    "value": session_key,
+                },
+            ]
+            if allow_permanent:
+                actions.append(
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Always Allow"},
+                        "action_id": "hermes_approve_always",
+                        "value": session_key,
+                    }
+                )
+            actions.append(
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Deny"},
+                    "style": "danger",
+                    "action_id": "hermes_deny",
+                    "value": session_key,
+                }
+            )
 
             blocks = [
                 {
@@ -2678,34 +2713,7 @@ class SlackAdapter(BasePlatformAdapter):
                 },
                 {
                     "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
-                            "style": "primary",
-                            "action_id": "hermes_approve_once",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
-                            "action_id": "hermes_approve_session",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
-                            "action_id": "hermes_approve_always",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
-                            "style": "danger",
-                            "action_id": "hermes_deny",
-                            "value": session_key,
-                        },
-                    ],
+                    "elements": actions,
                 },
             ]
 

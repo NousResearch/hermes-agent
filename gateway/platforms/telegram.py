@@ -2650,6 +2650,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        allow_permanent: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
@@ -2679,16 +2680,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._approval_counter = itertools.count(1)
             approval_id = next(self._approval_counter)
 
-            keyboard = InlineKeyboardMarkup([
+            keyboard_rows = [
                 [
                     InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
                     InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
                 ],
-                [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
-                ],
-            ])
+            ]
+            final_row = []
+            if allow_permanent:
+                final_row.append(
+                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
+                )
+            final_row.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
+            keyboard_rows.append(final_row)
+            keyboard = InlineKeyboardMarkup(keyboard_rows)
 
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),

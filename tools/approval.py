@@ -1381,6 +1381,11 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                # Tirith findings are intentionally session-scoped even when
+                # a caller sends choice="always" below. Surface that same
+                # contract to gateway button UIs so they do not offer a
+                # misleading permanent-approval action.
+                "allow_permanent": not has_tirith,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"

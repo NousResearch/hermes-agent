@@ -2659,6 +2659,7 @@ class QQAdapter(BasePlatformAdapter):
             command: str,
             session_key: str,
             description: str = "dangerous command",
+            allow_permanent: bool = True,
             metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
@@ -2681,6 +2682,7 @@ class QQAdapter(BasePlatformAdapter):
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent=allow_permanent,
         )
         return await self.send_approval_request(
             chat_id, req, reply_to=msg_id,

@@ -201,44 +201,51 @@ def _make_callback_button(
     )
 
 
-def build_approval_keyboard(session_key: str) -> InlineKeyboard:
-    """Build the 3-button approval keyboard.
+def build_approval_keyboard(session_key: str, allow_permanent: bool = True) -> InlineKeyboard:
+    """Build the exec-approval keyboard.
 
-    Layout: ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` — all three share
-    ``group_id='approval'`` so clicking one greys out the rest.
+    Layout: ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` when permanent
+    approval is allowed, otherwise ``[✅ 允许一次] [❌ 拒绝]``. All buttons
+    share ``group_id='approval'`` so clicking one greys out the rest.
 
     :param session_key: Embedded into ``button_data`` so the decision
         routes back to the right pending approval.
     """
+    buttons = [
+        _make_callback_button(
+            btn_id="allow",
+            label="✅ 允许一次",
+            visited_label="已允许",
+            data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-once",
+            style=1,
+            group_id="approval",
+        ),
+    ]
+    if allow_permanent:
+        buttons.append(
+            _make_callback_button(
+                btn_id="always",
+                label="⭐ 始终允许",
+                visited_label="已始终允许",
+                data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-always",
+                style=1,
+                group_id="approval",
+            )
+        )
+    buttons.append(
+        _make_callback_button(
+            btn_id="deny",
+            label="❌ 拒绝",
+            visited_label="已拒绝",
+            data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:deny",
+            style=0,
+            group_id="approval",
+        )
+    )
     return InlineKeyboard(
         content=KeyboardContent(
             rows=[
-                KeyboardRow(buttons=[
-                    _make_callback_button(
-                        btn_id="allow",
-                        label="✅ 允许一次",
-                        visited_label="已允许",
-                        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-once",
-                        style=1,
-                        group_id="approval",
-                    ),
-                    _make_callback_button(
-                        btn_id="always",
-                        label="⭐ 始终允许",
-                        visited_label="已始终允许",
-                        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-always",
-                        style=1,
-                        group_id="approval",
-                    ),
-                    _make_callback_button(
-                        btn_id="deny",
-                        label="❌ 拒绝",
-                        visited_label="已拒绝",
-                        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:deny",
-                        style=0,
-                        group_id="approval",
-                    ),
-                ]),
+                KeyboardRow(buttons=buttons),
             ]
         )
     )
@@ -295,6 +302,7 @@ class ApprovalRequest:
     tool_name: str = ""
     severity: str = ""
     timeout_sec: int = 120
+    allow_permanent: bool = True
 
 
 def build_approval_text(req: ApprovalRequest) -> str:
@@ -380,7 +388,7 @@ class ApprovalSender:
         :returns: ``True`` on success, ``False`` on failure.
         """
         text = build_approval_text(req)
-        keyboard = build_approval_keyboard(req.session_key)
+        keyboard = build_approval_keyboard(req.session_key, req.allow_permanent)
 
         logger.info(
             "[%s] Sending approval request to %s:%s (session=%.20s…)",

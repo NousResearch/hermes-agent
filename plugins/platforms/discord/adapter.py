@@ -4274,6 +4274,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        allow_permanent: bool = True,
         metadata: Optional[dict] = None,
     ) -> SendResult:
         """
@@ -4309,6 +4310,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                allow_permanent=allow_permanent,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -5264,7 +5266,7 @@ def _define_discord_view_classes() -> None:
         """
         Interactive button view for exec approval of dangerous commands.
 
-        Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
+        Shows Allow Once, Allow Session, Deny, and optionally Always Allow.
         Clicking a button calls ``resolve_gateway_approval()`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
         Only users in the allowed list can click.  Times out after 5 minutes.
@@ -5275,12 +5277,22 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            allow_permanent: bool = True,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.allow_permanent = allow_permanent
             self.resolved = False
+            if not allow_permanent:
+                remove_item = getattr(self, "remove_item", None)
+                if callable(remove_item):
+                    remove_item(self.allow_always)
+                elif hasattr(self, "children"):
+                    for child in list(self.children):
+                        if getattr(child, "label", None) == "Always Allow":
+                            self.children.remove(child)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""

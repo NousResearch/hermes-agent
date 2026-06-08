@@ -1786,6 +1786,39 @@ class TestSendExecApproval:
             metadata={"thread_id": "ignored", "anything": "else"},
         )
 
+    @pytest.mark.asyncio
+    async def test_forwards_allow_permanent_to_keyboard_request(self):
+        adapter = self._make_adapter()
+        calls = []
+
+        async def fake_send_approval(chat_id, req, reply_to=None):
+            from gateway.platforms.base import SendResult
+            calls.append(req)
+            return SendResult(success=True)
+
+        adapter.send_approval_request = fake_send_approval  # type: ignore[assignment]
+
+        await adapter.send_exec_approval(
+            chat_id="u", command="ls", session_key="s", allow_permanent=False
+        )
+
+        assert calls[0].allow_permanent is False
+
+
+class TestQQApprovalKeyboard:
+    def test_hides_always_button_when_permanent_approval_disallowed(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+
+        keyboard = build_approval_keyboard("sess", allow_permanent=False)
+        data = keyboard.to_dict()
+        buttons = data["content"]["rows"][0]["buttons"]
+        button_data = [button["action"]["data"] for button in buttons]
+
+        assert button_data == [
+            "approve:sess:allow-once",
+            "approve:sess:deny",
+        ]
+
 
 class TestSendUpdatePrompt:
     """Verify the cross-adapter send_update_prompt signature + behaviour."""

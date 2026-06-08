@@ -1339,6 +1339,7 @@ class MatrixAdapter(BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        allow_permanent: bool = True,
         metadata: Optional[dict] = None,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
@@ -1346,12 +1347,17 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        scope_text = (
+            "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
+            "`/approve always` to approve permanently, or `/deny` to cancel."
+            if allow_permanent
+            else "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, or `/deny` to cancel."
+        )
         text = (
             "⚠️ **Dangerous command requires approval**\n"
             f"```\n{cmd_preview}\n```\n"
             f"Reason: {description}\n\n"
-            "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
-            "`/approve always` to approve permanently, or `/deny` to cancel.\n\n"
+            f"{scope_text}\n\n"
             "You can also click the reaction to approve:\n"
             "✅ = /approve\n"
             "❎ = /deny"

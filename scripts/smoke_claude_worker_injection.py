@@ -267,6 +267,7 @@ def check_local_injection_with_shim() -> None:
         try:
             allowed = env.execute(f"{shim} -p 'Reply exactly: ok'", timeout=20)
             denied = env.execute(f"{shim} -p hi & env", timeout=20)
+            env_hijack = env.execute(f"env PATH={tmp} claude -p hi", timeout=20)
             non_claude = env.execute("env", timeout=20)
             subsequent = env.execute("env", timeout=20)
         finally:
@@ -283,6 +284,12 @@ def check_local_injection_with_shim() -> None:
             _ok("`claude -p ... & env` leak form did NOT receive the token")
         else:
             _fail("shell-control wrapper leaked the token")
+
+        # 4a.1: env-prefixed PATH/loader overrides must NOT receive the token.
+        if "TOKEN_PRESENT" not in env_hijack["output"]:
+            _ok("`env PATH=... claude -p` hijack form did NOT receive the token")
+        else:
+            _fail("env-prefixed command leaked the token")
 
         # 4b: plain non-claude command must not see it.
         if "CLAUDE_CODE_OAUTH_TOKEN" not in non_claude["output"]:

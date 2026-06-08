@@ -1949,6 +1949,30 @@ run_setup_wizard() {
 
     cd "$INSTALL_DIR"
 
+    # Sanity check: a Python built without the _ctypes extension (commonly a
+    # pyenv build done before libffi was installed) crashes at startup. Surface
+    # a clear, actionable message here instead of a raw traceback.
+    # See NousResearch/hermes-agent#42074.
+    if [ "$USE_VENV" = true ]; then
+        _ctypes_python="$INSTALL_DIR/venv/bin/python"
+    else
+        _ctypes_python="python"
+    fi
+    if ! "$_ctypes_python" -c "import ctypes" >/dev/null 2>&1; then
+        log_warn "Python's ctypes module is unavailable (missing _ctypes extension)."
+        log_info "This usually means libffi was not present when Python was compiled."
+        if command -v pyenv >/dev/null 2>&1; then
+            _ctypes_pyver=$("$_ctypes_python" -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>/dev/null)
+            log_info "Detected pyenv — reinstall Python with libffi support:"
+            log_info "  sudo apt-get install -y libffi-dev   # Debian/Ubuntu"
+            log_info "  pyenv install ${_ctypes_pyver:-<version>}"
+        else
+            log_info "Install libffi-dev and rebuild/reinstall your Python:"
+            log_info "  sudo apt-get install -y libffi-dev   # Debian/Ubuntu"
+        fi
+        log_info "Continuing anyway — process-title setup is cosmetic and now degrades gracefully."
+    fi
+
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then

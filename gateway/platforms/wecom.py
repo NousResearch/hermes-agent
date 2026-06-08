@@ -564,6 +564,11 @@ class WeComAdapter(BasePlatformAdapter):
         if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(event)
         else:
+            # Send immediate "thinking" feedback before agent processes
+            try:
+                await self.send(chat_id=chat_id, content="⏳ 处理中...")
+            except Exception:
+                pass  # non-fatal, feedback is best-effort
             await self.handle_message(event)
 
     # ------------------------------------------------------------------
@@ -643,6 +648,11 @@ class WeComAdapter(BasePlatformAdapter):
                 "[WeCom] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
+            # Send immediate "thinking" feedback before agent processes
+            try:
+                await self.send(chat_id=event.source.chat_id, content="⏳ 处理中...")
+            except Exception:
+                pass  # non-fatal, feedback is best-effort
             await self.handle_message(event)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:

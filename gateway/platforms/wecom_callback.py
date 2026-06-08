@@ -318,6 +318,14 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         while True:
             event = await self._message_queue.get()
             try:
+                # Send immediate "thinking" feedback before agent processes
+                try:
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content="⏳ 处理中...",
+                    )
+                except Exception:
+                    pass  # non-fatal, feedback is best-effort
                 task = asyncio.create_task(self.handle_message(event))
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)

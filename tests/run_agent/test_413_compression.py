@@ -553,6 +553,7 @@ class TestPreflightCompression:
         agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=114_000),
             patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=114_000),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
@@ -604,6 +605,7 @@ class TestPreflightCompression:
             return 125_000 if _rough_calls["n"] == 1 else 40_000
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
@@ -728,6 +730,7 @@ class TestPreflightCompression:
         agent.client.chat.completions.create.side_effect = [ok_resp]
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
             # Compression no-ops (returns input unchanged) — mirrors an aux
             # summary-model timeout where the messages can't be reduced.
@@ -760,6 +763,7 @@ class TestPreflightCompression:
         agent.client.chat.completions.create.side_effect = [ok_resp]
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
             patch.object(agent, "_compress_context", side_effect=lambda msgs, *a, **k: (msgs, agent._cached_system_prompt)),
             patch.object(agent, "_persist_session"),

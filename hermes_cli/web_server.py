@@ -9575,16 +9575,24 @@ def _merged_plugins_hub() -> Dict[str, Any]:
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
 
-    for name, version, description, source, dir_str in _discover_all_plugins():
-        if name in disabled_set:
+    for key, legacy_name, version, description, source, dir_str in _discover_all_plugins():
+        # `key` is the canonical registry identity (path-derived for nested
+        # category plugins, e.g. "observability/nemo_relay"); `legacy_name` is
+        # the bare manifest name. Both count for enabled/disabled state to
+        # match the runtime loader's back-compat lookup.
+        name = key
+        aliases = {key}
+        if legacy_name:
+            aliases.add(legacy_name)
+        if aliases & disabled_set:
             runtime_status = "disabled"
-        elif name in enabled_set:
+        elif aliases & enabled_set:
             runtime_status = "enabled"
         else:
             runtime_status = "inactive"
 
         dir_path = Path(dir_str)
-        dm = dash_by_name.get(name)
+        dm = dash_by_name.get(name) or (dash_by_name.get(legacy_name) if legacy_name else None)
         has_dash_manifest = dm is not None or (dir_path / "dashboard" / "manifest.json").exists()
 
         under_user_tree = False

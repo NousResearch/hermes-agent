@@ -79,7 +79,7 @@ export function ProjectTree({
   const handleActivate = useCallback(
     (node: NodeApi<TreeNode>) => {
       if (node.data && !node.data.isDirectory) {
-        onPreviewFile?.(node.data.id)
+        onPreviewFile?.(node.data.path)
       }
     },
     [onPreviewFile]
@@ -165,7 +165,7 @@ function ProjectTreeRow({
         }
 
         if (event.shiftKey) {
-          ;(isFolder ? onAttachFolder : onAttachFile)(node.data.id)
+          ;(isFolder ? onAttachFolder : onAttachFile)(node.data.path)
 
           return
         }
@@ -180,7 +180,7 @@ function ProjectTreeRow({
         event.stopPropagation()
 
         if (!isFolder && !isPlaceholder) {
-          onPreviewFile?.(node.data.id)
+          onPreviewFile?.(node.data.path)
         }
       }}
       onDragStart={event => {
@@ -190,11 +190,11 @@ function ProjectTreeRow({
           return
         }
 
-        const payload = JSON.stringify([{ isDirectory: isFolder, path: node.data.id }])
+        const payload = JSON.stringify([{ isDirectory: isFolder, path: node.data.path }])
 
         event.dataTransfer.effectAllowed = 'copy'
         event.dataTransfer.setData('application/x-hermes-paths', payload)
-        event.dataTransfer.setData('text/plain', node.data.id)
+        event.dataTransfer.setData('text/plain', node.data.path)
       }}
       ref={dragHandle}
       style={style}

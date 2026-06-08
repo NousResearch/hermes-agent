@@ -22,6 +22,9 @@ function ok(entries: { name: string; path: string; isDirectory: boolean }[]): He
   return { entries }
 }
 
+/** Encode a raw filesystem path to the safe arborist node id (mirrors makeNode). */
+const nid = (p: string): string => encodeURIComponent(p)
+
 describe('useProjectTree', () => {
   it('starts empty when cwd is blank and skips IPC', async () => {
     const { result } = renderHook(() => useProjectTree(''))
@@ -77,7 +80,7 @@ describe('useProjectTree', () => {
     await waitFor(() => expect(result.current.data.length).toBe(1))
 
     await act(async () => {
-      await result.current.loadChildren('/p/src')
+      await result.current.loadChildren(nid('/p/src'))
     })
 
     const src = result.current.data[0]
@@ -94,7 +97,7 @@ describe('useProjectTree', () => {
     await waitFor(() => expect(result.current.data.length).toBe(1))
 
     act(() => {
-      result.current.setNodeOpen('/p/src', true)
+      result.current.setNodeOpen(nid('/p/src'), true)
     })
 
     unmount()
@@ -102,7 +105,7 @@ describe('useProjectTree', () => {
     const remounted = renderHook(() => useProjectTree('/p'))
 
     expect(remounted.result.current.data.map(n => n.name)).toEqual(['src'])
-    expect(remounted.result.current.openState).toEqual({ '/p/src': true })
+    expect(remounted.result.current.openState).toEqual({ [nid('/p/src')]: true })
     expect(readDir).toHaveBeenCalledTimes(1)
   })
 
@@ -115,7 +118,7 @@ describe('useProjectTree', () => {
     await waitFor(() => expect(result.current.data.length).toBe(1))
 
     await act(async () => {
-      await result.current.loadChildren('/p/priv')
+      await result.current.loadChildren(nid('/p/priv'))
     })
 
     expect(result.current.data[0].error).toBe('EACCES')
@@ -139,9 +142,9 @@ describe('useProjectTree', () => {
 
     await act(async () => {
       // First call enters inflight, second short-circuits, third also short-circuits.
-      void result.current.loadChildren('/p/src')
-      void result.current.loadChildren('/p/src')
-      void result.current.loadChildren('/p/src')
+      void result.current.loadChildren(nid('/p/src'))
+      void result.current.loadChildren(nid('/p/src'))
+      void result.current.loadChildren(nid('/p/src'))
       resolveChildren?.(ok([{ name: 'a.ts', path: '/p/src/a.ts', isDirectory: false }]))
     })
 

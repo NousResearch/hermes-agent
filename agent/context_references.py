@@ -359,6 +359,30 @@ def _ensure_reference_path_allowed(path: Path) -> None:
             continue
         raise ValueError("path is a sensitive credential or internal Hermes path and cannot be attached")
 
+    # Anchor to the canonical read deny-list (agent/file_safety.get_read_block_error),
+    # the single source of truth used by the file/terminal read path. The narrow
+    # list above predates that guard and never caught the real credential stores:
+    # provider keys (auth.json), Anthropic OAuth tokens (.anthropic_oauth.json),
+    # MCP OAuth material (mcp-tokens/), webhook HMAC secrets, and project-local
+    # .env files. That gap matters because the gateway feeds UNTRUSTED remote
+    # message text into reference expansion, so `@file:~/.hermes/auth.json` from a
+    # chat peer would otherwise read the operator's keys straight into context.
+    # Routing through the canonical guard closes the gap today and keeps this path
+    # protected automatically whenever that deny-list grows.
+    try:
+        from agent.file_safety import get_read_block_error
+
+        if get_read_block_error(str(path)) is not None:
+            raise ValueError(
+                "path is a sensitive credential or internal Hermes path and cannot be attached"
+            )
+    except ValueError:
+        raise
+    except Exception:
+        # Never let guard resolution crash reference expansion — the explicit
+        # checks above already provide a baseline if this lookup is unavailable.
+        pass
+
 
 def _strip_trailing_punctuation(value: str) -> str:
     stripped = value.rstrip(TRAILING_PUNCTUATION)

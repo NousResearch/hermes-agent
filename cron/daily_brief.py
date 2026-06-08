@@ -235,6 +235,37 @@ async def _invoke_daily_default(
 # ---------------------------------------------------------------------------
 
 
+def _emit_brief_run_record(
+    *,
+    run_id: str,
+    status: str,
+    reason: str,
+    agent_decision_urn: str | None,
+) -> None:
+    """Plan 056-D: emit ONE ``producer="hermes"`` RunRecord at brief completion.
+
+    STRICTLY fail-soft + side-channel: this is the statefulness-spine breadcrumb
+    (so a Hermes brief shares the ``run_id`` join key with any orchestrator work
+    it triggers), NOT part of the brief's delivery. Any failure is swallowed by
+    ``emit_run_record`` itself, and we additionally guard the import/build so a
+    missing module can never change the brief's behavior. The LIVE wiring
+    (shipping these to the shared S3/Atlas store in prod) is Blake-gated [manual].
+    """
+    try:
+        from cron.run_record import build_run_record, emit_run_record
+
+        record = build_run_record(
+            run_id=run_id,
+            kind="brief",
+            status=status,
+            notes=f"daily-brief: {reason}",
+            memory_refs=[agent_decision_urn] if agent_decision_urn else [],
+        )
+        emit_run_record(record)
+    except Exception:  # noqa: BLE001 — observability must never break the brief
+        logger.debug("daily-brief: run-record emit skipped", exc_info=True)
+
+
 def run_daily_brief(
     *,
     now: datetime | None = None,
@@ -243,6 +274,7 @@ def run_daily_brief(
     channel: str | None = None,
     token: str | None = None,
     weekday_gate: frozenset[int] = WEEKDAY_GATE,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """End-to-end: gate, build brief, post to Slack.
 
@@ -252,21 +284,37 @@ def run_daily_brief(
          "reason": str,
          "summary_ts": str|None,
          "channel": str|None,
-         "agent_decision_urn": str|None}
+         "agent_decision_urn": str|None,
+         "run_id": str}
 
     Raises ``SlackError`` only on the post-step; ``build_daily_brief``
     failures are caught and surfaced as ``status=failed`` so the cron
     log captures the failure without crashing the scheduler.
+
+    Plan 056-D: this cron path is the initiator of a Hermes action, so it stamps
+    a ``run_id`` (overridable for an inbound chain) and emits ONE fail-soft
+    ``RunRecord`` at completion — the shared-``run_id`` statefulness spine. The
+    emit is behind the existing cron flow and never alters the brief's behavior.
     """
+    # Plan 056-D: stamp the run_id for this brief (the initiator mints it).
+    from cron.run_record import new_run_id
+
+    run_id = run_id or new_run_id()
+
     fire, reason = should_fire_now(now, weekday_gate=weekday_gate)
     if not fire:
         logger.info("daily-brief: %s — skipping", reason)
+        _emit_brief_run_record(
+            run_id=run_id, status="skipped", reason=reason,
+            agent_decision_urn=None,
+        )
         return {
             "status": "skipped",
             "reason": reason,
             "summary_ts": None,
             "channel": None,
             "agent_decision_urn": None,
+            "run_id": run_id,
         }
 
     resolved_channel = channel or _env("SLACK_DAILY_DM_CHANNEL") or _env("SLACK_HOME_CHANNEL") or ""
@@ -281,21 +329,33 @@ def run_daily_brief(
             payload = coro
     except Exception as exc:
         logger.exception("daily-brief: /daily invocation failed")
+        reason = f"/daily invocation failed: {type(exc).__name__}: {exc}"
+        _emit_brief_run_record(
+            run_id=run_id, status="failed", reason=reason,
+            agent_decision_urn=None,
+        )
         return {
             "status": "failed",
-            "reason": f"/daily invocation failed: {type(exc).__name__}: {exc}",
+            "reason": reason,
             "summary_ts": None,
             "channel": resolved_channel or None,
             "agent_decision_urn": None,
+            "run_id": run_id,
         }
 
     if not isinstance(payload, dict) or not payload.get("blocks"):
+        _emit_brief_run_record(
+            run_id=run_id, status="failed",
+            reason="build_daily_brief returned no blocks",
+            agent_decision_urn=None,
+        )
         return {
             "status": "failed",
             "reason": "build_daily_brief returned no blocks",
             "summary_ts": None,
             "channel": resolved_channel or None,
             "agent_decision_urn": None,
+            "run_id": run_id,
         }
 
     meta = payload.get("_daily_meta") or {}
@@ -309,12 +369,17 @@ def run_daily_brief(
         slack_post=slack_post,
     )
 
+    _emit_brief_run_record(
+        run_id=run_id, status="delivered", reason=reason,
+        agent_decision_urn=agent_decision_urn,
+    )
     result = {
         "status": "delivered",
         "reason": reason,
         "summary_ts": delivery.get("summary_ts"),
         "channel": delivery.get("channel"),
         "agent_decision_urn": agent_decision_urn,
+        "run_id": run_id,
     }
     logger.info(
         "daily-brief: delivered status=%s summary_ts=%s channel=%s urn=%s",

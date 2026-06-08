@@ -128,6 +128,71 @@ def test_remember_tool_posts_write(provider, mod, monkeypatch):
     assert captured["body"]["agent"] == "hermes"
 
 
+def test_remember_threads_run_id_annotation(provider, mod, monkeypatch):
+    """Plan 056-D: a run_id passed to atlas_remember is threaded onto the write
+    body as the shared-run_id join key."""
+    import httpx
+
+    class FakeResp:
+        def raise_for_status(self): ...
+
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["body"] = json
+        return FakeResp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = json.loads(provider.handle_tool_call(
+        "atlas_remember",
+        {"content": "Decided X", "run_id": "run-join-key-123"},
+    ))
+    assert result["result"] == "Fact stored in Atlas."
+    assert captured["body"]["run_id"] == "run-join-key-123"
+
+
+def test_remember_run_id_is_backward_compatible_when_omitted(provider, mod, monkeypatch):
+    """Plan 056-D: omitting run_id leaves the write body byte-identical to
+    pre-056-D (no run_id key present)."""
+    import httpx
+
+    class FakeResp:
+        def raise_for_status(self): ...
+
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["body"] = json
+        return FakeResp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    json.loads(provider.handle_tool_call(
+        "atlas_remember", {"content": "No run id here"}
+    ))
+    assert "run_id" not in captured["body"]
+
+
+def test_write_fact_run_id_default_none_omits_key(provider, monkeypatch):
+    """Plan 056-D: ``_write_fact`` default (run_id=None) does not add the key."""
+    import httpx
+
+    class FakeResp:
+        def raise_for_status(self): ...
+
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["body"] = json
+        return FakeResp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    provider._write_fact(target="user", action="add", content="x")
+    assert "run_id" not in captured["body"]
+    # And with run_id supplied, it is threaded.
+    provider._write_fact(target="user", action="add", content="x", run_id="abc")
+    assert captured["body"]["run_id"] == "abc"
+
+
 def test_remember_requires_content(provider):
     result = provider.handle_tool_call("atlas_remember", {})
     # tool_error returns a JSON string with an error

@@ -677,10 +677,13 @@ class AtlasMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             target = args.get("target", "user")
             life_context = args.get("life_context")
+            # Plan 056-D: optional run_id join key (backward-compatible — absent
+            # for callers that don't stamp one).
+            run_id = args.get("run_id")
             try:
                 self._write_fact(
                     target=target, action="add", content=content,
-                    life_context=life_context,
+                    life_context=life_context, run_id=run_id,
                 )
                 self._record_success()
                 return json.dumps({"result": "Fact stored in Atlas."})
@@ -691,8 +694,17 @@ class AtlasMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def _write_fact(self, *, target: str, action: str, content: str,
-                    old_text: str | None = None, life_context: str | None = None) -> None:
-        """POST /v1/memory/hermes/write. Raises on error."""
+                    old_text: str | None = None, life_context: str | None = None,
+                    run_id: str | None = None) -> None:
+        """POST /v1/memory/hermes/write. Raises on error.
+
+        Plan 056-D: ``run_id`` is an OPTIONAL annotation (default ``None``,
+        backward-compatible). When a Hermes-initiated action (a cron tick, a
+        Slack-triggered task) stamps a ``run_id`` and threads it here, the memory
+        write carries that join key so a Hermes-initiated → orchestrator-executed
+        chain is one queryable Atlas subgraph (the shared-``run_id`` spine). When
+        omitted, the request body is byte-identical to pre-056-D.
+        """
         import httpx
         url = f"{self._base_url.rstrip('/')}/v1/memory/hermes/write"
         body = {
@@ -706,6 +718,8 @@ class AtlasMemoryProvider(MemoryProvider):
             body["old_text"] = old_text
         if life_context:
             body["life_context"] = life_context
+        if run_id:
+            body["run_id"] = run_id
         resp = httpx.post(url, json=body, headers=self._headers(), timeout=_WRITE_TIMEOUT_SECS)
         resp.raise_for_status()
 

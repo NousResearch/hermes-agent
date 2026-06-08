@@ -443,6 +443,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
             normalized = normalized.replace(":", "@", 1)
         return normalized
 
+    @staticmethod
+    def _normalize_outgoing_chat_id(chat_id: str) -> str:
+        """Normalize a chat ID for outgoing WhatsApp messages.
+
+        Bare phone numbers (e.g. ``15005004144``) are appended with
+        ``@s.whatsapp.net`` so the bridge can parse them via ``jidDecode``.
+        IDs that already contain ``@`` are passed through unchanged.
+        """
+        cid = str(chat_id).strip()
+        if not cid:
+            return cid
+        if "@" not in cid:
+            if re.fullmatch(r"\+?\d+", cid):
+                cid = f"{cid}@s.whatsapp.net"
+        return cid
+
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
         for candidate in data.get("botIds") or []:
@@ -929,6 +945,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
 
+        chat_id = self._normalize_outgoing_chat_id(chat_id)
+
         try:
             import aiohttp
 
@@ -1016,6 +1034,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         bridge_exit = await self._check_managed_bridge_exit()
         if bridge_exit:
             return SendResult(success=False, error=bridge_exit)
+
+        chat_id = self._normalize_outgoing_chat_id(chat_id)
+
         try:
             import aiohttp
 
@@ -1119,7 +1140,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return
         if await self._check_managed_bridge_exit():
             return
-        
+
+        chat_id = self._normalize_outgoing_chat_id(chat_id)
+
         try:
             import aiohttp
 

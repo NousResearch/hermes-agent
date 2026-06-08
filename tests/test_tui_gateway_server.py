@@ -4411,7 +4411,7 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
 # ── active live TUI sessions ─────────────────────────────────────────
 
 
-def test_session_active_list_reports_live_sessions(monkeypatch):
+def test_session_active_list_reports_live_sessions_newest_first(monkeypatch):
     class _DB:
         def get_session_title(self, key):
             return {"key-a": "Research", "key-b": "Implement"}.get(key, "")
@@ -4439,7 +4439,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
             {
                 "id": "1",
                 "method": "session.active_list",
-                "params": {"current_session_id": "sid-b"},
+                "params": {"current_session_id": "sid-a"},
             }
         )
     finally:
@@ -4447,11 +4447,11 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         server._sessions.update(previous_sessions)
 
     session_rows = resp["result"]["sessions"]
-    assert [row["id"] for row in session_rows] == ["sid-a", "sid-b"]
+    assert [row["id"] for row in session_rows] == ["sid-b", "sid-a"]
 
     rows = {row["id"]: row for row in session_rows}
     assert rows["sid-a"] == {
-        "current": False,
+        "current": True,
         "id": "sid-a",
         "last_active": 20.0,
         "message_count": 1,
@@ -4462,7 +4462,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "status": "idle",
         "title": "Research",
     }
-    assert rows["sid-b"]["current"] is True
+    assert rows["sid-b"]["current"] is False
     assert rows["sid-b"]["status"] == "working"
     assert rows["sid-b"]["title"] == "Implement"
     assert rows["sid-b"]["preview"] == "writing code"

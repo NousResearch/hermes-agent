@@ -3563,9 +3563,11 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5036, f"could not enumerate active sessions: {e}")
 
-    # Keep the natural creation/insertion order from ``_sessions``.  The
-    # frontend marks the focused session with ``current``; it should not jump to
-    # the top just because the user switched to it.
+    # Show the newest live sessions first so newly created conversations do not
+    # disappear to the bottom of the switcher. Keep this keyed to creation time
+    # rather than current focus so activating an older session does not reorder
+    # the whole list underneath the user.
+    snapshot.sort(key=lambda item: (float(item[1].get("created_at") or 0.0), item[0]), reverse=True)
     rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
     return _ok(rid, {"sessions": rows})
 

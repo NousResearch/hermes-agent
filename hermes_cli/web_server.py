@@ -8288,20 +8288,32 @@ async def get_models_analytics(days: int = 30):
 # though uvicorn binds to 127.0.0.1.
 # ---------------------------------------------------------------------------
 
-# PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
-# Windows the import raises; catch and leave PtyBridge=None so the rest of
-# the dashboard (sessions, jobs, metrics, config editor) still loads and the
-# /api/pty endpoint cleanly refuses with a WSL-suggested message.
-try:
-    from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
-    _PTY_BRIDGE_AVAILABLE = True
-except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
-    PtyBridge = None  # type: ignore[assignment]
-    _PTY_BRIDGE_AVAILABLE = False
+# PTY bridge: POSIX uses pty_bridge (fcntl/termios/ptyprocess); native Windows
+# uses win_pty_bridge (pywinpty/ConPTY, already a declared dependency).  Both
+# expose the same public surface — spawn/read/write/resize/close/is_available —
+# so the /api/pty WebSocket handler needs no platform guards.
+if sys.platform.startswith("win"):
+    try:
+        from hermes_cli.win_pty_bridge import WinPtyBridge as PtyBridge, PtyUnavailableError
+        _PTY_BRIDGE_AVAILABLE = True
+    except ImportError:  # pragma: no cover - pywinpty missing
+        PtyBridge = None  # type: ignore[assignment]
+        _PTY_BRIDGE_AVAILABLE = False
 
-    class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
-        """Stub on platforms where pty_bridge can't be imported."""
-        pass
+        class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
+            """Stub when win_pty_bridge cannot be imported."""
+            pass
+else:
+    try:
+        from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+        _PTY_BRIDGE_AVAILABLE = True
+    except ImportError:  # pragma: no cover - dev env without ptyprocess
+        PtyBridge = None  # type: ignore[assignment]
+        _PTY_BRIDGE_AVAILABLE = False
+
+        class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
+            """Stub on platforms where pty_bridge can't be imported."""
+            pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2

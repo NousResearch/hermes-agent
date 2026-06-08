@@ -21,7 +21,9 @@ Lifecycle:
   3. update_from_response() called after each API response with usage data
   4. should_compress() checked after each turn
   5. compress() called when should_compress() returns True
-  6. on_session_end() called at real session boundaries (CLI exit, /reset,
+  6. on_turn_complete() called after a user turn finishes with the finalized
+     in-memory transcript snapshot
+  7. on_session_end() called at real session boundaries (CLI exit, /reset,
      gateway session expiry) — NOT per-turn
 """
 
@@ -123,6 +125,41 @@ class ContextEngine(ABC):
         engines can ignore it safely.
         """
         return False
+
+    # -- Optional: per-turn observation ------------------------------------
+
+    def on_turn_complete(
+        self,
+        messages: List[Dict[str, Any]],
+        usage: Dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Observe a finished user turn without requesting compaction.
+
+        Hosts call this after the turn has produced its finalized in-memory
+        transcript snapshot. Engines should treat ``messages`` as read-only:
+        return values are ignored and this hook must not rely on transcript
+        mutation for persistence.
+        """
+        return None
+
+    def prepare_request_messages(
+        self,
+        request_messages: List[Dict[str, Any]],
+        *,
+        conversation_messages: List[Dict[str, Any]] | None = None,
+        incoming_message: Dict[str, Any] | None = None,
+        budget_tokens: int = 0,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]] | None:
+        """Optionally replace the provider request messages for this call.
+
+        Hosts call this after building the API request message list and before
+        dispatching it to the provider. A returned list is request-only and
+        must not be treated as persisted transcript state. Return ``None`` to
+        leave the request unchanged.
+        """
+        return None
 
     # -- Optional: manual /compress preflight ------------------------------
 

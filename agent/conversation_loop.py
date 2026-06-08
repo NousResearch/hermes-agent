@@ -124,6 +124,172 @@ def _ra():
     return run_agent
 
 
+def _snapshot_messages_for_turn_hook(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return a shallow transcript copy for observation hooks."""
+    return [dict(msg) if isinstance(msg, dict) else msg for msg in messages]
+
+
+def _notify_context_engine_turn_complete(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    usage: Optional[Dict[str, Any]],
+    task_id: str,
+    turn_id: str,
+    api_call_count: int,
+    completed: bool,
+    interrupted: bool,
+    failed: bool,
+    turn_exit_reason: str,
+) -> None:
+    """Best-effort notification for context engines that observe turns."""
+    engine = getattr(agent, "context_compressor", None)
+    hook = getattr(engine, "on_turn_complete", None)
+    if not callable(hook):
+        return
+    try:
+        from agent.context_engine import ContextEngine
+
+        if getattr(hook, "__func__", None) is ContextEngine.on_turn_complete:
+            return
+    except Exception:
+        pass
+
+    try:
+        hook(
+            _snapshot_messages_for_turn_hook(messages),
+            usage=dict(usage) if usage is not None else None,
+            session_id=getattr(agent, "session_id", None),
+            task_id=task_id,
+            turn_id=turn_id,
+            api_call_count=api_call_count,
+            completed=completed,
+            interrupted=interrupted,
+            failed=failed,
+            turn_exit_reason=turn_exit_reason,
+            conversation_id=getattr(agent, "_gateway_session_key", None),
+            model=getattr(agent, "model", None),
+            platform=getattr(agent, "platform", None),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Context engine on_turn_complete hook failed: %s",
+            exc,
+            exc_info=True,
+        )
+
+
+def _context_engine_request_budget(agent: Any) -> int:
+    engine = getattr(agent, "context_compressor", None)
+    for attr in ("_budget_tokens", "threshold_tokens", "context_length"):
+        try:
+            value = int(getattr(engine, attr, 0) or 0)
+        except Exception:
+            value = 0
+        if value > 0:
+            return value
+    return 0
+
+
+def _apply_context_engine_request_hook(
+    agent: Any,
+    request_messages: List[Dict[str, Any]],
+    *,
+    conversation_messages: List[Dict[str, Any]],
+    incoming_message: Optional[Dict[str, Any]],
+    task_id: str,
+    turn_id: str,
+    api_call_count: int,
+    budget_tokens: int,
+) -> tuple[List[Dict[str, Any]], bool]:
+    """Let a context engine replace provider request messages, fail-open."""
+    engine = getattr(agent, "context_compressor", None)
+    hook = getattr(engine, "prepare_request_messages", None)
+    if not callable(hook):
+        return request_messages, False
+    try:
+        from agent.context_engine import ContextEngine
+
+        if getattr(hook, "__func__", None) is ContextEngine.prepare_request_messages:
+            return request_messages, False
+    except Exception:
+        pass
+
+    try:
+        replacement = hook(
+            _snapshot_messages_for_turn_hook(request_messages),
+            conversation_messages=_snapshot_messages_for_turn_hook(conversation_messages),
+            incoming_message=dict(incoming_message) if isinstance(incoming_message, dict) else None,
+            budget_tokens=budget_tokens,
+            session_id=getattr(agent, "session_id", None),
+            task_id=task_id,
+            turn_id=turn_id,
+            api_call_count=api_call_count,
+            conversation_id=getattr(agent, "_gateway_session_key", None),
+            model=getattr(agent, "model", None),
+            provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+            platform=getattr(agent, "platform", None),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Context engine prepare_request_messages hook failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return request_messages, False
+
+    if replacement is None:
+        return request_messages, False
+    if not isinstance(replacement, list):
+        logger.warning(
+            "Context engine prepare_request_messages returned %s, expected list or None",
+            type(replacement).__name__,
+        )
+        return request_messages, False
+    return _snapshot_messages_for_turn_hook(replacement), True
+
+
+def _normalize_request_messages_for_api(
+    api_messages: List[Dict[str, Any]],
+) -> None:
+    """Normalize API-copy messages for stable provider requests."""
+    for am in api_messages:
+        if isinstance(am.get("content"), str):
+            am["content"] = am["content"].strip()
+    for am in api_messages:
+        tcs = am.get("tool_calls")
+        if not tcs:
+            continue
+        new_tcs = []
+        for tc in tcs:
+            if isinstance(tc, dict) and "function" in tc:
+                try:
+                    args_obj = json.loads(tc["function"]["arguments"])
+                    tc = {**tc, "function": {
+                        **tc["function"],
+                        "arguments": json.dumps(
+                            args_obj, separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                    }}
+                except Exception:
+                    tc["function"]["arguments"] = _repair_tool_call_arguments(
+                        tc["function"]["arguments"],
+                        tc["function"].get("name", "?"),
+                    )
+            new_tcs.append(tc)
+        am["tool_calls"] = new_tcs
+
+    # Proactively strip any surrogate characters before the API call.
+    # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
+    # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
+    # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
+    _sanitize_messages_surrogates(api_messages)
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -441,6 +607,7 @@ def run_conversation(
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
+    last_usage_dict: Optional[Dict[str, Any]] = None
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
@@ -676,12 +843,26 @@ def run_conversation(
             for idx, pfm in enumerate(agent.prefill_messages):
                 api_messages.insert(sys_offset + idx, pfm.copy())
 
+        api_messages, _ = _apply_context_engine_request_hook(
+            agent,
+            api_messages,
+            conversation_messages=messages,
+            incoming_message=messages[current_turn_user_idx]
+            if 0 <= current_turn_user_idx < len(messages)
+            else None,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            api_call_count=api_call_count,
+            budget_tokens=_context_engine_request_budget(agent),
+        )
+
         # Apply Anthropic prompt caching for Claude models on native
         # Anthropic, OpenRouter, and third-party Anthropic-compatible
         # gateways. Auto-detected: if ``_use_prompt_caching`` is set,
         # inject cache_control breakpoints (system + last 3 messages)
         # to reduce input token costs by ~75% on multi-turn
-        # conversations.
+        # conversations. Runs after request-only context replacement so
+        # provider annotations target the final API message list.
         if agent._use_prompt_caching:
             api_messages = apply_anthropic_cache_control(
                 api_messages,
@@ -711,38 +892,7 @@ def run_conversation(
         # (llama.cpp, vLLM, Ollama) and improves cache hit rates for
         # cloud providers.  Operates on api_messages (the API copy) so
         # the original conversation history in `messages` is untouched.
-        for am in api_messages:
-            if isinstance(am.get("content"), str):
-                am["content"] = am["content"].strip()
-        for am in api_messages:
-            tcs = am.get("tool_calls")
-            if not tcs:
-                continue
-            new_tcs = []
-            for tc in tcs:
-                if isinstance(tc, dict) and "function" in tc:
-                    try:
-                        args_obj = json.loads(tc["function"]["arguments"])
-                        tc = {**tc, "function": {
-                            **tc["function"],
-                            "arguments": json.dumps(
-                                args_obj, separators=(",", ":"),
-                                sort_keys=True,
-                            ),
-                        }}
-                    except Exception:
-                        tc["function"]["arguments"] = _repair_tool_call_arguments(
-                            tc["function"]["arguments"],
-                            tc["function"].get("name", "?"),
-                        )
-                new_tcs.append(tc)
-            am["tool_calls"] = new_tcs
-
-        # Proactively strip any surrogate characters before the API call.
-        # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
-        # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
-        # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
-        _sanitize_messages_surrogates(api_messages)
+        _normalize_request_messages_for_api(api_messages)
 
         # Calculate approximate request size for logging
         total_chars = sum(len(str(msg)) for msg in api_messages)
@@ -1587,6 +1737,7 @@ def run_conversation(
                         "cache_write_tokens": canonical_usage.cache_write_tokens,
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
+                    last_usage_dict = usage_dict
                     agent.context_compressor.update_from_response(usage_dict)
 
                     # Cache discovered context length after successful call.
@@ -4214,6 +4365,7 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        last_usage=last_usage_dict,
     )
 
 

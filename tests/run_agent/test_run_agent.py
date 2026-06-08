@@ -3373,6 +3373,125 @@ class TestRunConversation:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
+    def test_notifies_context_engine_on_turn_complete(self, agent):
+        self._setup_agent(agent)
+        agent.context_compressor.on_turn_complete = MagicMock()
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done",
+            usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_sync_external_memory_for_turn"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            result = agent.run_conversation("hello", task_id="task-123")
+
+        assert result["completed"] is True
+        agent.context_compressor.on_turn_complete.assert_called_once()
+        messages_arg = agent.context_compressor.on_turn_complete.call_args.args[0]
+        usage_arg = agent.context_compressor.on_turn_complete.call_args.kwargs["usage"]
+        kwargs = agent.context_compressor.on_turn_complete.call_args.kwargs
+
+        assert [m["role"] for m in messages_arg] == ["user", "assistant"]
+        assert messages_arg[-1]["content"] == "done"
+        assert usage_arg["prompt_tokens"] == 10
+        assert usage_arg["completion_tokens"] == 4
+        assert usage_arg["total_tokens"] == 14
+        assert kwargs["session_id"] == agent.session_id
+        assert kwargs["task_id"] == "task-123"
+        assert kwargs["completed"] is True
+        assert kwargs["interrupted"] is False
+        assert kwargs["failed"] is False
+        assert kwargs["turn_exit_reason"] == "text_response(finish_reason=stop)"
+
+    def test_context_engine_prepare_request_messages_is_request_only(self, agent):
+        self._setup_agent(agent)
+        agent.context_compressor.prepare_request_messages = MagicMock(
+            return_value=[
+                {"role": "system", "content": "prepared system"},
+                {"role": "user", "content": "prepared user"},
+            ]
+        )
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done",
+            usage={"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_sync_external_memory_for_turn"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            result = agent.run_conversation("hello", task_id="task-123")
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert sent_messages == [
+            {"role": "system", "content": "prepared system"},
+            {"role": "user", "content": "prepared user"},
+        ]
+        assert [m["role"] for m in result["messages"]] == ["user", "assistant"]
+        assert result["messages"][0]["content"] == "hello"
+        assert result["messages"][-1]["content"] == "done"
+        agent.context_compressor.prepare_request_messages.assert_called_once()
+        hook_kwargs = agent.context_compressor.prepare_request_messages.call_args.kwargs
+        assert hook_kwargs["conversation_messages"][0]["content"] == "hello"
+        assert hook_kwargs["incoming_message"]["content"] == "hello"
+        assert hook_kwargs["task_id"] == "task-123"
+        assert hook_kwargs["session_id"] == agent.session_id
+
+    def test_context_engine_prepare_request_messages_runs_before_prompt_cache(self, agent):
+        self._setup_agent(agent)
+        agent._use_prompt_caching = True
+        agent._cache_ttl = "5m"
+        agent._use_native_cache_layout = False
+        agent.context_compressor.prepare_request_messages = MagicMock(
+            return_value=[
+                {"role": "system", "content": "prepared system"},
+                {"role": "user", "content": "prepared user"},
+            ]
+        )
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done",
+            usage={"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+        )
+        cached_seen = {}
+
+        def fake_cache_control(messages, **kwargs):
+            cached_seen["messages"] = [dict(m) for m in messages]
+            cached = [dict(m) for m in messages]
+            cached[0]["cache_control"] = {"type": "ephemeral"}
+            return cached
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_sync_external_memory_for_turn"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch(
+                "agent.conversation_loop.apply_anthropic_cache_control",
+                side_effect=fake_cache_control,
+            ) as cache_mock,
+        ):
+            result = agent.run_conversation("hello", task_id="task-123")
+
+        assert result["completed"] is True
+        cache_mock.assert_called_once()
+        assert cached_seen["messages"] == [
+            {"role": "system", "content": "prepared system"},
+            {"role": "user", "content": "prepared user"},
+        ]
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert sent_messages[0]["cache_control"] == {"type": "ephemeral"}
+        assert sent_messages[0]["content"] == "prepared system"
+
     def test_stop_finish_reason_returns_response(self, agent):
         self._setup_agent(agent)
         resp = _mock_response(content="Final answer", finish_reason="stop")

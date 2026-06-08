@@ -124,6 +124,32 @@ class TestDefaults:
         engine = StubEngine()
         assert engine.should_compress_preflight([]) is False
 
+    def test_on_turn_complete_default_noop(self):
+        engine = StubEngine()
+        messages = [{"role": "user", "content": "hello"}]
+
+        result = engine.on_turn_complete(
+            messages,
+            usage={"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+            session_id="session-123",
+        )
+
+        assert result is None
+
+    def test_prepare_request_messages_default_noop(self):
+        engine = StubEngine()
+        request_messages = [{"role": "user", "content": "hello"}]
+
+        result = engine.prepare_request_messages(
+            request_messages,
+            conversation_messages=request_messages,
+            incoming_message=request_messages[-1],
+            budget_tokens=128000,
+            session_id="session-123",
+        )
+
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # StubEngine behavior

@@ -26,6 +26,7 @@ engine plugins (e.g. hermes-lcm) rely on:
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 
@@ -193,6 +194,197 @@ def test_update_from_response_forwards_canonical_cache_buckets():
     assert usage_dict["reasoning_tokens"] == 50
     assert usage_dict["input_tokens"] == 1000
     assert usage_dict["output_tokens"] == 500
+
+
+def test_on_turn_complete_receives_snapshot_and_metadata():
+    """Host forwards a finalized turn snapshot to context engines."""
+    from agent.conversation_loop import _notify_context_engine_turn_complete
+
+    captured: dict = {}
+
+    class Engine:
+        def on_turn_complete(self, messages, usage=None, **kwargs):
+            captured["messages"] = messages
+            captured["usage"] = usage
+            captured["kwargs"] = kwargs
+
+    agent = _bare_agent()
+    agent.context_compressor = Engine()
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    usage = {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+
+    _notify_context_engine_turn_complete(
+        agent,
+        messages,
+        usage=usage,
+        task_id="task-123",
+        turn_id="turn-456",
+        api_call_count=1,
+        completed=True,
+        interrupted=False,
+        failed=False,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert captured["messages"] == messages
+    assert captured["messages"] is not messages
+    assert captured["messages"][0] is not messages[0]
+    captured["messages"][0]["content"] = "mutated"
+    assert messages[0]["content"] == "hello"
+    assert captured["usage"] == usage
+    assert captured["usage"] is not usage
+    assert captured["kwargs"]["session_id"] == "test-session"
+    assert captured["kwargs"]["task_id"] == "task-123"
+    assert captured["kwargs"]["turn_id"] == "turn-456"
+    assert captured["kwargs"]["api_call_count"] == 1
+    assert captured["kwargs"]["completed"] is True
+    assert captured["kwargs"]["interrupted"] is False
+    assert captured["kwargs"]["failed"] is False
+    assert captured["kwargs"]["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    assert captured["kwargs"]["model"] == "fake-model"
+    assert captured["kwargs"]["platform"] == "telegram"
+
+
+def test_on_turn_complete_failure_is_non_fatal(caplog):
+    """A context engine observation failure must not break the user turn."""
+    from agent.conversation_loop import _notify_context_engine_turn_complete
+
+    class Engine:
+        def on_turn_complete(self, messages, usage=None, **kwargs):
+            raise RuntimeError("observer offline")
+
+    agent = _bare_agent()
+    agent.context_compressor = Engine()
+
+    with caplog.at_level(logging.WARNING):
+        _notify_context_engine_turn_complete(
+            agent,
+            [{"role": "assistant", "content": "done"}],
+            usage=None,
+            task_id="task-123",
+            turn_id="turn-456",
+            api_call_count=1,
+            completed=True,
+            interrupted=False,
+            failed=False,
+            turn_exit_reason="text_response(finish_reason=stop)",
+        )
+
+    assert "Context engine on_turn_complete hook failed" in caplog.text
+
+
+def test_prepare_request_messages_replaces_request_only():
+    """Context engines may replace provider request messages without mutating history."""
+    from agent.conversation_loop import _apply_context_engine_request_hook
+
+    captured: dict = {}
+
+    class Engine:
+        context_length = 200_000
+
+        def prepare_request_messages(self, request_messages, **kwargs):
+            captured["request_messages"] = request_messages
+            captured["kwargs"] = kwargs
+            request_messages[0]["content"] = "mutated copy"
+            return [
+                {"role": "system", "content": "prepared system"},
+                {"role": "user", "content": "prepared user"},
+            ]
+
+    agent = _bare_agent()
+    agent.context_compressor = Engine()
+    request_messages = [{"role": "user", "content": "hello"}]
+    conversation_messages = [{"role": "user", "content": "hello"}]
+
+    prepared, changed = _apply_context_engine_request_hook(
+        agent,
+        request_messages,
+        conversation_messages=conversation_messages,
+        incoming_message=conversation_messages[-1],
+        task_id="task-123",
+        turn_id="turn-456",
+        api_call_count=1,
+        budget_tokens=12345,
+    )
+
+    assert changed is True
+    assert prepared == [
+        {"role": "system", "content": "prepared system"},
+        {"role": "user", "content": "prepared user"},
+    ]
+    assert prepared is not captured["request_messages"]
+    assert request_messages == [{"role": "user", "content": "hello"}]
+    assert conversation_messages == [{"role": "user", "content": "hello"}]
+    assert captured["kwargs"]["conversation_messages"] == conversation_messages
+    assert captured["kwargs"]["conversation_messages"] is not conversation_messages
+    assert captured["kwargs"]["incoming_message"] == conversation_messages[-1]
+    assert captured["kwargs"]["incoming_message"] is not conversation_messages[-1]
+    assert captured["kwargs"]["session_id"] == "test-session"
+    assert captured["kwargs"]["task_id"] == "task-123"
+    assert captured["kwargs"]["turn_id"] == "turn-456"
+    assert captured["kwargs"]["api_call_count"] == 1
+    assert captured["kwargs"]["budget_tokens"] == 12345
+    assert captured["kwargs"]["model"] == "fake-model"
+    assert captured["kwargs"]["platform"] == "telegram"
+
+
+def test_prepare_request_messages_none_preserves_original_request():
+    """Returning None means identity/no replacement."""
+    from agent.conversation_loop import _apply_context_engine_request_hook
+
+    class Engine:
+        def prepare_request_messages(self, request_messages, **kwargs):
+            return None
+
+    agent = _bare_agent()
+    agent.context_compressor = Engine()
+    request_messages = [{"role": "user", "content": "hello"}]
+
+    prepared, changed = _apply_context_engine_request_hook(
+        agent,
+        request_messages,
+        conversation_messages=[],
+        incoming_message=None,
+        task_id="task-123",
+        turn_id="turn-456",
+        api_call_count=1,
+        budget_tokens=0,
+    )
+
+    assert changed is False
+    assert prepared is request_messages
+
+
+def test_prepare_request_messages_failure_is_non_fatal(caplog):
+    """A request-preparation failure must fail open to the original request."""
+    from agent.conversation_loop import _apply_context_engine_request_hook
+
+    class Engine:
+        def prepare_request_messages(self, request_messages, **kwargs):
+            raise RuntimeError("retrieval offline")
+
+    agent = _bare_agent()
+    agent.context_compressor = Engine()
+    request_messages = [{"role": "user", "content": "hello"}]
+
+    with caplog.at_level(logging.WARNING):
+        prepared, changed = _apply_context_engine_request_hook(
+            agent,
+            request_messages,
+            conversation_messages=[],
+            incoming_message=None,
+            task_id="task-123",
+            turn_id="turn-456",
+            api_call_count=1,
+            budget_tokens=0,
+        )
+
+    assert changed is False
+    assert prepared is request_messages
+    assert "Context engine prepare_request_messages hook failed" in caplog.text
 
 
 def test_discover_context_engines_includes_plugin_registered_engines(monkeypatch):

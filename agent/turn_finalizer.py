@@ -42,6 +42,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    last_usage=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -304,6 +305,21 @@ def finalize_turn(
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
+
+    from agent.conversation_loop import _notify_context_engine_turn_complete
+
+    _notify_context_engine_turn_complete(
+        agent,
+        messages,
+        usage=last_usage,
+        task_id=effective_task_id,
+        turn_id=turn_id,
+        api_call_count=api_call_count,
+        completed=completed,
+        interrupted=interrupted,
+        failed=failed,
+        turn_exit_reason=_turn_exit_reason,
+    )
 
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything

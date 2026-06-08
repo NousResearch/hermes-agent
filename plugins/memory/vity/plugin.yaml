@@ -1,0 +1,7 @@
+name: vity
+version: 1.0.0
+description: "Vity by Maximem AI — cross-session semantic memory with profile-based recall, memory graph, and <100ms context injection."
+pip_dependencies:
+  - maximem-vity-sdk>=0.1.0,<1   # Vity SDK (build locally or publish to PyPI)
+hooks:
+  - on_session_end

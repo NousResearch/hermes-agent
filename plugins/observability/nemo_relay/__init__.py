@@ -44,7 +44,7 @@ class _Settings:
     plugins_toml_path: str = ""
     plugins_config: dict[str, Any] | None = None
     adaptive_enabled: bool = False
-    adaptive_mode: str = "observe"
+    adaptive_mode: str = "observe_only"
     atof_enabled: bool = False
     atof_output_directory: str = ""
     atof_filename: str = "hermes-atof.jsonl"
@@ -660,11 +660,16 @@ def _enabled_component_config(
 
 def _adaptive_mode(config: dict[str, Any] | None) -> str:
     if not isinstance(config, dict):
-        return "observe"
+        return "observe_only"
+    tool_parallelism = config.get("tool_parallelism")
+    if isinstance(tool_parallelism, dict):
+        mode = tool_parallelism.get("mode")
+        if isinstance(mode, str) and mode.strip():
+            return mode.strip()
     mode = config.get("mode")
     if isinstance(mode, str) and mode.strip():
         return mode.strip()
-    return "observe"
+    return "observe_only"
 
 
 def _observability_exporter_enabled(

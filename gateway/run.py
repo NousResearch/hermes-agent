@@ -1899,8 +1899,6 @@ class GatewayRunner:
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
-        self._reasoning_stream = False
-        self._reasoning_stream_msg_id = None
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -9634,7 +9632,6 @@ class GatewayRunner:
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            self._reasoning_stream_msg_id = None
             if _show_reasoning_effective and response:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -9645,23 +9642,7 @@ class GatewayRunner:
                         display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
-                    # Stream mode: send reasoning as a temporary separate message
-                    if getattr(self, "_reasoning_stream", False):
-                        _reasoning_adapter = self.adapters.get(source.platform)
-                        if _reasoning_adapter:
-                            try:
-                                _reasoning_result = await _reasoning_adapter.send(
-                                    chat_id=source.chat_id,
-                                    content=f"💭 **Reasoning:**\n```\n{display_reasoning}\n```",
-                                    metadata=self._thread_metadata_for_source(source),
-                                )
-                                if _reasoning_result and hasattr(_reasoning_result, "message_id"):
-                                    self._reasoning_stream_msg_id = str(_reasoning_result.message_id)
-                            except Exception:
-                                pass
-                    else:
-                        # Normal mode: prepend reasoning to the response
-                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -12911,10 +12892,6 @@ class GatewayRunner:
         config_path = _hermes_home / "config.yaml"
         session_key = self._session_key_for_source(event.source)
         self._show_reasoning = self._load_show_reasoning()
-        # Load reasoning_stream from config
-        _cfg = _load_gateway_runtime_config()
-        _raw_stream = cfg_get(_cfg, "display", "reasoning_stream") or False
-        self._reasoning_stream = is_truthy_value(_raw_stream, default=False)
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source,
             session_key=session_key,
@@ -12949,14 +12926,11 @@ class GatewayRunner:
                 level = t("gateway.reasoning.level_disabled")
             else:
                 level = rc.get("effort", "medium")
-            if getattr(self, "_reasoning_stream", False):
-                display_state = t("gateway.reasoning.display_stream")
-            else:
-                display_state = (
-                    t("gateway.reasoning.display_on")
-                    if self._show_reasoning
-                    else t("gateway.reasoning.display_off")
-                )
+            display_state = (
+                t("gateway.reasoning.display_on")
+                if self._show_reasoning
+                else t("gateway.reasoning.display_off")
+            )
             has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
             scope = (
                 t("gateway.reasoning.scope_session")
@@ -12974,23 +12948,13 @@ class GatewayRunner:
         platform_key = _platform_config_key(event.source.platform)
         if args in {"show", "on"}:
             self._show_reasoning = True
-            self._reasoning_stream = False
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
-            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", False)
             return t("gateway.reasoning.display_set_on", platform=platform_key)
 
         if args in {"hide", "off"}:
             self._show_reasoning = False
-            self._reasoning_stream = False
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
-            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", False)
             return t("gateway.reasoning.display_set_off", platform=platform_key)
-        if args in {"stream",}:
-            self._show_reasoning = True
-            self._reasoning_stream = True
-            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
-            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", True)
-            return t("gateway.reasoning.display_set_stream", platform=platform_key)
 
         # Effort level change
         effort = args.strip()
@@ -19481,48 +19445,6 @@ class GatewayRunner:
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
-
-        # Reasoning stream cleanup: delete the temporary reasoning bubble
-        # after the final response lands. Only fires when stream mode was
-        # active and we managed to send a reasoning message.
-        if (
-            getattr(self, "_reasoning_stream_msg_id", None) is not None
-            and session_key
-            and isinstance(response, dict)
-            and not response.get("failed")
-        ):
-            _rs_adapter = self.adapters.get(source.platform)
-            if _rs_adapter and hasattr(_rs_adapter, "register_post_delivery_callback"):
-                _rs_msg_id = str(self._reasoning_stream_msg_id)  # type: ignore[arg-type]  # guarded by getattr check above
-                _rs_chat_id = source.chat_id
-                _rs_adapter_ref = _rs_adapter
-                _rs_loop = asyncio.get_running_loop()
-
-                def _cleanup_reasoning_bubble() -> None:
-                    async def _delete_one() -> None:
-                        try:
-                            await _rs_adapter_ref.delete_message(
-                                _rs_chat_id, _rs_msg_id
-                            )
-                        except Exception:
-                            pass
-                    try:
-                        safe_schedule_threadsafe(
-                            _delete_one(), _rs_loop,
-                            logger=logger,
-                            log_message="Reasoning bubble cleanup scheduling error",
-                        )
-                    except Exception:
-                        pass
-
-                try:
-                    _rs_adapter.register_post_delivery_callback(
-                        session_key,
-                        _cleanup_reasoning_bubble,
-                        generation=run_generation,
-                    )
-                except Exception:
-                    pass
 
         return response
 

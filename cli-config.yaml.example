@@ -1013,15 +1013,6 @@ display:
   #   false: Hide reasoning (default)
   show_reasoning: false
 
-  # Stream reasoning as a separate temporary message (gateway only).
-  # When enabled, the model's thinking is sent as its own message on platforms
-  # that support post-delivery cleanup (e.g., Telegram) and auto-deleted after
-  # the final response lands. Toggle at runtime with /reasoning stream.
-  # This is stored per-platform under display.platforms.<platform>.reasoning_stream.
-  #   true:  Send reasoning as a separate ephemeral message
-  #   false: Prepend reasoning to the response (default)
-  reasoning_stream: false
-
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.

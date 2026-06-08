@@ -420,6 +420,56 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
     return _latest_release_cache
 
 
+_commits_since_tag_cache: Optional[tuple] = None  # (count, short_sha) or () for "at tag"
+
+
+def _get_commits_since_tag() -> Optional[tuple]:
+    """Return ``(count, short_sha)`` for commits past the latest release tag.
+
+    Returns ``None`` if the tag can't be resolved, ``(0, sha)`` if HEAD is
+    exactly at the tag, or ``(N, sha)`` if HEAD is N commits past the tag.
+    Cached per-process; cheap to call repeatedly from the banner code path.
+    """
+    global _commits_since_tag_cache
+    if _commits_since_tag_cache is not None:
+        return _commits_since_tag_cache or None
+
+    release = get_latest_release_tag()
+    if not release:
+        _commits_since_tag_cache = ()
+        return None
+    tag, _url = release
+    if not tag:
+        _commits_since_tag_cache = ()
+        return None
+
+    repo_dir = _resolve_repo_dir()
+    if repo_dir is None:
+        _commits_since_tag_cache = ()
+        return None
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", f"{tag}..HEAD"],
+            capture_output=True, text=True, timeout=3, cwd=str(repo_dir),
+        )
+    except Exception:
+        _commits_since_tag_cache = ()
+        return None
+    if result.returncode != 0:
+        _commits_since_tag_cache = ()
+        return None
+    try:
+        count = int((result.stdout or "0").strip() or "0")
+    except ValueError:
+        _commits_since_tag_cache = ()
+        return None
+
+    short_sha = _git_short_hash(repo_dir, "HEAD")
+    _commits_since_tag_cache = (count, short_sha)
+    return _commits_since_tag_cache
+
+
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
     base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
@@ -431,11 +481,21 @@ def format_banner_version_label() -> str:
     local = state["local"]
     ahead = int(state.get("ahead") or 0)
 
+    # Self-locating suffix: when HEAD is past the latest release tag, annotate
+    # the version with a git-describe-style "+N.g<sha>" stamp so operators can
+    # tell release builds from N-commit-past-release builds at a glance.
+    suffix = ""
+    tag_info = _get_commits_since_tag()
+    if tag_info:
+        n, sha = tag_info
+        if n > 0 and sha:
+            suffix = f"+{n}.g{sha}"
+
     if ahead <= 0 or upstream == local:
-        return f"{base} · upstream {upstream}"
+        return f"{base}{suffix} · upstream {upstream}"
 
     carried_word = "commit" if ahead == 1 else "commits"
-    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
+    return f"{base}{suffix} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
 
 
 # =========================================================================

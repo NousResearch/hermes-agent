@@ -1579,6 +1579,17 @@ def _skill_view_with_bump(args, **kw):
             # Use the resolved skill name from the payload when present —
             # qualified forms ("plugin:skill") return with the canonical name.
             resolved = parsed.get("name") or name
+            # Canonicalize to the bare skill name so usage isn't split across
+            # keys. skill_view returns the bare frontmatter name on its main
+            # path, but echoes the input identifier ("category/skill") for
+            # sub-file and category-qualified views; the bundle and slash-command
+            # loaders always bump the bare name (skill_bundles / skill_commands),
+            # so a qualified view here would fragment use_count/last_used_at into
+            # a second key and make an active skill look stale to the Curator's
+            # lifecycle timer (#17782). Strip a leading "category/" segment;
+            # leave "plugin:skill" qualified forms (which use ':') intact.
+            if resolved and "/" in resolved and ":" not in resolved:
+                resolved = resolved.rsplit("/", 1)[-1]
             if resolved:
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

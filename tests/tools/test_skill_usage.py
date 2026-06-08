@@ -703,3 +703,57 @@ def test_usage_report_covers_all_provenance(skills_home):
     for n in rows:
         assert rows[n]["use_count"] == 1
         assert rows[n]["_persisted"] is True
+
+
+# ---------------------------------------------------------------------------
+# skill_view bump canonicalizes the usage key (split-key regression)
+# ---------------------------------------------------------------------------
+
+def test_skill_view_bump_canonicalizes_category_qualified_name(skills_home, monkeypatch):
+    """A category-qualified view ("category/skill") records usage under the bare
+    frontmatter name, not a second "category/skill" key.
+
+    skill_view returns the bare name on its main path but echoes the input
+    identifier for sub-file / category-qualified views, while the bundle and
+    slash-command loaders always bump the bare name. Without canonicalization the
+    same skill's use_count/last_used_at split across two keys, making an active
+    skill look stale to the Curator's lifecycle timer (#17782).
+    """
+    import tools.skills_tool as st
+    from tools.skill_usage import load_usage
+
+    # Simulate skill_view echoing the qualified input identifier in "name".
+    monkeypatch.setattr(
+        st, "skill_view",
+        lambda name, file_path=None, task_id=None: json.dumps(
+            {"success": True, "name": "conversation/my-skill"}
+        ),
+    )
+
+    st._skill_view_with_bump({"name": "conversation/my-skill"})
+
+    usage = load_usage()
+    assert "my-skill" in usage, "usage must be keyed by the bare skill name"
+    assert "conversation/my-skill" not in usage, "qualified key must not be created"
+    assert usage["my-skill"]["use_count"] == 1
+    assert usage["my-skill"]["view_count"] == 1
+
+
+def test_skill_view_bump_preserves_plugin_qualified_name(skills_home, monkeypatch):
+    """Plugin-qualified names ("plugin:skill") are canonical and kept intact —
+    only "/"-style category prefixes are stripped."""
+    import tools.skills_tool as st
+    from tools.skill_usage import load_usage
+
+    monkeypatch.setattr(
+        st, "skill_view",
+        lambda name, file_path=None, task_id=None: json.dumps(
+            {"success": True, "name": "myplugin:my-skill"}
+        ),
+    )
+
+    st._skill_view_with_bump({"name": "myplugin:my-skill"})
+
+    usage = load_usage()
+    assert "myplugin:my-skill" in usage
+    assert usage["myplugin:my-skill"]["use_count"] == 1

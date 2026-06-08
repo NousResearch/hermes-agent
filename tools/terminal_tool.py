@@ -744,7 +744,19 @@ def _rewrite_compound_background(command: str) -> str:
         suffix = result[amp_pos + 1 :]
         # `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
-        result = prefix + "{ " + middle + "& }" + suffix
+        #
+        # The source `&` we consumed into the group also served as the
+        # statement separator when another command followed on the SAME line
+        # (`A && B & C`). A brace group must be terminated by `;`, `&`, `|`,
+        # a newline, or `)`/`}` before the next command, so `{ B & } C` is a
+        # bash syntax error that fails the entire command. Restore a `;`
+        # separator after `}` whenever the suffix resumes with command text.
+        # Strip only spaces/tabs (not newlines) — a newline already terminates
+        # the group, and an existing separator (`;`/`&`/`|`/`)`/`}`) needs no
+        # help.
+        tail = suffix.lstrip(" \t")
+        separator = " ;" if tail and tail[0] not in ";\n&|)}" else ""
+        result = prefix + "{ " + middle + "& }" + separator + suffix
 
     return result
 

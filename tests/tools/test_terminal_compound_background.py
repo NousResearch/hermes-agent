@@ -12,6 +12,10 @@ The rewriter fixes this by wrapping the tail in a brace group —
 the current shell. No subshell fork, no wait.
 """
 
+import shutil
+import subprocess
+
+import pytest
 
 from tools.terminal_tool import _rewrite_compound_background as rewrite
 
@@ -177,3 +181,88 @@ class TestEdgeCases:
 
     def test_tabs_between_tokens(self):
         assert rewrite("A\t&&\tB\t&") == "A\t&&\t{ B\t& }"
+
+
+class TestTrailingStatementSeparator:
+    """A statement after the backgrounded compound on the SAME line.
+
+    In ``A && B & C`` the trailing ``&`` is both the background operator and
+    the separator between the compound and ``C``. The rewrite consumes that
+    ``&`` into the brace group; without restoring a separator the result is
+    ``A && { B & } C`` — a bash syntax error (a brace group must be terminated
+    by ``;``, ``&``, ``|``, a newline, or ``)``/``}`` before the next command).
+    That mangles a valid command into one that fails entirely.
+    """
+
+    def test_trailing_command_gets_separator(self):
+        assert rewrite("echo hi && sleep 5 & echo done") == (
+            "echo hi && { sleep 5 & } ; echo done"
+        )
+
+    def test_trailing_chain_gets_separator(self):
+        assert rewrite("a && b & c && d") == "a && { b & } ; c && d"
+
+    def test_redirect_then_trailing_command(self):
+        assert rewrite("echo hi && sleep 5 &>/dev/null & echo done") == (
+            "echo hi && { sleep 5 &>/dev/null & } ; echo done"
+        )
+
+    def test_existing_semicolon_separator_untouched(self):
+        # An explicit `;` already separates the group; don't add a second one.
+        assert rewrite("a && b &; c") == "a && { b & }; c"
+
+    def test_newline_separator_untouched(self):
+        # A newline already terminates the brace group — no `;` needed.
+        assert rewrite("a && b &\necho next") == "a && { b & }\necho next"
+
+    def test_pipe_after_group_untouched(self):
+        # `{ ...; } | cmd` is valid; the pipe is its own terminator.
+        assert rewrite("a && b & | cat") == "a && { b & } | cat"
+
+    def test_second_background_then_trailing(self):
+        assert rewrite("echo a && sleep 5 & echo b & echo c") == (
+            "echo a && { sleep 5 & } ; echo b & echo c"
+        )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+class TestRewriteIsValidBash:
+    """The rewrite must always produce syntactically valid bash.
+
+    This is the crux of the trailing-statement bug: a mangled command fails
+    with a confusing syntax error and neither half runs. ``bash -n`` parses
+    without executing, so it catches the corruption directly.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo hi && sleep 5 & echo done",
+            "a && b & c && d",
+            "echo hi && sleep 5 &>/dev/null & echo done",
+            "echo a && sleep 5 & echo b & echo c",
+            "A && B &",
+            "A && B &; C",
+            "A && B &\nC",
+            "cd /tmp && python3 -m http.server 0 &>/dev/null & curl localhost",
+        ],
+    )
+    def test_rewrite_parses(self, command):
+        rewritten = rewrite(command)
+        result = subprocess.run(
+            ["bash", "-n", "-c", rewritten],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"rewrite produced invalid bash: {rewritten!r}\n{result.stderr}"
+        )
+
+    def test_trailing_statement_actually_runs(self):
+        # End-to-end: the command after the backgrounded compound must run.
+        rewritten = rewrite("echo first && true & echo SECOND_RAN")
+        result = subprocess.run(
+            ["bash", "-c", rewritten], capture_output=True, text=True
+        )
+        assert result.returncode == 0
+        assert "SECOND_RAN" in result.stdout

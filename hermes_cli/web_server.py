@@ -10004,9 +10004,9 @@ def start_server(
                     f"Bundled providers reported these issues:\n"
                     + "\n".join(skip_reasons)
                     + "\n"
-                    f"\n"
-                    f"Or pass --insecure to skip the auth gate (NOT "
-                    f"recommended on untrusted networks)."
+                    "\n"
+                    "Or pass --insecure to skip the auth gate (NOT "
+                    "recommended on untrusted networks)."
                 )
             raise SystemExit(
                 f"Refusing to bind dashboard to {host} — the OAuth auth "

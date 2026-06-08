@@ -105,11 +105,11 @@ def _install_dependencies(provider_name: str) -> None:
     else:
         pip_cmd = shutil.which("pip3") or shutil.which("pip")
         if not pip_cmd:
-            print(f"  ⚠ uv not found — cannot install dependencies")
-            print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-            print(f"  Then re-run: hermes memory setup")
+            print("  ⚠ uv not found — cannot install dependencies")
+            print("  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
+            print("  Then re-run: hermes memory setup")
             return
-        print(f"  ⚠ uv not found. Falling back to standard pip...")
+        print("  ⚠ uv not found. Falling back to standard pip...")
         install_cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + missing
         manual_cmd = f"{sys.executable} -m pip install {' '.join(missing)}"
 
@@ -220,7 +220,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     config["memory"]["provider"] = name
     save_config(config)
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml\n")
+    print("  Activation saved to config.yaml\n")
 
 
 def cmd_setup(args) -> None:
@@ -352,12 +352,12 @@ def cmd_setup(args) -> None:
         _write_env_vars(env_path, env_writes)
 
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml")
+    print("  Activation saved to config.yaml")
     if provider_config:
-        print(f"  Provider config saved")
+        print("  Provider config saved")
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
@@ -403,8 +403,8 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
-    print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
+    print("\nMemory status\n" + "─" * 40)
+    print("  Built-in:  always active")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     if provider_name:
@@ -417,18 +417,18 @@ def cmd_status(args) -> None:
         providers = _get_available_providers()
         found = any(name == provider_name for name, _, _ in providers)
         if found:
-            print(f"\n  Plugin:    installed ✓")
+            print("\n  Plugin:    installed ✓")
             for pname, _, p in providers:
                 if pname == provider_name:
                     if p.is_available():
-                        print(f"  Status:    available ✓")
+                        print("  Status:    available ✓")
                     else:
-                        print(f"  Status:    not available ✗")
+                        print("  Status:    not available ✗")
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
                         # Check all fields that have env_var (both secret and non-secret)
                         required_fields = [f for f in schema if f.get("env_var")]
                         if required_fields:
-                            print(f"  Missing:")
+                            print("  Missing:")
                             for f in required_fields:
                                 env_var = f.get("env_var", "")
                                 url = f.get("url", "")
@@ -440,12 +440,12 @@ def cmd_status(args) -> None:
                                 print(line)
                     break
         else:
-            print(f"\n  Plugin:    NOT installed ✗")
+            print("\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     providers = _get_available_providers()
     if providers:
-        print(f"\n  Installed plugins:")
+        print("\n  Installed plugins:")
         for pname, desc, _ in providers:
             active = " ← active" if pname == provider_name else ""
             print(f"    • {pname}  ({desc}){active}")

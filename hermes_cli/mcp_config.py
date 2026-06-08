@@ -708,13 +708,13 @@ def cmd_mcp_login(args):
                 "OAuth client yourself and add its credentials to config.yaml:"
             )
             print()
-            print(color(f"    mcp_servers:", Colors.DIM))
+            print(color("    mcp_servers:", Colors.DIM))
             print(color(f"      {name}:", Colors.DIM))
             print(color(f"        url: {url}", Colors.DIM))
-            print(color(f"        auth: oauth", Colors.DIM))
-            print(color(f"        oauth:", Colors.DIM))
-            print(color(f"          client_id: \"<your-oauth-client-id>\"", Colors.DIM))
-            print(color(f"          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
+            print(color("        auth: oauth", Colors.DIM))
+            print(color("        oauth:", Colors.DIM))
+            print(color("          client_id: \"<your-oauth-client-id>\"", Colors.DIM))
+            print(color("          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
             print()
             _info("Then re-run `hermes mcp login " + name + "`.")
             return

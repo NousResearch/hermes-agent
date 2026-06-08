@@ -78,6 +78,78 @@ def _load_openai_cls() -> type:
     return _OPENAI_CLS_CACHE
 
 
+_keepalive_client_cache: "httpx.Client | None" = None
+_keepalive_async_client_cache: "httpx.AsyncClient | None" = None
+
+
+def _build_keepalive_http_client() -> "httpx.Client | None":
+    """Build an ``httpx.Client`` with TCP keepalive socket options.
+
+    Returns ``None`` when httpx is not available (e.g. in a minimal venv).
+    The main agent loop (``run_agent.py``) uses an identical pattern;
+    keeping a module-level singleton avoids rebuilding the client on every
+    single auxiliary call.
+    """
+    global _keepalive_client_cache
+    if _keepalive_client_cache is not None:
+        return _keepalive_client_cache
+
+    try:
+        import httpx as _httpx
+        import socket as _socket
+
+        _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+        if hasattr(_socket, "TCP_KEEPIDLE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
+        elif hasattr(_socket, "TCP_KEEPALIVE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+
+        _keepalive_client_cache = _httpx.Client(
+            transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+        )
+    except Exception:
+        _keepalive_client_cache = None
+
+    return _keepalive_client_cache
+
+
+_async_keepalive_built: bool = False
+
+
+def _build_keepalive_async_client() -> "httpx.AsyncClient | None":
+    """Build an ``httpx.AsyncClient`` with TCP keepalive socket options.
+
+    Mirrors ``_build_keepalive_http_client`` for the async path.
+    """
+    global _keepalive_async_client_cache, _async_keepalive_built
+    if _async_keepalive_built:
+        return _keepalive_async_client_cache
+
+    try:
+        import httpx as _httpx
+        import socket as _socket
+
+        _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+        if hasattr(_socket, "TCP_KEEPIDLE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
+        elif hasattr(_socket, "TCP_KEEPALIVE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+
+        _keepalive_async_client_cache = _httpx.AsyncClient(
+            transport=_httpx.AsyncHTTPTransport(socket_options=_sock_opts),
+        )
+    except Exception:
+        _keepalive_async_client_cache = None
+    finally:
+        _async_keepalive_built = True
+
+    return _keepalive_async_client_cache
+
+
 class _OpenAIProxy:
     """Module-level proxy that looks like the ``openai.OpenAI`` class.
 
@@ -88,6 +160,8 @@ class _OpenAIProxy:
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
+        if "http_client" not in kwargs:
+            kwargs["http_client"] = _build_keepalive_http_client()
         return _load_openai_cls()(*args, **kwargs)
 
     def __instancecheck__(self, obj):
@@ -3288,6 +3362,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
     }
+    if _keepalive_client_cache is not None:
+        async_kwargs["http_client"] = _build_keepalive_async_client()
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()

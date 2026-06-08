@@ -83,6 +83,59 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_malformed_host_header_is_rejected(self):
+        """Actual Host headers are authorities, not full URLs."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert not _is_accepted_host("http://localhost:9119", "127.0.0.1")
+        assert not _is_accepted_host("http://[::1", "127.0.0.1")
+        assert not _is_accepted_host("localhost:", "127.0.0.1")
+        assert not _is_accepted_host("localhost:notaport", "127.0.0.1")
+        assert not _is_accepted_host("[localhost]", "127.0.0.1")
+
+    def test_loopback_bind_accepts_public_url_host(self, monkeypatch):
+        """Trusted reverse-proxy hostnames come from dashboard.public_url.
+
+        This is the deployment shape for Tailscale Serve: the dashboard remains
+        bound to loopback, while the browser-facing Host header is the tailnet
+        DNS name. The accepted host must be exact so DNS-rebinding attacker
+        hosts still fail closed.
+        """
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL",
+            "https://dashboard.tailnet.example.ts.net/hermes",
+        )
+
+        assert _is_accepted_host("dashboard.tailnet.example.ts.net", "127.0.0.1")
+        assert _is_accepted_host("dashboard.tailnet.example.ts.net:443", "127.0.0.1")
+        assert _is_accepted_host("dashboard.tailnet.example.ts.net", "localhost")
+        assert not _is_accepted_host("evil.example", "127.0.0.1")
+        assert not _is_accepted_host(
+            "dashboard.tailnet.example.ts.net.evil.example",
+            "127.0.0.1",
+        )
+        assert not _is_accepted_host(
+            "dashboard.tailnet.example.ts.net:443.evil",
+            "127.0.0.1",
+        )
+
+    def test_loopback_bind_accepts_config_public_url_host(self, monkeypatch):
+        """dashboard.public_url works when the env override is unset."""
+        from hermes_cli.dashboard_auth import prefix
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr(
+            prefix,
+            "_load_dashboard_section",
+            lambda: {"public_url": "https://from-config.example/hermes"},
+        )
+
+        assert _is_accepted_host("from-config.example", "127.0.0.1")
+        assert not _is_accepted_host("from-config.example.evil.example", "127.0.0.1")
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware
@@ -127,6 +180,48 @@ class TestHostHeaderMiddleware:
             assert resp.status_code != 400 or (
                 "Invalid Host header" not in resp.json().get("detail", "")
             )
+        finally:
+            if hasattr(app.state, "bound_host"):
+                del app.state.bound_host
+
+    def test_public_url_host_request_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL",
+            "https://dashboard.tailnet.example.ts.net/hermes",
+        )
+        app.state.bound_host = "127.0.0.1"
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "dashboard.tailnet.example.ts.net"},
+            )
+            assert resp.status_code != 400
+            assert "Invalid Host header" not in resp.text
+        finally:
+            if hasattr(app.state, "bound_host"):
+                del app.state.bound_host
+
+    def test_public_url_host_suffix_request_rejected(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL",
+            "https://dashboard.tailnet.example.ts.net/hermes",
+        )
+        app.state.bound_host = "127.0.0.1"
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "dashboard.tailnet.example.ts.net.evil.example"},
+            )
+            assert resp.status_code == 400
+            assert "Invalid Host header" in resp.json()["detail"]
         finally:
             if hasattr(app.state, "bound_host"):
                 del app.state.bound_host
@@ -215,3 +310,53 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    def test_public_url_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL",
+            "https://dashboard.tailnet.example.ts.net/hermes",
+        )
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "dashboard.tailnet.example.ts.net",
+                "Origin": "https://dashboard.tailnet.example.ts.net",
+            },
+        ):
+            pass
+
+    def test_public_url_websocket_cross_site_origin_is_rejected(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL",
+            "https://dashboard.tailnet.example.ts.net/hermes",
+        )
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                url,
+                headers={
+                    "Host": "dashboard.tailnet.example.ts.net",
+                    "Origin": "https://evil.example",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4403

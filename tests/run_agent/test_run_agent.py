@@ -4262,7 +4262,7 @@ class TestRunConversation:
         assert "Earlier user-visible answer." in text_deltas, (
             f"prior-turn text was never streamed; callback only saw {deltas!r}"
         )
-        assert deltas[-1] is None, (
+        assert deltas and deltas[-1] is None, (
             f"stream_delta_callback was not closed with None; deltas={deltas!r}"
         )
         assert result.get("response_previewed") is True

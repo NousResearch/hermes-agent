@@ -55,6 +55,7 @@ export function useSessionStateCache({
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
+  const viewSyncTimeoutRef = useRef<number | null>(null)
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
@@ -133,6 +134,31 @@ export function useSessionStateCache({
     setTurnStartedAt(pending.state.turnStartedAt)
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
+  const clearScheduledViewSync = useCallback(() => {
+    if (typeof window === 'undefined') {
+      viewSyncRafRef.current = null
+      viewSyncTimeoutRef.current = null
+
+      return
+    }
+
+    if (viewSyncRafRef.current !== null) {
+      window.cancelAnimationFrame(viewSyncRafRef.current)
+    }
+
+    if (viewSyncTimeoutRef.current !== null) {
+      window.clearTimeout(viewSyncTimeoutRef.current)
+    }
+
+    viewSyncRafRef.current = null
+    viewSyncTimeoutRef.current = null
+  }, [])
+
+  const runScheduledViewSync = useCallback(() => {
+    clearScheduledViewSync()
+    flushPendingViewState()
+  }, [clearScheduledViewSync, flushPendingViewState])
+
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
       // Only the currently-viewed session may stage into the shared `$messages`
@@ -150,7 +176,7 @@ export function useSessionStateCache({
 
       pendingViewStateRef.current = { sessionId, state }
 
-      if (viewSyncRafRef.current !== null) {
+      if (viewSyncRafRef.current !== null || viewSyncTimeoutRef.current !== null) {
         return
       }
 
@@ -160,23 +186,39 @@ export function useSessionStateCache({
         return
       }
 
-      viewSyncRafRef.current = window.requestAnimationFrame(() => {
-        viewSyncRafRef.current = null
-        flushPendingViewState()
-      })
+      // Foreground frames keep scroll/measurement work aligned to paint, but a
+      // timer fallback ensures hidden or throttled windows still publish the
+      // newest transcript state without waiting for an unrelated later frame.
+      viewSyncTimeoutRef.current = window.setTimeout(runScheduledViewSync, 16)
+      viewSyncRafRef.current = window.requestAnimationFrame(runScheduledViewSync)
     },
-    [flushPendingViewState]
+    [flushPendingViewState, runScheduledViewSync]
   )
 
   useEffect(
     () => () => {
-      if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-        window.cancelAnimationFrame(viewSyncRafRef.current)
-        viewSyncRafRef.current = null
-      }
+      clearScheduledViewSync()
     },
-    []
+    [clearScheduledViewSync]
   )
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined
+    }
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && pendingViewStateRef.current) {
+        runScheduledViewSync()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [runScheduledViewSync])
 
   const updateSessionState = useCallback(
     (

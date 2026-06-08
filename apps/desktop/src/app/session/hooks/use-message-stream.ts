@@ -256,9 +256,30 @@ export function useMessageStream({
   )
 
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDeltas>>(new Map())
-  const flushHandleRef = useRef<number | null>(null)
+  const flushRafRef = useRef<number | null>(null)
+  const flushTimeoutRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
+
+  const clearScheduledDeltaFlush = useCallback(() => {
+    if (typeof window === 'undefined') {
+      flushRafRef.current = null
+      flushTimeoutRef.current = null
+
+      return
+    }
+
+    if (flushRafRef.current !== null && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(flushRafRef.current)
+    }
+
+    if (flushTimeoutRef.current !== null) {
+      window.clearTimeout(flushTimeoutRef.current)
+    }
+
+    flushRafRef.current = null
+    flushTimeoutRef.current = null
+  }, [])
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -294,8 +315,14 @@ export function useMessageStream({
     [mutateStream]
   )
 
+  const runScheduledDeltaFlush = useCallback(() => {
+    clearScheduledDeltaFlush()
+    lastFlushAtRef.current = performance.now()
+    flushQueuedDeltas()
+  }, [clearScheduledDeltaFlush, flushQueuedDeltas])
+
   const scheduleDeltaFlush = useCallback(() => {
-    if (flushHandleRef.current !== null) {
+    if (flushRafRef.current !== null || flushTimeoutRef.current !== null) {
       return
     }
 
@@ -314,20 +341,18 @@ export function useMessageStream({
     // to ~1/5s on big sessions (see scripts/profile-typing-lag.md).
     const sinceLast = performance.now() - lastFlushAtRef.current
 
-    const runFlush = () => {
-      flushHandleRef.current = null
-      lastFlushAtRef.current = performance.now()
-      flushQueuedDeltas()
-    }
-
     if (sinceLast >= STREAM_DELTA_FLUSH_MS && typeof window.requestAnimationFrame === 'function') {
-      flushHandleRef.current = window.requestAnimationFrame(runFlush)
+      // Hidden or de-prioritized windows can starve rAF indefinitely. Keep the
+      // paint-aligned path for foreground smoothness, but arm a timer so the
+      // stream still advances and doesn't wait for some unrelated future frame.
+      flushTimeoutRef.current = window.setTimeout(runScheduledDeltaFlush, STREAM_DELTA_FLUSH_MS)
+      flushRafRef.current = window.requestAnimationFrame(runScheduledDeltaFlush)
 
       return
     }
 
-    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast))
-  }, [flushQueuedDeltas])
+    flushTimeoutRef.current = window.setTimeout(runScheduledDeltaFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast))
+  }, [flushQueuedDeltas, runScheduledDeltaFlush])
 
   const queueDelta = useCallback(
     (sessionId: string, key: keyof QueuedStreamDeltas, delta: string) => {
@@ -345,19 +370,29 @@ export function useMessageStream({
 
   useEffect(
     () => () => {
-      if (flushHandleRef.current !== null && typeof window !== 'undefined') {
-        if (typeof window.cancelAnimationFrame === 'function') {
-          window.cancelAnimationFrame(flushHandleRef.current)
-        } else {
-          window.clearTimeout(flushHandleRef.current)
-        }
-      }
-
-      flushHandleRef.current = null
+      clearScheduledDeltaFlush()
       flushQueuedDeltas()
     },
-    [flushQueuedDeltas]
+    [clearScheduledDeltaFlush, flushQueuedDeltas]
   )
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined
+    }
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && (flushRafRef.current !== null || flushTimeoutRef.current !== null)) {
+        runScheduledDeltaFlush()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [runScheduledDeltaFlush])
 
   const appendAssistantDelta = useCallback(
     (sessionId: string, delta: string) => {

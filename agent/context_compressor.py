@@ -553,6 +553,22 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+    def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Clear per-session compaction state at a real session boundary.
+
+        ``_previous_summary`` is per-session iterative-summary state. It is
+        cleared on ``on_session_reset()`` (/new, /reset), but session *end*
+        (CLI exit, gateway expiry, session-id rotation) goes through
+        ``on_session_end()`` instead — which inherited a no-op from
+        ``ContextEngine``. Without clearing here, a cron/background session's
+        summary could survive on a reused compressor instance and leak into the
+        next live session via the ``_generate_summary()`` iterative-update path
+        (#38788). ``compress()`` already guards the leak at the point of use;
+        this is defense-in-depth that drops the stale summary the moment the
+        owning session ends.
+        """
+        self._previous_summary = None
+
     def update_model(
         self,
         model: str,

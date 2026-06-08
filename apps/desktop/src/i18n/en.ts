@@ -1470,7 +1470,9 @@ export const en: Translations = {
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      modelDetailTitle: (provider, model, effort, fastMode) =>
+        [provider, model, effort, fastMode ? 'Fast mode on' : ''].filter(Boolean).join(' · ')
     }
   },
 

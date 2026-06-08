@@ -1574,7 +1574,9 @@ export const zhHant = defineLocale({
       switchModel: '切換模型',
       openModelPicker: '開啟模型選擇器',
       modelTitle: (provider, model) => `模型 · ${provider}：${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      modelDetailTitle: (provider, model, effort, fastMode) =>
+        [provider, model, effort, fastMode ? '快速模式已開啟' : ''].filter(Boolean).join(' · ')
     }
   },
 

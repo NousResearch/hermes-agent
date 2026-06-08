@@ -1651,7 +1651,9 @@ export const zh: Translations = {
       switchModel: '切换模型',
       openModelPicker: '打开模型选择器',
       modelTitle: (provider, model) => `模型 · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      modelDetailTitle: (provider, model, effort, fastMode) =>
+        [provider, model, effort, fastMode ? '快速模式已开启' : ''].filter(Boolean).join(' · ')
     }
   },
 

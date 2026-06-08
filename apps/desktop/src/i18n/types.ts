@@ -1143,6 +1143,7 @@ export interface Translations {
       openModelPicker: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
+      modelDetailTitle: (provider: string, model: string, effort: string, fastMode: boolean) => string
     }
   }
 

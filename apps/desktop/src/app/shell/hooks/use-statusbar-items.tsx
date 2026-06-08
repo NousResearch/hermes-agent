@@ -17,7 +17,7 @@ import {
   Zap,
   ZapFilled
 } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { formatModelStatusLabel, reasoningEffortLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -373,14 +373,14 @@ export function useStatusbarItems({
               menuClassName: 'w-64',
               menuContent: modelMenuContent,
               title: currentProvider
-                ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+                ? copy.modelDetailTitle(currentProvider, currentModel || copy.modelNone, reasoningEffortLabel(currentReasoningEffort) || 'Med', currentFastMode)
                 : copy.switchModel,
               variant: 'menu' as const
             }
           : {
               onSelect: () => setModelPickerOpen(true),
               title: currentProvider
-                ? copy.providerModelTitle(currentProvider, currentModel || copy.noModel)
+                ? copy.modelDetailTitle(currentProvider, currentModel || copy.noModel, reasoningEffortLabel(currentReasoningEffort) || 'Med', currentFastMode)
                 : copy.openModelPicker,
               variant: 'action' as const
             })

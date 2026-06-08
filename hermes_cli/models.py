@@ -68,6 +68,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stepfun/step-3.7-flash",                 ""),
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    ("nvidia/nemotron-3-ultra:free",           "free"),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
@@ -264,6 +265,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "nvidia": [
         # NVIDIA flagship reasoning models
         "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3-ultra:free",
         "nvidia/nemotron-3-nano-30b-a3b",
         "nvidia/llama-3.3-nemotron-super-49b-v1.5",
         # Third-party agentic models hosted on build.nvidia.com

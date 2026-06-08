@@ -51,8 +51,15 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly wait for background MCP discovery before the first tool snapshot."""
+def wait_for_mcp_discovery(timeout: float = 5.0) -> None:
+    """Wait briefly for background MCP discovery before the first tool snapshot.
+
+    Local stdio MCP servers routinely need a couple of seconds to spawn and
+    enumerate tools.  If this default is too short, the first one-shot CLI turn
+    snapshots tools before MCP registration finishes, so the model cannot see
+    tools that appear in logs milliseconds later.  Keep the wait bounded so a
+    slow or broken server still cannot freeze startup indefinitely.
+    """
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return

@@ -13267,6 +13267,8 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                     "message_id": message_id,
                     "content": content,
                 }
+                if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
+                    kwargs["finalize"] = True
                 if _edit_accepts_metadata:
                     kwargs["metadata"] = _progress_metadata
                 return await adapter.edit_message(**kwargs)

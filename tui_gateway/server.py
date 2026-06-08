@@ -6706,6 +6706,15 @@ def _(rid, params: dict) -> dict:
     try:
         output = worker.run(cmd)
         warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        # When a model switch is blocked because the session is running
+        # (e.g. a background agent is active), _mirror_slash_side_effects
+        # returns a warning string but slash.exec still responds with _ok.
+        # The Desktop app ignores the warning, keeps its optimistic UI
+        # update, and on the next turn reverts to the old model — the
+        # user never learns the switch failed (closes #40795).
+        # Fail explicitly so the Desktop shows an error notification.
+        if _cmd_base == "model" and isinstance(warning, str) and "session busy" in warning:
+            return _err(rid, 4009, warning)
         payload = {"output": output or "(no output)"}
         if warning:
             payload["warning"] = warning

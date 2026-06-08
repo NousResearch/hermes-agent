@@ -251,10 +251,25 @@ def resolve_command(name: str) -> CommandDef | None:
 
 
 def _build_description(cmd: CommandDef) -> str:
-    """Build a CLI-facing description string including usage hint."""
+    """Build a CLI-facing description string including usage hint.
+
+    Resolves descriptions through the i18n catalog when available,
+    falling back to the English description stored in the registry.
+    """
+    desc = cmd.description
+    try:
+        from agent.i18n import t
+        translated = t(f"commands.{cmd.name}")
+        # t() falls back to English (which matches cmd.description),
+        # and returns the bare key as last resort. Only use the
+        # translation when it's a real string, not a fallback key path.
+        if translated and translated != f"commands.{cmd.name}":
+            desc = translated
+    except Exception:
+        pass  # i18n not available — use registry default
     if cmd.args_hint:
-        return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
-    return cmd.description
+        return f"{desc} (usage: /{cmd.name} {cmd.args_hint})"
+    return desc
 
 
 # Backwards-compatible flat dict: "/command" -> description

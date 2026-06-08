@@ -764,84 +764,93 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && !trimmedQuery && visibleSessionPresence.length > 0 && (
-          <SidebarPresenceSection
-            activeSessionId={activeSidebarSessionId}
-            labelMeta={String(visibleSessionPresence.length)}
-            onOpenPresenceSession={onOpenPresenceSession}
-            onToggle={() => setLiveOpen(!liveOpen)}
-            open={liveOpen}
-            records={visibleSessionPresence}
-          />
-        )}
-
-        {sidebarOpen && showSessionSections && !trimmedQuery && (
-          <SidebarSessionsSection
-            activeSessionId={activeSidebarSessionId}
-            contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
-            dndSensors={dndSensors}
-            emptyState={<SidebarPinnedEmptyState />}
-            label="Pinned"
-            onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
-            onReorder={handlePinnedDragEnd}
-            onResumeSession={onResumeSession}
-            onToggle={() => setSidebarPinsOpen(!pinsOpen)}
-            onTogglePin={unpinSession}
-            open={pinsOpen}
-            pinned
-            rootClassName="shrink-0 p-0 pb-1"
-            sessions={pinnedSessions}
-            sortable={pinnedSessions.length > 1}
-            workingSessionIdSet={workingSessionIdSet}
-          />
-        )}
-
-        {sidebarOpen && showSessionSections && !trimmedQuery && (
-          <SidebarSessionsSection
-            activeSessionId={activeSidebarSessionId}
-            contentClassName={cn(
-              'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
-              // Separate profile sections clearly in the ALL view; rows inside
-              // each group keep their own tight gap-px rhythm.
-              showAllProfiles ? 'gap-3' : 'gap-px'
+        {sidebarOpen && !trimmedQuery && (
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75">
+            {/* Live presence section */}
+            {visibleSessionPresence.length > 0 && (
+              <SidebarPresenceSection
+                activeSessionId={activeSidebarSessionId}
+                labelMeta={
+                  <span className="flex items-center gap-1">
+                    <span className="size-1.5 rounded-full bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)]" />
+                    <SidebarCount>{visibleSessionPresence.length}</SidebarCount>
+                  </span>
+                }
+                onOpenPresenceSession={(record) => void onResumeSession(record.session_id)}
+                onToggle={() => setSidebarPinsOpen(false)}
+                open={true}
+                records={visibleSessionPresence}
+              />
             )}
-            dndSensors={dndSensors}
-            emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
-            footer={
-              // Hide "load more" only when workspace-grouped (those groups page
-              // themselves). ALL-profiles now pages per-profile from each profile
-              // header; the global footer only applies to non-ALL views.
-              !showAllProfiles && !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
-                <SidebarLoadMoreRow
-                  loading={sessionsLoading}
-                  onClick={onLoadMoreSessions}
-                  step={Math.min(SIDEBAR_SESSIONS_PAGE_SIZE, remainingSessionCount)}
-                />
-              ) : null
-            }
-            forceEmptyState={showSessionSkeletons}
-            groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined}
-            headerAction={sessionsHeaderAction}
-            label="Sessions"
-            labelMeta={recentsMeta}
-            onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
-            onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
-            onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
-            onResumeSession={onResumeSession}
-            onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
-            onTogglePin={pinSession}
-            open={agentsOpen}
-            pinned={false}
-            rootClassName="min-h-0 flex-1 p-0"
-            sessions={agentSessions}
-            sortable={!showAllProfiles && agentSessions.length > 1}
-            workingSessionIdSet={workingSessionIdSet}
-          />
+
+            {/* Pinned sessions */}
+            {pinnedSessions.length > 0 && (
+              <SidebarSessionsSection
+                activeSessionId={activeSidebarSessionId}
+                contentClassName="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+                emptyState={<SidebarPinnedEmptyState />}
+                footer={null}
+                forceEmptyState={false}
+                label="Pinned"
+                labelMeta={<SidebarCount>{pinnedSessions.length}</SidebarCount>}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onToggle={() => setSidebarPinsOpen(!pinsOpen)}
+                onTogglePin={pinSession}
+                open={pinsOpen}
+                pinned={true}
+                rootClassName="min-h-0 flex-1 p-0"
+                sessions={pinnedSessions}
+                sortable={pinnedSessions.length > 1}
+                onReorder={handlePinnedDragEnd}
+                onResumeSession={onResumeSession}
+                workingSessionIdSet={workingSessionIdSet}
+                dndSensors={dndSensors}
+              />
+            )}
+
+            {/* Recents / All sessions */}
+            <SidebarSessionsSection
+              activeSessionId={activeSidebarSessionId}
+              contentClassName={cn(
+                'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
+                showAllProfiles ? 'gap-3' : 'gap-px'
+              )}
+              dndSensors={dndSensors}
+              emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
+              footer={
+                !showAllProfiles && !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
+                  <SidebarLoadMoreRow
+                    loading={sessionsLoading}
+                    onClick={onLoadMoreSessions}
+                    step={Math.min(SIDEBAR_SESSIONS_PAGE_SIZE, remainingSessionCount)}
+                  />
+                ) : null
+              }
+              forceEmptyState={showSessionSkeletons}
+              groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined}
+              headerAction={sessionsHeaderAction}
+              label="Sessions"
+              labelMeta={recentsMeta}
+              onArchiveSession={onArchiveSession}
+              onDeleteSession={onDeleteSession}
+              onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
+              onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
+              onResumeSession={onResumeSession}
+              onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
+              onTogglePin={pinSession}
+              open={agentsOpen}
+              pinned={false}
+              rootClassName="min-h-0 flex-1 p-0"
+              sessions={agentSessions}
+              sortable={!showAllProfiles && agentSessions.length > 1}
+              workingSessionIdSet={workingSessionIdSet}
+            />
+          </div>
         )}
 
         {sidebarOpen && !showSessionSections && <div className="min-h-0 flex-1" />}
+
 
         {sidebarOpen && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">

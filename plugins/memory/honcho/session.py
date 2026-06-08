@@ -831,12 +831,82 @@ class HonchoSessionManager:
 
         return "\n".join(lines).encode("utf-8")
 
+    _MEMORY_MIGRATION_MARKER = "hermes_memory_files_migrated"
+    _MEMORY_MIGRATION_SOURCE = "local_memory"
+
+    @staticmethod
+    def _metadata_dict(obj: Any) -> dict[str, Any]:
+        """Return a plain metadata dict from a Honcho SDK object."""
+        metadata = {}
+        getter = getattr(obj, "get_metadata", None)
+        if callable(getter):
+            try:
+                metadata = getter() or {}
+            except Exception as e:
+                logger.debug("Honcho metadata read failed: %s", e)
+        if not metadata:
+            metadata = getattr(obj, "metadata", {}) or {}
+        if isinstance(metadata, dict):
+            return dict(metadata)
+        return {}
+
+    def _mark_memory_files_migrated(
+        self,
+        honcho_session: Any,
+        *,
+        reason: str,
+        uploaded_files: list[str] | None = None,
+    ) -> None:
+        """Persist an idempotency marker on the Honcho session metadata."""
+        metadata = self._metadata_dict(honcho_session)
+        metadata[self._MEMORY_MIGRATION_MARKER] = True
+        metadata["hermes_memory_files_migrated_reason"] = reason
+        if uploaded_files is not None:
+            metadata["hermes_memory_files_migrated_files"] = sorted(uploaded_files)
+        setter = getattr(honcho_session, "set_metadata", None)
+        if callable(setter):
+            try:
+                setter(metadata)
+            except Exception as e:
+                logger.debug("Honcho memory migration marker write failed: %s", e)
+
+    def _memory_files_already_migrated(self, honcho_session: Any) -> bool:
+        """Return True if local MEMORY/USER/SOUL files were already uploaded."""
+        metadata = self._metadata_dict(honcho_session)
+        if metadata.get(self._MEMORY_MIGRATION_MARKER):
+            return True
+
+        # Backfill protection for deployments created before the marker existed.
+        # Honcho v3 supports metadata filters on Session.messages(); using the
+        # SDK avoids private SQL and follows the documented Messages primitive.
+        messages = getattr(honcho_session, "messages", None)
+        if callable(messages):
+            try:
+                page = messages(filters={"metadata": {"source": self._MEMORY_MIGRATION_SOURCE}})
+                items = list(getattr(page, "items", []) or [])
+                if any(
+                    (getattr(item, "metadata", {}) or {}).get("source") == self._MEMORY_MIGRATION_SOURCE
+                    for item in items
+                ):
+                    self._mark_memory_files_migrated(
+                        honcho_session,
+                        reason="existing_local_memory_messages",
+                    )
+                    return True
+            except Exception as e:
+                logger.debug("Honcho local memory migration marker probe failed: %s", e)
+
+        return False
+
     def migrate_memory_files(self, session_key: str, memory_dir: str) -> bool:
         """
-        Upload MEMORY.md and USER.md to Honcho as files.
+        Upload MEMORY.md, USER.md, and SOUL.md to Honcho as files once.
 
         Used when Honcho activates on an instance that already has locally
-        consolidated memory. Backwards compatible -- skips if files don't exist.
+        consolidated memory. The upload is idempotent because session.context()
+        can return no recent messages for an existing per-directory session,
+        which otherwise makes Hermes treat every startup as a fresh session and
+        flood Honcho with duplicate <prior_memory_file> messages.
 
         Args:
             session_key: The session key to associate files with.
@@ -861,10 +931,15 @@ class HonchoSessionManager:
             logger.warning("No Honcho session cached for '%s', skipping memory migration", session_key)
             return False
 
+        if self._memory_files_already_migrated(honcho_session):
+            logger.debug("Honcho local memory files already migrated for %s", session_key)
+            return False
+
         user_peer = self._get_or_create_peer(session.user_peer_id)
         assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
 
         uploaded = False
+        uploaded_files: list[str] = []
         files = [
             (
                 "MEMORY.md",
@@ -925,8 +1000,16 @@ class HonchoSessionManager:
                     target_kind,
                 )
                 uploaded = True
+                uploaded_files.append(filename)
             except Exception as e:
                 logger.error("Failed to upload %s to Honcho: %s", filename, e)
+
+        if uploaded:
+            self._mark_memory_files_migrated(
+                honcho_session,
+                reason="uploaded_local_memory_files",
+                uploaded_files=uploaded_files,
+            )
 
         return uploaded
 

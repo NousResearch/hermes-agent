@@ -123,6 +123,40 @@ def test_kill_process_uses_windows_tree_kill(monkeypatch):
     assert killed == []
 
 
+def test_kill_process_uses_proc_pid_as_group_when_getpgid_denied(monkeypatch):
+    """If Android denies getpgid, still signal the process group.
+
+    LocalEnvironment starts POSIX children with ``os.setsid``, so ``proc.pid``
+    is the process-group id. Permission-denied getpgid must not degrade cleanup
+    to wrapper-only ``proc.kill()``.
+    """
+    env = object.__new__(LocalEnvironment)
+    killed = []
+    proc = SimpleNamespace(
+        pid=424242,
+        poll=lambda: None,
+        kill=lambda: killed.append("proc.kill"),
+        wait=lambda timeout=None: None,
+    )
+    killpg_calls = []
+
+    def fake_getpgid(_pid):
+        raise PermissionError("denied")
+
+    def fake_killpg(pgid, sig):
+        killpg_calls.append((pgid, sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+
+    env._kill_process(proc)
+
+    assert killpg_calls == [(424242, signal.SIGTERM), (424242, 0)]
+    assert killed == []
+
+
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""
@@ -176,12 +210,32 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
                 ps = subprocess.run(
                     ["ps", "-eo", "pid,ppid,pgid,cmd"], capture_output=True, text=True,
                 )
+                rows = []
+                parent_by_pid = {}
                 for line in ps.stdout.splitlines():
-                    if "sleep 30" in line and "grep" not in line:
-                        parts = line.split()
-                        if parts and parts[0].isdigit():
-                            target_pid = int(parts[0])
-                            break
+                    parts = line.split(None, 3)
+                    if len(parts) < 4 or not parts[0].isdigit() or not parts[1].isdigit():
+                        continue
+                    pid = int(parts[0])
+                    ppid = int(parts[1])
+                    cmd = parts[3]
+                    rows.append((pid, cmd))
+                    parent_by_pid[pid] = ppid
+
+                def is_descendant_of_current_process(pid: int) -> bool:
+                    current = os.getpid()
+                    seen = set()
+                    while pid and pid not in seen:
+                        if pid == current:
+                            return True
+                        seen.add(pid)
+                        pid = parent_by_pid.get(pid, 0)
+                    return False
+
+                for pid, cmd in rows:
+                    if "sleep 30" in cmd and is_descendant_of_current_process(pid):
+                        target_pid = pid
+                        break
             if target_pid:
                 break
             time.sleep(0.1)

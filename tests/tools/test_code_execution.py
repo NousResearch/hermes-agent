@@ -17,7 +17,9 @@ import pytest
 
 import json
 import os
+import signal
 import socket
+import subprocess
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -70,6 +72,74 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
     return json.dumps({"error": f"Unknown tool in mock: {function_name}"})
 
 
+def test_execute_code_interrupt_uses_group_escalation():
+    """User interruption must not return before resistant children are killable."""
+    with (
+        patch("tools.interrupt.is_interrupted", return_value=True),
+        patch(
+            "tools.code_execution_tool._kill_process_group",
+            wraps=_kill_process_group,
+        ) as kill_group,
+    ):
+        result = json.loads(execute_code("import time; time.sleep(60)", task_id="interrupt-test"))
+
+    assert result["status"] == "interrupted"
+    assert kill_group.call_count == 1
+    assert kill_group.call_args.kwargs.get("escalate") is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups only")
+@pytest.mark.live_system_guard_bypass
+def test_kill_process_group_access_denied_kills_entire_posix_group():
+    """AccessDenied must not reduce cleanup to the direct wrapper process."""
+    import psutil
+
+    child_code = (
+        "import signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(60)"
+    )
+    parent_code = (
+        "import signal,subprocess,sys,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        "print(child.pid, flush=True); "
+        "time.sleep(60)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", parent_code],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+    try:
+        child_pid = int(proc.stdout.readline().strip())
+        with patch("psutil.Process", side_effect=psutil.AccessDenied(pid=proc.pid)):
+            _kill_process_group(proc, escalate=True)
+
+        proc.wait(timeout=2)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("AccessDenied fallback left the descendant alive")
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
 def test_kill_process_group_falls_back_when_psutil_access_denied():
     import psutil
 
@@ -83,8 +153,76 @@ def test_kill_process_group_falls_back_when_psutil_access_denied():
             self.killed = True
 
     proc = DummyProc()
-    with patch("psutil.Process", side_effect=psutil.AccessDenied(pid=proc.pid)):
+    with (
+        patch("os.killpg", side_effect=PermissionError("denied")),
+        patch("psutil.Process", side_effect=psutil.AccessDenied(pid=proc.pid)),
+    ):
         _kill_process_group(proc)
+
+    assert proc.killed
+
+
+def test_kill_process_group_falls_back_when_parent_terminate_access_denied():
+    import psutil
+
+    class DummyProc:
+        pid = 123456
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    class DummyParent:
+        def children(self, recursive=True):
+            return []
+
+        def terminate(self):
+            raise psutil.AccessDenied(pid=123456)
+
+    proc = DummyProc()
+    with (
+        patch("os.killpg", side_effect=PermissionError("denied")),
+        patch("psutil.Process", return_value=DummyParent()),
+    ):
+        _kill_process_group(proc)
+
+    assert proc.killed
+
+
+def test_kill_process_group_falls_back_when_parent_kill_access_denied():
+    import psutil
+    import subprocess
+
+    class DummyProc:
+        pid = 123456
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="dummy", timeout=timeout)
+
+    class DummyParent:
+        def children(self, recursive=True):
+            return []
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            raise psutil.AccessDenied(pid=123456)
+
+    proc = DummyProc()
+    with (
+        patch("os.killpg", side_effect=PermissionError("denied")),
+        patch("psutil.Process", return_value=DummyParent()),
+    ):
+        _kill_process_group(proc, escalate=True)
 
     assert proc.killed
 

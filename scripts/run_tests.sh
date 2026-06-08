@@ -1,4 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# Re-exec under bash from PATH. Termux lacks /usr/bin/env, but has /bin/sh
+# and bash on PATH; using a POSIX trampoline keeps the canonical runner
+# directly executable without hardcoding a phone-specific bash path.
+if [ -z "${HERMES_RUN_TESTS_BASH_REEXEC:-}" ]; then
+  export HERMES_RUN_TESTS_BASH_REEXEC=1
+  exec bash "$0" "$@"
+fi
+unset HERMES_RUN_TESTS_BASH_REEXEC
 # Canonical test runner for hermes-agent. Run this instead of calling
 # `pytest` directly to guarantee your local run matches CI behavior.
 #

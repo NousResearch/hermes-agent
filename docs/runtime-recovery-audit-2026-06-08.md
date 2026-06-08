@@ -413,6 +413,49 @@
 2. 当前未重启 gateway/WebUI；如果需要运行态加载第 4 批，必须另行确认 restart/reload。
 3. 第 4 批 checkpoint 后，可继续第 5 批 `guarded Codex workflow tools`。
 
+## 第 5 批执行记录：guarded Codex workflow tools
+
+状态：**第 5 批已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：恢复 `codex_workflow_run` / `codex_staged_implement` 工具、guard scripts、review packet、stage runner 与 toolset/config 注册。
+
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-guarded-b5-20260608132143`
+- 隔离分支：`recover/guarded-b5-20260608132143`
+- 基线 HEAD：`c585a07aa fix(terminal): restore codex exec launch policy`
+- 候选判断：
+  - `f241c4352 fix: add guarded codex workflow orchestration`
+  - `77b7541dd fix: add guarded codex workflow orchestration`
+  - 两者 `git patch-id --stable` 相同，功能 diff 等价；`77b7541dd` 是 fork/main 上 later cherry-pick，因此本批选 `77b7541dd`。
+  - `8b5118fae fix: block unguarded codex implementation launches` 暂未混入；它是更强 raw implementation block，touches `process_registry.py` / `terminal_tool.py`，建议作为 5B 或后续强化，在 core guarded tools 落稳后处理。
+- 冲突处理：
+  - `77b7541dd` 在隔离 worktree 无冲突应用。
+- 隔离 worktree touched files：
+  - `tools/codex_staged_implement_tool.py`
+  - `tools/codex_workflow_run_tool.py`
+  - `scripts/runtime/codex_impl_guard.py`
+  - `scripts/runtime/codex_review_guard.py`
+  - `scripts/runtime/codex_review_packet.py`
+  - `scripts/runtime/codex_stage_runner.py`
+  - `tests/tools/test_codex_staged_implement_tool.py`
+  - `tests/tools/test_codex_workflow_run_tool.py`
+  - `hermes_cli/tools_config.py`
+  - `toolsets.py`
+- 隔离验证命令与结果（live 复跑同组命令结果一致）：
+  - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/codex_staged_implement_tool.py tools/codex_workflow_run_tool.py scripts/runtime/codex_impl_guard.py scripts/runtime/codex_review_guard.py scripts/runtime/codex_review_packet.py scripts/runtime/codex_stage_runner.py tests/tools/test_codex_staged_implement_tool.py tests/tools/test_codex_workflow_run_tool.py hermes_cli/tools_config.py toolsets.py` ✅
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_codex_staged_implement_tool.py -q -o addopts=''` ✅ `92 passed, 1 warning in 17.13s`
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_codex_workflow_run_tool.py -q -o addopts=''` ✅ `49 passed in 3.14s`
+  - `git diff --check HEAD` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=10`，最终 `0`
+- 当前隔离 worktree 状态：保留 staged candidate diff 作为来源证据。
+- live 状态：已应用第 5 批代码并完成 focused 验证；未 push，未重启。live 仍有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+
+下一步选择：
+
+1. 本批收尾创建本地 checkpoint commit，作为第 5 批 stable point。
+2. 当前未重启 gateway/WebUI；如果需要运行态加载第 5 批，必须另行确认 restart/reload。
+3. 第 5 批落 live 后，当前会话工具 schema 仍不一定立刻暴露 `codex_staged_implement` / `codex_workflow_run`；需要 gateway/WebUI reload/restart 或新运行进程加载后才生效。
+4. 第 5 批 checkpoint 后，建议单独考虑 5B：`8b5118fae` 更强 raw implementation block。
+
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
@@ -420,5 +463,5 @@
 - [x] 第 2 批：compression / gateway recovery（2A 已落 live 并本地 commit；2B 已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 3 批：process / Codex output governance（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 4 批：terminal raw Codex policy（已落 live 并完成 focused 验证；未 push/未重启）。
-- [ ] 第 5 批：guarded Codex workflow tools。
+- [x] 第 5 批：guarded Codex workflow tools（已落 live 并完成 focused 验证；未 push/未重启）。
 - [ ] 第 6 批：browser / image / custom provider 增强。

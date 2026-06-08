@@ -402,10 +402,10 @@ def _call(tool_name, args):
             _sock = _connect()
             # Retry the request once on the fresh connection.
             try:
-                conn.sendall(request.encode())
+                _sock.sendall(request.encode())
                 buf = b""
                 while True:
-                    chunk = conn.recv(65536)
+                    chunk = _sock.recv(65536)
                     if not chunk:
                         raise RuntimeError("Agent process disconnected")
                     buf += chunk

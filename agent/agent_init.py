@@ -1354,6 +1354,27 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    # LM Studio can either be explicitly preloaded through LM Studio's
+    # management API (the historical Hermes behavior) or left to LM Studio's
+    # just-in-time / Auto-Evict chat-completions path.  Keep the default
+    # explicit for backward compatibility; users with LM Studio Auto-Evict can
+    # opt into JIT via ``model.lmstudio_load_mode: jit``.
+    agent.lmstudio_load_mode = "explicit"
+    try:
+        _model_section = _agent_cfg.get("model", {})
+        if isinstance(_model_section, dict):
+            _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()
+            if _load_mode in {"explicit", "jit"}:
+                agent.lmstudio_load_mode = _load_mode
+            else:
+                logger.warning(
+                    "Invalid model.lmstudio_load_mode=%r; expected 'explicit' or 'jit'. Using explicit.",
+                    _model_section.get("lmstudio_load_mode"),
+                )
+    except Exception:
+        agent.lmstudio_load_mode = "explicit"
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

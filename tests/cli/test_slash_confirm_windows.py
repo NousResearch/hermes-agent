@@ -288,3 +288,117 @@ class TestConfirmDestructiveSlashWindows:
 
         assert outcome["stdin_called"] is False
         assert outcome["result"] == expected
+
+
+class TestNativeWindowsNoRawInputDeadlock:
+    """Anti-regression guard exercising the REAL ``_prompt_text_input``.
+
+    Every other test here mocks ``_prompt_text_input`` away, so they only
+    assert *routing* (modal vs. stdin) — they cannot observe the actual hang
+    that #33961 was.  The historical regression was precisely that
+    ``_prompt_text_input_modal`` delegated to the *real* ``_prompt_text_input``
+    on native Windows, which on a non-main thread runs a bare ``input()`` that
+    blocks forever against prompt_toolkit's stdin ownership.
+
+    These tests let the real ``_prompt_text_input`` run with a blocking
+    ``input()`` and assert the worker thread never hangs.  They fail on the
+    pre-#33961 code (win32 → ``_prompt_text_input`` → off-main ``input()``)
+    and pass once the modal path / clean-cancel fallback is in place.
+    """
+
+    def test_win32_daemon_thread_never_blocks_on_real_input(self):
+        """A blocking input() must NOT hang the daemon thread on win32.
+
+        Drives the genuine helper chain (no mock of ``_prompt_text_input``)
+        with ``builtins.input`` patched to block forever. The confirm must
+        resolve via the app-loop modal (answered on a background thread, as
+        the real key bindings would) and never sit in ``input()``.  On the
+        pre-#33961 code the win32 early-return routed to the real
+        ``_prompt_text_input`` → off-main ``input()`` → permanent hang.
+        """
+        cli = _make_cli()
+        cli._app.loop.call_soon_threadsafe = lambda cb: cb()
+
+        def _blocking_input(prompt=""):  # stands in for "no line ever arrives"
+            time.sleep(30)
+            return "1"
+
+        outcome = {}
+        done = threading.Event()
+
+        def _worker():
+            try:
+                with patch.object(sys, "platform", "win32"), \
+                     patch("builtins.input", side_effect=_blocking_input), \
+                     patch.object(cli, "_capture_modal_input_snapshot"), \
+                     patch.object(cli, "_restore_modal_input_snapshot"), \
+                     patch.object(cli, "_invalidate"):
+                    outcome["result"] = cli._prompt_text_input_modal(
+                        title="/new",
+                        detail="destroys conversation state",
+                        choices=_SAMPLE_CHOICES,
+                        timeout=3,
+                    )
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=_worker, daemon=True)
+        answerer = threading.Thread(
+            target=_answer_modal_when_open, args=(cli, "cancel", done), daemon=True
+        )
+        answerer.start()
+        worker.start()
+        worker.join(timeout=5.0)
+        answerer.join(timeout=5.0)
+        assert not worker.is_alive(), (
+            "daemon thread hung in real input() — native-Windows confirm "
+            "deadlock regressed (#33961)"
+        )
+        # cancel → None; the point is it RETURNED rather than blocking forever.
+        assert outcome.get("result") in (None, "cancel")
+
+    def test_win32_scheduling_failure_cleanly_cancels_no_input(self):
+        """If the modal can't be marshaled onto the app loop on native Windows
+        (scheduling failure) the off-main-thread path must cancel cleanly —
+        NOT fall through to a blocking raw ``input()``.
+
+        This is the degraded branch the pre-#33961 code handled with
+        ``return self._prompt_text_input(...)`` (which deadlocks); the fix
+        returns ``None`` instead.
+        """
+        cli = _make_cli()
+
+        def _raise(cb):  # call_soon_threadsafe scheduling failure
+            raise RuntimeError("event loop closed")
+
+        cli._app.loop.call_soon_threadsafe = _raise
+
+        input_called = {"n": 0}
+
+        def _tracking_input(prompt=""):
+            input_called["n"] += 1
+            time.sleep(30)
+            return "1"
+
+        outcome = {}
+
+        def _worker():
+            with patch.object(sys, "platform", "win32"), \
+                 patch("builtins.input", side_effect=_tracking_input), \
+                 patch.object(cli, "_invalidate"):
+                outcome["result"] = cli._prompt_text_input_modal(
+                    title="/new",
+                    detail="destroys conversation state",
+                    choices=_SAMPLE_CHOICES,
+                    timeout=3,
+                )
+
+        worker = threading.Thread(target=_worker, daemon=True)
+        worker.start()
+        worker.join(timeout=5.0)
+        assert not worker.is_alive(), (
+            "daemon thread hung — win32 scheduling-failure fallback used raw "
+            "input() instead of cleanly cancelling (#33961)"
+        )
+        assert input_called["n"] == 0, "win32 off-thread fallback must not call input()"
+        assert outcome.get("result") is None

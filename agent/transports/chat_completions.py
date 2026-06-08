@@ -382,12 +382,17 @@ class ChatCompletionsTransport(ProviderTransport):
         # /v1 the only honored control is reasoning_effort: "none" -> Think=false
         # (chat_template_kwargs.enable_thinking is ignored, #10809). Hermes emitted no
         # reasoning field for local Ollama, so `reasoning_effort: none` in config was a
-        # silent no-op. Emit it when the user has explicitly disabled reasoning, which
-        # restores tool-calling and leaves every other provider untouched. (#6152)
+        # silent no-op. Emit it when the user has explicitly disabled reasoning so
+        # tool-calling is restored. Local-only by design; public / remote Ollama is
+        # covered by the explicit `model.extra_body: {reasoning_effort: none}` opt-in
+        # (forwarded via extra_body_additions), which also takes precedence here so we
+        # never send a conflicting top-level value. (#6152)
+        _user_extra = params.get("extra_body_additions")
         if (
             isinstance(reasoning_config, dict)
             and reasoning_config.get("enabled") is False
             and is_local_endpoint(params.get("base_url") or "")
+            and not (isinstance(_user_extra, dict) and "reasoning_effort" in _user_extra)
         ):
             api_kwargs["reasoning_effort"] = "none"
 

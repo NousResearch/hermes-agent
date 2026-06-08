@@ -1672,6 +1672,18 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
+    # ── User-provided extra_body for the main model ──
+    # Forwarded verbatim into the chat request body (mirrors auxiliary models).
+    # Lets users set provider-specific request fields — e.g.
+    # ``extra_body: {reasoning_effort: none}`` to disable qwen3 thinking on Ollama —
+    # regardless of whether the endpoint is local, so it also covers public / remote
+    # Ollama hosts that ``is_local_endpoint()`` cannot match. (#6152)
+    agent.model_extra_body: dict | None = None
+    if isinstance(_model_cfg, dict):
+        _meb = _model_cfg.get("extra_body")
+        if isinstance(_meb, dict) and _meb:
+            agent.model_extra_body = _meb
+
     if not agent.quiet_mode:
         if compression_enabled:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")

@@ -761,6 +761,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            extra_body_additions=getattr(agent, "model_extra_body", None),
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -808,6 +809,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        extra_body_additions=getattr(agent, "model_extra_body", None),
     )
 
 

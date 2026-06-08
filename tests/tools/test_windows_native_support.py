@@ -839,6 +839,23 @@ class TestLocalEnvironmentWindowsTempDir:
         assert "get_hermes_home" in source
         assert 'cache_dir = get_hermes_home() / "cache" / "terminal"' in source
 
+    def test_windows_cwd_is_normalized_for_bash_cd(self, monkeypatch):
+        import tools.environments.local as local_mod
+        from tools.environments.local import LocalEnvironment
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(LocalEnvironment, "init_session", lambda self: None)
+            env = LocalEnvironment(cwd=r"C:\Users\Some Name\project", timeout=10, env={})
+
+        assert env._quote_cwd_for_cd(env.cwd) == "'/c/Users/Some Name/project'"
+
+    def test_windows_unc_cwd_is_normalized_for_bash_cd(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert local_mod._windows_to_msys_path(r"\\server\share\folder") == "//server/share/folder"
+
 
 class TestLocalEnvironmentPathInjectionGated:
     """The /usr/bin PATH injection in _make_run_env must be POSIX-only."""
@@ -886,6 +903,13 @@ class TestGitBashPathNormalization:
         # returns this form; it's valid for both bash and Python, so we
         # don't need to translate).
         assert cli_mod._normalize_git_bash_path("C:/Users/foo") == "C:/Users/foo"
+
+
+class TestBaseEnvironmentCwdQuoting:
+    def test_source_routes_bootstrap_cwd_through_quote_helper(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "environments" / "base.py").read_text(encoding="utf-8")
+        assert "_quoted_cwd = self._quote_cwd_for_cd(self.cwd)" in source
 
 
 class TestWorktreeSymlinkFallback:

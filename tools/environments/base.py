@@ -359,7 +359,7 @@ class BaseEnvironment(ABC):
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        _quoted_cwd = shlex.quote(self.cwd)
+        _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
         # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  On POSIX this is a no-op (no colons /
@@ -403,9 +403,12 @@ class BaseEnvironment(ABC):
     # Command wrapping
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _quote_cwd_for_cd(cwd: str) -> str:
+    def _normalize_cwd_for_cd(self, cwd: str) -> str:
+        return cwd
+
+    def _quote_cwd_for_cd(self, cwd: str) -> str:
         """Quote a ``cd`` target while preserving ``~`` expansion."""
+        cwd = self._normalize_cwd_for_cd(cwd)
         if cwd == "~":
             return cwd
         if cwd == "~/":

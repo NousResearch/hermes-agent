@@ -29,7 +29,9 @@ def _make_bare_agent():
 def test_buffer_status_accumulates_then_flushes(capsys):
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(("status", msg))
+    agent._emit_status = lambda message, customer_facing=True: emitted.append(
+        ("status", message, customer_facing)
+    )
 
     agent._buffer_status("⏳ Retrying...")
     agent._buffer_status("⚠️ Fallback...")
@@ -37,15 +39,15 @@ def test_buffer_status_accumulates_then_flushes(capsys):
     # Nothing emitted yet — they are buffered.
     assert emitted == []
     assert agent._retry_status_buffer == [
-        ("status", "⏳ Retrying..."),
-        ("status", "⚠️ Fallback..."),
+        ("status", "⏳ Retrying...", True),
+        ("status", "⚠️ Fallback...", True),
     ]
 
     # Flush surfaces them in order through _emit_status.
     agent._flush_status_buffer()
     assert emitted == [
-        ("status", "⏳ Retrying..."),
-        ("status", "⚠️ Fallback..."),
+        ("status", "⏳ Retrying...", True),
+        ("status", "⚠️ Fallback...", True),
     ]
     # Buffer is drained.
     assert agent._retry_status_buffer == []
@@ -54,7 +56,7 @@ def test_buffer_status_accumulates_then_flushes(capsys):
 def test_clear_drops_buffered_messages_silently():
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    agent._emit_status = lambda message, customer_facing=True: emitted.append(message)
 
     agent._buffer_status("⏳ Retrying...")
     agent._buffer_status("⚠️ Fallback...")
@@ -86,7 +88,7 @@ def test_buffer_vprint_replays_via_vprint_with_log_prefix():
 def test_flush_empty_buffer_is_noop():
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    agent._emit_status = lambda message, customer_facing=True: emitted.append(message)
     agent._vprint = lambda msg, force=False, **kw: emitted.append(msg)
 
     # No buffer attribute yet — flush should be a quiet no-op.
@@ -102,7 +104,7 @@ def test_flush_empty_buffer_is_noop():
 def test_re_buffer_after_flush_works():
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    agent._emit_status = lambda message, customer_facing=True: emitted.append(message)
 
     agent._buffer_status("first")
     agent._flush_status_buffer()
@@ -118,7 +120,7 @@ def test_mixed_kinds_replay_through_correct_channels():
     statuses = []
     vprints = []
     warns = []
-    agent._emit_status = lambda msg: statuses.append(msg)
+    agent._emit_status = lambda message, customer_facing=True: statuses.append(message)
     agent._vprint = lambda msg, force=False, **kw: vprints.append((msg, force))
     agent._emit_warning = lambda msg: warns.append(msg)
 
@@ -135,12 +137,25 @@ def test_mixed_kinds_replay_through_correct_channels():
     assert warns == ["warn-1"]
 
 
+def test_buffer_status_preserves_customer_facing_flag_on_replay():
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = lambda message, customer_facing=True: emitted.append(
+        (message, customer_facing)
+    )
+
+    agent._buffer_status("🗜️ Context too large", customer_facing=False)
+    agent._flush_status_buffer()
+
+    assert emitted == [("🗜️ Context too large", False)]
+
+
 def test_flush_swallows_callback_exceptions():
     agent = _make_bare_agent()
     seen = []
 
-    def boom(msg):
-        seen.append(msg)
+    def boom(message, customer_facing=True):
+        seen.append((message, customer_facing))
         raise RuntimeError("simulated callback failure")
 
     agent._emit_status = boom
@@ -151,6 +166,6 @@ def test_flush_swallows_callback_exceptions():
     agent._flush_status_buffer()
 
     # Both messages were attempted.
-    assert seen == ["first", "second"]
+    assert seen == [("first", True), ("second", True)]
     # Buffer drained regardless of failures.
     assert agent._retry_status_buffer == []

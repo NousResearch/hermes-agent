@@ -879,22 +879,26 @@ class AIAgent:
     # (agent.log) are unaffected — every individual emission site still
     # writes to ``logger.warning`` / ``logger.info`` for diagnosis.
 
-    def _buffer_status(self, message: str) -> None:
+    def _buffer_status(self, message: str, customer_facing: bool = True) -> None:
         """Buffer a retry/fallback status message.
 
-        Stored as a (kind, text) tuple where ``kind`` is one of:
+        Stored as a tuple where ``kind`` is one of:
         - ``"status"``  -> replays via ``_emit_status``
         - ``"vprint"``  -> replays via ``_vprint(force=True)``
         - ``"warn"``    -> replays via ``_emit_warning``
         Used to defer noisy retry chatter until we know whether the
         turn ultimately recovered or failed.
+
+        ``customer_facing`` is carried through replay so internal-only retry
+        and compression banners cannot leak to WhatsApp/Slack/etc. if the
+        buffer is flushed after terminal failure.
         """
         try:
             buf = getattr(self, "_retry_status_buffer", None)
             if buf is None:
                 buf = []
                 self._retry_status_buffer = buf
-            buf.append(("status", message))
+            buf.append(("status", message, customer_facing))
         except Exception:
             # Never break the retry loop on a buffer hiccup.
             pass
@@ -932,10 +936,15 @@ class AIAgent:
             # Drain first so a callback exception doesn't double-emit.
             messages = list(buf)
             buf.clear()
-            for kind, msg in messages:
+            for item in messages:
                 try:
+                    if len(item) == 3:
+                        kind, msg, customer_facing = item
+                    else:
+                        kind, msg = item
+                        customer_facing = True
                     if kind == "status":
-                        self._emit_status(msg)
+                        self._emit_status(msg, customer_facing=customer_facing)
                     elif kind == "warn":
                         self._emit_warning(msg)
                     else:

@@ -5788,9 +5788,35 @@ class TestStreamingApiCall:
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
 
-    def test_truncated_tool_call_args_upgrade_finish_reason_to_length(self, agent):
+    def test_truncated_tool_call_args_no_finish_reason_routes_to_stub(self, agent):
+        # Stream delivers a tool call with incomplete JSON args and then ENDS
+        # with no finish_reason (the SSE just stops — no terminator, no
+        # [DONE]).  This is an upstream mid-tool-call drop, NOT an output cap.
+        # The builder must route it through the partial-stream-stub path
+        # (id=PARTIAL_STREAM_STUB_ID, tool_calls=None so it can't execute,
+        # finish_reason=length so the loop's continuation machinery fires with
+        # chunking guidance) rather than stamping a normal 'length' truncation.
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.id == PARTIAL_STREAM_STUB_ID
+        assert resp.choices[0].finish_reason == "length"
+        assert resp.choices[0].message.tool_calls is None
+        assert getattr(resp, "_dropped_tool_names", None) == ["write_file"]
+
+    def test_truncated_tool_call_args_with_length_finish_reason_upgrades(self, agent):
+        # Control: when the provider explicitly reports finish_reason='length'
+        # alongside incomplete tool args, it IS a genuine output cap.  Keep the
+        # existing behaviour — tool_calls preserved, finish_reason 'length' —
+        # so the max_tokens-boost truncation retry path still applies.
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
+            _make_chunk(finish_reason="length"),
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 

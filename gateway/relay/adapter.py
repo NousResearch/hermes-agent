@@ -82,6 +82,17 @@ class RelayAdapter(BasePlatformAdapter):
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
         await self.handle_message(event)
 
+    async def on_interrupt(self, session_key: str, chat_id: str) -> None:
+        """Bridge a connector-delivered /stop into the adapter's interrupt path.
+
+        The connector forwards a mid-turn interrupt down the socket owned by
+        the gateway instance running ``session_key``; this routes it to the
+        existing per-session interrupt mechanism (sets the
+        ``_active_sessions[session_key]`` Event and clears typing), cancelling
+        the right turn without touching sibling sessions.
+        """
+        await self.interrupt_session_activity(session_key, chat_id)
+
     async def disconnect(self) -> None:
         if self._transport is not None:
             await self._transport.disconnect()

@@ -360,3 +360,42 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
 
     assert adapter.send.await_count == 1
     assert adapter.send.await_args.args[0] == "!room123:example.org"
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_retries_without_breakaway_on_windows(
+    monkeypatch,
+):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    import hermes_cli._subprocess_compat as sc
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "executable", "python.exe")
+
+    monkeypatch.setattr(sc, "windows_detach_popen_kwargs", lambda: {"creationflags": 111})
+    monkeypatch.setattr(sc, "windows_detach_flags_without_breakaway", lambda: 222)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        if len(popen_calls) == 1:
+            raise PermissionError(5, "Access is denied")
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 2
+    first_cmd, first_kwargs = popen_calls[0]
+    second_cmd, second_kwargs = popen_calls[1]
+    assert first_cmd == second_cmd
+    assert first_cmd[0] == "python.exe"
+    assert first_cmd[1] == "-c"
+    assert first_cmd[3:] == ["321", "hermes", "gateway", "restart"]
+    assert first_kwargs["creationflags"] == 111
+    assert second_kwargs["creationflags"] == 222
+    assert second_kwargs["stdout"] is subprocess.DEVNULL
+    assert second_kwargs["stderr"] is subprocess.DEVNULL

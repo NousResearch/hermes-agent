@@ -4109,7 +4109,10 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
         # that triggered the /restart command closing its console.
         if sys.platform == "win32":
             import textwrap
-            from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+            from hermes_cli._subprocess_compat import (
+                windows_detach_flags_without_breakaway,
+                windows_detach_popen_kwargs,
+            )
 
             cmd_argv = [*hermes_cmd, "gateway", "restart"]
             watcher = textwrap.dedent(
@@ -4153,20 +4156,44 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                 _CREATE_NEW_PROCESS_GROUP = 0x00000200
                 _DETACHED_PROCESS = 0x00000008
                 _CREATE_NO_WINDOW = 0x08000000
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW,
+                _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+                _flags = (
+                    _CREATE_NEW_PROCESS_GROUP
+                    | _DETACHED_PROCESS
+                    | _CREATE_NO_WINDOW
+                    | _CREATE_BREAKAWAY_FROM_JOB
                 )
+                try:
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_flags,
+                    )
+                except OSError:
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_flags & ~_CREATE_BREAKAWAY_FROM_JOB,
+                    )
                 """
             ).strip()
-            subprocess.Popen(
-                [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **windows_detach_popen_kwargs(),
-            )
+            watcher_argv = [sys.executable, "-c", watcher, str(current_pid), *cmd_argv]
+            try:
+                subprocess.Popen(
+                    watcher_argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **windows_detach_popen_kwargs(),
+                )
+            except OSError:
+                subprocess.Popen(
+                    watcher_argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=windows_detach_flags_without_breakaway(),
+                )
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)

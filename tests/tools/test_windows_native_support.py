@@ -1005,3 +1005,32 @@ class TestGatewayDetachedWatcherWindowsFlags:
             "CreateProcess and retry without the breakaway bit, matching "
             "gateway_windows._spawn_detached's fallback pattern."
         )
+
+
+def test_gateway_run_windows_restart_watcher_outer_popen_has_access_denied_fallback():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "gateway" / "run.py").read_text(encoding="utf-8")
+    assert "windows_detach_flags_without_breakaway" in text, (
+        "_launch_detached_restart_command must import "
+        "windows_detach_flags_without_breakaway so it can retry the outer "
+        "watcher spawn when CREATE_BREAKAWAY_FROM_JOB is denied."
+    )
+
+
+def test_gateway_run_windows_restart_watcher_respawn_retries_without_breakaway():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "gateway" / "run.py").read_text(encoding="utf-8")
+    marker = 'if sys.platform == "win32":'
+    idx = text.find(marker)
+    assert idx != -1, "Windows restart watcher block not found in gateway/run.py"
+    end = text.find('        cmd = " ".join', idx)
+    assert end != -1, "Windows restart watcher block end not found"
+    block = text[idx:end]
+    assert "_CREATE_BREAKAWAY_FROM_JOB" in block, (
+        "The inlined restart watcher must name CREATE_BREAKAWAY_FROM_JOB "
+        "symbolically so the respawn escape hatch is visible in the source."
+    )
+    assert "~_CREATE_BREAKAWAY_FROM_JOB" in block, (
+        "The inlined restart watcher must retry without the breakaway bit "
+        "when CreateProcess raises access denied."
+    )

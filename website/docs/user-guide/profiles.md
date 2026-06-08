@@ -199,6 +199,115 @@ If you want this profile to work in a specific project by default, also set its 
 coder config set terminal.cwd /absolute/path/to/project
 ```
 
+## Config inheritance
+
+By default, new profiles **inherit** from the default profile's `~/.hermes/config.yaml`. This means you only specify what's different — model choice, terminal backend, toolsets, etc. — and everything else comes from the default config automatically.
+
+### How it works
+
+When you create a profile without cloning:
+
+```bash
+hermes profile create coder
+```
+
+Hermes writes a skeleton `config.yaml` with `inherit: true`:
+
+```yaml
+# This profile inherits from ~/.hermes/config.yaml (default profile).
+# Only specify overrides here — all other values come from the default.
+#
+# Example: change only the model and max_turns
+# model: anthropic/claude-opus-4
+# max_turns: 120
+#
+# To disable inheritance, set inherit: false below.
+inherit: true
+```
+
+When Hermes loads this profile's config, it:
+1. Reads `~/.hermes/config.yaml` (the default) as the base
+2. Reads the profile's `config.yaml` for overrides
+3. Deep-merges them, with profile values winning on conflicts
+
+Control inheritance with the `inherit` YAML key:
+
+```yaml
+inherit: true    # enable inheritance from default config
+inherit: false   # disable inheritance (standalone mode)
+```
+
+### Creating inherited vs standalone profiles
+
+```bash
+# Inherited (default) — only overrides needed
+hermes profile create coder
+
+# Standalone — must specify everything
+hermes profile create sandbox --no-inherit
+```
+
+Cloned profiles (`--clone`, `--clone-all`, `--clone-from`) always use the cloned config as-is — no inheritance skeleton is written.
+
+### What gets inherited
+
+**Everything** from the default config is available unless overridden:
+- Model, provider, API mode
+- Terminal backend, timeout, Docker settings
+- Compression, memory, delegation settings
+- Provider definitions, fallback chains
+- All other `config.yaml` keys
+
+Only keys that differ from the parent appear in the profile's `config.yaml`. This keeps inherited profiles minimal and makes it obvious what's different.
+
+### Saving and viewing
+
+When you run `hermes config set` in an inherited profile, only the changed keys are written to disk — the inheritance pattern is preserved automatically.
+
+```bash
+coder config set model anthropic/claude-opus-4
+# Only `model: anthropic/claude-opus-4` is added to the profile's config.yaml
+# All other values still come from ~/.hermes/config.yaml
+```
+
+`hermes config` (or `coder config`) shows inheritance status:
+
+```
+◆ Profile
+  Active:       coder
+  Inherits:     /home/joe/.hermes/config.yaml
+
+◆ Model
+  Model:        anthropic/claude-opus-4 (override)
+  Max turns:    90 (inherited)
+```
+
+Values marked `(override)` are set explicitly in this profile. Values marked `(inherited)` come from the default config. Standalone profiles (no inheritance) show no tags.
+
+### Opting out
+
+To convert an inherited profile to standalone, edit the profile's `config.yaml` and change `inherit: true` to `inherit: false`:
+
+```bash
+coder config edit
+# Change `inherit: true` to `inherit: false`, then save
+```
+
+Or set it via CLI:
+
+```bash
+coder config set inherit false
+```
+
+The profile will then use its own full config with no inheritance from the default.
+
+### Use cases
+
+- **Different model, same everything else:** Create an inherited profile and override only `model`
+- **Different terminal backend:** Override only `terminal.backend`
+- **Testing/experimentation:** Inherited profile so you can change one thing without touching your main config
+- **Shared team defaults:** Set up `~/.hermes/config.yaml` with team-wide defaults, then each user creates inherited profiles for personal overrides
+
 ## Updating
 
 `hermes update` pulls code once (shared) and syncs new bundled skills to **all** profiles automatically:

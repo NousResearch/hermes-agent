@@ -75,6 +75,34 @@ _CLONE_ALL_STRIP: list[str] = [
     "processes.json",
 ]
 
+# Skeleton config.yaml written for a fresh profile that inherits from the
+# default profile (~/.hermes/config.yaml). Contains only the inherit directive
+# plus guidance; the user adds overrides as needed.
+INHERITANCE_SKELETON_YAML = """\
+# This profile inherits from ~/.hermes/config.yaml (the default profile).
+# Only specify overrides below — every other value is read from the default.
+#
+# Example: override just the model and max turns
+#   model: anthropic/claude-opus-4
+#   agent:
+#     max_turns: 120
+#
+# To make this a standalone profile, set `inherit: false` and add full config.
+inherit: true
+"""
+
+# Skeleton config.yaml written for a fresh standalone profile (no inheritance).
+FULL_CONFIG_SKELETON_YAML = """\
+# Standalone profile configuration (does NOT inherit from the default profile).
+# Specify any values you want to override the built-in defaults.
+#
+#   model: anthropic/claude-sonnet-4
+#   agent:
+#     max_turns: 90
+#   toolsets: [terminal, file, web, search]
+inherit: false
+"""
+
 # Infrastructure artifacts excluded from --clone-all when the source is the
 # default profile (``~/.hermes``).  Named profiles never contain these
 # directories at root, so the exclusion is gated to avoid silently dropping
@@ -723,6 +751,7 @@ def create_profile(
     no_alias: bool = False,
     no_skills: bool = False,
     description: Optional[str] = None,
+    inherits: bool = True,
 ) -> Path:
     """Create a new profile directory.
 
@@ -745,6 +774,12 @@ def create_profile(
         a marker file so ``hermes update`` skips re-seeding this profile's
         skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
         explicitly copy skills from the source).
+    inherits:
+        If True (default), a fresh (non-cloned) profile gets a skeleton
+        ``config.yaml`` with ``inherit: true`` so it inherits all config from
+        the default profile and only stores overrides. If False, the skeleton
+        is written with ``inherit: false`` (standalone). Ignored when cloning,
+        since cloned profiles copy the source's config verbatim.
 
     Returns
     -------
@@ -842,6 +877,18 @@ def create_profile(
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
         except Exception:
             pass  # best-effort — don't fail profile creation over this
+
+    # Seed a skeleton config.yaml for fresh (non-cloned) profiles only. Cloning
+    # paths copy (or intentionally skip) the source's config.yaml, so we must
+    # NOT seed a skeleton there — that would fabricate a config the clone never
+    # had. ``source_dir`` is set whenever any clone flag was passed.
+    config_yaml_path = profile_dir / "config.yaml"
+    if source_dir is None and not config_yaml_path.exists():
+        try:
+            skeleton = INHERITANCE_SKELETON_YAML if inherits else FULL_CONFIG_SKELETON_YAML
+            config_yaml_path.write_text(skeleton, encoding="utf-8")
+        except OSError:
+            pass  # best-effort — config still resolves from defaults
 
     # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
     # all-profile sync loop both skip this profile for bundled-skill seeding.

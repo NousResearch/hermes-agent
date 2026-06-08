@@ -148,6 +148,16 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
+def get_default_config_path() -> Path:
+    """Return the default profile's config.yaml path.
+
+    Used for inheritance resolution when loading profile configs. This is
+    always the root ``config.yaml`` (the default profile), regardless of
+    which profile is currently active.
+    """
+    return get_default_hermes_root() / "config.yaml"
+
+
 def _get_packaged_data_dir(name: str) -> Path | None:
     """Return an installed data-files directory if one exists.
 

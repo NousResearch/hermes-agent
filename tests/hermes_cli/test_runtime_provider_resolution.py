@@ -1313,12 +1313,11 @@ def test_opencode_zen_claude_defaults_to_messages(monkeypatch):
 
     assert resolved["provider"] == "opencode-zen"
     assert resolved["api_mode"] == "anthropic_messages"
-    # Trailing /v1 stripped for anthropic_messages mode — the Anthropic SDK
-    # appends its own /v1/messages to the base_url.
+    # Anthropic SDK appends /v1/messages, so runtime base_url is stripped.
     assert resolved["base_url"] == "https://opencode.ai/zen"
 
 
-def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
+def test_opencode_go_minimax_defaults_to_chat_completions(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "minimax-m2.5"})
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
@@ -1327,9 +1326,9 @@ def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="opencode-go")
 
     assert resolved["provider"] == "opencode-go"
-    assert resolved["api_mode"] == "anthropic_messages"
-    # Trailing /v1 stripped — Anthropic SDK appends /v1/messages itself.
-    assert resolved["base_url"] == "https://opencode.ai/zen/go"
+    assert resolved["api_mode"] == "chat_completions"
+    # OCG OpenAI-compatible endpoints require /v1.
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):
@@ -1352,7 +1351,7 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     leak across /model switches (a stale ``anthropic_messages`` on a
     chat_completions target would strip /v1 from base_url and 404).
 
-    minimax-m2.5 is an Anthropic-routed model on opencode-go, so even when
+    qwen3.7-max is an Anthropic-routed model on opencode-go, so even when
     the config claims ``api_mode: chat_completions`` the runtime must pick
     ``anthropic_messages`` — the model dictates the mode, not the stale
     persisted setting.
@@ -1363,7 +1362,7 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
         "_get_model_config",
         lambda: {
             "provider": "opencode-go",
-            "default": "minimax-m2.5",
+            "default": "qwen3.7-max",
             "api_mode": "chat_completions",
         },
     )

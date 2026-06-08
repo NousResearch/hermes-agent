@@ -1065,21 +1065,23 @@ def switch_model(
     if not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
 
+    if isinstance(base_url, str):
+        base_url = base_url.rstrip("/")
+
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    # Mirrors the same logic in hermes_cli.runtime_provider.resolve_runtime_provider;
-    # without it, /model switches into an anthropic_messages-routed OpenCode
-    # model (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
-    # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
+    # Anthropic SDK prepends its own /v1/messages to the base_url. Strip the
+    # trailing /v1 only when BOTH conditions are true:
+    #   (a) the provider is an OpenCode profile, AND
+    #   (b) the resolved api_mode is anthropic_messages.
+    # If only one is true (e.g. OCG chat-completions, or some other provider
+    # that happens to use anthropic_messages), keep /v1 intact — OCG routes
+    # under /v1/chat/completions, and stripping it would 404.
     if (
-        api_mode == "anthropic_messages"
-        and target_provider in {"opencode-zen", "opencode-go"}
+        target_provider and str(target_provider).lower() in {"opencode-zen", "opencode-go"}
+        and api_mode == "anthropic_messages"
         and isinstance(base_url, str)
-        and base_url
     ):
-        base_url = re.sub(r"/v1/?$", "", base_url)
+        base_url = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model)

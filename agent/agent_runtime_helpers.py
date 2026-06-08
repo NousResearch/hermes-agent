@@ -1371,18 +1371,20 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url)
 
-    # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
-    # /v1 into the anthropic_messages client, which would cause the SDK to
-    # hit /v1/v1/messages.  `model_switch.switch_model()` already strips
-    # this, but we guard here so any direct callers (future code paths,
-    # tests) can't reintroduce the double-/v1 404 bug.
+    # Defense-in-depth: OpenCode base URLs end with /v1 for OpenAI-compatible
+    # models, but the Anthropic SDK prepends its own /v1/messages to base_url.
+    # Strip the trailing /v1 only when BOTH conditions are true:
+    #   (a) the provider is an OpenCode profile, AND
+    #   (b) the resolved api_mode is anthropic_messages.
+    # If only one is true (e.g. OCG chat-completions, or some other provider
+    # that happens to use anthropic_messages), keep /v1 intact — OCG routes
+    # under /v1/chat/completions, and stripping it would 404.
     if (
-        api_mode == "anthropic_messages"
-        and new_provider in {"opencode-zen", "opencode-go"}
+        new_provider in {"opencode-zen", "opencode-go"}
+        and api_mode == "anthropic_messages"
         and isinstance(base_url, str)
-        and base_url
     ):
-        base_url = re.sub(r"/v1/?$", "", base_url)
+        base_url = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
 
     old_model = agent.model
     old_provider = agent.provider

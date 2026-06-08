@@ -74,11 +74,11 @@ def _run_opencode_switch(
         )
 
 
-class TestOpenCodeGoV1Strip:
-    """OpenCode Go: ``/model minimax-*`` must strip /v1."""
+class TestOpenCodeGoV1Preserve:
+    """OpenCode Go keeps /v1 for both Chat Completions and Anthropic Messages."""
 
-    def test_switch_to_minimax_m27_strips_v1(self):
-        """GLM-5 → MiniMax-M2.7: base_url loses trailing /v1."""
+    def test_switch_to_minimax_m27_keeps_v1(self):
+        """GLM-5 → MiniMax-M2.7: base_url keeps trailing /v1."""
         result = _run_opencode_switch(
             raw_input="minimax-m2.7",
             current_provider="opencode-go",
@@ -87,12 +87,12 @@ class TestOpenCodeGoV1Strip:
         )
 
         assert result.success, f"switch_model failed: {result.error_message}"
-        assert result.api_mode == "anthropic_messages"
-        assert result.base_url == "https://opencode.ai/zen/go", (
-            f"Expected /v1 stripped for anthropic_messages; got {result.base_url}"
+        assert result.api_mode == "chat_completions"
+        assert result.base_url == "https://opencode.ai/zen/go/v1", (
+            f"Expected /v1 preserved for OCG anthropic_messages; got {result.base_url}"
         )
 
-    def test_switch_to_minimax_m25_strips_v1(self):
+    def test_switch_to_minimax_m25_keeps_v1(self):
         """Same behavior for M2.5."""
         result = _run_opencode_switch(
             raw_input="minimax-m2.5",
@@ -102,15 +102,15 @@ class TestOpenCodeGoV1Strip:
         )
 
         assert result.success
-        assert result.api_mode == "anthropic_messages"
-        assert result.base_url == "https://opencode.ai/zen/go"
+        assert result.api_mode == "chat_completions"
+        assert result.base_url == "https://opencode.ai/zen/go/v1"
 
     def test_switch_to_glm_leaves_v1_intact(self):
         """OpenAI-compatible models (GLM, Kimi, MiMo) keep /v1."""
         result = _run_opencode_switch(
             raw_input="glm-5.1",
             current_provider="opencode-go",
-            current_model="minimax-m2.7",
+            current_model="qwen3.7-max",
             current_base_url="https://opencode.ai/zen/go",  # stripped from previous Anthropic model
             runtime_base_url="https://opencode.ai/zen/go/v1",
         )
@@ -133,8 +133,8 @@ class TestOpenCodeGoV1Strip:
         assert result.api_mode == "chat_completions"
         assert result.base_url == "https://opencode.ai/zen/go/v1"
 
-    def test_trailing_slash_also_stripped(self):
-        """``/v1/`` with trailing slash is also stripped cleanly."""
+    def test_trailing_slash_normalized_to_v1(self):
+        """``/v1/`` with trailing slash is normalized cleanly."""
         result = _run_opencode_switch(
             raw_input="minimax-m2.7",
             current_provider="opencode-go",
@@ -143,15 +143,15 @@ class TestOpenCodeGoV1Strip:
         )
 
         assert result.success
-        assert result.api_mode == "anthropic_messages"
-        assert result.base_url == "https://opencode.ai/zen/go"
+        assert result.api_mode == "chat_completions"
+        assert result.base_url == "https://opencode.ai/zen/go/v1"
 
 
-class TestOpenCodeZenV1Strip:
-    """OpenCode Zen: ``/model claude-*`` must strip /v1."""
+class TestOpenCodeZenV1Preserve:
+    """OpenCode Zen keeps /v1 for Anthropic Messages too."""
 
-    def test_switch_to_claude_sonnet_strips_v1(self):
-        """Gemini → Claude on opencode-zen: /v1 stripped."""
+    def test_switch_to_claude_sonnet_keeps_v1(self):
+        """Gemini → Claude on opencode-zen: /v1 preserved."""
         result = _run_opencode_switch(
             raw_input="claude-sonnet-4-6",
             current_provider="opencode-zen",
@@ -193,10 +193,10 @@ class TestOpenCodeZenV1Strip:
 
 
 class TestAgentSwitchModelDefenseInDepth:
-    """run_agent.AIAgent.switch_model() also strips /v1 as defense-in-depth."""
+    """run_agent.AIAgent.switch_model() preserves OCG /v1 as defense-in-depth."""
 
-    def test_agent_switch_model_strips_v1_for_anthropic_messages(self):
-        """Even if a caller hands in a /v1 URL, the agent strips it."""
+    def test_agent_switch_model_keeps_v1_for_opencode_anthropic_messages(self):
+        """OCG Anthropic-compatible routing must keep /v1."""
         from run_agent import AIAgent
 
         # Build a bare agent instance without running __init__; we only want
@@ -229,7 +229,7 @@ class TestAgentSwitchModelDefenseInDepth:
         def _raise_after_capture(api_key, base_url, **kwargs):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
-            raise _Sentinel("strip verified")
+            raise _Sentinel("base_url verified")
 
         with patch(
             "agent.anthropic_adapter.build_anthropic_client",
@@ -239,7 +239,7 @@ class TestAgentSwitchModelDefenseInDepth:
         ):
             with pytest.raises(_Sentinel):
                 agent.switch_model(
-                    new_model="minimax-m2.7",
+                    new_model="qwen3.7-max",
                     new_provider="opencode-go",
                     api_key="sk-opencode-fake",
                     base_url="https://opencode.ai/zen/go/v1",
@@ -247,7 +247,7 @@ class TestAgentSwitchModelDefenseInDepth:
                 )
 
         assert captured.get("base_url") == "https://opencode.ai/zen/go", (
-            f"agent.switch_model did not strip /v1; passed {captured.get('base_url')} "
+            f"agent.switch_model lost /v1; passed {captured.get('base_url')} "
             "to build_anthropic_client"
         )
 
@@ -306,7 +306,7 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
         )
         assert result.api_mode == "chat_completions"
 
-    def test_go_glm_switch_keeps_v1_despite_minimax_config_default(self, tmp_path, monkeypatch):
+    def test_go_glm_switch_keeps_v1_despite_qwen_config_default(self, tmp_path, monkeypatch):
         import yaml
         import importlib
 
@@ -314,7 +314,7 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
         monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
         monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
-            "model": {"provider": "opencode-go", "default": "minimax-m2.7"},
+            "model": {"provider": "opencode-go", "default": "qwen3.7-max"},
         }))
 
         import hermes_cli.config as _cfg_mod
@@ -327,8 +327,8 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
         result = _ms_mod.switch_model(
             raw_input="glm-5.1",
             current_provider="opencode-go",
-            current_model="minimax-m2.7",
-            current_base_url="https://opencode.ai/zen/go",  # stripped from prior minimax turn
+            current_model="qwen3.7-max",
+            current_base_url="https://opencode.ai/zen/go",  # stale/stripped from prior turn
             current_api_key="test-key",
             is_global=False,
             explicit_provider="opencode-go",
@@ -338,11 +338,10 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
         assert result.base_url == "https://opencode.ai/zen/go/v1"
         assert result.api_mode == "chat_completions"
 
-    def test_claude_switch_still_strips_v1_with_kimi_config_default(self, tmp_path, monkeypatch):
+    def test_claude_switch_keeps_v1_with_kimi_config_default(self, tmp_path, monkeypatch):
         """Inverse case: config default is chat_completions, switch TO anthropic_messages.
 
-        Guards that the target_model plumbing does not break the original
-        strip-for-anthropic behavior.
+        Guards that target_model plumbing preserves OCG /v1 while changing api_mode.
         """
         import yaml
         import importlib

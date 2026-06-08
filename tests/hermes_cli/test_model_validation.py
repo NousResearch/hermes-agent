@@ -215,6 +215,25 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
+    def test_opencode_go_static_catalog_matches_live_snapshot(self):
+        ids = provider_model_ids("opencode-go")
+        for model in [
+            "minimax-m3",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "kimi-k2.6",
+            "glm-5.1",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "mimo-v2.5-pro",
+            "mimo-v2.5",
+            "hy3-preview",
+        ]:
+            assert model in ids
+        # Live OCG still exposes mimo-v2-omni, but benchmark/router policy
+        # treats it as deprecated and excludes it from default/latest scopes.
+        assert "mimo-v2-omni" in ids
+
 
 # -- fetch_api_models --------------------------------------------------------
 
@@ -380,10 +399,15 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
-        assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "minimax-m3") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "qwen3.7-plus") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "deepseek-v4-pro") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "deepseek-v4-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "hy3-preview") == "chat_completions"
 
 
 class TestAzureFoundryModelApiMode:

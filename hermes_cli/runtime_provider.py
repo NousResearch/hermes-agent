@@ -400,11 +400,20 @@ def _resolve_runtime_from_pool_entry(
                 api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
-    # trailing /v1 so the SDK constructs the correct path (e.g.
-    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-        base_url = re.sub(r"/v1/?$", "", base_url)
+    # Anthropic SDK prepends its own /v1/messages to the base_url. Strip the
+    # trailing /v1 only when BOTH conditions are true:
+    #   (a) the provider is an OpenCode profile, AND
+    #   (b) the resolved api_mode is anthropic_messages.
+    # If only one is true (e.g. OCG chat-completions, or some other provider
+    # that happens to use anthropic_messages), keep /v1 intact — OCG routes
+    # under /v1/chat/completions, and stripping it would 404.
+    if (
+        provider and str(provider).lower() in {"opencode-zen", "opencode-go"}
+        and api_mode == "anthropic_messages"
+        and isinstance(base_url, str)
+    ):
+        base_url = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
+
 
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
@@ -1667,9 +1676,7 @@ def resolve_runtime_provider(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
-        # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
-        if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-            base_url = re.sub(r"/v1/?$", "", base_url)
+        # OpenCode Anthropic-compatible endpoints require /v1 too; preserve it.
         return {
             "provider": provider,
             "api_mode": api_mode,

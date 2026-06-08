@@ -398,20 +398,29 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3-coder",
         "big-pickle",
     ],
+    # OCG Go model inventory, verified against the live /v1/models endpoint
+    # on 2026-06-07. OCG flips their catalog frequently; refresh this block
+    # when models change upstream. Keep the most-used models at the top.
+    # - mimo-v2-omni is deprecated by policy; it is intentionally NOT in this
+    #   list. benchmark/router code still references it for legacy callers.
     "opencode-go": [
+        "minimax-m3",
+        "qwen3.7-max",
+        "qwen3.7-plus",
         "kimi-k2.6",
         "kimi-k2.5",
         "glm-5.1",
         "glm-5",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
         "mimo-v2.5-pro",
         "mimo-v2.5",
         "mimo-v2-pro",
-        "mimo-v2-omni",
         "minimax-m2.7",
         "minimax-m2.5",
-        "qwen3.7-max",
         "qwen3.6-plus",
         "qwen3.5-plus",
+        "hy3-preview",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
@@ -3123,8 +3132,9 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
-    - MiniMax models on Go use ``/v1/messages``
-    - GLM / Kimi on Go use ``/v1/chat/completions``
+    - Qwen 3.7 Max on Go uses ``/v1/messages``
+    - GLM / Kimi / MiniMax / DeepSeek / MiMo / Hy3 on Go use
+      ``/v1/chat/completions``
     - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
       ``/v1/chat/completions``
 
@@ -3136,8 +3146,14 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
         return "chat_completions"
 
     if provider == "opencode-go":
-        if normalized.startswith("minimax-"):
-            return "anthropic_messages"
+        # Verified against live OCG 2026-06-07:
+        # - Qwen 3.7 Max is Anthropic Messages under /v1/messages.
+        # - Qwen 3.7 Plus also works in Anthropic Messages, but chat-completions
+        #   is supported and keeps it consistent with the rest of OCG Go.
+        # - MiniMax M3/M2.x, Kimi, GLM, DeepSeek, MiMo, and Hy3 are OpenAI
+        #   chat-completions under /v1/chat/completions.
+        # Keep this in sync with live /v1/messages coverage; if OCG exposes
+        # more Anthropic-routed models, extend the prefix list below.
         if normalized.startswith("qwen3.7-max"):
             return "anthropic_messages"
         return "chat_completions"

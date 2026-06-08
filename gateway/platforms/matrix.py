@@ -420,6 +420,8 @@ class _CryptoStateStore:
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
+    supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
+
     # Threshold for detecting Matrix client-side message splits.
     # When a chunk is near the ~4000-char practical limit, a continuation
     # is almost certain.

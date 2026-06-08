@@ -573,6 +573,7 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
+    supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300

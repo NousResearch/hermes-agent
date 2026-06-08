@@ -7,6 +7,13 @@ declare global {
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
+      // and drop it if a remote one has gone unreachable, so the next
+      // getConnection() rebuilds a reachable descriptor instead of the renderer
+      // re-dialing a dead remote forever. No-op for local backends (they
+      // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
+      // remote cache was dropped.
+      revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>

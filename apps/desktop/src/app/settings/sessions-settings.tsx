@@ -1,13 +1,15 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
+import { deleteSession, listAllProfileSessions, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -35,6 +37,7 @@ function workspaceLabel(cwd: null | string | undefined): string {
 export function SessionsSettings() {
   const { t } = useI18n()
   const s = t.settings.sessions
+  const profile = normalizeProfileKey(useStore($activeGatewayProfile))
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -43,14 +46,20 @@ export function SessionsSettings() {
     setLoading(true)
 
     try {
-      const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
+      // Scope to the active profile via the cross-profile list, which tags each
+      // row with its owning `profile`. The plain listSessions() reads only the
+      // primary backend's state.db and leaves `profile` unset, so a chat
+      // archived under a named/remote profile never appeared here, and the
+      // unarchive/delete actions below — which forward session.profile to route
+      // the mutation — silently operated on the default profile instead.
+      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only', 'recent', profile)
       setLocalSessions(result.sessions)
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [profile, s.failedLoad])
 
   useEffect(() => {
     void load()

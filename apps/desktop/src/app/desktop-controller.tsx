@@ -11,9 +11,9 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, listSessions } from '../hermes'
+import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
-import { toggleCommandPalette } from '../store/command-palette'
+import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -25,9 +25,18 @@ import {
   pinSession,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
+  SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileScope,
+  ALL_PROFILES,
+  normalizeProfileKey,
+  refreshActiveProfile
+} from '../store/profile'
 import {
   $activeSessionId,
   $currentCwd,
@@ -36,15 +45,18 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  CRON_SECTION_LIMIT,
   mergeSessionPage,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
+  setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
   setSessionsTotal
@@ -63,12 +75,13 @@ import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { useKeybinds } from './hooks/use-keybinds'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -98,6 +111,41 @@ const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).P
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
 
+// Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
+// Cron sessions are written by a background scheduler tick (the desktop
+// backend), so no user action signals the UI. Poll the bounded cron list on
+// this cadence while the app is open + visible so new runs surface promptly
+// instead of waiting for the next user-triggered refreshSessions().
+const CRON_POLL_INTERVAL_MS = 30_000
+
+// Cheap signature compare so the poll only swaps the atom (and re-renders the
+// sidebar) when the visible cron rows actually changed.
+function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
+  if (a.length !== b.length) {return false}
+
+  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+}
+
+// Rows a session refresh must preserve even if the aggregator omits them:
+// in-flight first turns (message_count 0), pinned rows aged off the page, and
+// the actively-viewed chat (its "working" flag clears a beat before the
+// aggregator sees the persisted row). Pass `scope` to only keep the active row
+// when it belongs to the profile being paged.
+function sessionsToKeep(scope?: string): Set<string> {
+  const keep = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
+  const active = $selectedStoredSessionId.get()
+
+  if (active) {
+    const session = scope ? $sessions.get().find(s => s.id === active) : null
+
+    if (!scope || !session || normalizeProfileKey(session.profile) === scope) {
+      keep.add(active)
+    }
+  }
+
+  return keep
+}
+
 export function DesktopController() {
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -116,6 +164,7 @@ export function DesktopController() {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
+  const profileScope = useStore($profileScope)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -201,30 +250,35 @@ export function DesktopController() {
     }
   }, [])
 
-  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K → command
-  // palette (the composer's "drain next queued" moved to Cmd+Shift+K), Cmd+. →
-  // command center (sessions / system / usage).
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
-        return
-      }
+  // Cron-job sessions as their own list (latest N). Independent of the recents
+  // page so the two never compete for slots. Cheap + bounded. Kept (even though
+  // the sidebar now lists cron *jobs*, not run sessions) so a pinned cron run
+  // still resolves into the Pinned section via sessionByAnyId.
+  const refreshCronSessions = useCallback(async () => {
+    try {
+      const { sessions } = await listAllProfileSessions(CRON_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+        source: 'cron'
+      })
 
-      const key = event.key.toLowerCase()
-
-      if (key === 'k') {
-        event.preventDefault()
-        toggleCommandPalette()
-      } else if (key === '.') {
-        event.preventDefault()
-        toggleCommandCenter()
-      }
+      setCronSessions(prev => (sameCronSignature(prev, sessions) ? prev : sessions))
+    } catch {
+      // Non-fatal: the cron section just stays empty/stale.
     }
+  }, [])
 
-    window.addEventListener('keydown', onKeyDown)
+  // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
+  // synchronously (agent tool call or the cron UI), so refreshing here right
+  // after an agent turn surfaces a new job immediately; the interval poll keeps
+  // next-run/state fresh as the scheduler advances them.
+  const refreshCronJobs = useCallback(async () => {
+    try {
+      const jobs = await getCronJobs()
 
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [toggleCommandCenter])
+      setCronJobs(jobs)
+    } catch {
+      // Non-fatal: the cron section just keeps its last-known jobs.
+    }
+  }, [])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
@@ -233,32 +287,61 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
+
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
-      const result = await listSessions(limit, 1)
+      // Unified cross-profile list (served read-only off each profile's
+      // state.db; no per-profile backend is spawned). Single-profile users get
+      // the same rows tagged profile="default". Cron sessions are excluded here
+      // and fetched separately (refreshCronSessions) so the scheduler's
+      // always-newest rows can't consume the recents page budget.
+      // Scope the fetch to the active profile (not always 'all') so a profile
+      // with few recent sessions isn't windowed out of the cross-profile
+      // recency page — the empty-history-on-profile-switch bug.
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
+        excludeSources: ['cron']
+      })
 
       if (refreshSessionsRequestRef.current === requestId) {
-        // Don't hard-replace. Two kinds of rows must survive a refresh the
-        // server didn't return: (1) sessions whose first turn is still in
-        // flight (message_count 0, so min_messages=1 omits them) and (2)
-        // pinned sessions that have aged off the most-recent page — otherwise
-        // the pin "disappears until you refresh". mergeSessionPage keeps both.
-        const keepIds = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
-        setSessions(prev => mergeSessionPage(prev, result.sessions, keepIds))
+        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
+        setSessionProfileTotals(result.profile_totals ?? {})
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)
       }
     }
-  }, [])
+
+    void refreshCronSessions()
+    void refreshCronJobs()
+  }, [profileScope, refreshCronSessions, refreshCronJobs])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
     void refreshSessions()
   }, [refreshSessions])
+
+  // ALL-profiles view pages one profile at a time: fetch that profile's next
+  // page and merge it in place, leaving every other profile's rows untouched.
+  const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
+    const key = normalizeProfileKey(profile)
+    const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
+    const loaded = $sessions.get().filter(inKey).length
+
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
+      excludeSources: ['cron']
+    })
+
+    const keep = sessionsToKeep(key)
+
+    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
+
+    const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
+    setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
+  }, [])
 
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -349,9 +432,11 @@ export function DesktopController() {
         return
       }
 
+      const storedProfile = $sessions.get().find(session => session.id === storedSessionId)?.profile
+
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
-          const latest = await getSessionMessages(storedSessionId)
+          const latest = await getSessionMessages(storedSessionId, storedProfile)
           updateSessionState(
             runtimeSessionId,
             state => ({
@@ -419,40 +504,46 @@ export function DesktopController() {
     updateSessionState
   })
 
+  // Single global listener for every rebindable hotkey (incl. profile switching)
+  // plus the on-screen keybind editor's capture mode.
+  useKeybinds({
+    startFreshSession: startFreshSessionDraft,
+    toggleCommandCenter,
+    toggleSelectedPin
+  })
+
+  // A profile switch/create drops to a fresh new-session draft so the previously
+  // open session doesn't bleed across contexts. Skip the initial value.
+  const freshSessionRequest = useStore($freshSessionRequest)
+  const lastFreshRef = useRef(freshSessionRequest)
+
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-
-      const editing =
-        target?.isContentEditable ||
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement
-
-      if (event.defaultPrevented || event.repeat || event.altKey || event.code !== 'KeyN') {
-        return
-      }
-
-      // Two accelerators for "new session":
-      //   - Cmd/Ctrl+N (browser-like, works while typing in any input)
-      //   - Shift+N    (single-key, only when no input is focused)
-      const accelerator = event.metaKey || event.ctrlKey
-      const singleKey = !accelerator && !editing && event.shiftKey
-
-      if (!accelerator && !singleKey) {
-        return
-      }
-
-      event.preventDefault()
-      startFreshSessionDraft()
-      // Briefly light up the sidebar's ⌘N hint so the shortcut is discoverable.
-      window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
+    if (freshSessionRequest === lastFreshRef.current) {
+      return
     }
 
-    window.addEventListener('keydown', onKeyDown)
+    lastFreshRef.current = freshSessionRequest
+    startFreshSessionDraft()
+  }, [freshSessionRequest, startFreshSessionDraft])
 
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [startFreshSessionDraft])
+  // Swapping the live gateway to another profile must re-pull that profile's
+  // global model + active-profile pill. Both are nanostores, so the blanket
+  // invalidateQueries() the profile store fires on swap doesn't touch them —
+  // without this the statusbar keeps showing the previous profile's model
+  // (the "forgets the LLM setting" report). gatewayState stays 'open' across a
+  // swap (background sockets persist), so the open→open effect won't re-run.
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const lastGatewayProfileRef = useRef(activeGatewayProfile)
+
+  useEffect(() => {
+    if (activeGatewayProfile === lastGatewayProfileRef.current) {
+      return
+    }
+
+    lastGatewayProfileRef.current = activeGatewayProfile
+    void refreshCurrentModel()
+    void refreshActiveProfile()
+  }, [activeGatewayProfile, refreshCurrentModel])
 
   const composer = useComposerActions({
     activeSessionId,
@@ -498,14 +589,22 @@ export function DesktopController() {
 
   const handleSkinCommand = useSkinCommand()
 
-  const { cancelRun, editMessage, handleThreadMessagesChange, reloadFromMessage, submitText, transcribeVoiceAudio } =
-    usePromptActions({
+  const {
+    cancelRun,
+    editMessage,
+    handleThreadMessagesChange,
+    reloadFromMessage,
+    steerPrompt,
+    submitText,
+    transcribeVoiceAudio
+  } = usePromptActions({
       activeSessionId,
       activeSessionIdRef,
       branchCurrentSession: branchInNewChat,
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      refreshSessions,
       requestGateway,
       selectedStoredSessionIdRef,
       startFreshSessionDraft,
@@ -528,9 +627,29 @@ export function DesktopController() {
   useEffect(() => {
     if (gatewayState === 'open') {
       void refreshCurrentModel()
+      void refreshActiveProfile()
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  // Keep the cron jobs section live without a user action: the scheduler ticks
+  // in the background (advancing next-run/state and creating runs), so poll the
+  // job list on an interval (and on tab re-focus) while connected.
+  useEffect(() => {
+    if (gatewayState !== 'open') {return}
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {void refreshCronJobs()}
+    }
+
+    const intervalId = window.setInterval(tick, CRON_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshCronJobs])
 
   useRouteResume({
     activeSessionId,
@@ -570,10 +689,20 @@ export function DesktopController() {
       currentView={currentView}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
+      onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
+      onManageCronJob={jobId => {
+        setCronFocusJobId(jobId)
+        navigate(CRON_ROUTE)
+      }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onTriggerCronJob={jobId => {
+        void triggerCronJob(jobId)
+          .then(() => refreshCronJobs())
+          .catch(() => undefined)
+      }}
     />
   )
 
@@ -626,6 +755,7 @@ export function DesktopController() {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
+            onNavigateRoute={path => navigate(path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
         </Suspense>
@@ -639,7 +769,10 @@ export function DesktopController() {
 
       {cronOpen && (
         <Suspense fallback={null}>
-          <CronView onClose={closeOverlayToPreviousRoute} />
+          <CronView
+            onClose={closeOverlayToPreviousRoute}
+            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+          />
         </Suspense>
       )}
 
@@ -673,6 +806,7 @@ export function DesktopController() {
       onPickImages={() => void composer.pickImages()}
       onReload={reloadFromMessage}
       onRemoveAttachment={id => void composer.removeAttachment(id)}
+      onSteer={steerPrompt}
       onSubmit={submitText}
       onThreadMessagesChange={handleThreadMessagesChange}
       onToggleSelectedPin={toggleSelectedPin}

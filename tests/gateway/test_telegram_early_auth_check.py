@@ -193,3 +193,73 @@ class TestEarlyAuthCheck:
         adapter._message_handler = None
         msg = _make_message(user_id="99999")
         assert adapter._is_user_auth_early(msg) is True
+
+class TestCallbackQueryAuthIntegration:
+    """Callback queries from unauthorized users must be rejected.
+
+    The _handle_callback_query handler has auth checks for approval
+    buttons (ea:*) but model picker (mp:*) and gmail triage (gt:*)
+    callbacks lack per-user authorization at the handler level.
+    These tests document the current behavior.
+    """
+
+    @staticmethod
+    def _make_callback_update(user_id="99999", data="mp:test", chat_id=123):
+        """Build a minimal callback query update."""
+        from types import SimpleNamespace
+
+        user = SimpleNamespace(id=int(user_id), first_name="Test", username="testuser")
+        chat = SimpleNamespace(id=chat_id, type="private")
+        msg = SimpleNamespace(chat_id=chat_id, chat=chat, message_thread_id=None)
+        query = SimpleNamespace(
+            data=data, from_user=user, message=msg,
+            answer=AsyncMock(), id="cb123",
+        )
+        update = SimpleNamespace(callback_query=query, message=None)
+        return update
+
+    def test_approval_callback_rejected_for_unauthorized(self, monkeypatch):
+        """Approval button callbacks (ea:*) must be auth-gated."""
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "11111")
+        adapter = _make_adapter()
+        adapter._approval_state = {42: "session-key"}
+        adapter._message_handler = None
+
+        # The _is_callback_user_authorized check at line 3280 should deny
+        assert adapter._is_callback_user_authorized("99999") is False
+
+    def test_approval_callback_allowed_for_authorized(self, monkeypatch):
+        """Approval button callbacks permit authorized users."""
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "99999")
+        adapter = _make_adapter()
+        adapter._message_handler = None
+
+        assert adapter._is_callback_user_authorized("99999") is True
+
+    def test_early_auth_check_passes_for_channel_post(self, monkeypatch):
+        """Channel posts (no from_user) must pass the early auth gate."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+
+        msg = SimpleNamespace(from_user=None, text="broadcast")
+        # Channel posts have no from_user → _is_user_auth_early returns True
+        assert adapter._is_user_auth_early(msg) is True
+
+    def test_early_auth_check_rejects_unauthorized_user(self, monkeypatch):
+        """Regular messages from unauthorized users must be rejected early."""
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "11111")
+        adapter = _make_adapter()
+
+        user = SimpleNamespace(id=99999, first_name="Bad", username="bad")
+        msg = SimpleNamespace(from_user=user, text="inject this")
+        assert adapter._is_user_auth_early(msg) is False
+
+    def test_early_auth_check_allows_authorized_user(self, monkeypatch):
+        """Regular messages from authorized users must pass."""
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "99999")
+        adapter = _make_adapter()
+
+        user = SimpleNamespace(id=99999, first_name="Good", username="good")
+        msg = SimpleNamespace(from_user=user, text="hello")
+        assert adapter._is_user_auth_early(msg) is True

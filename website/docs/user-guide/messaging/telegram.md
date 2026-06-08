@@ -1124,13 +1124,20 @@ This covers the custom fallback transport layer that Hermes uses for Telegram co
 
 ## Message Reactions
 
-The bot can add emoji reactions to messages as visual processing feedback:
+Telegram supports two separate reaction features in Hermes:
+
+1. **Bot status reactions** — Hermes reacts to your messages as visual processing feedback.
+2. **Reaction shortcuts** — you react to a Hermes assistant message to trigger a scoped command.
+
+### Bot status reactions
+
+The bot can add emoji reactions to your messages as processing feedback:
 
 - 👀 when the bot starts processing your message
-- ✅ when the response is delivered successfully
-- ❌ if an error occurs during processing
+- 👍 when the response is delivered successfully
+- 👎 if an error occurs during processing
 
-Reactions are **disabled by default**. Enable them in `config.yaml`:
+Status reactions are **disabled by default**. Enable them in `config.yaml`:
 
 ```yaml
 telegram:
@@ -1144,11 +1151,58 @@ TELEGRAM_REACTIONS=true
 ```
 
 :::note
-Unlike Discord (where reactions are additive), Telegram's Bot API replaces all bot reactions in a single call. The transition from 👀 to ✅/❌ happens atomically — you won't see both at once.
+Unlike Discord (where reactions are additive), Telegram's Bot API replaces all bot reactions in a single call. The transition from 👀 to 👍/👎 happens atomically — you won't see both at once.
 :::
 
 :::tip
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
+:::
+
+### Reaction shortcuts
+
+Reaction shortcuts let authorized users react to a Hermes **assistant message** and turn that reaction into a scoped instruction. This is useful on mobile when you want to approve, verify, research, rewrite, or critique a response without typing a full follow-up.
+
+In Telegram, send:
+
+```text
+/reaction setup
+```
+
+This enables status reactions and installs safe defaults in `telegram.reaction_commands.map`:
+
+```yaml
+telegram:
+  reactions: true
+  reaction_commands:
+    enabled: true
+    map:
+      "💯": "Approve/proceed only if the reacted assistant message has an active pending action attached to that exact message. Do not grant global permission."
+      "🤓": "Research the topic or claim in the reacted assistant message and return a practical, source-grounded summary."
+      "👀": "Verify/check current status of the reacted assistant message using tools where possible."
+      "✍️": "Rewrite or clean up the reacted assistant message into a clearer, shorter version without changing meaning."
+      "💅": "Polish the reacted assistant message: improve wording, structure, and presentation."
+      "🤔": "Critique the reacted assistant message: check assumptions, risks, missing details, or weak logic."
+      "👨‍💻": "Treat the reacted assistant message as code/dev related and inspect or improve the implementation."
+```
+
+Available Telegram commands:
+
+- `/reaction setup` — enable safe Telegram-available defaults
+- `/reaction status` — show whether shortcuts are enabled and list active mappings
+- `/reaction delete` — disable shortcuts while keeping the config section
+- `/reaction uninstall` — disable shortcuts and print manual cleanup guidance
+- `/reaction help` — show usage
+
+Important behavior:
+
+- React to a Hermes **assistant** message, not your own message.
+- Unknown or unmapped reactions are ignored.
+- Removing a reaction later does not undo work already started.
+- Premium/custom reactions are ignored unless Telegram exposes them as normal emoji reaction values.
+- `💯` approval is intentionally narrow: it only applies to a pending action attached to the exact reacted assistant message. It does not grant broad/global approval.
+
+:::warning
+Telegram reactions are not arbitrary Unicode emojis. Users can only pick from the reaction set exposed by Telegram for that chat/account. Avoid defaults like `🧹` or `🔁` unless you have confirmed they appear in the actual Telegram reaction picker; Hermes ignores those known-unavailable defaults to prevent dead shortcuts.
 :::
 
 ## Per-Channel Prompts

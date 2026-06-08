@@ -3440,7 +3440,58 @@ class AIAgent:
         return False
 
     @staticmethod
+    def _tls_impersonation_profile() -> "str | None":
+        """Read model.tls_impersonate from config.
+
+        Returns the impersonation profile name (e.g. ``"chrome124"``) or
+        ``None`` when the key is absent, empty, or set to ``"none"``.
+        """
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            val = (cfg.get("model") or {}).get("tls_impersonate")
+            if isinstance(val, str) and val.strip().lower() not in ("", "none"):
+                return val.strip().lower()
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _is_cloudflare_protected(base_url: str) -> bool:
+        """True when *base_url* is known to sit behind Cloudflare WAF."""
+        url_lower = (base_url or "").lower()
+        return any(
+            domain in url_lower
+            for domain in ("chatgpt.com", "api.openai.com")
+        )
+
+    @staticmethod
     def _build_keepalive_http_client(base_url: str = "") -> Any:
+        # ── curl_cffi TLS impersonation for Cloudflare-protected endpoints ──
+        impersonate = AIAgent._tls_impersonation_profile()
+        if impersonate and AIAgent._is_cloudflare_protected(base_url):
+            try:
+                from agent.curl_cffi_transport import build_curl_cffi_http_client
+                _proxy = _get_proxy_for_base_url(base_url)
+                logger.info(
+                    "Using curl_cffi TLS impersonation (%s) for %s",
+                    impersonate, base_url[:80],
+                )
+                return build_curl_cffi_http_client(
+                    impersonate=impersonate,
+                    proxy=_proxy,
+                )
+            except ImportError:
+                logger.warning(
+                    "tls_impersonate is set but curl_cffi is not installed; "
+                    "falling back to stock httpx. Install: pip install curl_cffi"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "curl_cffi transport setup failed: %s; falling back to stock httpx", exc
+                )
+
+        # ── Stock httpx with TCP keepalives ──
         try:
             import httpx as _httpx
             import socket as _socket

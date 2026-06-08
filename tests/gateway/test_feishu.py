@@ -4944,3 +4944,170 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestBuildTableCardPayload(unittest.TestCase):
+    """_build_table_card_payload converts markdown tables to Feishu cards."""
+
+    # -- helper -----------------------------------------------------------
+
+    def _parse_card(self, content):
+        """Run _build_table_card_payload and return parsed card dict."""
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        raw = _build_table_card_payload(content)
+        self.assertIsNotNone(raw, "card payload should not be None")
+        return json.loads(raw)
+
+    # -- single table -----------------------------------------------------
+
+    def test_single_table_becomes_card(self):
+        table = "| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |"
+        card = self._parse_card(table)
+
+        self.assertEqual(card["config"]["wide_screen_mode"], True)
+        self.assertEqual(card["header"]["template"], "blue")
+        self.assertIn("📊", card["header"]["title"]["content"])
+        elements = card["body"]["elements"]
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["tag"], "table")
+        # Verify table structure
+        col_names = [c["display_name"] for c in elements[0]["columns"]]
+        self.assertEqual(col_names, ["Name", "Age"])
+        self.assertEqual(len(elements[0]["rows"]), 2)
+        self.assertEqual(elements[0]["rows"][0]["col0"], "Alice")
+        self.assertEqual(elements[0]["rows"][1]["col1"], "25")
+
+    # -- mixed text + table -----------------------------------------------
+
+    def test_text_before_and_after_table(self):
+        content = (
+            "Here is the report:\n"
+            "\n"
+            "| Col |\n| --- |\n| val |\n"
+            "\n"
+            "End of report."
+        )
+        card = self._parse_card(content)
+        elements = card["body"]["elements"]
+        # Should have: text-before, table, text-after
+        self.assertEqual(len(elements), 3)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("Here is the report", elements[0]["content"])
+        self.assertEqual(elements[1]["tag"], "table")
+        self.assertEqual(elements[1]["columns"][0]["display_name"], "Col")
+        self.assertEqual(elements[1]["rows"][0]["col0"], "val")
+        self.assertEqual(elements[2]["tag"], "markdown")
+        self.assertIn("End of report", elements[2]["content"])
+
+    # -- multiple tables --------------------------------------------------
+
+    def test_two_tables_in_one_message(self):
+        content = (
+            "| A |\n| --- |\n| 1 |\n"
+            "\nSome text\n\n"
+            "| B |\n| --- |\n| 2 |"
+        )
+        card = self._parse_card(content)
+        elements = card["body"]["elements"]
+        # table1, text, table2
+        self.assertEqual(len(elements), 3)
+        self.assertEqual(elements[0]["tag"], "table")
+        self.assertEqual(elements[0]["columns"][0]["display_name"], "A")
+        self.assertEqual(elements[0]["rows"][0]["col0"], "1")
+        self.assertEqual(elements[1]["tag"], "markdown")
+        self.assertIn("Some text", elements[1]["content"])
+        self.assertEqual(elements[2]["tag"], "table")
+        self.assertEqual(elements[2]["columns"][0]["display_name"], "B")
+        self.assertEqual(elements[2]["rows"][0]["col0"], "2")
+
+    # -- large table truncation -------------------------------------------
+
+    def test_large_table_truncated_to_50_rows(self):
+        rows = "\n".join(f"| row{i} |" for i in range(80))
+        content = f"| Id |\n| --- |\n{rows}"
+        card = self._parse_card(content)
+        elements = card["body"]["elements"]
+        # table + truncation note
+        self.assertTrue(len(elements) >= 2)
+        table_elem = elements[0]
+        self.assertEqual(table_elem["tag"], "table")
+        # Native table component has rows directly.
+        self.assertEqual(len(table_elem["rows"]), 50)
+        # Truncation warning
+        last = elements[-1]
+        self.assertEqual(last["tag"], "markdown")
+        self.assertIn("截断", last["content"])
+
+    # -- malformed table falls back ---------------------------------------
+
+    def test_pipe_line_without_separator_produces_text_card(self):
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        # A string that looks like a pipe line but has no separator row.
+        # _parse_table_segments treats it as plain text, so
+        # _build_table_card_payload still returns a valid card (text-only).
+        result = _build_table_card_payload("| just a pipe line |\nnot a table")
+        card = json.loads(result)
+        self.assertEqual(card["body"]["elements"][0]["tag"], "markdown")
+
+    def test_empty_content_returns_none(self):
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        result = _build_table_card_payload("")
+        self.assertIsNone(result)
+
+    def test_whitespace_only_returns_none(self):
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        result = _build_table_card_payload("   \n  \n  ")
+        self.assertIsNone(result)
+
+    # -- alignment markers stripped ---------------------------------------
+
+    def test_alignment_markers_are_replaced(self):
+        table = "| L | C | R |\n| :--- | :---: | ---: |\n| a | b | c |"
+        card = self._parse_card(table)
+        elem = card["body"]["elements"][0]
+        self.assertEqual(elem["tag"], "table")
+        # Alignment markers are stripped; column names are clean.
+        col_names = [c["display_name"] for c in elem["columns"]]
+        self.assertEqual(col_names, ["L", "C", "R"])
+        # Row data should contain the values, not alignment markers.
+        self.assertEqual(elem["rows"][0], {"col0": "a", "col1": "b", "col2": "c"})
+
+    # -- _build_outbound_payload integration ------------------------------
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_returns_interactive_for_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| X |\n| --- |\n| 1 |"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["config"]["wide_screen_mode"], True)
+        self.assertIn("X", card["header"]["title"]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_falls_back_for_plain_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "no tables here"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload)["text"], content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_falls_back_for_markdown_only(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "**bold** and _italic_"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")

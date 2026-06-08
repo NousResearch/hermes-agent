@@ -28,7 +28,7 @@ _TITLE_PROMPT = (
 def generate_title(
     user_message: str,
     assistant_response: str,
-    timeout: float = 30.0,
+    timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
 ) -> Optional[str]:
@@ -56,7 +56,7 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=messages,
-            max_tokens=500,
+            max_tokens=64,
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,

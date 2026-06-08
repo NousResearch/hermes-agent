@@ -35,7 +35,8 @@ Config keys this provider responds to::
 
 Env vars::
 
-    FIRECRAWL_API_KEY=...            # direct cloud auth
+    FIRECRAWL_API_KEY=...            # direct cloud auth (fallback when FIRECRAWL_API_KEYS unset)
+    FIRECRAWL_API_KEYS=...           # comma/space-separated list of keys for rotation
     FIRECRAWL_API_URL=...            # self-hosted Firecrawl
     FIRECRAWL_GATEWAY_URL=...        # Nous tool-gateway (subscribers)
     TOOL_GATEWAY_DOMAIN=...          # alternate gateway env
@@ -54,6 +55,97 @@ from agent.web_search_provider import WebSearchProvider
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Multi-key rotation state
+# ---------------------------------------------------------------------------
+# FIRECRAWL_API_KEYS (comma/space/newline-separated list) enables key
+# rotation on 429/401/403 errors. Falls back to FIRECRAWL_API_KEY when
+# the plural form is not set, so existing single-key setups keep working.
+
+import re as _re  # noqa: WPS433 — module-level import only for key parsing
+
+_firecrawl_keys: List[str] = []
+_current_key_index: int = 0
+
+
+def _load_firecrawl_keys() -> List[str]:
+    """Load keys from ``FIRECRAWL_API_KEYS`` or fall back to ``FIRECRAWL_API_KEY``.
+
+    Parses comma, comma+space, newline, or whitespace-separated values.
+    Caches the result so subsequent calls are O(1).
+    """
+    global _firecrawl_keys
+    if _firecrawl_keys:
+        return _firecrawl_keys
+
+    multi = os.getenv("FIRECRAWL_API_KEYS", "").strip()
+    if multi:
+        keys = _re.split(r"[,;\s]+", multi)
+        keys = [k.strip() for k in keys if k.strip()]
+        if keys:
+            _firecrawl_keys = keys
+            logger.info("Loaded %d Firecrawl API keys from FIRECRAWL_API_KEYS", len(keys))
+            return _firecrawl_keys
+
+    single = os.getenv("FIRECRAWL_API_KEY", "").strip()
+    if single:
+        _firecrawl_keys = [single]
+    return _firecrawl_keys
+
+
+def _current_firecrawl_key() -> Optional[str]:
+    """Return the currently active key without rotating."""
+    keys = _load_firecrawl_keys()
+    if not keys:
+        return None
+    idx = _current_key_index % len(keys) if keys else 0
+    return keys[idx]
+
+
+def _rotate_firecrawl_key() -> Optional[str]:
+    """Advance to the next key and clear the cached client.
+
+    Returns the new active key, or None when no keys are configured.
+    When only one key is available rotation is a no-op (returns the same
+    key without clearing the cache — the error was not a key issue).
+    """
+    global _current_key_index
+    keys = _load_firecrawl_keys()
+    if not keys:
+        return None
+    if len(keys) > 1:
+        _current_key_index = (_current_key_index + 1) % len(keys)
+        _reset_client_for_tests()
+        logger.info(
+            "Rotated to Firecrawl key %d/%d",
+            _current_key_index + 1, len(keys),
+        )
+    return keys[_current_key_index % len(keys)]
+
+
+def _is_retryable_firecrawl_error(exc: Exception) -> bool:
+    """Return True when the exception suggests a key rotation might help.
+
+    Matches HTTP 429 (rate limit), 401 (unauthorized), 403 (forbidden)
+    and common keyword patterns in error messages.
+    """
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in [
+            "429", "401", "403",
+            "rate limit", "too many requests",
+            "unauthorized", "forbidden", "invalid key",
+            "quota exceeded", "payment required",
+        ]
+    )
+
+
+def _has_multiple_firecrawl_keys() -> bool:
+    """Return True when key rotation is available (2+ keys configured)."""
+    return len(_load_firecrawl_keys()) > 1
 
 
 # ---------------------------------------------------------------------------
@@ -120,8 +212,15 @@ Firecrawl = _FirecrawlProxy()
 
 
 def _get_direct_firecrawl_config() -> Optional[tuple]:
-    """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
-    api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
+    """Return explicit direct Firecrawl kwargs + cache key, or None when unset.
+
+    Uses the rotation-aware ``_current_firecrawl_key()`` so that
+    ``FIRECRAWL_API_KEYS`` (comma-separated multi-key) and the legacy
+    ``FIRECRAWL_API_KEY`` both work transparently. After a
+    :func:`_rotate_firecrawl_key` call the next invocation returns a
+    config for the next key in the rotation.
+    """
+    api_key = _current_firecrawl_key()
     api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
 
     if not api_key and not api_url:
@@ -392,9 +491,13 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         call directly. Normalizes the response across SDK/direct/gateway
         shapes via :func:`_extract_web_search_results`.
 
+        On retryable errors (rate-limit / auth) when multiple keys are
+        configured via ``FIRECRAWL_API_KEYS``, rotates to the next key
+        and retries once before surfacing the error.
+
         Pre-flight errors (``ValueError`` from configuration check,
         ``ImportError`` from missing SDK) propagate to the dispatcher's
-        top-level handler, which wraps them as ``tool_error(...)`` —
+        top-level handler, which wraps them as ``tool_error(...)`` -
         matching the legacy ``{"error": "Error searching web: ..."}``
         envelope. Only in-flight errors are caught and surfaced as
         ``{"success": False, "error": ...}``.
@@ -405,7 +508,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             return {"success": False, "error": "Interrupted"}
 
         logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
-        # _get_firecrawl_client() raises ValueError on unconfigured systems —
+        # _get_firecrawl_client() raises ValueError on unconfigured systems -
         # let it propagate so the dispatcher emits the legacy envelope shape.
         client = _get_firecrawl_client()
         try:
@@ -414,6 +517,27 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}
         except Exception as exc:  # noqa: BLE001
+            if _has_multiple_firecrawl_keys() and _is_retryable_firecrawl_error(exc):
+                logger.warning(
+                    "Firecrawl search retryable error, rotating key: %s", exc,
+                )
+                _rotate_firecrawl_key()
+                try:
+                    client = _get_firecrawl_client()
+                    response = client.search(query=query, limit=limit)
+                    web_results = _extract_web_search_results(response)
+                    logger.info(
+                        "Firecrawl: found %d search results (retry)", len(web_results),
+                    )
+                    return {"success": True, "data": {"web": web_results}}
+                except Exception as retry_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Firecrawl search failed after key rotation: %s", retry_exc,
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Firecrawl search failed: {retry_exc}",
+                    }
             logger.warning("Firecrawl search error: %s", exc)
             return {"success": False, "error": f"Firecrawl search failed: {exc}"}
 
@@ -423,6 +547,10 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         Async; each URL is scraped in a background thread with a 60s
         timeout. After scraping, the final URL (post-redirect) is
         re-checked against website-access policy.
+
+        On retryable errors (rate-limit / auth) when multiple keys are
+        configured via ``FIRECRAWL_API_KEYS``, rotates to the next key
+        and retries the entire batch once before surfacing per-URL errors.
 
         Accepted kwargs (others ignored for forward compat):
           - ``format``: ``"markdown"`` or ``"html"``; default is both
@@ -446,11 +574,8 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         else:
             formats = ["markdown", "html"]
 
-        # check_website_access is the legacy policy gate; imported at
-        # module level (lazy-friendly because the website_policy import is
-        # cheap) so monkeypatching it in tests works as expected.
-
         results: List[Dict[str, Any]] = []
+        _did_rotate = False
 
         for url in urls:
             if _is_interrupted():
@@ -499,7 +624,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             "title": "",
                             "content": "",
                             "error": (
-                                "Scrape timed out after 60s — page may be too large "
+                                "Scrape timed out after 60s - page may be too large "
                                 "or unresponsive. Try browser_navigate instead."
                             ),
                         }
@@ -563,6 +688,60 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                     }
                 )
             except Exception as scrape_err:  # noqa: BLE001
+                if (
+                    not _did_rotate
+                    and _has_multiple_firecrawl_keys()
+                    and _is_retryable_firecrawl_error(scrape_err)
+                ):
+                    logger.warning(
+                        "Firecrawl extract retryable error, rotating key: %s",
+                        scrape_err,
+                    )
+                    _rotate_firecrawl_key()
+                    _did_rotate = True
+                    # Retry this URL with the new key
+                    try:
+                        logger.info("Firecrawl scraping (retry): %s", url)
+                        scrape_result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _get_firecrawl_client().scrape,
+                                url=url,
+                                formats=formats,
+                            ),
+                            timeout=60,
+                        )
+                        scrape_payload = _extract_scrape_payload(scrape_result)
+                        metadata = scrape_payload.get("metadata", {})
+                        content_markdown = scrape_payload.get("markdown")
+                        content_html = scrape_payload.get("html")
+                        if not isinstance(metadata, dict):
+                            if hasattr(metadata, "model_dump"):
+                                metadata = metadata.model_dump()
+                            elif hasattr(metadata, "__dict__"):
+                                metadata = metadata.__dict__
+                            else:
+                                metadata = {}
+                        title = metadata.get("title", "")
+                        final_url = metadata.get("sourceURL", url)
+                        if format == "markdown" or (format is None and content_markdown):
+                            chosen_content = content_markdown
+                        else:
+                            chosen_content = content_html or content_markdown or ""
+                        results.append(
+                            {
+                                "url": final_url,
+                                "title": title,
+                                "content": chosen_content,
+                                "raw_content": chosen_content,
+                                "metadata": metadata,
+                            }
+                        )
+                        continue
+                    except Exception as retry_err:  # noqa: BLE001
+                        logger.warning(
+                            "Firecrawl extract failed after key rotation: %s",
+                            retry_err,
+                        )
                 logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
                 results.append(
                     {
@@ -579,7 +758,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Firecrawl",
-            "badge": "paid · optional gateway",
+            "badge": "paid - optional gateway",
             "tag": (
                 "Full search + extract; supports direct API and "
                 "Nous tool-gateway routing."
@@ -588,6 +767,11 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                 {
                     "key": "FIRECRAWL_API_KEY",
                     "prompt": "Firecrawl API key (or leave blank for self-hosted)",
+                    "url": "https://docs.firecrawl.dev/introduction",
+                },
+                {
+                    "key": "FIRECRAWL_API_KEYS",
+                    "prompt": "Comma-separated list of Firecrawl keys for automatic rotation on rate-limit/auth errors (optional)",
                     "url": "https://docs.firecrawl.dev/introduction",
                 },
             ],

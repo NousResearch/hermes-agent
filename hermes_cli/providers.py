@@ -109,7 +109,19 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
+        extra_env_vars=("KIMI_CODING_API_KEY",),
         base_url_env_var="KIMI_BASE_URL",
+    ),
+    "kimi-coding": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
+        base_url_env_var="KIMI_BASE_URL",
+    ),
+    "kimi-coding-cn": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("KIMI_CN_API_KEY",),
+        base_url_override="https://api.moonshot.cn/v1",
+        base_url_env_var="KIMI_CN_BASE_URL",
     ),
     "stepfun": HermesOverlay(
         transport="openai_chat",
@@ -264,8 +276,8 @@ ALIASES: Dict[str, str] = {
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
-    "kimi-coding": "kimi-for-coding",
-    "kimi-coding-cn": "kimi-for-coding",
+    "kimi-coding": "kimi-coding",
+    "kimi-coding-cn": "kimi-coding-cn",
     "moonshot": "kimi-for-coding",
 
     # stepfun
@@ -367,6 +379,8 @@ ALIASES: Dict[str, str] = {
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
+    "kimi-coding": "Kimi / Kimi Coding Plan",
+    "kimi-coding-cn": "Kimi / Moonshot (China)",
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",

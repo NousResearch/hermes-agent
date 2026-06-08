@@ -61,7 +61,7 @@ DEFAULT_X_SEARCH_MODEL = "grok-4.20-reasoning"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
 MAX_HANDLES = 10
-JINA_READER_BASE_URL = "https://r.jina.ai/http://r.jina.ai/http://"
+JINA_READER_BASE_URL = "https://r.jina.ai/http://"
 X_STATUS_URL_RE = re.compile(
     r"https?://(?:www\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})/status/(\d{1,30})(?=$|[\s?#/])",
     re.IGNORECASE,

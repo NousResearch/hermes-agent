@@ -476,7 +476,7 @@ def test_x_search_reads_status_url_via_jina_without_xai_credentials(monkeypatch)
     assert result["success"] is True
     assert result["provider"] == "jina"
     assert result["tool"] == "x_jina_reader"
-    assert captured["url"] == "https://r.jina.ai/http://r.jina.ai/http://https://x.com/zapabob_ouj/status/123"
+    assert captured["url"] == "https://r.jina.ai/http://https://x.com/zapabob_ouj/status/123"
     assert "ボブにゃん posted" in result["answer"]
     assert result["citations"] == [
         {"url": "https://x.com/zapabob_ouj/status/123", "title": "X status via r.jina.ai"}

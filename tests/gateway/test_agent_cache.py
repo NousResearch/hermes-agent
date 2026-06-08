@@ -1514,3 +1514,74 @@ class TestAgentConfigSignatureUserId:
             user_id=None, user_id_alt=None,
         )
         assert sig_implicit == sig_explicit_none
+
+
+class TestSiblingEvictionLeakFixes:
+    """Widening of #18438: every eviction path frees per-session state.
+
+    The contributor's PR fixed _evict_cached_agent + the idle-sweep path.
+    These tests cover the sibling sites: cap-enforcement pruning and the
+    re-entrant-lock safety of the shared _prune_stale_session_dicts helper.
+    """
+
+    def _runner_with_session_dicts(self):
+        from gateway.run import GatewayRunner
+        from collections import OrderedDict
+
+        r = GatewayRunner.__new__(GatewayRunner)
+        r._agent_cache = OrderedDict()
+        r._agent_cache_lock = threading.Lock()
+        r._running_agents = {}
+        r._session_model_overrides = {}
+        r._session_reasoning_overrides = {}
+        r._pending_approvals = {}
+        r._update_prompt_pending = {}
+        return r
+
+    def test_prune_removes_stale_but_keeps_live(self):
+        """A key still in the cache keeps its overrides; a stale key loses them."""
+        r = self._runner_with_session_dicts()
+        r._agent_cache["live"] = (MagicMock(), "sys")
+        r._session_model_overrides["live"] = "opus"
+        r._session_model_overrides["stale"] = "sonnet"
+        r._pending_approvals["stale"] = object()
+        r._prune_stale_session_dicts({"live", "stale"})
+        assert "live" in r._session_model_overrides
+        assert "stale" not in r._session_model_overrides
+        assert "stale" not in r._pending_approvals
+
+    def test_prune_does_not_deadlock_when_lock_held(self):
+        """lock_held=True must not re-acquire the non-reentrant cache lock."""
+        r = self._runner_with_session_dicts()
+        r._session_model_overrides["gone"] = "x"
+        # Simulate the cap-enforcement caller, which holds the lock.
+        completed = []
+        with r._agent_cache_lock:
+            r._prune_stale_session_dicts({"gone"}, lock_held=True)
+            completed.append(True)
+        assert completed == [True]
+        assert "gone" not in r._session_model_overrides
+
+    def test_cap_enforcement_prunes_evicted_session_dicts(self):
+        """_enforce_agent_cache_cap evicts AND prunes per-session dicts."""
+        import gateway.run as gr
+
+        r = self._runner_with_session_dicts()
+        old_max = gr._AGENT_CACHE_MAX_SIZE
+        gr._AGENT_CACHE_MAX_SIZE = 1
+        try:
+            old_agent = MagicMock()
+            old_agent.release_clients = MagicMock()
+            r._agent_cache["old"] = (old_agent, "sys")
+            r._session_model_overrides["old"] = "opus"
+            r._session_reasoning_overrides["old"] = "high"
+            # Push over cap.
+            r._agent_cache["new"] = (MagicMock(), "sys")
+            with r._agent_cache_lock:
+                r._enforce_agent_cache_cap()
+            assert "old" not in r._agent_cache
+            assert "old" not in r._session_model_overrides
+            assert "old" not in r._session_reasoning_overrides
+        finally:
+            gr._AGENT_CACHE_MAX_SIZE = old_max
+

@@ -3087,6 +3087,17 @@ class AIAgent:
         except Exception:
             pass
 
+        # 6. Free conversation history memory.  Mirrors the soft-eviction
+        # path (_release_evicted_agent_soft clears _session_messages) — the
+        # hard teardown must do the same, otherwise a held reference to this
+        # agent (e.g. a still-draining background task) pins tens of MB of
+        # tool outputs (file reads, terminal output, search results) for the
+        # process lifetime.  Safe here: close() is a true session boundary.
+        try:
+            self._session_messages = []
+        except Exception:
+            pass
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.

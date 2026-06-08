@@ -125,6 +125,7 @@ export function FloatingOverlays({
     overlay.pager ||
     overlay.sessions ||
     overlay.skillsHub ||
+    overlay.statusTooltip ||
     completions.length
 
   if (!hasAny) {
@@ -140,6 +141,16 @@ export function FloatingOverlays({
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+      {overlay.statusTooltip && (
+        <FloatBox color={theme.color.border}>
+          {overlay.statusTooltip.lines.map((line, i) => (
+            <Text color={theme.color.muted} key={i}>
+              {line}
+            </Text>
+          ))}
+        </FloatBox>
+      )}
+
       {overlay.sessions && (
         <FloatBox color={theme.color.border}>
           <ActiveSessionSwitcher

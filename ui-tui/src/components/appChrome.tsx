@@ -5,6 +5,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
 import type { IndicatorStyle, Notice } from '../app/interfaces.js'
+import { patchOverlayState } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -362,6 +363,17 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+function buildModelTooltip(model: string, effort?: string, fast?: boolean, provider?: string): string[] {
+  const lines: string[] = []
+  lines.push(`model: ${model}`)
+  if (provider) lines.push(`provider: ${provider}`)
+  if (effort && effort !== 'medium' && effort !== 'normal' && effort !== 'default') {
+    lines.push(`reasoning: ${effort}`)
+  }
+  if (fast) lines.push('fast mode: on  (priority / low-latency tier)')
+  return lines
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -396,6 +408,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  provider,
   indicatorStyle = 'kaomoji',
   notice,
   usage,
@@ -538,7 +551,16 @@ export function StatusRule({
           </Box>
         ) : null}
         {/* Pinned essentials — model + context never shrink, always visible. */}
-        <Box flexDirection="row" flexShrink={0}>
+        <Box
+          flexDirection="row"
+          flexShrink={0}
+          onMouseEnter={() =>
+            patchOverlayState({
+              statusTooltip: { lines: buildModelTooltip(model, modelReasoningEffort, modelFast, provider) }
+            })
+          }
+          onMouseLeave={() => patchOverlayState({ statusTooltip: null })}
+        >
           {DEV_CREDITS_MODE ? (
             <Text color={t.color.warn} wrap="truncate-end">
               {' (dev credits)'}
@@ -732,6 +754,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  provider?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number

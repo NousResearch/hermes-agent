@@ -96,6 +96,7 @@ export interface OverlayState {
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean
+  statusTooltip: null | { lines: string[] }
   sudo: null | SudoReq
 }
 

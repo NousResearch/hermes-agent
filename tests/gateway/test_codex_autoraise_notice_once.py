@@ -98,6 +98,15 @@ def test_agents_without_codex_autoraise_warning_are_not_latched(tmp_path):
     assert store._entries[SESSION_KEY].notices_shown == {}
 
 
+def test_gateway_latch_tolerates_minimal_test_runner_without_session_store():
+    runner = GatewayRunner.__new__(GatewayRunner)
+    agent = _agent()
+
+    GatewayRunner._apply_gateway_notice_latch(runner, agent, SESSION_KEY)
+
+    assert agent._compression_warning == NOTICE
+
+
 def test_latch_allows_exactly_one_lifecycle_replay_for_rebuilt_agents(tmp_path):
     store = _store(tmp_path)
     delivered = []

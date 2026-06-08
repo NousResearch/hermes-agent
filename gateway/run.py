@@ -12563,7 +12563,10 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
             and getattr(agent, "_compression_warning", None)
         ):
             return
-        _first_notice = self.session_store.mark_notice_shown_once(
+        session_store = getattr(self, "session_store", None)
+        if session_store is None:
+            return
+        _first_notice = session_store.mark_notice_shown_once(
             session_key,
             _CODEX_GPT55_AUTORAISE_NOTICE_KEY,
         )

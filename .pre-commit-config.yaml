@@ -1,0 +1,24 @@
+# Fork CI-equivalent pre-commit hooks — matches upstream blocking checks:
+#   https://github.com/NousResearch/hermes-agent/blob/main/.github/workflows/lint.yml
+#
+# The global hook (~/.git-hooks/pre-commit) chains to this via
+# `pre-commit run --config .pre-commit-config.yaml`, so both run.
+#
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff enforcement (blocking)
+        description: "Matches upstream 'ruff enforcement (blocking)' CI job"
+        entry: .venv/bin/ruff check .
+        language: system
+        files: \.py$
+        pass_filenames: false
+
+      - id: windows-footguns
+        name: Windows footguns (blocking)
+        description: "Matches upstream 'Windows footguns (blocking)' CI job"
+        entry: .venv/bin/python scripts/check-windows-footguns.py --all
+        language: system
+        files: \.py$
+        pass_filenames: false

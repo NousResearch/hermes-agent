@@ -1182,6 +1182,24 @@ def _store_provider_state(
         auth_store["active_provider"] = provider_id
 
 
+def mark_provider_active_if_unset(provider_id: str) -> None:
+    """Set ``active_provider`` to *provider_id* only when none is set yet.
+
+    Used by ``hermes auth add`` OAuth paths that create credential-pool
+    entries directly (no singleton ``providers.<id>`` block). Adding the
+    very first credential for a provider should make it the active provider
+    so the setup wizard's ``_model_section_has_credentials()`` check (which
+    consults ``get_active_provider()``) does not report "No inference
+    provider configured". Subsequent adds for an already-active setup leave
+    the user's chosen active provider untouched.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        if not (auth_store.get("active_provider") or "").strip():
+            auth_store["active_provider"] = provider_id
+            _save_auth_store(auth_store)
+
+
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
     return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
@@ -1322,38 +1340,10 @@ def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     return _load_provider_state(auth_store, provider_id)
 
 
-def _active_provider_from_store(auth_store: Dict[str, Any]) -> Optional[str]:
-    """Return the active provider for a loaded auth store.
-
-    In profile mode, falls back to the global-root ``auth.json`` when the
-    profile store has no ``active_provider`` set. This mirrors the per-provider
-    shadowing already used by ``_load_provider_state`` and
-    ``read_credential_pool``: a named profile that never selected its own
-    provider still resolves the provider the user authenticated at the global
-    root (e.g. a Nous OAuth login), so ``model.provider: auto`` works under a
-    profile. A profile that has its own ``active_provider`` always wins; the
-    fallback only fires when the profile has none. Returns ``None`` when
-    neither scope has one. In classic mode ``_load_global_auth_store`` returns
-    an empty dict, so this is a no-op. See issue #18594 follow-up.
-    """
-    active = auth_store.get("active_provider")
-    if active:
-        return active
-    global_store = _load_global_auth_store()
-    if global_store:
-        return global_store.get("active_provider")
-    return None
-
-
 def get_active_provider() -> Optional[str]:
-    """Return the currently active provider ID from auth store.
-
-    In profile mode this falls back to the global-root ``active_provider``
-    when the profile has not selected one of its own — see
-    ``_active_provider_from_store``.
-    """
+    """Return the currently active provider ID from auth store."""
     auth_store = _load_auth_store()
-    return _active_provider_from_store(auth_store)
+    return auth_store.get("active_provider")
 
 
 def is_provider_explicitly_configured(provider_id: str) -> bool:
@@ -1575,14 +1565,10 @@ def resolve_provider(
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # Check auth store for an active OAuth provider. In profile mode this
-    # honors the global-root active_provider when the profile has none of its
-    # own, mirroring the credential-pool / provider-state fallbacks so a
-    # named profile running model.provider: auto can use a globally
-    # authenticated provider. See issue #18594 follow-up.
+    # Check auth store for an active OAuth provider
     try:
         auth_store = _load_auth_store()
-        active = _active_provider_from_store(auth_store)
+        active = auth_store.get("active_provider")
         if active and active in PROVIDER_REGISTRY:
             status = get_auth_status(active)
             if status.get("logged_in"):
@@ -1592,6 +1578,21 @@ def resolve_provider(
 
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
+
+    # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
+    # (manual pool entry, no env var). Without this, a key that only lives in
+    # the credential pool is invisible to auto-detection — the user sees
+    # `hermes auth list` showing the credential while requests go out with no
+    # Authorization header ("HTTP 401: Missing Authentication header"). The
+    # env-var check above only covers keys exported as OPENROUTER_API_KEY /
+    # OPENAI_API_KEY. See issue #42130.
+    try:
+        from agent.credential_pool import load_pool as _load_pool
+
+        if _load_pool("openrouter").has_credentials():
+            return "openrouter"
+    except Exception as e:
+        logger.debug("Could not check OpenRouter credential pool: %s", e)
 
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
@@ -3372,6 +3373,7 @@ def _sync_codex_pool_entries(
     auth_store: Dict[str, Any],
     tokens: Dict[str, str],
     last_refresh: Optional[str],
+    previous_singleton_tokens: Optional[Dict[str, str]] = None,
 ) -> None:
     """Mirror a fresh Codex re-auth into the credential_pool OAuth entries.
 
@@ -3387,24 +3389,34 @@ def _sync_codex_pool_entries(
       OAuth flow when the user logged in via ``hermes setup`` / the model
       picker.  Always synced with the fresh tokens.
     * ``manual:device_code`` — entries created by ``hermes auth add openai-codex``
-      that use the same device-code OAuth mechanism.  An interactive re-auth
-      proves the user owns the ChatGPT account, so it is safe (and expected)
-      to refresh these entries too.  Without this, a user who once ran the
-      ``hermes auth add`` workaround for #33000 would silently leave that
-      manual entry stale on every subsequent re-auth, recreating the issue
-      reported in #33538.
+      that use the same device-code OAuth mechanism.  ONLY synced if the
+      entry's existing access_token matches the *previous* singleton
+      access_token (i.e. the entry is a legacy singleton-alias from the
+      #33000 workaround era).  Manual entries whose tokens never matched the
+      singleton represent INDEPENDENT accounts added via
+      ``hermes auth add openai-codex`` and must not be overwritten by a
+      re-auth that targeted a different account (regression for #39236).
+
+      The original #33538 fix refreshed every ``manual:device_code`` entry
+      unconditionally.  That worked when ``manual:device_code`` only meant
+      "legacy alias of the singleton", but the same source string is now
+      also produced by independent-account additions, and the broad sync
+      silently clobbered distinct accounts with the latest-authenticated
+      token pair.  The access_token-match check distinguishes the two cases
+      without changing the source-string contract.
 
     What does NOT get refreshed:
 
     * ``manual:api_key`` and any other non-device-code manual sources — those
       are independent credentials (an explicit API key, a different ChatGPT
       account, etc.) and must not be overwritten by a single re-auth.
+    * ``manual:device_code`` entries whose access_token does NOT match the
+      previous singleton — see above; these are independent accounts.
 
-    Error markers (``last_status``, ``last_error_*``) are also cleared on
-    every device-code-backed entry — even those whose tokens we did not
-    rewrite — so that an interactive re-auth gives every relevant pool entry
-    a fresh selection chance instead of leaving them marked unhealthy from a
-    pre-re-auth 401.
+    Error markers (``last_status``, ``last_error_*``) are cleared ONLY on
+    entries that actually had their tokens rewritten by this re-auth.
+    Independent entries keep their own error state (their 401/429 markers
+    belong to that account's own auth flow, not this re-auth).
     """
     access_token = tokens.get("access_token")
     if not access_token:
@@ -3416,15 +3428,34 @@ def _sync_codex_pool_entries(
     entries = pool.get("openai-codex")
     if not isinstance(entries, list):
         return
-    # Sources whose tokens should be rewritten by a fresh Codex device-code
-    # OAuth re-auth.  ``manual:api_key`` and unknown sources are intentionally
-    # excluded — they represent independent credentials.
-    REFRESHABLE_SOURCES = {"device_code", "manual:device_code"}
+    # Previous singleton access_token (before this re-auth overwrote it) —
+    # used to distinguish legacy singleton-aliases from independent accounts.
+    # When None or empty, no manual entry can be treated as an alias (which
+    # is the right default for first-ever-save or a freshly initialized
+    # auth.json).
+    prev_at = None
+    if isinstance(previous_singleton_tokens, dict):
+        prev_at = previous_singleton_tokens.get("access_token") or None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         source = entry.get("source")
-        if source not in REFRESHABLE_SOURCES:
+        if source == "device_code":
+            # Singleton-seeded mirror — always refresh.
+            refresh_this_entry = True
+        elif source == "manual:device_code":
+            # Refresh only if this entry's existing access_token matches the
+            # previous singleton access_token (i.e. it is a true alias of the
+            # singleton from the #33000 workaround era).  An entry with its
+            # own distinct token material is an independent account and must
+            # be left alone (#39236).
+            refresh_this_entry = bool(
+                prev_at and entry.get("access_token") == prev_at
+            )
+        else:
+            # ``manual:api_key`` and any future non-device-code sources.
+            refresh_this_entry = False
+        if not refresh_this_entry:
             continue
         entry["access_token"] = access_token
         if refresh_token:
@@ -3446,13 +3477,24 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
+        # Capture the previous singleton tokens BEFORE overwriting them.  The
+        # pool-sync step uses this to distinguish legacy singleton-aliases
+        # (which should be refreshed) from independent accounts that
+        # ``hermes auth add openai-codex`` created (which must not be
+        # overwritten — see #39236).
+        previous_singleton_tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else None
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         if label and str(label).strip():
             state["label"] = str(label).strip()
         _save_provider_state(auth_store, "openai-codex", state)
-        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+        _sync_codex_pool_entries(
+            auth_store,
+            tokens,
+            last_refresh,
+            previous_singleton_tokens=previous_singleton_tokens,
+        )
         _save_auth_store(auth_store)
 
 

@@ -1,0 +1,91 @@
+name: photon-platform
+label: Photon iMessage
+kind: platform
+version: 0.1.0
+description: >
+  Photon Spectrum gateway adapter for Hermes Agent.
+  Connects to iMessage (and other Spectrum interfaces) through Photon's
+  managed Spectrum platform. Inbound messages arrive as signed webhooks
+  on a local aiohttp server; outbound messages are sent via a small
+  supervised Node sidecar that runs the `spectrum-ts` SDK (Photon does
+  not currently expose a public HTTP send endpoint).
+
+  The plugin ships with a `hermes photon` CLI for the one-time login
+  + project + user setup, persists Spectrum credentials to
+  ``~/.hermes/auth.json`` under ``credential_pool.photon`` (token) and
+  ``credential_pool.photon_project`` (project id + secret), and exposes
+  Photon's free shared-line model so users can get started without a
+  paid plan.
+author: NousResearch
+requires_env:
+  - name: PHOTON_PROJECT_ID
+    description: "Spectrum project ID (set by `hermes photon setup`)"
+    prompt: "Photon Spectrum project ID"
+    url: "https://app.photon.codes/"
+    password: false
+  - name: PHOTON_PROJECT_SECRET
+    description: "Spectrum project secret (set by `hermes photon setup`)"
+    prompt: "Photon Spectrum project secret"
+    url: "https://app.photon.codes/"
+    password: true
+optional_env:
+  - name: PHOTON_WEBHOOK_SECRET
+    description: "Per-URL HMAC-SHA256 signing secret returned at webhook registration"
+    prompt: "Photon webhook signing secret"
+    password: true
+  - name: PHOTON_WEBHOOK_PORT
+    description: "Local port the webhook receiver listens on (default 8788)"
+    prompt: "Webhook receiver port"
+    password: false
+  - name: PHOTON_WEBHOOK_PATH
+    description: "Path the webhook receiver listens on (default /photon/webhook)"
+    prompt: "Webhook receiver path"
+    password: false
+  - name: PHOTON_WEBHOOK_BIND
+    description: "Bind address for the webhook receiver (default 0.0.0.0)"
+    prompt: "Webhook bind address"
+    password: false
+  - name: PHOTON_SIDECAR_PORT
+    description: "Loopback port for the Node sidecar control channel (default 8789)"
+    prompt: "Sidecar control port"
+    password: false
+  - name: PHOTON_SIDECAR_AUTOSTART
+    description: "Spawn the Node sidecar on connect (true/false, default true)"
+    prompt: "Auto-start the sidecar?"
+    password: false
+  - name: PHOTON_NODE_BIN
+    description: "Path to the node binary (default: shutil.which('node'))"
+    prompt: "Node executable path"
+    password: false
+  - name: PHOTON_API_HOST
+    description: "Spectrum management API host (default https://spectrum.photon.codes)"
+    prompt: "Spectrum API host"
+    password: false
+  - name: PHOTON_DASHBOARD_HOST
+    description: "Dashboard API host (default https://app.photon.codes)"
+    prompt: "Dashboard host"
+    password: false
+  - name: PHOTON_ALLOWED_USERS
+    description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: PHOTON_ALLOW_ALL_USERS
+    description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: PHOTON_REQUIRE_MENTION
+    description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
+    prompt: "Require a mention in group chats?"
+    password: false
+  - name: PHOTON_MENTION_PATTERNS
+    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
+    prompt: "Group mention patterns"
+    password: false
+  - name: PHOTON_HOME_CHANNEL
+    description: "Default Spectrum space ID for cron / notification delivery"
+    prompt: "Home space ID"
+    password: false
+  - name: PHOTON_HOME_CHANNEL_NAME
+    description: "Human label for the home channel"
+    prompt: "Home channel display name"
+    password: false

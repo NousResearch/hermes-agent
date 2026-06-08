@@ -123,6 +123,7 @@ describe('ChatView render isolation', () => {
       onPickImages: vi.fn(),
       onReload: vi.fn(),
       onRemoveAttachment: vi.fn(),
+      onSteer: vi.fn(),
       onSubmit: vi.fn(),
       onThreadMessagesChange: vi.fn(),
       onToggleSelectedPin: vi.fn(),

@@ -68,6 +68,129 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
+---
+
+## MES Inspection Subsystem (`mes-inspection/`)
+
+A standalone MES intelligent inspection system built on the hermes-agent platform.
+Covers 6 components (Nginx, JVM/Tomcat, RabbitMQ, Oracle, ELK, SkyWalking) with
+automated inspection → intelligent diagnosis → fault self-healing → memory/evolution.
+
+### Architecture: Script-First + wakeAgent Gate
+
+Scheduled inspections run as **pure Python scripts** — LLM is only triggered when
+metrics exceed thresholds. This is intentional: scripts detect, LLM diagnoses.
+
+```
+Cron → heartbeat/full_check/deep_analysis (script)
+  → metrics normal? → {"wakeAgent": false} (no LLM cost)
+  → anomaly detected? → report + {"wakeAgent": true} → LLM diagnoses + self-heals
+```
+
+### Key Directory Layout
+
+```
+mes-inspection/
+├── scripts/             # Inspection scripts + debug tools (the load-bearing code)
+│   ├── base_checker.py  # BaseChecker ABC — multi-node, JSON output, exit codes 0/1/2
+│   ├── ssh_executor.py  # SSHExecutor/LocalExecutor/create_executor — SSH/Local abstraction
+│   ├── inspection_runner.py  # Unified runner; load_component_config() + create_checker()
+│   ├── heartbeat.py     # Entry: upstream only, every 2m (lightweight)
+│   ├── full_check.py    # Entry: all 6 components, every 5m
+│   ├── deep_analysis.py # Entry: Oracle+ELK, every 30m
+│   ├── debug_tools.py   # CLI: gc/stack/log subcommands (GC log, thread stack, ES search)
+│   ├── gc_log_analyzer.py      # GcLogAnalyzer — SSH fetch + time-range trim + parse G1/CMS
+│   ├── thread_stack_analyzer.py # ThreadStackAnalyzer — jstack + keyword filter ±N context
+│   ├── es_log_search.py         # EsLogSearcher — ES REST API by host/time/keyword/level
+│   ├── nginx_check.py   # NginxChecker — /status endpoint parsing
+│   ├── jvm_check.py     # JvmChecker — jstat + jmap (via SSH), Tomcat HTTP check
+│   ├── rabbitmq_check.py # RabbitMQChecker — management API
+│   ├── oracle_check.py  # OracleChecker — JDBC (thin driver) or cx_Oracle
+│   ├── elk_check.py     # ElkChecker — ES cluster health + indices
+│   ├── skywalking_check.py # SkyWalkingChecker — GraphQL API
+│   └── upstream_check.py   # UpstreamChecker — nginx_upstream_check_module HTTP
+├── config/
+│   ├── default_thresholds.py  # DEFAULT_THRESHOLDS dict — all component defaults
+│   ├── config_manager.py      # ConfigManager — YAML load + deep merge
+│   ├── cron_jobs.json         # 6 Cron jobs (heartbeat/full/daily/weekly/evolution)
+│   └── mes_inspection.yaml.example  # Full config template
+├── alerter/
+│   ├── feishu_alerter.py  # Feishu card + text POST
+│   └── formatter.py       # Feishu formatter with node_grouped display
+├── self_healing/          # DecisionMatrix, SelfHealer, CodeAnalyzer
+├── memory/                # MemoryLogger — inspection history
+├── evolution/             # StrategyEvolution — DSPy-based skill improvement
+├── gitlab/                # GitLabClient, MrCreator — auto MR for config fixes
+├── skills/                # 9 Hermes Skills (mes-*-check, mes-debug-tools, mes-evolution)
+├── tests/                 # Pytest suite (~172 tests, 14 test files)
+└── vendor/                # Vendored deps (if any)
+```
+
+### Running Tests
+
+```bash
+# Standard (in mes-inspection/ dir)
+python -m pytest tests/ -v --no-header -o "addopts="
+
+# Single test file
+python -m pytest tests/test_gc_log_analyzer.py -v --no-header -o "addopts="
+
+# Single test
+python -m pytest tests/test_gc_log_analyzer.py::TestGcLogParsing::test_parse_g1_young -v -o "addopts="
+```
+
+**IMPORTANT:** Always pass `-o "addopts="` to override pyproject.toml timeout settings.
+The default pytest `addopts` in pyproject.toml includes a timeout that breaks
+subprocess-based tests. This override is required for mes-inspection tests.
+
+**Python for tests:** Use `C:\Users\Administrator\AppData\Local\Programs\Python\Python38\python.exe`
+if the default `python` doesn't have pytest installed.
+
+**Known pre-existing failure:** `test_npe_diff_suggestion` in `test_self_healing.py` —
+unrelated to inspection/debug code. Do not attempt to fix it during inspection work.
+
+### Multi-Node Inspection Model
+
+- **Centralized:** All inspection runs from one controller node
+- **HTTP checks** (Nginx status, RabbitMQ API, ES health, Tomcat HTTP): use `target.url`
+- **Command checks** (jstat, jstack, jmap, log files): use `SSHExecutor` to remote exec
+- `BaseChecker.check()` → `check_all_targets()` → `check_node(target)` → `_merge_node_reports()`
+- `create_executor(target)` auto-selects `LocalExecutor` (localhost) or `SSHExecutor` (remote)
+- `get_targets()` returns a list from `config["targets"]`; backward-compatible when missing
+
+### Script Output Convention
+
+All scripts print JSON to stdout and use exit codes:
+- `0` = NORMAL (all healthy)
+- `1` = WARNING (degraded)
+- `2` = CRITICAL (down/unreachable)
+
+The `===INSPECTION_REPORT===` / `===END===` wrapper separates human-readable
+report from the `{"wakeAgent": true/false}` gate for the Cron agent.
+
+### Debug Tools CLI
+
+```bash
+python scripts/debug_tools.py gc --host 10.0.0.1 --start 2026-06-05T01:00:00 --end 2026-06-05T02:00:00
+python scripts/debug_tools.py stack --host 10.0.0.1 --keyword DataRecordServiceImpl --context-lines 10
+python scripts/debug_tools.py log --host-name 39QEMES-Tomcat-Crontab01 --start 2026-06-05T01:00:00 --end 2026-06-05T02:00:00 --keyword Exception --level ERROR
+```
+
+### ES Index Pattern
+
+MES application logs use Filebeat → ES with index `39qjmes-YYYY.MM.DD`.
+Cross-day queries expand to comma-separated index list automatically.
+Field mapping: `_source.host.name` = hostname, `_source.message` = log line,
+`_source.@timestamp` = ingestion time.
+
+### SED Escaping Pitfall
+
+When building sed patterns for remote commands, use `_escape_sed_pattern()` to
+escape `\`, `/`, `&` for sed syntax. Use `shlex.quote()` only for shell-level
+args (log_path, pid, process_name). `shlex.quote()` wraps in single quotes
+which breaks sed's `s/pattern/replacement/` syntax — this was the root cause of
+a multi-hour debugging session.
+
 ## TypeScript Style
 
 Applies to TypeScript across eve: desktop, TUI, website, and future TS packages.

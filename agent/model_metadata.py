@@ -111,6 +111,18 @@ _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
+# ── Per-model context-length probe cache ──────────────────────────────────
+# Caches results of _query_local_context_length and _query_ollama_api_show
+# so local/vLLM endpoints aren't re-probed on every query.
+_local_ctx_cache: Dict[str, Optional[int]] = {}
+_local_ctx_cache_time: Dict[str, float] = {}
+_LOCAL_CTX_CACHE_TTL = 300  # 5 minutes; matches _ENDPOINT_MODEL_CACHE_TTL
+
+# ── Local server type detection cache ─────────────────────────────────────
+_server_type_cache: Dict[str, Optional[str]] = {}
+_server_type_cache_time: Dict[str, float] = {}
+_SERVER_TYPE_CACHE_TTL = 300  # 5 minutes
+
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
 # step down on context-length errors until one works.  Tier[0] is also the
@@ -477,10 +489,20 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
+    Results are cached in-memory per base_url for ``_SERVER_TYPE_CACHE_TTL``
+    seconds to avoid re-probing on every query.
     """
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return None
+    now = time.time()
+    cached = _server_type_cache.get(normalized)
+    cached_at = _server_type_cache_time.get(normalized, 0)
+    if cached is not None and (now - cached_at) < _SERVER_TYPE_CACHE_TTL:
+        return cached
+
     import httpx
 
-    normalized = _normalize_base_url(base_url)
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
@@ -493,6 +515,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
             try:
                 r = client.get(f"{server_url}/api/v1/models")
                 if r.status_code == 200:
+                    _server_type_cache[normalized] = "lm-studio"
+                    _server_type_cache_time[normalized] = now
                     return "lm-studio"
             except Exception:
                 pass
@@ -505,6 +529,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                     try:
                         data = r.json()
                         if "models" in data:
+                            _server_type_cache[normalized] = "ollama"
+                            _server_type_cache_time[normalized] = now
                             return "ollama"
                     except Exception:
                         pass
@@ -516,6 +542,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 if r.status_code != 200:
                     r = client.get(f"{server_url}/props")  # fallback for older builds
                 if r.status_code == 200 and "default_generation_settings" in r.text:
+                    _server_type_cache[normalized] = "llamacpp"
+                    _server_type_cache_time[normalized] = now
                     return "llamacpp"
             except Exception:
                 pass
@@ -525,12 +553,16 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 if r.status_code == 200:
                     data = r.json()
                     if "version" in data:
+                        _server_type_cache[normalized] = "vllm"
+                        _server_type_cache_time[normalized] = now
                         return "vllm"
             except Exception:
                 pass
     except Exception:
         pass
 
+    _server_type_cache[normalized] = None
+    _server_type_cache_time[normalized] = now
     return None
 
 
@@ -1077,7 +1109,19 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
       2. ``parameters`` → ``num_ctx`` — server-side Modelfile override
     The order is flipped vs ``query_ollama_num_ctx()`` because local users
     control ``num_ctx`` themselves; hosted users can't.
+
+    Results are cached in-memory per (model, base_url) for
+    ``_LOCAL_CTX_CACHE_TTL`` seconds to avoid re-probing on every query.
     """
+    # Check in-memory cache first
+    model = _strip_provider_prefix(model)
+    cache_key = f"{model}@{base_url}"
+    now = time.time()
+    cached = _local_ctx_cache.get(cache_key)
+    cached_at = _local_ctx_cache_time.get(cache_key, 0)
+    if cached is not None and (now - cached_at) < _LOCAL_CTX_CACHE_TTL:
+        return cached
+
     import httpx
 
     server_url = base_url.rstrip("/")
@@ -1090,6 +1134,8 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
         with httpx.Client(timeout=5.0, headers=headers) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": model})
             if resp.status_code != 200:
+                _local_ctx_cache[cache_key] = None
+                _local_ctx_cache_time[cache_key] = now
                 return None
             data = resp.json()
 
@@ -1100,6 +1146,8 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
                 if "context_length" in key and isinstance(value, (int, float)):
                     ctx = int(value)
                     if ctx >= 1024:
+                        _local_ctx_cache[cache_key] = ctx
+                        _local_ctx_cache_time[cache_key] = now
                         return ctx
 
             # Fall back to num_ctx from Modelfile parameters (rare on Cloud)
@@ -1112,11 +1160,16 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
                             try:
                                 ctx = int(parts[-1])
                                 if ctx >= 1024:
+                                    _local_ctx_cache[cache_key] = ctx
+                                    _local_ctx_cache_time[cache_key] = now
                                     return ctx
                             except ValueError:
                                 pass
     except Exception:
         pass
+
+    _local_ctx_cache[cache_key] = None
+    _local_ctx_cache_time[cache_key] = now
     return None
 
 
@@ -1157,12 +1210,21 @@ def _model_name_suggests_grok_4_3(model: str) -> bool:
 
 
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
-    """Query a local server for the model's context length."""
-    import httpx
+    """Query a local server for the model's context length.
 
-    # Strip recognised provider prefix (e.g., "local:model-name" → "model-name").
-    # Ollama "model:tag" colons (e.g. "qwen3.5:27b") are intentionally preserved.
+    Results are cached in-memory per (model, base_url) for
+    ``_LOCAL_CTX_CACHE_TTL`` seconds to avoid re-probing on every query.
+    """
+    # Check in-memory cache first
     model = _strip_provider_prefix(model)
+    cache_key = f"{model}@{base_url}"
+    now = time.time()
+    cached = _local_ctx_cache.get(cache_key)
+    cached_at = _local_ctx_cache_time.get(cache_key, 0)
+    if cached is not None and (now - cached_at) < _LOCAL_CTX_CACHE_TTL:
+        return cached
+
+    import httpx
 
     # Strip /v1 suffix to get the server root
     server_url = base_url.rstrip("/")
@@ -1196,14 +1258,20 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                                 parts = line.strip().split()
                                 if len(parts) >= 2:
                                     try:
-                                        return int(parts[-1])
+                                        ctx = int(parts[-1])
+                                        _local_ctx_cache[cache_key] = ctx
+                                        _local_ctx_cache_time[cache_key] = now
+                                        return ctx
                                     except ValueError:
                                         pass
                     # Fall back to GGUF model_info context_length (training max)
                     model_info = data.get("model_info", {})
                     for key, value in model_info.items():
                         if "context_length" in key and isinstance(value, (int, float)):
-                            return int(value)
+                            ctx = int(value)
+                            _local_ctx_cache[cache_key] = ctx
+                            _local_ctx_cache_time[cache_key] = now
+                            return ctx
 
             # LM Studio native API: /api/v1/models returns max_context_length.
             # This is more reliable than the OpenAI-compat /v1/models which
@@ -1221,6 +1289,8 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                                 cfg = inst.get("config", {})
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
+                                    _local_ctx_cache[cache_key] = int(ctx)
+                                    _local_ctx_cache_time[cache_key] = now
                                     return int(ctx)
                             break
 
@@ -1231,6 +1301,8 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                 # vLLM returns max_model_len
                 ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
                 if ctx and isinstance(ctx, (int, float)):
+                    _local_ctx_cache[cache_key] = int(ctx)
+                    _local_ctx_cache_time[cache_key] = now
                     return int(ctx)
 
             # Try /v1/models and find the model in the list.
@@ -1243,10 +1315,14 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                     if _model_id_matches(m.get("id", ""), model):
                         ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
                         if ctx and isinstance(ctx, (int, float)):
+                            _local_ctx_cache[cache_key] = int(ctx)
+                            _local_ctx_cache_time[cache_key] = now
                             return int(ctx)
     except Exception:
         pass
 
+    _local_ctx_cache[cache_key] = None
+    _local_ctx_cache_time[cache_key] = now
     return None
 
 
@@ -1645,6 +1721,11 @@ def get_model_context_length(
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
+            # Persist to disk cache so subsequent queries skip the endpoint probe
+            # entirely rather than relying solely on the 5-minute in-memory TTL
+            # of fetch_endpoint_model_metadata.
+            if provider != "lmstudio":
+                save_context_length(model, base_url, context_length)
             return context_length
         if not _is_known_provider_base_url(base_url):
             # 2b. Ollama native /api/show — any URL might be an Ollama server

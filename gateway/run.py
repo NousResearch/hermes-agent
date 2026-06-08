@@ -7174,6 +7174,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
 
+        if canonical == "cron-recipe":
+            return await self._handle_cron_recipe_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -9269,6 +9272,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug("suggestions command failed: %s", e)
             return f"Suggestions command failed: {e}"
+
+    async def _handle_cron_recipe_command(self, event: MessageEvent) -> str:
+        """Handle /cron-recipe in the gateway.
+
+        Delegates to the shared handler so CLI, TUI, and gateway never drift.
+        Origin is built from the event source so a created recipe job delivers
+        back to this chat/thread.
+        """
+        args = (event.get_command_args() or "").strip()
+        source = event.source
+        origin = None
+        try:
+            platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
+            chat_id = getattr(source, "chat_id", None)
+            if platform and chat_id:
+                origin = {
+                    "platform": platform,
+                    "chat_id": str(chat_id),
+                    "chat_name": getattr(source, "chat_name", None),
+                    "thread_id": getattr(source, "thread_id", None),
+                }
+        except Exception:
+            origin = None
+        try:
+            from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
+
+            return handle_cron_recipe_command(args, origin=origin)
+        except Exception as e:
+            logger.debug("cron-recipe command failed: %s", e)
+            return f"Cron recipe command failed: {e}"
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)

@@ -1,0 +1,6 @@
+name: zupply-overseer
+version: "0.1.0"
+description: "Deterministic Zupply business-process preflight gate for high-risk side effects: courier pickup emails, payment execution, quote margins, and branded PDF workflow."
+author: "Zupply / Hermes"
+hooks:
+  - pre_tool_call

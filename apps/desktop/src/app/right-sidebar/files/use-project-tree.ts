@@ -5,8 +5,12 @@ import { useCallback, useEffect, useMemo } from 'react'
 import { clearProjectDirCache, readProjectDir } from './ipc'
 
 export interface TreeNode {
-  /** Absolute filesystem path. Doubles as react-arborist node id. */
+  /** Encoded node id — safe for react-arborist internal keying even when
+   *  the filesystem path contains Unicode or spaces. */
   id: string
+  /** Original absolute filesystem path. Use this for all I/O operations
+   *  (readProjectDir, onActivateFile, drag-and-drop, etc.). */
+  path: string
   name: string
   /** Drives arborist's leaf-vs-expandable decision via childrenAccessor. */
   isDirectory: boolean
@@ -20,8 +24,8 @@ export interface TreeNode {
 
 const PLACEHOLDER_ID = '__loading__'
 
-function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
-  return { id: path, isDirectory, name }
+function makeNode(fsPath: string, name: string, isDirectory: boolean): TreeNode {
+  return { id: encodeURIComponent(fsPath), path: fsPath, isDirectory, name }
 }
 
 function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: TreeNode) => TreeNode): TreeNode[] {
@@ -212,7 +216,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
         }
       })
 
-      const { entries, error } = await readProjectDir(id, cwd)
+      const { entries, error } = await readProjectDir(decodeURIComponent(id), cwd)
 
       inflight.delete(id)
 

@@ -371,8 +371,9 @@ export function Pane({
             {
               [edge]: 0,
               width: overlayWidth,
-              // Inner-edge lift — Brooklyn's tuned value (left); y-offset sign flips for right.
-              '--reveal-shadow': `0px ${side === 'left' ? '-18px' : '18px'} 18px -5px #0000003b`,
+              // Brooklyn's tuned offset shadow, verbatim. Mirror axis is offset-x
+              // (0 here → same both sides); never flip the y/blur/spread.
+              '--reveal-shadow': '0px -18px 18px -5px #0000003b',
               transitionDuration: `${HOVER_REVEAL_SLIDE_MS}ms`,
               transitionTimingFunction: HOVER_REVEAL_EASE,
               '--reveal-enter-delay': `${HOVER_REVEAL_ENTER_DELAY_MS}ms`

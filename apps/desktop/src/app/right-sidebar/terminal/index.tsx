@@ -5,6 +5,8 @@ import { useStore } from '@nanostores/react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { $terminalTakeover, setRightSidebarTab, setTerminalTakeover } from '../store'
@@ -18,19 +20,21 @@ interface TerminalTabProps {
 }
 
 export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
+  const { t } = useI18n()
   const { addSelectionToChat, hostRef, selection, selectionStyle, shellName, status } = useTerminalSession({
     cwd,
     onAddSelectionToChat
   })
 
   const takeover = useStore($terminalTakeover)
-  const label = takeover ? 'Return to split view' : 'Focus terminal view'
+  const label = takeover ? t.rightSidebar.terminalSplit : t.rightSidebar.terminalFocus
 
   const toggleTakeover = () => {
     // Pre-select the Terminal tab so the slot is ready to host us on return.
     if (takeover) {
       setRightSidebarTab('terminal')
     }
+
     setTerminalTakeover(!takeover)
   }
 
@@ -38,17 +42,18 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 px-2.5">
         <SidebarPanelLabel className="text-white!">{shellName}</SidebarPanelLabel>
-        <Button
-          aria-label={label}
-          className="ml-auto size-6 rounded-md text-white!"
-          onClick={toggleTakeover}
-          size="icon"
-          title={label}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name={takeover ? 'screen-normal' : 'screen-full'} size="0.875rem" />
-        </Button>
+        <Tip label={label}>
+          <Button
+            aria-label={label}
+            className="ml-auto size-6 rounded-md text-white!"
+            onClick={toggleTakeover}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name={takeover ? 'screen-normal' : 'screen-full'} size="0.875rem" />
+          </Button>
+        </Tip>
       </div>
       <div className="relative min-h-0 flex-1 bg-[#002b36] p-2">
         {status === 'starting' && (
@@ -74,7 +79,7 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
               type="button"
               variant="secondary"
             >
-              Add to chat
+              {t.rightSidebar.addToChat}
               <span className="ml-1 text-[0.6rem] text-(--ui-text-tertiary)">{addSelectionShortcutLabel()}</span>
             </Button>
           </div>

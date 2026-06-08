@@ -17,6 +17,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
@@ -50,6 +51,8 @@ interface ProviderGroup {
 }
 
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
   const [search, setSearch] = useState('')
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
@@ -95,9 +98,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   return (
     <>
       <DropdownMenuSearch
-        aria-label="Search models"
+        aria-label={copy.search}
         onValueChange={setSearch}
-        placeholder="Search models"
+        placeholder={copy.search}
         value={search}
       />
 
@@ -122,7 +125,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         </DropdownMenuItem>
       ) : groups.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
-          No models found
+          {copy.noModels}
         </DropdownMenuItem>
       ) : (
         <div className="max-h-80 overflow-y-auto py-0.5">
@@ -157,11 +160,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // Grayed text: active row shows live state (Fast + effort);
                 // others show a fast-capability hint.
                 const meta = isCurrent
-                  ? [fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null, reasoningEffortLabel(currentReasoningEffort) || 'Med']
+                  ? [
+                      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
+                      reasoningEffortLabel(currentReasoningEffort) || copy.medium
+                    ]
                       .filter(Boolean)
                       .join(' ')
                   : caps?.fast || family.fastId
-                    ? 'Fast'
+                    ? copy.fast
                     : ''
 
                 // Every row is a hover-Edit submenu trigger. Activating it
@@ -178,7 +184,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 return (
                   <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                     <DropdownMenuSubTrigger
-                      className={cn(dropdownMenuRow, 'cursor-pointer')}
+                      className={dropdownMenuRow}
                       hideChevron
                       onClick={activate}
                       onKeyDown={event => {
@@ -212,10 +218,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       <DropdownMenuSeparator className="mx-0" />
 
       <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'cursor-pointer text-(--ui-text-tertiary)')}
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
       >
-        Edit Models…
+        {copy.editModels}
       </DropdownMenuItem>
     </>
   )

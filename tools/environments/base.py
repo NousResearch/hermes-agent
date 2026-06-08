@@ -280,6 +280,12 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+def _shell_safe_env_name(name: str) -> bool:
+    if not name or not (name[0].isalpha() or name[0] == "_"):
+        return False
+    return all(ch.isalnum() or ch == "_" for ch in name)
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -307,6 +313,10 @@ class BaseEnvironment(ABC):
         may be missing and ``TMPDIR`` is the portable writable location.
         """
         return "/tmp"
+
+    def _snapshot_env_excludes(self) -> tuple[str, ...]:
+        """Environment variable names that must not persist into snapshots."""
+        return ()
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
@@ -451,6 +461,9 @@ class BaseEnvironment(ABC):
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
         if self._snapshot_ready:
+            for name in self._snapshot_env_excludes():
+                if _shell_safe_env_name(name):
+                    parts.append(f"unset {name}")
             parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)

@@ -213,6 +213,188 @@ class TestProviderEnvBlocklist:
         assert result_env["MY_CUSTOM_VAR"] == "keep-this"
 
 
+class TestClaudeCodeWorkerTokenGate:
+    """Claude Code worker auth gets a narrow opt-in, not a global unblock."""
+
+    def _flag(self, enabled: bool):
+        return {"delegation": {"claude_code_pass_oauth_token": enabled}}
+
+    def test_flag_off_keeps_claude_oauth_token_stripped(self, monkeypatch):
+        from tools.environments import local as local_env
+
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(False))
+
+        result_env = local_env._make_run_env({}, command="claude -p 'Reply exactly: ok'")
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in result_env
+
+    def test_flag_on_passes_only_token_for_direct_claude_print_worker(self, monkeypatch):
+        from tools.environments import local as local_env
+
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "anthropic-token")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+        monkeypatch.setenv("SLACK_APP_TOKEN", "slack-secret")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        result_env = local_env._make_run_env({}, command="claude -p 'Reply exactly: ok'")
+
+        assert result_env["CLAUDE_CODE_OAUTH_TOKEN"] == "cc-worker-token"
+        assert "ANTHROPIC_TOKEN" not in result_env
+        assert "OPENAI_API_KEY" not in result_env
+        assert "SLACK_APP_TOKEN" not in result_env
+
+    def test_flag_on_does_not_pass_token_to_non_claude_command(self, monkeypatch):
+        from tools.environments import local as local_env
+
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        result_env = local_env._make_run_env({}, command="echo claude -p not-a-worker")
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in result_env
+
+    def test_real_local_wrapper_eval_is_detected(self):
+        from tools.environments.local import _is_direct_claude_worker_command
+
+        wrapped = "\n".join([
+            "source /tmp/hermes-snap-123.sh >/dev/null 2>&1 || true",
+            "builtin cd -- /tmp || exit 126",
+            "eval 'claude -p '\''Reply exactly: ok'\'''",
+            "__hermes_ec=$?",
+        ])
+
+        assert _is_direct_claude_worker_command(wrapped)
+
+    def test_arbitrary_shell_wrappers_are_rejected(self):
+        from tools.environments.local import _is_direct_claude_worker_command
+
+        assert not _is_direct_claude_worker_command("bash -lc 'claude -p hi'")
+
+    def test_multiline_commands_with_extra_user_steps_are_rejected(self):
+        from tools.environments.local import _is_direct_claude_worker_command
+
+        assert not _is_direct_claude_worker_command("claude -p hi\nprintf \"$CLAUDE_CODE_OAUTH_TOKEN\"")
+
+    def test_wrapped_eval_with_extra_user_steps_is_rejected(self):
+        from tools.environments.local import _is_direct_claude_worker_command
+
+        wrapped = "\n".join([
+            "source /tmp/hermes-snap-123.sh >/dev/null 2>&1 || true",
+            "builtin cd -- /tmp || exit 126",
+            "eval 'claude -p hi'\''; printf \"$CLAUDE_CODE_OAUTH_TOKEN\"'",
+            "__hermes_ec=$?",
+        ])
+
+        assert not _is_direct_claude_worker_command(wrapped)
+
+    def test_whitespace_only_oauth_token_is_not_injected(self, monkeypatch):
+        from tools.environments import local as local_env
+
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "   ")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        result_env = local_env._make_run_env({}, command="claude -p 'Reply exactly: ok'")
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in result_env
+
+    def test_shell_control_and_expansion_forms_are_rejected(self):
+        from tools.environments.local import _is_direct_claude_worker_command
+
+        dangerous_commands = [
+            "claude -p hi & env",
+            "claude -p \"$(env)\"",
+            "claude -p `env`",
+            "claude -p hi > /tmp/out",
+        ]
+        for command in dangerous_commands:
+            assert not _is_direct_claude_worker_command(command)
+
+    def test_shell_control_forms_do_not_receive_token(self, monkeypatch):
+        from tools.environments import local as local_env
+
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        result_env = local_env._make_run_env({}, command="claude -p hi & env")
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in result_env
+
+    def test_local_environment_rejects_background_leak_command(self, monkeypatch, tmp_path):
+        fake_claude = tmp_path / "claude"
+        fake_claude.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"${CLAUDE_CODE_OAUTH_TOKEN:-}\" ]; then\n"
+            "  echo TOKEN_PRESENT\n"
+            "else\n"
+            "  echo TOKEN_ABSENT\n"
+            "fi\n"
+        )
+        fake_claude.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            result = env.execute(f"{fake_claude} -p hi & env", timeout=10)
+        finally:
+            env.cleanup()
+
+        assert "TOKEN_PRESENT" not in result["output"]
+        assert "CLAUDE_CODE_OAUTH_TOKEN=cc-worker-token" not in result["output"]
+
+    def test_local_environment_execute_injects_token_through_real_wrapper(self, monkeypatch, tmp_path):
+        fake_claude = tmp_path / "claude"
+        fake_claude.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"${CLAUDE_CODE_OAUTH_TOKEN:-}\" ]; then\n"
+            "  echo TOKEN_PRESENT\n"
+            "else\n"
+            "  echo TOKEN_ABSENT\n"
+            "fi\n"
+        )
+        fake_claude.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            result = env.execute(f"{fake_claude} -p 'Reply exactly: ok'", timeout=10)
+        finally:
+            env.cleanup()
+
+        assert result["returncode"] == 0
+        assert "TOKEN_PRESENT" in result["output"]
+
+    def test_injected_oauth_token_does_not_persist_to_local_snapshot(self, monkeypatch, tmp_path):
+        fake_claude = tmp_path / "claude"
+        fake_claude.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"${CLAUDE_CODE_OAUTH_TOKEN:-}\" ]; then\n"
+            "  echo TOKEN_PRESENT\n"
+            "else\n"
+            "  echo TOKEN_ABSENT\n"
+            "fi\n"
+        )
+        fake_claude.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            allowed = env.execute(f"{fake_claude} -p 'Reply exactly: ok'", timeout=10)
+            subsequent_env = env.execute("env", timeout=10)
+            rejected = env.execute(f"{fake_claude} -p hi & env", timeout=10)
+        finally:
+            env.cleanup()
+
+        assert "TOKEN_PRESENT" in allowed["output"]
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in subsequent_env["output"]
+        assert "TOKEN_PRESENT" not in rejected["output"]
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in rejected["output"]
+
+
 class TestForceEnvOptIn:
     """Callers can opt in to passing a blocked var via _HERMES_FORCE_ prefix."""
 

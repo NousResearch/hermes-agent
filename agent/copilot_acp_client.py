@@ -103,9 +103,62 @@ def _resolve_home_dir() -> str:
     return "/tmp"
 
 
-def _build_subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
+_ACP_ENV_ALLOWLIST = frozenset({
+    "HOME",
+    "PATH",
+    "LANG",
+    "TERM",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "HERMES_HOME",
+    "HERMES_PROFILE",
+})
+_ACP_ENV_PREFIX_ALLOWLIST = ("LC_",)
+_ACP_DEFAULT_PATH = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin"
+_CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def _is_truthy_config_value(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _claude_code_oauth_token_passthrough_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        delegation = cfg.get("delegation") or {}
+        return _is_truthy_config_value(delegation.get("claude_code_pass_oauth_token", False))
+    except Exception:
+        return False
+
+
+def _is_claude_acp_command(command: str | None) -> bool:
+    basename = os.path.basename((command or "").strip().strip('"\''))
+    return basename in {"claude", "claude.exe"}
+
+
+def _build_subprocess_env(command: str | None = None) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in _ACP_ENV_ALLOWLIST or key.startswith(_ACP_ENV_PREFIX_ALLOWLIST):
+            env[key] = value
+
     env["HOME"] = _resolve_home_dir()
+    if not env.get("PATH"):
+        env["PATH"] = _ACP_DEFAULT_PATH
+
+    token = os.environ.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV, "").strip()
+    if token and _is_claude_acp_command(command) and _claude_code_oauth_token_passthrough_enabled():
+        env[_CLAUDE_CODE_OAUTH_TOKEN_ENV] = token
+
     return env
 
 
@@ -445,7 +498,7 @@ class CopilotACPClient:
                 text=True,
                 bufsize=1,
                 cwd=self._acp_cwd,
-                env=_build_subprocess_env(),
+                env=_build_subprocess_env(self._acp_command),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

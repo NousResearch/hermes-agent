@@ -124,6 +124,14 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_delegation_claude_oauth_flag_goes_to_config_despite_token_suffix(self, _isolated_hermes_home):
+        set_config_value("delegation.claude_code_pass_oauth_token", "true")
+
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "claude_code_pass_oauth_token: true" in config
+        assert "CLAUDE_CODE_PASS_OAUTH_TOKEN" not in env_content
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

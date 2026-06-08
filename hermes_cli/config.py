@@ -1703,6 +1703,11 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # OFF by default. When true, Hermes may pass CLAUDE_CODE_OAUTH_TOKEN
+        # only to direct Claude Code worker subprocesses (`claude -p` / ACP
+        # command basename `claude`). General terminal/provider secret
+        # blocklists remain intact.
+        "claude_code_pass_oauth_token": False,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -5998,8 +6003,19 @@ def set_config_value(key: str, value: str):
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
         'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
-    
-    if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
+
+    config_key_exceptions = {
+        "delegation.claude_code_pass_oauth_token",
+    }
+
+    if (
+        key.lower() not in config_key_exceptions
+        and (
+            key.upper() in api_keys
+            or key.upper().endswith(('_API_KEY', '_TOKEN'))
+            or key.upper().startswith('TERMINAL_SSH')
+        )
+    ):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return

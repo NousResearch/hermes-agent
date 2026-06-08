@@ -205,3 +205,71 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+# ── Claude Code OAuth worker env gate ─────────────────────────────────────
+
+def _delegation_flag(enabled: bool):
+    return {"delegation": {"claude_code_pass_oauth_token": enabled}}
+
+
+def test_acp_env_does_not_copy_collateral_secrets(monkeypatch, tmp_path):
+    from agent import copilot_acp_client as acp
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "anthropic-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "slack-secret")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _delegation_flag(False))
+
+    env = acp._build_subprocess_env("copilot")
+
+    assert env["HOME"]
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert "ANTHROPIC_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "SLACK_APP_TOKEN" not in env
+
+
+def test_acp_env_passes_claude_oauth_only_for_claude_command_with_flag(monkeypatch, tmp_path):
+    from agent import copilot_acp_client as acp
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "anthropic-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _delegation_flag(True))
+
+    env = acp._build_subprocess_env("/opt/homebrew/bin/claude")
+
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "cc-worker-token"
+    assert "ANTHROPIC_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_acp_env_does_not_pass_claude_oauth_to_non_claude_commands(monkeypatch, tmp_path):
+    from agent import copilot_acp_client as acp
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _delegation_flag(True))
+
+    env = acp._build_subprocess_env("copilot")
+
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_acp_env_does_not_pass_whitespace_only_claude_oauth(monkeypatch, tmp_path):
+    from agent import copilot_acp_client as acp
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "   ")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _delegation_flag(True))
+
+    env = acp._build_subprocess_env("claude")
+
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env

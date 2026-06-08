@@ -4,6 +4,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -203,6 +204,151 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+_CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def _is_truthy_config_value(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _claude_code_oauth_token_passthrough_enabled() -> bool:
+    """Return whether config explicitly opts into Claude worker token passing."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        delegation = cfg.get("delegation") or {}
+        return _is_truthy_config_value(delegation.get("claude_code_pass_oauth_token", False))
+    except Exception:
+        return False
+
+
+def _is_claude_executable(token: str) -> bool:
+    basename = os.path.basename((token or "").strip().strip('"\''))
+    return basename in {"claude", "claude.exe"}
+
+
+def _looks_like_env_assignment(token: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token or ""))
+
+
+def _has_shell_active_chars(command: str) -> bool:
+    # The token is injected into a bash wrapper env. Any shell control,
+    # expansion, substitution, or redirection syntax can run collateral code
+    # before/alongside Claude and must fail safe.
+    return any(ch in command for ch in ("$", "`", "&", ";", "|", "<", ">"))
+
+
+def _tokens_are_direct_claude_print_command(tokens: list[str]) -> bool:
+    """Conservative detector for `claude -p` / `env FOO=bar claude -p`."""
+    if not tokens:
+        return False
+
+    if any(token in {";", "&&", "||", "|"} or any(op in token for op in (";", "&&", "||", "|")) for token in tokens):
+        return False
+
+    index = 0
+    if os.path.basename(tokens[index]) in {"env", "env.exe"}:
+        index += 1
+        while index < len(tokens) and _looks_like_env_assignment(tokens[index]):
+            index += 1
+        if index >= len(tokens):
+            return False
+
+    if not _is_claude_executable(tokens[index]):
+        return False
+
+    return any(token in {"-p", "--print"} for token in tokens[index + 1:])
+
+
+def _shlex_split(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return []
+
+
+def _is_benign_hermes_wrapper_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return True
+    if stripped.startswith("source "):
+        return "hermes-snap-" in stripped and ">/dev/null 2>&1 || true" in stripped
+    if stripped.startswith("builtin cd "):
+        return stripped.endswith("|| exit 126")
+    if stripped == "__hermes_ec=$?":
+        return True
+    if stripped.startswith("export -p > "):
+        return "hermes-snap-" in stripped and stripped.endswith("2>/dev/null || true")
+    if stripped.startswith("pwd -P > "):
+        return "hermes-cwd-" in stripped and stripped.endswith("2>/dev/null || true")
+    if stripped.startswith("printf '\\n__HERMES_CWD_"):
+        return "$(pwd -P)" in stripped
+    if stripped == "exit $__hermes_ec":
+        return True
+    if stripped == f"unset {_CLAUDE_CODE_OAUTH_TOKEN_ENV}":
+        return True
+    return False
+
+
+def _is_direct_claude_worker_command(command: str | None, *, _depth: int = 0) -> bool:
+    """True only for direct Claude Code print-mode worker commands.
+
+    This intentionally accepts Hermes' own multi-line wrapper (`eval '<cmd>'`)
+    but rejects arbitrary shell wrappers such as `bash -lc 'claude -p ...'`.
+    """
+    if not command or _depth > 3:
+        return False
+    command = str(command).strip()
+    if not command:
+        return False
+
+    if "\n" not in command:
+        if _has_shell_active_chars(command):
+            return False
+        if _tokens_are_direct_claude_print_command(_shlex_split(command)):
+            return True
+
+    found_worker_line = False
+    for raw_line in command.splitlines():
+        line = raw_line.strip()
+        if _is_benign_hermes_wrapper_line(line):
+            continue
+
+        tokens = _shlex_split(line)
+        if tokens and tokens[0] == "eval":
+            candidate = " ".join(tokens[1:])
+            if candidate and _is_direct_claude_worker_command(candidate, _depth=_depth + 1):
+                found_worker_line = True
+                continue
+            return False
+
+        if _tokens_are_direct_claude_print_command(tokens):
+            found_worker_line = True
+            continue
+
+        return False
+
+    return found_worker_line
+
+
+def _maybe_inject_claude_code_oauth_token(run_env: dict[str, str], command: str | None) -> None:
+    token = os.environ.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV, "").strip()
+    if not token:
+        return
+    if not _claude_code_oauth_token_passthrough_enabled():
+        return
+    if not _is_direct_claude_worker_command(command):
+        return
+    run_env[_CLAUDE_CODE_OAUTH_TOKEN_ENV] = token
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -300,7 +446,7 @@ _SANE_PATH = (
 )
 
 
-def _make_run_env(env: dict) -> dict:
+def _make_run_env(env: dict, command: str | None = None) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
@@ -347,6 +493,8 @@ def _make_run_env(env: dict) -> dict:
                 run_env[var_name] = value
     except Exception:
         pass
+
+    _maybe_inject_claude_code_oauth_token(run_env, command)
 
     return run_env
 
@@ -448,6 +596,9 @@ class LocalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 
+    def _snapshot_env_excludes(self) -> tuple[str, ...]:
+        return (_CLAUDE_CODE_OAUTH_TOKEN_ENV,)
+
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.
 
@@ -511,7 +662,7 @@ class LocalEnvironment(BaseEnvironment):
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
+        run_env = _make_run_env(self.env, command=cmd_string)
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

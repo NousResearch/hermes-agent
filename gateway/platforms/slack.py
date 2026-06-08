@@ -370,6 +370,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        # Multi-agent operator mesh state tracking (slice 19: error/unavailable state)
+        # Tracks operator states: operator_id -> {"state": str, "error": str|None, "since": float}
+        self._operator_states: Dict[str, Dict[str, Any]] = {}
+        self._OPERATOR_STATE_MAX = 1000  # cap to avoid unbounded growth
+        self._operator_state_lock = asyncio.Lock()
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -543,6 +548,124 @@ class SlackAdapter(BasePlatformAdapter):
         except RuntimeError:
             return
         loop.create_task(self._restart_socket_mode("socket task exited"))
+
+    # -------------------------------------------------------------------------
+    # Multi-agent operator mesh state management (slice 19)
+    # -------------------------------------------------------------------------
+
+    async def set_operator_state(
+        self,
+        operator_id: str,
+        state: str,
+        error: Optional[str] = None,
+    ) -> None:
+        """Set the state of an operator in the multi-agent mesh.
+
+        Args:
+            operator_id: Unique identifier for the operator (e.g., profile name)
+            state: One of "available", "busy", "error", "unavailable"
+            error: Optional error message when state is "error" or "unavailable"
+        """
+        async with self._operator_state_lock:
+            # Enforce max entries to prevent unbounded growth
+            if len(self._operator_states) >= self._OPERATOR_STATE_MAX:
+                # Remove oldest entry
+                oldest = min(
+                    self._operator_states.items(),
+                    key=lambda x: x[1].get("since", 0),
+                )
+                del self._operator_states[oldest[0]]
+
+            self._operator_states[operator_id] = {
+                "state": state,
+                "error": error,
+                "since": time.monotonic(),
+            }
+
+        # Log state transitions for observability
+        if state in ("error", "unavailable"):
+            logger.warning(
+                "[Slack] Operator %s is now %s%s",
+                operator_id,
+                state,
+                f": {error}" if error else "",
+            )
+        else:
+            logger.info("[Slack] Operator %s is now %s", operator_id, state)
+
+    async def get_operator_state(self, operator_id: str) -> Optional[Dict[str, Any]]:
+        """Get the current state of an operator.
+
+        Returns:
+            Dict with keys: state, error, since; or None if operator unknown.
+        """
+        async with self._operator_state_lock:
+            return self._operator_states.get(operator_id)
+
+    async def list_operators(self) -> Dict[str, Dict[str, Any]]:
+        """List all operators and their states.
+
+        Returns:
+            Dict mapping operator_id -> state info
+        """
+        async with self._operator_state_lock:
+            return dict(self._operator_states)
+
+    async def remove_operator(self, operator_id: str) -> bool:
+        """Remove an operator from tracking.
+
+        Returns:
+            True if operator was removed, False if not found.
+        """
+        async with self._operator_state_lock:
+            if operator_id in self._operator_states:
+                del self._operator_states[operator_id]
+                return True
+            return False
+
+    def is_operator_available(self, operator_id: str) -> bool:
+        """Check if an operator is available for work.
+
+        This is a synchronous check for use in routing decisions.
+        For authoritative state, use get_operator_state().
+        """
+        info = self._operator_states.get(operator_id)
+        if info is None:
+            return False
+        return info.get("state") == "available"
+
+    async def mark_operator_error(
+        self,
+        operator_id: str,
+        error: str,
+        retryable: bool = True,
+    ) -> None:
+        """Mark an operator as being in an error state.
+
+        Args:
+            operator_id: Unique identifier for the operator
+            error: Error message describing what went wrong
+            retryable: Whether the error is expected to be transient
+        """
+        state = "error" if retryable else "unavailable"
+        await self.set_operator_state(operator_id, state, error)
+
+    async def clear_operator_error(self, operator_id: str) -> bool:
+        """Clear an operator's error state and mark as available.
+
+        Returns:
+            True if state was cleared, False if operator not found.
+        """
+        async with self._operator_state_lock:
+            if operator_id not in self._operator_states:
+                return False
+            self._operator_states[operator_id] = {
+                "state": "available",
+                "error": None,
+                "since": time.monotonic(),
+            }
+        logger.info("[Slack] Operator %s error cleared, now available", operator_id)
+        return True
 
     def _describe_slack_api_error(
         self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None
@@ -1043,6 +1166,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._app = None
         self._app_token = None
         self._proxy_url = None
+
+        # Clear operator mesh state on disconnect
+        async with self._operator_state_lock:
+            self._operator_states.clear()
 
         self._release_platform_lock()
 

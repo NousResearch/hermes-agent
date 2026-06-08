@@ -4959,6 +4959,79 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
+def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
+    """Terminate any running desktop app executing from this build's ``release``
+    dir so a rebuild can replace its (otherwise locked) executable.
+
+    On Windows a running ``Hermes.exe`` keeps an exclusive lock on
+    ``release/win-unpacked/Hermes.exe``. electron-builder's pack then can't
+    delete the stale binary and dies with ``remove …\\Hermes.exe: Access is
+    denied`` / ``ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`` (before-pack hits the same
+    EPERM cleaning the dir). The retry path repeats the failure because the lock
+    is still held. POSIX lets you unlink a running binary, so this is a no-op
+    off-Windows.
+
+    Scope is deliberately narrow: only processes whose executable lives *inside*
+    this desktop's ``release`` tree are stopped — a packaged install elsewhere or
+    an unrelated "Hermes" process is never touched. Best-effort: never raises.
+    Returns the PIDs we asked to stop.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import psutil
+    except Exception:
+        return []
+    try:
+        release_dir = (desktop_dir / "release").resolve()
+    except OSError:
+        return []
+    if not release_dir.is_dir():
+        return []
+
+    me = os.getpid()
+    victims = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe"])
+    except Exception:
+        return []
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid = info.get("pid")
+        exe = info.get("exe")
+        if not exe or pid is None or pid == me:
+            continue
+        try:
+            exe_path = Path(exe).resolve()
+        except (OSError, ValueError):
+            continue
+        if release_dir in exe_path.parents:
+            victims.append(proc)
+
+    stopped: list[int] = []
+    for proc in victims:
+        try:
+            proc.terminate()
+            stopped.append(int(proc.pid))
+        except Exception:
+            continue
+    if stopped:
+        # Wait for the handles (and thus the file locks) to actually release.
+        try:
+            _, alive = psutil.wait_procs(victims, timeout=5)
+            for proc in alive:
+                try:
+                    proc.kill()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    return stopped
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -5115,6 +5188,15 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
+            if not source_mode:
+                # A running desktop instance launched from release/win-unpacked
+                # holds Hermes.exe locked on Windows, so the pack can't replace
+                # it ("Access is denied" / ERR_ELECTRON_BUILDER_CANNOT_EXECUTE).
+                # Stop it first so the rebuild — including the installer's
+                # headless --update rebuild — succeeds instead of failing cryptically.
+                stopped = _stop_desktop_processes_locking_build(desktop_dir)
+                if stopped:
+                    print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT
@@ -5135,10 +5217,16 @@ def cmd_gui(args: argparse.Namespace):
                     print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")
                     for p in purged:
                         print(f"    - {p}")
+                    # The purge can't remove a win-unpacked tree whose Hermes.exe
+                    # is still locked by a running instance; stop it before retry.
+                    _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
+                if sys.platform == "win32":
+                    print("  If this says \"Access is denied\" on Hermes.exe, close any")
+                    print("  running Hermes desktop window and retry.")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:

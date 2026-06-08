@@ -18376,19 +18376,26 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                has_tirith = approval_data.get("has_tirith", False)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        # Inject has_tirith into metadata so adapters
+                        # (e.g. Discord) can hide "Always Allow" for
+                        # Tirith findings that are session-only.
+                        _approval_meta = dict(_status_thread_metadata or {})
+                        if has_tirith:
+                            _approval_meta["has_tirith"] = True
                         _approval_fut = safe_schedule_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_approval_meta,
                             ),
                             _loop_for_step,
                             logger=logger,

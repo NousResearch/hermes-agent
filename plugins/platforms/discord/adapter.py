@@ -4309,6 +4309,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                has_tirith=(metadata or {}).get("has_tirith", False),
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -5275,12 +5276,19 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            has_tirith: bool = False,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            # When Tirith security findings are present, "Always Allow"
+            # is misleading — the backend only persists Tirith approvals
+            # for the current session, not permanently.  Hide the button
+            # so the UI matches the backend behavior (#41769).
+            if has_tirith:
+                self.allow_always.hidden = True
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""

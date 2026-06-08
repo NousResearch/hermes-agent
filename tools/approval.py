@@ -1381,6 +1381,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "has_tirith": has_tirith,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"

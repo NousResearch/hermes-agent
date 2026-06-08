@@ -1792,7 +1792,14 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
-    
+
+    # Whether this platform renders triple-backtick fenced code blocks (i.e.
+    # ``format_message`` translates/preserves markdown fences into a real code
+    # block).  Drives presentation choices like rendering a ``terminal`` tool
+    # call's command as a ```bash block instead of a flat preview line.
+    # Default False (plain-text platforms); markdown-rendering adapters set True.
+    supports_code_blocks: bool = False
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform

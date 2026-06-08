@@ -615,6 +615,7 @@ def _route_capture_through_aux_vision(
         # MIME sniffing returns the right content-type.
         ext = ".jpg" if cap.png_b64[:8].startswith("/9j/") else ".png"
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+        cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
         temp_image_path.write_bytes(raw)
 
@@ -650,6 +651,8 @@ def _route_capture_through_aux_vision(
         try:
             parsed = json.loads(result_json)
             if isinstance(parsed, dict):
+                if parsed.get("success") is False:
+                    return None
                 analysis_text = str(parsed.get("analysis") or "").strip()
         except (TypeError, json.JSONDecodeError):
             analysis_text = result_json.strip()

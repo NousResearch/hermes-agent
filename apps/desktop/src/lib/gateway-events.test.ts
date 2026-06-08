@@ -13,6 +13,7 @@ describe('gateway event routing', () => {
   it('allows global events to remain unscoped', () => {
     expect(gatewayEventRequiresSessionId('gateway.ready')).toBe(false)
     expect(gatewayEventRequiresSessionId('preview.restart.progress')).toBe(false)
+    expect(gatewayEventRequiresSessionId('session.info')).toBe(false)
     expect(gatewayEventRequiresSessionId(undefined)).toBe(false)
   })
 })

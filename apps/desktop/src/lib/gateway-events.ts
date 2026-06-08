@@ -17,7 +17,6 @@ const SESSION_SCOPED_EVENT_TYPES = new Set([
   'reasoning.available',
   'reasoning.delta',
   'secret.request',
-  'session.info',
   'status.update',
   'subagent.complete',
   'subagent.progress',

@@ -338,6 +338,22 @@ export const estimateRows = (text: string, w: number, compact = false) => {
   return Math.max(1, rows)
 }
 
+/**
+ * Render an unanswered clarify prompt (timed out, or cancelled with Esc/Ctrl+C)
+ * as a persistent transcript block.  The live `ClarifyPrompt` overlay is torn
+ * down the moment the turn settles, so without this the question + options
+ * vanish from the screen while the agent's follow-up still refers to "the
+ * options above".  Mirrors the option formatting in ClarifyPrompt (the same
+ * 1-based numbered list) so the persisted record reads identically to what was
+ * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
+ */
+export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
+  const head = `ask ${question.trim()}`
+  const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
+
+  return [head, ...opts, `  (${reason} — no selection)`].join('\n')
+}
+
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
 
 const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })

@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+
+import aiohttp
 from types import SimpleNamespace
 from unittest import mock
 
@@ -2218,5 +2220,15 @@ class TestReadEventsClosedWsGuard:
         adapter = self._make_adapter()
         adapter._running = True
         adapter._ws = None
+        with pytest.raises(RuntimeError):
+            asyncio.run(adapter._read_events())
+
+    def test_read_events_raises_on_ws_closing_message(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = mock.AsyncMock()
+        adapter._ws.closed = False
+        adapter._ws.receive = mock.AsyncMock(return_value=SimpleNamespace(type=aiohttp.WSMsgType.CLOSING))
+
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())

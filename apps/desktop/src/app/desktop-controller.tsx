@@ -8,6 +8,7 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
@@ -166,6 +167,10 @@ export function DesktopController() {
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
+  // Below 600px there's no room for a docked rail — collapse both sidebars
+  // (without touching their stored open state) so the hover-reveal overlay
+  // becomes the way in. Restores to the saved layout once it's wide again.
+  const narrowViewport = useMediaQuery('(max-width: 600px)')
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -848,6 +853,7 @@ export function DesktopController() {
     <Pane
       defaultOpen={false}
       disabled={!chatOpen}
+      forceCollapsed={narrowViewport}
       hoverReveal
       id="file-browser"
       key="file-browser"
@@ -876,6 +882,7 @@ export function DesktopController() {
     >
       <Pane
         disabled={terminalTakeoverActive}
+        forceCollapsed={narrowViewport}
         hoverReveal
         id="chat-sidebar"
         maxWidth={SIDEBAR_MAX_WIDTH}

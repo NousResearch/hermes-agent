@@ -32,6 +32,8 @@ export interface PaneProps {
   defaultOpen?: boolean
   /** Forces the pane closed (track→0, aria-hidden) without writing to the store — for transient route gates. */
   disabled?: boolean
+  /** Like disabled, but keeps hoverReveal alive — collapses the track without writing to the store (e.g. narrow window). */
+  forceCollapsed?: boolean
   /** When collapsed, float the contents over the main column on hover/focus instead of hiding them (track stays 0px). */
   hoverReveal?: boolean
   /** Called with the reveal state whenever a collapsed hoverReveal pane floats in/out. */
@@ -58,6 +60,7 @@ export interface PaneShellProps {
 interface CollectedPane {
   defaultOpen: boolean
   disabled: boolean
+  forceCollapsed: boolean
   id: string
   resizable: boolean
   side: PaneSide
@@ -115,6 +118,7 @@ function collectPanes(children: ReactNode) {
     const entry: CollectedPane = {
       defaultOpen: props.defaultOpen ?? true,
       disabled: props.disabled ?? false,
+      forceCollapsed: props.forceCollapsed ?? false,
       id: props.id,
       resizable: props.resizable ?? false,
       side: props.side,
@@ -129,7 +133,7 @@ function collectPanes(children: ReactNode) {
 
 function trackForPane(pane: CollectedPane, states: Record<string, { open: boolean; widthOverride?: number }>) {
   const stateOpen = states[pane.id]?.open ?? pane.defaultOpen
-  const open = !pane.disabled && stateOpen
+  const open = !pane.disabled && !pane.forceCollapsed && stateOpen
 
   if (!open) {
     return { open: false, track: '0px' }

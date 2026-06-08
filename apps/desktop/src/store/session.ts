@@ -76,6 +76,15 @@ export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
+// Cron-job sessions (source === 'cron') are fetched as their own list so the
+// scheduler's always-newest sessions never crowd recents out of the page
+// budget. Powers the collapsed "Cron jobs" sidebar section.
+export const $cronSessions = atom<SessionInfo[]>([])
+// Max cron sessions fetched for the sidebar section (single bounded page). When
+// the fetch returns exactly this many rows we know more exist, so the section
+// badge renders "N+". Lives here so the controller (fetch) and sidebar (badge)
+// share one source of truth without a circular import.
+export const CRON_SECTION_LIMIT = 50
 // Listable conversation count per profile (children excluded), keyed by profile
 // name. Lets the sidebar scope its "Load more" footer to the active profile so a
 // huge default profile doesn't keep "Load more" visible while browsing a small
@@ -119,6 +128,7 @@ export const setConnection = (next: Updater<HermesConnection | null>) => updateA
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
+export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)

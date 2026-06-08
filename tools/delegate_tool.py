@@ -261,9 +261,11 @@ def _extract_output_tail(
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = msg.get("content") or ""
-        if not isinstance(content, str):
-            content = str(content)
+        # Flatten content-block lists/dicts to text so the overlay shows real
+        # output (not a "[{'type': 'text'...}]" blob) and error detection can
+        # see markers buried inside content blocks. Crude str() here would
+        # mislabel a block-wrapped "Error: ..." result as is_error=False.
+        content = _stringify_tool_content(msg.get("content") or "")
         is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
         # Preserve line structure so the overlay's wrapped scroll region can
@@ -276,7 +278,35 @@ def _extract_output_tail(
     return tail
 
 
-def _looks_like_error_output(content: str) -> bool:
+def _stringify_tool_content(content: Any) -> str:
+    """Return a stable text representation for tool-result content.
+
+    Most providers store tool results as strings, but some OpenAI-compatible
+    paths can return content-block lists. Delegate observability must never
+    crash while summarising a child run just because the transport used blocks.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, default=str))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False, default=str)
+    return str(content)
+
+
+def _looks_like_error_output(content: Any) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
     The old heuristic flagged any preview containing the substring "error",
@@ -286,6 +316,7 @@ def _looks_like_error_output(content: str) -> bool:
       - structured JSON with ``status`` of error/failed
       - first line starts with a classic error marker
     """
+    content = _stringify_tool_content(content)
     if not content:
         return False
 
@@ -1672,7 +1703,7 @@ def _run_single_child(
                         if tc_id:
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
+                    content = _stringify_tool_content(msg.get("content", ""))
                     is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),

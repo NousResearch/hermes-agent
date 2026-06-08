@@ -301,6 +301,19 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
 
+    # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
+    # desktop build seeds at session OPEN (see seed_credits_at_session_start in
+    # tui_gateway), so this call is usually a no-op there (idempotent: skips when
+    # _credits_state already exists). For the plain CLI / any path that didn't seed
+    # at build, it primes credits state from /api/oauth/account (or a fixture) on the
+    # first turn so depletion / usage-band warnings fire. Fail-open inside the helper.
+    try:
+        from agent.credits_tracker import seed_credits_at_session_start
+
+        seed_credits_at_session_start(agent)
+    except Exception:
+        logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
+
     # Persist the system prompt snapshot in SQLite.  Failure here used
     # to log at DEBUG, which silently broke prefix-cache reuse on the
     # gateway path (fresh AIAgent per turn → reads from this row every
@@ -587,6 +600,19 @@ def run_conversation(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Crash-resilience: persist the inbound user turn as soon as the session row
+    # has a valid system prompt, before any provider call or tool execution can
+    # hang/kill the process. The normal end-of-turn persist still runs later;
+    # _last_flushed_db_idx makes this idempotent and prevents duplicate rows.
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning(
+            "Early turn-start session persistence failed for session=%s",
+            agent.session_id or "none",
+            exc_info=True,
+        )
+
     # ── Preflight context compression ──
     # Before entering the main loop, check if the loaded conversation
     # history already exceeds the model's context threshold.  This handles
@@ -628,7 +654,14 @@ def run_conversation(
             # Skipped when deferring — a deferred estimate is known to over-count
             # vs the last real provider prompt, so trusting it for the display
             # would re-introduce the very desync we're avoiding.
-            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+            _last = _compressor.last_prompt_tokens
+            # Do NOT overwrite the -1 sentinel. compress_context() sets
+            # last_prompt_tokens=-1 right after compression to mark "no real API
+            # usage yet". `(x or 0)` evaluates to -1 (truthy) for the sentinel,
+            # so the old comparison was always True and clobbered the sentinel
+            # with a schema-inflated rough estimate — re-triggering compression
+            # on the next turn (#36718). Treat any negative value as "no data".
+            if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
 
         if _preflight_deferred:
@@ -1226,6 +1259,28 @@ def run_conversation(
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+                try:
+                    from hermes_cli.middleware import apply_llm_request_middleware
+
+                    _llm_request_mw = apply_llm_request_middleware(
+                        api_kwargs,
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        session_id=agent.session_id or "",
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                    )
+                    api_kwargs = _llm_request_mw.payload
+                    _original_api_kwargs = _llm_request_mw.original_payload
+                    _llm_middleware_trace = _llm_request_mw.trace
+                except Exception:
+                    _original_api_kwargs = dict(api_kwargs)
+                    _llm_middleware_trace = []
 
                 try:
                     from hermes_cli.plugins import (
@@ -1278,6 +1333,7 @@ def run_conversation(
                             request_char_count=total_chars,
                             max_tokens=agent.max_tokens,
                             started_at=api_start_time,
+                            middleware_trace=list(_llm_middleware_trace),
                             request=_request_payload,
                         )
                 except Exception:
@@ -1336,7 +1392,24 @@ def run_conversation(
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
 
-                response = _perform_api_call(api_kwargs)
+                from hermes_cli.middleware import run_llm_execution_middleware
+
+                response = run_llm_execution_middleware(
+                    api_kwargs,
+                    _perform_api_call,
+                    original_request=_original_api_kwargs,
+                    task_id=effective_task_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    session_id=agent.session_id or "",
+                    platform=agent.platform or "",
+                    model=agent.model,
+                    provider=agent.provider,
+                    base_url=agent.base_url,
+                    api_mode=agent.api_mode,
+                    api_call_count=api_call_count,
+                    middleware_trace=list(_llm_middleware_trace),
+                )
                 
                 api_duration = time.time() - api_start_time
                 

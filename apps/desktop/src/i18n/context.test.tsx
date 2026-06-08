@@ -13,6 +13,7 @@ function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
     <div>
       <p data-testid="locale">{locale}</p>
       <p data-testid="label">{t.language.label}</p>
+      <p data-testid="save">{t.common.save}</p>
       <p data-testid="loading">{String(isLoadingConfig)}</p>
       <p data-testid="saving">{String(isSavingLocale)}</p>
       <p data-testid="save-error">{saveError?.message ?? ''}</p>
@@ -94,9 +95,47 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
+  it('loads zh-hant from display.language config', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-TW' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient} initialLocale="zh">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh-hant')
+    expect(screen.getByTestId('save').textContent).toBe('儲存')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('loads ja from display.language config', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'ja-JP' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe('ja')
+    expect(screen.getByTestId('save').textContent).toBe('保存')
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
   it('does not overwrite unsupported configured languages', async () => {
     const configClient: I18nConfigClient = {
-      getConfig: vi.fn().mockResolvedValue({ display: { language: 'ja' } }),
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'de' } }),
       saveConfig: vi.fn()
     }
 
@@ -143,6 +182,31 @@ describe('I18nProvider', () => {
       display: { language: 'zh', skin: 'slate' },
       terminal: { cwd: '/new' }
     })
+  })
+
+  it('saves newly supported locales to display.language', async () => {
+    const saveConfig = vi.fn().mockResolvedValue({ ok: true })
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi
+        .fn()
+        .mockResolvedValueOnce({ display: { language: 'en' } })
+        .mockResolvedValueOnce({ display: { language: 'en', skin: 'mono' } }),
+      saveConfig
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="ja" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'mono' } })
+    expect(screen.getByTestId('locale').textContent).toBe('ja')
   })
 
   it('rolls back the visible locale when saving fails', async () => {

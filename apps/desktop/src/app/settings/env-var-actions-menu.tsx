@@ -9,6 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useI18n } from '@/i18n'
 import { Eye, EyeOff, ExternalLink, Trash2 } from '@/lib/icons'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -41,6 +42,8 @@ export function EnvVarActionsMenu({
   showReveal = true,
   sideOffset = 6
 }: EnvVarActionsMenuProps) {
+  const { t } = useI18n()
+  const copy = t.settings.envActions
   const hasClear = isSet && onClear
   const hasReveal = isSet && showReveal && onReveal
   const hasDocs = Boolean(docsUrl?.trim())
@@ -50,7 +53,7 @@ export function EnvVarActionsMenu({
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent
         align={align}
-        aria-label={`Actions for ${label}`}
+        aria-label={copy.actionsFor(label)}
         className="w-44"
         sideOffset={sideOffset}
       >
@@ -63,7 +66,7 @@ export function EnvVarActionsMenu({
             }}
           >
             <ExternalLink className="size-3.5" />
-            <span>Docs</span>
+            <span>{copy.docs}</span>
           </DropdownMenuItem>
         )}
 
@@ -75,7 +78,7 @@ export function EnvVarActionsMenu({
             }}
           >
             {isRevealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-            <span>{isRevealed ? 'Hide value' : 'Reveal value'}</span>
+            <span>{isRevealed ? copy.hideValue : copy.revealValue}</span>
           </DropdownMenuItem>
         )}
 
@@ -86,7 +89,7 @@ export function EnvVarActionsMenu({
           }}
         >
           <Codicon name="edit" size="0.875rem" />
-          <span>{isSet ? 'Replace' : 'Set'}</span>
+          <span>{isSet ? copy.replace : copy.set}</span>
         </DropdownMenuItem>
 
         {hasClear && (
@@ -101,7 +104,7 @@ export function EnvVarActionsMenu({
               variant="destructive"
             >
               <Trash2 className="size-3.5" />
-              <span>Clear</span>
+              <span>{copy.clear}</span>
             </DropdownMenuItem>
           </>
         )}
@@ -115,12 +118,15 @@ interface EnvVarActionsTriggerProps extends Omit<React.ComponentProps<typeof But
 }
 
 export function EnvVarActionsTrigger({ className, label, ...props }: EnvVarActionsTriggerProps) {
+  const { t } = useI18n()
+  const copy = t.settings.envActions
+
   return (
     <Button
-      aria-label={`Actions for ${label}`}
+      aria-label={copy.actionsFor(label)}
       className={cn('text-muted-foreground hover:text-foreground', className)}
       size="icon-sm"
-      title="Credential actions"
+      title={copy.credentialActions}
       variant="ghost"
       {...props}
     >

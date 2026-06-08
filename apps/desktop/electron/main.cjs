@@ -30,6 +30,15 @@ const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const {
+  buildPosixCleanupScript,
+  buildWindowsCleanupScript,
+  modeRemovesAgent,
+  modeRemovesUserData,
+  resolveRemovableAppPath,
+  shouldRemoveAppBundle,
+  uninstallArgsForMode
+} = require('./desktop-uninstall.cjs')
+const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -247,6 +256,25 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+// Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
+// (version-skew crash -> backend exits instantly -> renderer keeps hitting
+// Retry) appends the full bootstrap transcript every attempt and grows without
+// bound — we have seen it reach ~326 GB and exhaust the disk, which then breaks
+// update/install (no room for git/venv/npm temp files).
+//
+// Mirror the Python logs (hermes_logging.py RotatingFileHandler, maxBytes x
+// backupCount): cascade live -> .1 -> .2 -> .3, drop the oldest. Steady-state
+// stays bounded at ~(backupCount + 1) x cap however hard the app loops.
+//
+// Bounding alone never RECLAIMS an already-huge file: a plain rotation just
+// renames the monster to .1 and strands it for a cycle a healthy app may never
+// reach. A multi-GB boot-loop transcript has no diagnostic value, so anything
+// past the discard ceiling is deleted outright — the updated app self-heals a
+// disk a stale build filled, on the next launch.
+const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
+const DESKTOP_LOG_BACKUP_COUNT = 3
+const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
+const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -408,8 +436,13 @@ function previewFileMetadata(filePath, mimeType) {
 }
 
 app.setName(APP_NAME)
+// Seed the native About panel with the live Hermes version. This is refreshed
+// on every open via the explicit "About" menu handler (refreshAboutPanel), so
+// an in-place `hermes update` mid-session is reflected without an app restart;
+// the seed here just covers the first open and any non-menu invocation path.
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
+  applicationVersion: resolveHermesVersion(),
   copyright: 'Copyright © 2026 Nous Research'
 })
 
@@ -529,6 +562,59 @@ let bootProgressState = {
   timestamp: Date.now()
 }
 
+// Pure planner: ordered fs ops to bound a live log of `size`. [] = nothing.
+// Each step is ['rm', path] or ['mv', src, dst]; executed best-effort so a
+// missing chain link never aborts the rest.
+function planDesktopLogRotation(size) {
+  if (size < DESKTOP_LOG_MAX_BYTES) return []
+  const backups = n => Array.from({ length: n }, (_, i) => desktopLogBackupPath(i + 1))
+  // Pathological boot-loop log: reclaim live + every backup outright.
+  if (size > DESKTOP_LOG_DISCARD_BYTES) {
+    return [DESKTOP_LOG_PATH, ...backups(DESKTOP_LOG_BACKUP_COUNT)].map(p => ['rm', p])
+  }
+  // Cascade: drop oldest, shift each up, live -> .1.
+  const ops = [['rm', desktopLogBackupPath(DESKTOP_LOG_BACKUP_COUNT)]]
+  for (let i = DESKTOP_LOG_BACKUP_COUNT - 1; i >= 1; i--) {
+    ops.push(['mv', desktopLogBackupPath(i), desktopLogBackupPath(i + 1)])
+  }
+  ops.push(['mv', DESKTOP_LOG_PATH, desktopLogBackupPath(1)])
+  return ops
+}
+
+function rotateDesktopLogIfNeededSync() {
+  let size
+  try {
+    size = fs.statSync(DESKTOP_LOG_PATH).size
+  } catch {
+    return // No live file yet — the append (re)creates it.
+  }
+  for (const [op, src, dst] of planDesktopLogRotation(size)) {
+    try {
+      if (op === 'rm') fs.rmSync(src, { force: true })
+      else fs.renameSync(src, dst)
+    } catch {
+      // Best-effort — logging must never block startup/shutdown.
+    }
+  }
+}
+
+async function rotateDesktopLogIfNeededAsync() {
+  let size
+  try {
+    size = (await fs.promises.stat(DESKTOP_LOG_PATH)).size
+  } catch {
+    return // No live file yet — the append (re)creates it.
+  }
+  for (const [op, src, dst] of planDesktopLogRotation(size)) {
+    try {
+      if (op === 'rm') await fs.promises.rm(src, { force: true })
+      else await fs.promises.rename(src, dst)
+    } catch {
+      // Best-effort — logging must never crash the shell.
+    }
+  }
+}
+
 function flushDesktopLogBufferSync() {
   if (!desktopLogBuffer) return
   const chunk = desktopLogBuffer
@@ -536,6 +622,7 @@ function flushDesktopLogBufferSync() {
 
   try {
     fs.mkdirSync(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+    rotateDesktopLogIfNeededSync()
     fs.appendFileSync(DESKTOP_LOG_PATH, chunk)
   } catch {
     // Logging must never block app startup/shutdown.
@@ -550,6 +637,7 @@ function flushDesktopLogBufferAsync() {
   desktopLogFlushPromise = desktopLogFlushPromise
     .then(async () => {
       await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+      await rotateDesktopLogIfNeededAsync()
       await fs.promises.appendFile(DESKTOP_LOG_PATH, chunk)
     })
     .catch(() => {
@@ -1409,6 +1497,20 @@ function forceKillProcessTree(pid) {
 // aggressively SIGKILL-ing the backend here would be an untested behavior change
 // for no benefit. So we no-op off Windows and leave that path exactly as it was.
 async function releaseBackendLockForUpdate(updateRoot) {
+  return releaseBackendLock(updateRoot, 'updates')
+}
+
+// Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
+// hand-off and the desktop uninstaller — they have the identical Windows
+// problem: the desktop's backend (and the grandchildren IT spawned — a hermes
+// REPL, a pty terminal, the gateway) keep `hermes.exe` and other files in the
+// venv mandatory-locked, so any in-place replace/delete of the install tree
+// races a live handle and half-fails (#37532). We tree-kill every backend PID
+// the desktop owns, then poll the shim until it's genuinely writable.
+//
+// `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
+// locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
+async function releaseBackendLock(updateRoot, tag) {
   if (!IS_WINDOWS) return { unlocked: true }
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
@@ -1433,14 +1535,12 @@ async function releaseBackendLockForUpdate(updateRoot) {
   const deadlineMs = Date.now() + 15000
   while (Date.now() < deadlineMs) {
     if (!isShimLocked(shim)) {
-      rememberLog('[updates] venv shim unlocked; safe to hand off the update')
+      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
       return { unlocked: true }
     }
     await new Promise(r => setTimeout(r, 300))
   }
-  // Timed out: the updater's own wait_for_venv_free + force-kill is the second
-  // line of defense, and we pass --force so the guard won't dead-end. Log it.
-  rememberLog('[updates] venv shim still locked after 15s; handing off anyway (updater will force)')
+  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
   return { unlocked: false }
 }
 
@@ -2981,7 +3081,7 @@ function buildApplicationMenu() {
     template.push({
       label: APP_NAME,
       submenu: [
-        { role: 'about', label: `About ${APP_NAME}` },
+        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
         checkForUpdatesItem,
         { type: 'separator' },
         { role: 'services' },
@@ -4269,6 +4369,9 @@ async function spawnPoolBackend(profile, entry) {
       HERMES_HOME,
       ...backend.env,
       HERMES_DASHBOARD_SESSION_TOKEN: token,
+      // Marks this dashboard backend as desktop-spawned so it runs the cron
+      // scheduler tick loop (the gateway isn't running under the app).
+      HERMES_DESKTOP: '1',
       HERMES_WEB_DIST: webDist
     },
     shell: backend.shell,
@@ -4410,6 +4513,9 @@ async function startHermes() {
         HERMES_HOME,
         ...backend.env,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
+        // Marks this dashboard backend as desktop-spawned so it runs the cron
+        // scheduler tick loop (the gateway isn't running under the app).
+        HERMES_DESKTOP: '1',
         HERMES_WEB_DIST: webDist
       },
       shell: backend.shell,
@@ -4631,6 +4737,45 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+// Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
+// so the 'exit'/'error' handlers that would clear a dead connectionPromise never
+// fire — once the remote becomes unreachable across a sleep/wake the renderer
+// re-dials the same dead descriptor forever and the composer stays stuck on
+// "Starting Hermes…". Before the renderer's backoff loop reconnects, it asks us
+// to confirm the cached PRIMARY backend is still reachable; if a remote one is
+// not, we drop the cache so the next getConnection() rebuilds it. Local backends
+// self-heal via their child 'exit' handler, so we never touch them here.
+ipcMain.handle('hermes:connection:revalidate', async () => {
+  if (!connectionPromise) {
+    return { ok: true, rebuilt: false }
+  }
+
+  let conn = null
+  try {
+    conn = await connectionPromise
+  } catch {
+    // The cached boot already rejected (its own catch nulls connectionPromise);
+    // nothing to revalidate — the next getConnection() builds fresh.
+    return { ok: true, rebuilt: false }
+  }
+
+  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
+    return { ok: true, rebuilt: false }
+  }
+
+  const base = conn.baseUrl.replace(/\/+$/, '')
+  try {
+    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    return { ok: true, rebuilt: false }
+  } catch {
+    // Unreachable remote: drop the stale cache so the renderer's next reconnect
+    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
+    // nulls connectionPromise for a remote (no child to SIGTERM).
+    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    resetHermesConnection()
+    return { ok: true, rebuilt: true }
+  }
+})
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }
@@ -5373,6 +5518,19 @@ function resolveHermesVersion() {
   return app.getVersion()
 }
 
+// Re-resolve the live Hermes version and push it into the native About panel
+// just before showing it, so an in-place `hermes update` is reflected without
+// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
+// other platforms don't use this menu item.
+function showAboutPanelFresh() {
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: resolveHermesVersion(),
+    copyright: 'Copyright © 2026 Nous Research'
+  })
+  app.showAboutPanel()
+}
+
 ipcMain.handle('hermes:version', async () => ({
   appVersion: resolveHermesVersion(),
   electronVersion: process.versions.electron,
@@ -5380,6 +5538,199 @@ ipcMain.handle('hermes:version', async () => ({
   platform: process.platform,
   hermesRoot: resolveUpdateRoot()
 }))
+
+// ===========================================================================
+// Uninstall — remove the Chat GUI (and optionally the agent / user data).
+// ===========================================================================
+//
+// The renderer's About → Danger Zone surfaces three options that mirror the
+// CLI exactly: GUI only, Lite (keep user data), Full. We ask the agent to do
+// the actual removal via `hermes uninstall …` so the cross-platform PATH /
+// registry / service / node-symlink cleanup all lives in one place
+// (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
+//
+// getUninstallSummary() shells out to `--gui-summary` (a fast, no-side-effect
+// JSON probe) so the UI can gate options on what's actually installed — and
+// detect a missing agent (a future "lite client" that ships without the
+// bundled agent), hiding the agent/full options when there's nothing to remove.
+
+function uninstallVenvPython() {
+  return getVenvPython(VENV_ROOT)
+}
+
+async function getUninstallSummary() {
+  const py = uninstallVenvPython()
+  const agentRoot = ACTIVE_HERMES_ROOT
+  // Fast JS-side fallback used when the agent venv is gone (lite client) or the
+  // probe fails — the renderer still needs *something* to render options from.
+  const fallback = () => ({
+    hermes_home: HERMES_HOME,
+    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
+    gui_installed: true,
+    source_built_artifacts: [],
+    packaged_app_paths: [],
+    userdata_dir: app.getPath('userData'),
+    userdata_exists: true,
+    platform: process.platform,
+    probe: 'fallback'
+  })
+
+  if (!fileExists(py)) {
+    return fallback()
+  }
+
+  return new Promise(resolve => {
+    let stdout = ''
+    let settled = false
+    const done = value => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    try {
+      const child = spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'], {
+        cwd: agentRoot,
+        env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
+      child.stdout.on('data', chunk => {
+        stdout += chunk.toString()
+      })
+      child.on('error', () => done(fallback()))
+      child.on('exit', code => {
+        if (code !== 0) return done(fallback())
+        try {
+          const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
+          const parsed = JSON.parse(line)
+          // The app bundle the renderer would be removing on *this* machine,
+          // resolved from the running exe (the Python probe only knows the
+          // standard locations, not where THIS build actually runs from).
+          parsed.running_app_path = resolveRemovableAppPath(process.execPath, process.platform, process.env)
+          done(parsed)
+        } catch {
+          done(fallback())
+        }
+      })
+      setTimeout(() => done(fallback()), 8000)
+    } catch {
+      done(fallback())
+    }
+  })
+}
+
+async function runDesktopUninstall(mode) {
+  let uninstallArgs
+  try {
+    uninstallArgs = uninstallArgsForMode(mode)
+  } catch (error) {
+    return { ok: false, error: 'invalid-mode', message: error.message }
+  }
+
+  const venvPy = uninstallVenvPython()
+  if (!fileExists(venvPy)) {
+    return {
+      ok: false,
+      error: 'agent-missing',
+      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
+    }
+  }
+
+  // Interpreter choice (Finding 3): lite/full rmtree the venv that holds the
+  // running python.exe. On Windows a running .exe is mandatory-locked, so the
+  // rmtree must NOT be driven by the venv's own interpreter — use a system
+  // Python with PYTHONPATH=<agentRoot> so `import hermes_cli` resolves from
+  // source while the venv is torn down. gui-only doesn't touch the venv, so the
+  // venv python is fine there. If no system Python exists (the Windows edge
+  // case), fall back to the venv python — gui-only is unaffected; lite/full may
+  // leave venv remnants the user can delete, which we log.
+  let py = venvPy
+  let pythonPath = null
+  if (modeRemovesAgent(mode)) {
+    const sysPy = findSystemPython()
+    if (sysPy) {
+      py = sysPy
+      pythonPath = ACTIVE_HERMES_ROOT
+    } else if (IS_WINDOWS) {
+      rememberLog(
+        '[uninstall] no system Python found for lite/full on Windows; falling back ' +
+          'to the venv python — venv files locked by the running interpreter may ' +
+          'remain and need manual deletion.'
+      )
+    }
+  }
+
+  const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
+  const removeBundle = shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
+
+  // CRITICAL (Windows): tear down every backend the desktop owns and wait for
+  // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete
+  // the venv, and even gui-only removes the install tree's GUI artifacts — a
+  // live backend grandchild (gateway / pty / REPL) holding a mandatory file
+  // lock would make the script's rmdir half-fail (#37532 for the update path).
+  // Reuses the incident-hardened update teardown; no-op on macOS/Linux.
+  try {
+    await releaseBackendLock(ACTIVE_HERMES_ROOT, 'uninstall')
+  } catch (error) {
+    rememberLog(`[uninstall] backend teardown errored (continuing): ${error.message}`)
+  }
+
+  const scriptArgs = {
+    desktopPid: process.pid,
+    pythonExe: py,
+    pythonPath,
+    agentRoot: ACTIVE_HERMES_ROOT,
+    uninstallArgs,
+    appPath: removeBundle,
+    hermesHome: HERMES_HOME
+  }
+
+  let scriptPath
+  let runner
+  let runnerArgs
+  try {
+    if (IS_WINDOWS) {
+      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.cmd`)
+      fs.writeFileSync(scriptPath, buildWindowsCleanupScript(scriptArgs))
+      runner = process.env.ComSpec || 'cmd.exe'
+      runnerArgs = ['/c', scriptPath]
+    } else {
+      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.sh`)
+      fs.writeFileSync(scriptPath, buildPosixCleanupScript(scriptArgs), { mode: 0o755 })
+      runner = '/bin/bash'
+      runnerArgs = [scriptPath]
+    }
+  } catch (error) {
+    return { ok: false, error: 'script-write-failed', message: error.message }
+  }
+
+  try {
+    const child = spawn(runner, runnerArgs, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    child.unref()
+  } catch (error) {
+    return { ok: false, error: 'spawn-failed', message: error.message }
+  }
+
+  rememberLog(
+    `[uninstall] launched detached cleanup (${mode}): ${scriptPath} ` +
+      `(removesAgent=${modeRemovesAgent(mode)} removesUserData=${modeRemovesUserData(mode)} bundle=${removeBundle || 'none'})`
+  )
+
+  // Give the renderer a beat to show its "uninstalling…" state, then quit so
+  // the venv python shim + app bundle unlock and the cleanup script can run.
+  setTimeout(() => app.quit(), 800)
+  return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
+}
+
+ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
+ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
+  const mode = payload && typeof payload === 'object' ? payload.mode : payload
+  return runDesktopUninstall(String(mode || ''))
+})
+
 
 app.whenReady().then(() => {
   if (IS_MAC) {

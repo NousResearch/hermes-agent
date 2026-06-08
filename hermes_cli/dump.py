@@ -213,6 +213,13 @@ def _config_overrides(config: dict) -> dict[str, str]:
     if fallbacks:
         overrides["fallback_providers"] = str(fallbacks)
 
+    # model.* keys — model can be a string (shorthand) or a dict
+    _model_cfg = config.get("model")
+    if isinstance(_model_cfg, dict):
+        _gen_params = _model_cfg.get("generation_params")
+        if isinstance(_gen_params, dict) and _gen_params:
+            overrides["model.generation_params"] = str(_gen_params)
+
     return overrides
 
 

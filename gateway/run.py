@@ -2791,16 +2791,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
-        service_tier = getattr(self, "_service_tier", None)
-        if not service_tier:
-            route["request_overrides"] = {}
-            return route
-
+        # Read model.generation_params (user-configured sampling defaults).
+        _overrides: dict = {}
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            from hermes_cli.config import load_config
+            _model_cfg = load_config().get("model")
+            if isinstance(_model_cfg, dict):
+                _gen = _model_cfg.get("generation_params")
+                if isinstance(_gen, dict) and _gen:
+                    _overrides = dict(_gen)
         except Exception:
-            overrides = None
-        route["request_overrides"] = overrides or {}
+            pass
+
+        service_tier = getattr(self, "_service_tier", None)
+        if service_tier:
+            try:
+                fast_overrides = resolve_fast_mode_overrides(route["model"])
+                if fast_overrides:
+                    _overrides.update(fast_overrides)
+            except Exception:
+                pass
+
+        route["request_overrides"] = _overrides
         return route
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:

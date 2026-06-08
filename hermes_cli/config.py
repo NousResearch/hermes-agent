@@ -800,7 +800,7 @@ def _ensure_hermes_home_managed(home: Path):
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "",
+    "model": "",  # str shorthand or dict: {"default": "…", "provider": "…", "generation_params": {"temperature": 1.0, "top_p": 0.95, "top_k": 64}}
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},

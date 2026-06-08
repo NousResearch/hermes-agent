@@ -78,16 +78,91 @@ def _load_openai_cls() -> type:
     return _OPENAI_CLS_CACHE
 
 
+def _build_keepalive_httpx_client(base_url: str = "") -> object:
+    """Build an httpx.Client with TCP keepalive socket options.
+
+    Avoids ``SSL: UNEXPECTED_EOF_WHILE_READING`` on corporate proxies and
+    load balancers that drop idle TLS connections.  Mirrors the logic in
+    ``run_agent.AgentRuntime._build_keepalive_http_client``.
+
+    Returns ``None`` if httpx or socket options are unavailable so callers
+    can fall back to the SDK default.
+    """
+    try:
+        import httpx as _httpx
+        import socket as _socket
+
+        _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+        if hasattr(_socket, "TCP_KEEPIDLE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
+        elif hasattr(_socket, "TCP_KEEPALIVE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+
+        # Honour env proxy settings (with NO_PROXY bypass for localhost).
+        _proxy = _get_proxy_for_base_url(base_url)
+        return _httpx.Client(
+            transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+            proxy=_proxy,
+        )
+    except Exception:
+        return None
+
+
+def _get_proxy_for_base_url(base_url: str = "") -> object:
+    """Best-effort proxy resolution for auxiliary httpx clients."""
+    try:
+        from agent.process_bootstrap import _get_proxy_for_base_url as _gp
+        return _gp(base_url)
+    except Exception:
+        return None
+
+
+def _build_keepalive_async_httpx_client(base_url: str = "") -> object:
+    """Async counterpart of ``_build_keepalive_httpx_client``."""
+    try:
+        import httpx as _httpx
+        import socket as _socket
+
+        _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+        if hasattr(_socket, "TCP_KEEPIDLE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
+        elif hasattr(_socket, "TCP_KEEPALIVE"):
+            _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+
+        _proxy = _get_proxy_for_base_url(base_url)
+        return _httpx.AsyncClient(
+            transport=_httpx.AsyncHTTPTransport(socket_options=_sock_opts),
+            proxy=_proxy,
+        )
+    except Exception:
+        return None
+
+
 class _OpenAIProxy:
     """Module-level proxy that looks like the ``openai.OpenAI`` class.
 
     Forwards ``OpenAI(...)`` calls and ``isinstance(x, OpenAI)`` checks to the
     real SDK class, importing the SDK lazily on first use.
+
+    Automatically injects an httpx transport with TCP keepalive socket
+    options when the caller does not supply an explicit ``http_client``.
+    This prevents ``SSL: UNEXPECTED_EOF_WHILE_READING`` errors on
+    corporate proxies and load balancers that drop idle TLS connections.
     """
 
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
+        if "http_client" not in kwargs and not args:
+            # Infer base_url from kwargs for proxy resolution.
+            base_url = kwargs.get("base_url", "") or ""
+            keepalive = _build_keepalive_httpx_client(base_url)
+            if keepalive is not None:
+                kwargs["http_client"] = keepalive
         return _load_openai_cls()(*args, **kwargs)
 
     def __instancecheck__(self, obj):
@@ -3299,6 +3374,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    if "http_client" not in async_kwargs:
+        keepalive = _build_keepalive_async_httpx_client(sync_base_url)
+        if keepalive is not None:
+            async_kwargs["http_client"] = keepalive
     return AsyncOpenAI(**async_kwargs), model
 
 

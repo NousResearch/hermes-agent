@@ -47,17 +47,17 @@ const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
 
 // ─── Per-profile appearance persistence ─────────────────────────────────────
-// Skin and mode are each stored per profile, each falling back to a legacy
-// global value the default profile keeps seeded — so unassigned profiles
-// inherit a sane default and pre-per-profile installs are untouched.
+// Skin and mode are each stored per profile. "default" isn't a real profile —
+// it *is* the legacy global slot, so it reads/writes the global directly. Named
+// profiles get their own entry and fall back to that global until assigned, so
+// unassigned profiles and pre-per-profile installs stay on the global value.
 const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => ({
   resolve: (profile: string): T => normalize(storedStringRecord(record)[profile] ?? storedString(legacy)),
   assign: (profile: string, value: T): void => {
-    persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
-
-    // The default profile keeps the legacy global fresh so others inherit it.
     if (profile === 'default') {
       persistString(legacy, value)
+    } else {
+      persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
     }
   }
 })

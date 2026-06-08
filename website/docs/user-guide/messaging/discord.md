@@ -689,7 +689,9 @@ When the bot is in a voice channel, you can give it a more conversational feel: 
 
 discord.py plays only one audio stream per connection, so Hermes installs a software mixer on the outgoing stream that sums an ambient loop, acknowledgements, and TTS replies into that single stream — they overlap instead of cutting each other off.
 
-This is **off by default**. Enable it in `config.yaml`:
+This is **off by default**. The easiest opt-in path is `hermes gateway setup` → Discord → answer **yes** to **Enable the natural Discord voice mode preset?**. That writes the conservative preset below to `config.yaml`.
+
+You can also enable or tune it manually:
 
 ```yaml
 discord:
@@ -697,14 +699,14 @@ discord:
     enabled: true          # master switch
     ambient_enabled: true  # idle "thinking" bed while tools run
     ambient_path: ""       # custom loop file (any audio format); "" = built-in synthesised pad
-    ambient_gain: 0.18     # idle bed loudness (0.0–1.0)
-    duck_gain: 0.06        # ambient loudness while the bot is speaking
+    ambient_gain: 0.12     # idle bed loudness (0.0–1.0)
+    duck_gain: 0.04        # ambient loudness while the bot is speaking
     speech_gain: 1.0       # TTS / acknowledgement loudness
     ack_enabled: true      # speak a short phrase before the first tool call of a turn
     ack_phrases:           # picked at random; set to [] to disable the spoken ack
-      - "Let me look into that."
-      - "One moment."
-      - "Checking on that now."
+      - "Let me check that."
+      - "One sec."
+      - "I'm on it."
 ```
 
 Notes:

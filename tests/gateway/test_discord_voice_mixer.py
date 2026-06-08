@@ -30,6 +30,48 @@ import voice_mixer as vm  # noqa: E402
 
 
 # =====================================================================
+# Config preset helpers
+# =====================================================================
+class TestNaturalVoiceFxPreset:
+    def test_preset_is_opt_in_and_uses_safe_gains(self):
+        from plugins.platforms.discord.adapter import NATURAL_VOICE_FX_PRESET
+
+        assert NATURAL_VOICE_FX_PRESET == {
+            "enabled": True,
+            "ambient_enabled": True,
+            "ambient_path": "",
+            "ambient_gain": 0.12,
+            "duck_gain": 0.04,
+            "speech_gain": 1.0,
+            "ack_enabled": True,
+            "ack_phrases": ["Let me check that.", "One sec.", "I'm on it."],
+        }
+
+    def test_apply_preset_preserves_unrelated_discord_config(self):
+        from plugins.platforms.discord.adapter import apply_natural_voice_fx_preset_to_config
+
+        original = {
+            "discord": {
+                "require_mention": False,
+                "voice_fx": {"enabled": False, "ambient_gain": 0.5},
+            },
+            "tts": {"provider": "edge"},
+        }
+        updated = apply_natural_voice_fx_preset_to_config(original)
+
+        assert updated["discord"]["require_mention"] is False
+        assert updated["tts"] == {"provider": "edge"}
+        assert updated["discord"]["voice_fx"]["enabled"] is True
+        assert updated["discord"]["voice_fx"]["ambient_gain"] == 0.12
+        assert updated["discord"]["voice_fx"]["duck_gain"] == 0.04
+        assert updated["discord"]["voice_fx"]["ack_phrases"] == [
+            "Let me check that.", "One sec.", "I'm on it."
+        ]
+        # The helper should return a new tree, not mutate the caller's object.
+        assert original["discord"]["voice_fx"] == {"enabled": False, "ambient_gain": 0.5}
+
+
+# =====================================================================
 # Pure mixer unit tests
 # =====================================================================
 
@@ -149,8 +191,9 @@ def _make_adapter(fx_cfg=None):
     adapter._ambient_pcm_cache = None
     adapter._voice_fx_cfg = fx_cfg if fx_cfg is not None else {
         "enabled": True, "ambient_enabled": True, "ambient_path": "",
-        "ambient_gain": 0.18, "duck_gain": 0.06, "speech_gain": 1.0,
-        "ack_enabled": True, "ack_phrases": ["One moment."],
+        "ambient_gain": 0.12, "duck_gain": 0.04, "speech_gain": 1.0,
+        "ack_enabled": True,
+        "ack_phrases": ["Let me check that.", "One sec.", "I'm on it."],
     }
     return adapter
 

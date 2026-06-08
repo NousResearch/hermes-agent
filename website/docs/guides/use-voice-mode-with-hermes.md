@@ -386,6 +386,36 @@ In a Discord text channel where the bot is present:
 - keep `DISCORD_ALLOWED_USERS` tight
 - use a dedicated bot/testing channel at first
 - verify STT and TTS work in ordinary text-chat voice mode before trying VC mode
+- for the most natural/seamless flow, enable the opt-in preset in `hermes gateway setup` → Discord → **Enable the natural Discord voice mode preset?**; it turns on low-gain `discord.voice_fx` acknowledgements and a subtle thinking bed while leaving the global default off for everyone else
+
+### Natural Discord voice-channel preset
+
+The setup preset writes this conservative config:
+
+```yaml
+discord:
+  voice_fx:
+    enabled: true
+    ambient_enabled: true
+    ambient_path: ""
+    ambient_gain: 0.12
+    duck_gain: 0.04
+    speech_gain: 1.0
+    ack_enabled: true
+    ack_phrases:
+      - "Let me check that."
+      - "One sec."
+      - "I'm on it."
+```
+
+Then use it like this:
+
+1. start `hermes gateway`
+2. join a Discord voice channel yourself
+3. run `/voice join` in the associated text channel
+4. speak normally; Hermes transcribes you, runs tools, gives a short acknowledgement when work starts, and speaks the final answer back into the VC
+
+Set `discord.voice_fx.enabled: false` to return to the original one-shot voice-channel playback path.
 
 ## Voice quality recommendations
 

@@ -1945,16 +1945,14 @@ class DiscordAdapter(BasePlatformAdapter):
             "enabled": False,        # master switch for the mixer subsystem
             "ambient_enabled": True, # idle "thinking" bed while tools run
             "ambient_path": "",      # optional custom loop file; "" = synthesised
-            "ambient_gain": 0.18,    # idle bed loudness (0..1)
-            "duck_gain": 0.06,       # ambient loudness while speech plays
+            "ambient_gain": 0.12,    # idle bed loudness (0..1)
+            "duck_gain": 0.04,       # ambient loudness while speech plays
             "speech_gain": 1.0,      # TTS / ack loudness
             "ack_enabled": True,     # speak a short phrase before tool calls
             "ack_phrases": [
-                "Let me look into that.",
-                "One moment.",
-                "Checking on that now.",
-                "Give me a sec.",
-                "On it.",
+                "Let me check that.",
+                "One sec.",
+                "I'm on it.",
             ],
         }
         try:
@@ -2007,8 +2005,8 @@ class DiscordAdapter(BasePlatformAdapter):
             from .voice_mixer import VoiceMixer
 
         mixer = VoiceMixer(
-            ambient_gain=float(self._voice_fx_cfg.get("ambient_gain", 0.18)),
-            duck_gain=float(self._voice_fx_cfg.get("duck_gain", 0.06)),
+            ambient_gain=float(self._voice_fx_cfg.get("ambient_gain", 0.12)),
+            duck_gain=float(self._voice_fx_cfg.get("duck_gain", 0.04)),
             speech_gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
         )
         ambient = await asyncio.to_thread(self._get_ambient_pcm)
@@ -2039,7 +2037,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         if phrase is None:
             import random
-            phrases = self._voice_fx_cfg.get("ack_phrases") or ["One moment."]
+            phrases = self._voice_fx_cfg.get("ack_phrases") or ["One sec."]
             phrase = random.choice(phrases)
 
         # Synthesise the ack via the configured TTS provider, then layer it.
@@ -6291,6 +6289,60 @@ def _clean_discord_user_ids(raw: str) -> list:
     return cleaned
 
 
+NATURAL_VOICE_FX_PRESET: Dict[str, Any] = {
+    "enabled": True,
+    "ambient_enabled": True,
+    "ambient_path": "",
+    "ambient_gain": 0.12,
+    "duck_gain": 0.04,
+    "speech_gain": 1.0,
+    "ack_enabled": True,
+    "ack_phrases": ["Let me check that.", "One sec.", "I'm on it."],
+}
+
+
+def apply_natural_voice_fx_preset_to_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return config with the opt-in natural Discord VC voice preset applied.
+
+    The preset intentionally lives under ``discord.voice_fx`` in config.yaml,
+    not .env, because it is behavior/tuning rather than a secret. It only runs
+    when setup (or a future CLI command) explicitly opts in.
+    """
+    updated = dict(config or {})
+    discord_cfg = updated.get("discord")
+    if not isinstance(discord_cfg, dict):
+        discord_cfg = {}
+    else:
+        discord_cfg = dict(discord_cfg)
+    existing_fx = discord_cfg.get("voice_fx")
+    merged_fx = dict(existing_fx) if isinstance(existing_fx, dict) else {}
+    merged_fx.update(NATURAL_VOICE_FX_PRESET)
+    discord_cfg["voice_fx"] = merged_fx
+    updated["discord"] = discord_cfg
+    return updated
+
+
+def _offer_natural_voice_fx_preset() -> None:
+    """Offer the low-gain ambient + ack preset for Discord voice channels."""
+    from hermes_cli.cli_output import prompt_yes_no, print_info, print_success
+    from hermes_cli.config import load_config, save_config
+
+    print()
+    print_info("🎙 Natural Discord voice-channel mode")
+    print_info("   For the most seamless voice mode, join a Discord voice channel,")
+    print_info("   run /voice join in a text channel, then talk to Hermes in the VC.")
+    print_info("   Optional voice effects can reduce dead air while tools run:")
+    print_info("   short acknowledgements plus a very low thinking bed under TTS.")
+    print_info("   This is opt-in and can be disabled with discord.voice_fx.enabled: false.")
+    if not prompt_yes_no("Enable the natural Discord voice mode preset?", False):
+        return
+
+    config = load_config() or {}
+    save_config(apply_natural_voice_fx_preset_to_config(config))
+    print_success("Enabled discord.voice_fx natural voice-channel preset")
+    print_info("   Use it in Discord with: join a VC → /voice join → speak normally")
+
+
 def interactive_setup() -> None:
     """Guide the user through Discord bot setup.
 
@@ -6321,6 +6373,7 @@ def interactive_setup() -> None:
                         cleaned_ids = _clean_discord_user_ids(allowed_users)
                         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
                         print_success("Discord allowlist configured")
+            _offer_natural_voice_fx_preset()
             return
 
     print_info("Create a bot at https://discord.com/developers/applications")
@@ -6357,6 +6410,8 @@ def interactive_setup() -> None:
     home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
     if home_channel:
         save_env_value("DISCORD_HOME_CHANNEL", home_channel)
+
+    _offer_natural_voice_fx_preset()
 
 
 def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:

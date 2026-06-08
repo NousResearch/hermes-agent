@@ -1861,16 +1861,14 @@ DEFAULT_CONFIG = {
             "enabled": False,         # master switch for the mixer subsystem
             "ambient_enabled": True,  # play the idle "thinking" bed while tools run
             "ambient_path": "",       # custom loop audio file; "" = synthesised pad
-            "ambient_gain": 0.18,     # idle bed loudness, 0.0–1.0
-            "duck_gain": 0.06,        # ambient loudness while speech plays
+            "ambient_gain": 0.12,     # idle bed loudness, 0.0–1.0
+            "duck_gain": 0.04,        # ambient loudness while speech plays
             "speech_gain": 1.0,       # TTS / ack loudness, 0.0–1.0
             "ack_enabled": True,      # speak a short phrase before the first tool call
             "ack_phrases": [          # picked at random; set [] to disable phrases
-                "Let me look into that.",
-                "One moment.",
-                "Checking on that now.",
-                "Give me a sec.",
-                "On it.",
+                "Let me check that.",
+                "One sec.",
+                "I'm on it.",
             ],
         },
     },

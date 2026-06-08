@@ -2932,6 +2932,22 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "TRELLO_API_KEY": {
+        "description": "Trello API key for board, list, and card management",
+        "prompt": "Trello API key",
+        "url": "https://trello.com/power-ups/admin/",
+        "tools": ["trello"],
+        "password": False,
+        "category": "tool",
+    },
+    "TRELLO_API_TOKEN": {
+        "description": "Trello API token (OAuth-style token with read/write access to your Trello account)",
+        "prompt": "Trello API token",
+        "url": "https://trello.com/power-ups/admin/",
+        "tools": ["trello"],
+        "password": True,
+        "category": "tool",
+    },
     "SEARXNG_URL": {
         "description": "URL of your SearXNG instance for free self-hosted web search",
         "prompt": "SearXNG URL (e.g. http://localhost:8080)",

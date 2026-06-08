@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Trello project management (gated on TRELLO_API_KEY + TRELLO_API_TOKEN via check_fn)
+    "trello",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -271,6 +273,16 @@ TOOLSETS = {
             "kanban_create", "kanban_link",
             "kanban_unblock",
         ],
+        "includes": [],
+    },
+
+    "trello": {
+        "description": (
+            "Trello project management — boards, lists, and cards via REST API. "
+            "Requires TRELLO_API_KEY and TRELLO_API_TOKEN. "
+            "Get credentials at https://trello.com/app-key"
+        ),
+        "tools": ["trello"],
         "includes": [],
     },
 

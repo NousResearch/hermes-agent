@@ -1,5 +1,10 @@
 """Tests for _web_ui_build_needed — staleness check for the web UI dist.
 
+The freshness check uses a SHA-256 content hash of the web source tree
+(mirroring the desktop build), recorded in a stamp file under $HERMES_HOME,
+NOT mtime comparison — so ``git pull`` / ``hermes update`` that rewrite
+source mtimes without changing content no longer fool it.
+
 Critical invariant: the dashboard Vite build outputs to hermes_cli/web_dist/
 (vite.config.ts: outDir: "../../hermes_cli/web_dist"), NOT web/dist/.
 The sentinel must be checked in the correct output directory or the
@@ -11,8 +16,22 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
-from hermes_cli.main import _web_ui_build_needed, _build_web_ui, _run_npm_install_deterministic
+from hermes_cli.main import (
+    _web_ui_build_needed,
+    _build_web_ui,
+    _run_npm_install_deterministic,
+    _compute_web_ui_content_hash,
+    _web_ui_stamp_path,
+    _write_web_ui_build_stamp,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_hermes_home(tmp_path, monkeypatch):
+    """Keep web-build-stamp writes inside the test's tmp dir, never the real home."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "_hermes_home"))
 
 
 def _touch(path: Path, offset: float = 0.0) -> None:
@@ -33,68 +52,155 @@ def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
 
 
 class TestWebUIBuildNeeded:
+    """Content-hash staleness — replaces the old mtime comparison.
+
+    The dashboard build hashes the web source tree (like the desktop build)
+    instead of comparing mtimes, so git operations that rewrite mtimes
+    without changing content no longer fool the freshness check.
+    """
+
+    @staticmethod
+    def _root(web_dir: Path) -> Path:
+        return web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+
+    def _stamp_current(self, web_dir: Path) -> None:
+        """Record a stamp matching web_dir's current source content."""
+        _write_web_ui_build_stamp(self._root(web_dir), web_dir)
 
     def test_returns_true_when_dist_missing(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
+        # Even with a matching stamp, a missing dist forces a build.
+        self._stamp_current(web_dir)
         assert _web_ui_build_needed(web_dir) is True
 
-    def test_returns_false_when_vite_manifest_fresh(self, tmp_path):
+    def test_returns_true_when_dist_present_but_no_stamp(self, tmp_path):
+        """First run after upgrade to content-hash: no stamp -> one rebuild."""
         web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(web_dir / "src" / "App.tsx", offset=-10)
-        _touch(dist_dir / ".vite" / "manifest.json")
+        (dist_dir / ".vite").mkdir(parents=True, exist_ok=True)
+        (dist_dir / ".vite" / "manifest.json").write_text("{}")
+        assert _web_ui_build_needed(web_dir) is True
+
+    def test_returns_false_when_stamp_matches_source(self, tmp_path):
+        web_dir, dist_dir = _make_web_dir(tmp_path)
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
+        (dist_dir / ".vite").mkdir(parents=True, exist_ok=True)
+        (dist_dir / ".vite" / "manifest.json").write_text("{}")
+        self._stamp_current(web_dir)
         assert _web_ui_build_needed(web_dir) is False
 
-    def test_returns_true_when_source_newer_than_manifest(self, tmp_path):
+    def test_falls_back_to_index_html_sentinel(self, tmp_path):
+        """When the vite manifest is absent, index.html is the sentinel."""
         web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "src" / "App.tsx")
-        assert _web_ui_build_needed(web_dir) is True
-
-    def test_falls_back_to_index_html_when_manifest_missing(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(web_dir / "src" / "main.ts", offset=-10)
-        _touch(dist_dir / "index.html")
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "main.ts").write_text("console.log(1)\n")
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        (dist_dir / "index.html").write_text("<html></html>")
+        self._stamp_current(web_dir)
         assert _web_ui_build_needed(web_dir) is False
 
     def test_web_dist_dir_not_web_dist_subdir(self, tmp_path):
         """Regression: sentinel must be in hermes_cli/web_dist/, NOT web/dist/."""
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(web_dir / "src" / "App.tsx", offset=-10)
-        # Place manifest in wrong location (web/dist/) — should NOT count as fresh
-        wrong_dist = web_dir / "dist" / ".vite" / "manifest.json"
-        _touch(wrong_dist)
-        # Correct location is empty → still needs build
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("x\n")
+        self._stamp_current(web_dir)
+        # A manifest in the WRONG location (web/dist/) must not count as fresh.
+        wrong = web_dir / "dist" / ".vite" / "manifest.json"
+        wrong.parent.mkdir(parents=True, exist_ok=True)
+        wrong.write_text("{}")
+        # Correct location (hermes_cli/web_dist/) is empty -> still needs build.
         assert _web_ui_build_needed(web_dir) is True
 
-    def test_returns_true_when_package_lock_newer_than_dist(self, tmp_path):
+    def test_returns_true_when_source_content_changes(self, tmp_path):
         web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        # With a single workspace root lockfile, the lockfile lives at the
-        # project root (tmp_path), not inside web_dir.
-        _touch(tmp_path / "package-lock.json")
+        src = web_dir / "src" / "App.tsx"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("export const A = 1\n")
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        (dist_dir / "index.html").write_text("<html></html>")
+        self._stamp_current(web_dir)
+        assert _web_ui_build_needed(web_dir) is False
+        src.write_text("export const A = 2\n")  # content edit
         assert _web_ui_build_needed(web_dir) is True
 
-    def test_returns_true_when_vite_config_newer_than_dist(self, tmp_path):
+    def test_mtime_only_change_is_not_stale(self, tmp_path):
+        """The whole point: bumping mtimes without changing bytes (what
+        ``git pull`` / ``hermes update`` do) must NOT report stale."""
         web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "vite.config.ts")
-        assert _web_ui_build_needed(web_dir) is True
-
-    def test_ignores_node_modules(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        # package.json older than manifest; only node_modules file is newer
-        _touch(web_dir / "package.json", offset=-20)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "node_modules" / "react" / "index.js")
+        src = web_dir / "src" / "App.tsx"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("export const A = 1\n")
+        (dist_dir / ".vite").mkdir(parents=True, exist_ok=True)
+        (dist_dir / ".vite" / "manifest.json").write_text("{}")
+        self._stamp_current(web_dir)
+        assert _web_ui_build_needed(web_dir) is False
+        future = time.time() + 10_000
+        os.utime(src, (future, future))
+        os.utime(web_dir / "package.json", (future, future))
         assert _web_ui_build_needed(web_dir) is False
 
-    def test_ignores_dist_subdir_under_web(self, tmp_path):
+    def test_root_package_lock_content_change_is_stale(self, tmp_path):
         web_dir, dist_dir = _make_web_dir(tmp_path)
-        # package.json older than manifest; only web/dist file is newer
-        _touch(web_dir / "package.json", offset=-20)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "dist" / "assets" / "index.js")
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "main.ts").write_text("console.log(1)\n")
+        lock = tmp_path / "package-lock.json"
+        lock.write_text('{"v": 1}')
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        (dist_dir / "index.html").write_text("<html></html>")
+        self._stamp_current(web_dir)
         assert _web_ui_build_needed(web_dir) is False
+        lock.write_text('{"v": 2}')  # dependency change
+        assert _web_ui_build_needed(web_dir) is True
+
+    def test_gitignored_paths_excluded_from_hash(self, tmp_path):
+        web_dir, dist_dir = _make_web_dir(tmp_path)
+        (tmp_path / ".gitignore").write_text("node_modules/\ndist/\n")
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("x\n")
+        (dist_dir / ".vite").mkdir(parents=True, exist_ok=True)
+        (dist_dir / ".vite" / "manifest.json").write_text("{}")
+        self._stamp_current(web_dir)
+        assert _web_ui_build_needed(web_dir) is False
+        # A new file under an ignored dir must not flip staleness.
+        nm = web_dir / "node_modules" / "react" / "index.js"
+        nm.parent.mkdir(parents=True, exist_ok=True)
+        nm.write_text("module.exports = {}\n")
+        assert _web_ui_build_needed(web_dir) is False
+
+    def test_content_hash_is_deterministic(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
+        root = self._root(web_dir)
+        h1 = _compute_web_ui_content_hash(root, web_dir)
+        h2 = _compute_web_ui_content_hash(root, web_dir)
+        assert h1 == h2
+        assert len(h1) == 64
+
+    def test_write_stamp_creates_file_with_hash(self, tmp_path):
+        import json as _json
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
+        self._stamp_current(web_dir)
+        stamp = _web_ui_stamp_path()
+        assert stamp.is_file()
+        data = _json.loads(stamp.read_text())
+        assert data["contentHash"] == _compute_web_ui_content_hash(self._root(web_dir), web_dir)
+
+    def test_malformed_non_object_stamp_forces_rebuild(self, tmp_path):
+        web_dir, dist_dir = _make_web_dir(tmp_path)
+        (web_dir / "src").mkdir(parents=True, exist_ok=True)
+        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        (dist_dir / "index.html").write_text("<html></html>")
+        stamp = _web_ui_stamp_path()
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text("[]")
+        assert _web_ui_build_needed(web_dir) is True
 
 
 class TestBuildWebUISkipsWhenFresh:
@@ -102,6 +208,9 @@ class TestBuildWebUISkipsWhenFresh:
     def test_skips_npm_when_dist_is_fresh(self, tmp_path):
         web_dir, dist_dir = _make_web_dir(tmp_path)
         _touch(dist_dir / ".vite" / "manifest.json")
+        # Record a stamp matching current source so the build is skipped.
+        root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+        _write_web_ui_build_stamp(root, web_dir)
 
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run") as mock_run:

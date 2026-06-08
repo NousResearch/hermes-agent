@@ -1561,16 +1561,27 @@ async function applyUpdates(opts = {}) {
   updateInFlight = true
 
   try {
-    const updater = resolveUpdaterBinary()
-    if (!updater && !IS_WINDOWS) {
-      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
-      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
-      // there's no mandatory file locking here, so the desktop can drive the
-      // whole update itself: `hermes update` (backend) + `hermes desktop
-      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
-      // with the freshly built one and relaunch.
+    // macOS/Linux: the desktop drives the whole update in-app — `hermes update`
+    // (backend) + `hermes desktop --build-only` (OS-aware GUI rebuild), then an
+    // atomic swap of the running .app bundle and a relaunch. There's no
+    // mandatory file lock on a running binary here (releaseBackendLock is a
+    // no-op off Windows), so we never need an external process to take over.
+    //
+    // Only Windows uses the staged hermes-setup hand-off below, because a
+    // running hermes.exe keeps the venv shim mandatory-locked and `hermes
+    // update` refuses until the desktop fully exits.
+    //
+    // Previously any macOS/Linux install that happened to have a staged
+    // hermes-setup (e.g. a .dmg / installer user) was routed through the
+    // Windows-style hand-off: the desktop fire-and-forget spawned the updater
+    // and quit, but the version never advanced and the flow kept re-handing-off
+    // — the "Update & Restart" loop. Keep every non-Windows install on the
+    // robust in-app path regardless of whether a staged updater exists.
+    if (!IS_WINDOWS) {
       return await applyUpdatesPosixInApp(opts)
     }
+
+    const updater = resolveUpdaterBinary()
     if (!updater) {
       // No staged updater binary — this is a CLI-installed user (they ran
       // `hermes desktop`, never the Tauri installer that self-copies

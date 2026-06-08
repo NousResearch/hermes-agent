@@ -4369,6 +4369,9 @@ async function spawnPoolBackend(profile, entry) {
       HERMES_HOME,
       ...backend.env,
       HERMES_DASHBOARD_SESSION_TOKEN: token,
+      // Marks this dashboard backend as desktop-spawned so it runs the cron
+      // scheduler tick loop (the gateway isn't running under the app).
+      HERMES_DESKTOP: '1',
       HERMES_WEB_DIST: webDist
     },
     shell: backend.shell,
@@ -4510,6 +4513,9 @@ async function startHermes() {
         HERMES_HOME,
         ...backend.env,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
+        // Marks this dashboard backend as desktop-spawned so it runs the cron
+        // scheduler tick loop (the gateway isn't running under the app).
+        HERMES_DESKTOP: '1',
         HERMES_WEB_DIST: webDist
       },
       shell: backend.shell,
@@ -4731,6 +4737,45 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+// Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
+// so the 'exit'/'error' handlers that would clear a dead connectionPromise never
+// fire — once the remote becomes unreachable across a sleep/wake the renderer
+// re-dials the same dead descriptor forever and the composer stays stuck on
+// "Starting Hermes…". Before the renderer's backoff loop reconnects, it asks us
+// to confirm the cached PRIMARY backend is still reachable; if a remote one is
+// not, we drop the cache so the next getConnection() rebuilds it. Local backends
+// self-heal via their child 'exit' handler, so we never touch them here.
+ipcMain.handle('hermes:connection:revalidate', async () => {
+  if (!connectionPromise) {
+    return { ok: true, rebuilt: false }
+  }
+
+  let conn = null
+  try {
+    conn = await connectionPromise
+  } catch {
+    // The cached boot already rejected (its own catch nulls connectionPromise);
+    // nothing to revalidate — the next getConnection() builds fresh.
+    return { ok: true, rebuilt: false }
+  }
+
+  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
+    return { ok: true, rebuilt: false }
+  }
+
+  const base = conn.baseUrl.replace(/\/+$/, '')
+  try {
+    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    return { ok: true, rebuilt: false }
+  } catch {
+    // Unreachable remote: drop the stale cache so the renderer's next reconnect
+    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
+    // nulls connectionPromise for a remote (no child to SIGTERM).
+    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    resetHermesConnection()
+    return { ok: true, rebuilt: true }
+  }
+})
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }

@@ -1247,6 +1247,19 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
+        # Current date for temporal anchoring (see ## Temporal Anchoring below).
+        # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
+        # user's configured timezone via hermes_time.now(). The compaction summary
+        # is a mid-conversation message that is NOT part of the cached prefix, so a
+        # date here never affects prompt-cache stability. Resolved defensively —
+        # a clock failure must never block compaction.
+        try:
+            from hermes_time import now as _hermes_now
+
+            _today_str = _hermes_now().strftime("%Y-%m-%d")
+        except Exception:  # pragma: no cover - clock resolution is best-effort
+            _today_str = ""
+
         # Preamble shared by both first-compaction and iterative-update prompts.
         # Keep the wording deliberately plain: Azure/OpenAI-compatible content
         # filters have flagged stronger "injection" / "do not respond" framing.
@@ -1263,6 +1276,24 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "with [REDACTED]. Note that the user had credentials present, but "
             "do not preserve their values."
         )
+
+        # Temporal anchoring directive. Rewrites relative / still-pending-sounding
+        # references into absolute, dated, past-tense facts so a resumed
+        # conversation does not re-issue completed actions. Only emitted when the
+        # current date resolved successfully; otherwise the rule is omitted so the
+        # summarizer is never handed an empty date placeholder.
+        if _today_str:
+            _temporal_anchoring_rule = (
+                f"\nTEMPORAL ANCHORING: The current date is {_today_str}. When an "
+                "action has already been carried out, phrase it as a completed, "
+                "dated, past-tense fact rather than an open instruction. For "
+                'example, rewrite "email John about the proposal" as "Sent the '
+                f'proposal email to John on {_today_str}." Never leave a finished '
+                "action worded as if it still needs doing, and never invent a date "
+                "for work that has not happened yet.\n"
+            )
+        else:
+            _temporal_anchoring_rule = ""
 
         # Shared structured template (used by both paths).
         _template_sections = f"""## Active Task
@@ -1337,7 +1368,7 @@ Be specific with file paths, commands, line numbers, and results.]
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
-
+{_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:

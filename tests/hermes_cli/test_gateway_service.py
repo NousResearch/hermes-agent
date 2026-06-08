@@ -495,7 +495,11 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
         assert "--replace" in plist_path.read_text(encoding="utf-8")
-        assert calls[:2] == [
+        # First call is the macOS 26 provenance pre-flight (xattr list —
+        # plist is fresh so no repair happens); followed by the original
+        # launchctl bootout + bootstrap sequence.
+        assert calls[0] == ["xattr", str(plist_path)]
+        assert calls[1:3] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
@@ -576,7 +580,12 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_restart()
 
-        assert calls == [
+        # The macOS 26 pre-flight makes one xattr call (no provenance → no
+        # repair). After that, the original terminate + kickstart sequence.
+        xattr_calls = [c for c in calls if c and c[0] == "xattr"]
+        assert len(xattr_calls) == 1
+        non_xattr = [c for c in calls if not (c and c[0] == "xattr")]
+        assert non_xattr == [
             ("term", 321, False),
             ["launchctl", "kickstart", "-k", target],
         ]
@@ -593,11 +602,16 @@ class TestLaunchdServiceRecovery:
             "_request_gateway_self_restart",
             lambda pid: calls.append(("self", pid)) or True,
         )
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
-        )
+        # Pre-flight (xattr) is allowed; launchctl must NOT be invoked when
+        # the gateway self-restart path is taken (that's the whole point of
+        # the test).
+        def fake_run(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0] == "xattr":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"launchctl should not run; got {cmd!r}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_restart()
 

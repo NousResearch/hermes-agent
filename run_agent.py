@@ -783,12 +783,31 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
-    def _emit_status(self, message: str) -> None:
-        """Emit a lifecycle status message to both CLI and gateway channels.
+    # Platforms whose end-users are external/customer-facing rather than the
+    # operator/admin running Hermes directly. Internal lifecycle/status banners
+    # are suppressed on these surfaces so implementation details do not leak
+    # into chat threads. Refs: https://github.com/NousResearch/hermes-agent/issues/28208
+    _CUSTOMER_FACING_PLATFORMS = frozenset({
+        "whatsapp", "slack", "signal", "telegram", "discord",
+    })
+
+    # Defensive glyph fallback for call sites that have not been migrated to
+    # the explicit ``customer_facing=False`` kwarg. Kept narrow on purpose:
+    # the currently reported leak is the compression banner family.
+    _INTERNAL_STATUS_PREFIXES = (
+        "\U0001f5dc",  # 🗜 context-pressure / compression banner family
+    )
+
+    def _emit_status(self, message: str, customer_facing: bool = True) -> None:
+        """Emit a lifecycle status message to CLI and selectively to gateway.
 
         CLI users see the message via ``_vprint(force=True)`` so it is always
-        visible regardless of verbose/quiet mode.  Gateway consumers receive
-        it through ``status_callback("lifecycle", ...)``.
+        visible regardless of verbose/quiet mode.
+
+        Gateway consumers receive it through ``status_callback("lifecycle", ...)``
+        unless the runtime ``platform`` is customer-facing and the message is
+        explicitly internal-only (``customer_facing=False``) or starts with a
+        known internal-status glyph.
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
@@ -797,6 +816,14 @@ class AIAgent:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
+
+        platform = (getattr(self, "platform", "") or "").lower()
+        if platform in self._CUSTOMER_FACING_PLATFORMS:
+            if not customer_facing:
+                return
+            if message.startswith(self._INTERNAL_STATUS_PREFIXES):
+                return
+
         if self.status_callback:
             try:
                 self.status_callback("lifecycle", message)

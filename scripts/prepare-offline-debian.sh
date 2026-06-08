@@ -185,6 +185,8 @@ else
     REQ_FILE="$OUTPUT_DIR/requirements.txt"
     cd "$PROJECT_ROOT"
     if uv export --extra all --no-hashes -o "$REQ_FILE" 2>/dev/null; then
+        # 移除 -e . (editable install，不能和 --target 一起用)
+        grep -v '^\-e \.' "$REQ_FILE" > "$REQ_FILE.tmp" && mv "$REQ_FILE.tmp" "$REQ_FILE"
         PKG_COUNT=$(grep -c '==' "$REQ_FILE" || echo 0)
         ok "导出 $PKG_COUNT 个包"
     else

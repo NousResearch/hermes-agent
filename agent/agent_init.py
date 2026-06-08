@@ -1094,6 +1094,24 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+
+    agent._completion_claim_gate_config = {
+        "enabled": False,
+        "require_report_for_done": True,
+        "allowed_roots": ["."],
+        "report_path_regex": r"(?P<path>(?:~|/|\.)?[^\s`'\"]*(?:report|verification)[^\s`'\"]*\.(?:md|txt|json))",
+        "pass_regex": r"^\s*(?:Gate|Status|Result)\s*:\s*PASS(?:ED)?\s*$",
+        "remediation_command": "",
+    }
+    try:
+        from agent.completion_claim_gate import (
+            config_from_mapping as _ccg_config_from_mapping,
+        )
+
+        agent._completion_claim_gate_config = _ccg_config_from_mapping(_agent_cfg)
+    except Exception as _ccg_err:
+        _ra().logger.warning("Completion claim gate config ignored: %s", _ccg_err)
+
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

@@ -4407,6 +4407,7 @@ def run_conversation(
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
     _response_transformed = False
+    _completion_claim_gate = None
 
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
@@ -4429,6 +4430,27 @@ def run_conversation(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    if final_response and not interrupted:
+        try:
+            from agent.completion_claim_gate import (
+                apply_completion_claim_gate as _apply_completion_claim_gate,
+            )
+
+            _ccg_cfg = getattr(agent, "_completion_claim_gate_config", {}) or {}
+            _completion_claim_gate = _apply_completion_claim_gate(
+                final_response,
+                enabled=bool(_ccg_cfg.get("enabled", False)),
+                require_report_for_done=bool(_ccg_cfg.get("require_report_for_done", True)),
+                allowed_roots=list(_ccg_cfg.get("allowed_roots", ["."]) or ["."]),
+                report_path_regex=str(_ccg_cfg.get("report_path_regex", "") or ""),
+                pass_regex=str(_ccg_cfg.get("pass_regex", "") or ""),
+                remediation_command=str(_ccg_cfg.get("remediation_command", "") or ""),
+            )
+            final_response = _completion_claim_gate.response
+            _response_transformed = _response_transformed or _completion_claim_gate.changed
+        except Exception as _ccg_err:
+            logger.warning("completion claim gate failed: %s", _ccg_err)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
@@ -4500,6 +4522,12 @@ def run_conversation(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if _completion_claim_gate is not None:
+        result["completion_claim_gate"] = {
+            "status": _completion_claim_gate.status,
+            "changed": _completion_claim_gate.changed,
+            "report_paths": list(_completion_claim_gate.report_paths),
+        }
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

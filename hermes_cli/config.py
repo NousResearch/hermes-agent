@@ -859,6 +859,20 @@ DEFAULT_CONFIG = {
         # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
         # env var overrides this (build-time/container mechanism).
         "environment_hint": "",
+        # Optional final-response gate for teams that require explicit
+        # verification evidence before Hermes is allowed to claim a task is
+        # Done/completed. Disabled by default; when enabled, the final reply
+        # must reference a verification report file whose contents match
+        # ``pass_regex`` or Hermes will rewrite the completion claim into a
+        # withheld-pending-verification notice.
+        "completion_claim_gate": {
+            "enabled": False,
+            "require_report_for_done": True,
+            "allowed_roots": ["."],
+            "report_path_regex": r"(?P<path>(?:~|/|\.)?[^\s`'\"]*(?:report|verification)[^\s`'\"]*\.(?:md|txt|json))",
+            "pass_regex": r"^\s*(?:Gate|Status|Result)\s*:\s*PASS(?:ED)?\s*$",
+            "remediation_command": "",
+        },
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

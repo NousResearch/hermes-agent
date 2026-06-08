@@ -770,9 +770,12 @@ class AIAgent:
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
-        Preload the LM Studio model with at least Hermes' minimum context.
+        Preload the LM Studio model unless configured to rely on LM Studio JIT loading.
         """
         if (self.provider or "").strip().lower() != "lmstudio":
+            return
+        if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
+            logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return
         try:
             from agent.model_metadata import MINIMUM_CONTEXT_LENGTH

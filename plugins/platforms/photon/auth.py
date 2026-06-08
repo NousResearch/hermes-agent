@@ -448,7 +448,7 @@ def print_credential_summary(emit: Any = print) -> None:
     if load_photon_token():
         labels["device_token"] = "✓ stored"
     else:
-        labels["device_token"] = "✗ missing (run `hermes photon login`)"
+        labels["device_token"] = "✗ missing (run `hermes photon setup`)"
     pid, sec = load_project_credentials()
     labels["project_id"] = pid if pid else "✗ missing"
     labels["project_key"] = "✓ stored" if sec else "✗ missing"
@@ -477,7 +477,7 @@ def credential_summary() -> Dict[str, str]:
     function — read-and-bool-cast happens entirely inside the closure.
     """
     def _present_token() -> str:
-        return "✓ stored" if load_photon_token() else "✗ missing (run `hermes photon login`)"
+        return "✓ stored" if load_photon_token() else "✗ missing (run `hermes photon setup`)"
 
     def _present_project_id() -> str:
         pid, _sec = load_project_credentials()

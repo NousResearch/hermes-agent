@@ -4,13 +4,16 @@
 
 Subcommands:
 
-    login              run the device-code OAuth flow
-    setup              full first-time setup (login + project + user + sidecar)
+    setup              full first-time setup (device login + project + user + sidecar)
     status             show login + project + sidecar dep state
     install-sidecar    npm install inside plugins/platforms/photon/sidecar/
     webhook register   register the local webhook URL with Photon
     webhook list       list registered webhooks
     webhook delete     delete a webhook by id
+
+The device-code login runs automatically as the first step of ``setup``;
+there is no standalone ``login`` verb (matching how every other Hermes
+gateway channel onboards through a single setup surface).
 """
 from __future__ import annotations
 
@@ -35,17 +38,14 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     """Wire up `hermes photon ...` subcommands."""
     subs = parser.add_subparsers(dest="photon_command", required=False)
 
-    p_login = subs.add_parser("login", help="Authenticate with Photon (device flow)")
-    p_login.add_argument("--no-browser", action="store_true",
-                         help="Don't try to open a browser; print the URL only")
-
-    p_setup = subs.add_parser("setup", help="First-time setup (login + project + user + sidecar)")
+    p_setup = subs.add_parser("setup", help="First-time setup (device login + project + user + sidecar)")
     p_setup.add_argument("--project-name", default=None, help="Project name (default: 'Hermes Agent')")
     p_setup.add_argument("--phone", default=None, help="Your E.164 phone number (e.g. +15551234567)")
     p_setup.add_argument("--first-name", default=None)
     p_setup.add_argument("--last-name", default=None)
     p_setup.add_argument("--email", default=None)
-    p_setup.add_argument("--no-browser", action="store_true")
+    p_setup.add_argument("--no-browser", action="store_true",
+                         help="Don't try to open a browser for device login; print the URL only")
     p_setup.add_argument("--skip-sidecar-install", action="store_true",
                          help="Skip `npm install` inside the sidecar directory")
 
@@ -71,8 +71,6 @@ def dispatch(args: argparse.Namespace) -> int:
     if sub is None:
         # No subcommand given — show status by default.
         return _cmd_status(args)
-    if sub == "login":
-        return _cmd_login(args)
     if sub == "setup":
         return _cmd_setup(args)
     if sub == "status":
@@ -88,7 +86,13 @@ def dispatch(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 
-def _cmd_login(args: argparse.Namespace) -> int:
+def _run_device_login(args: argparse.Namespace) -> int:
+    """Run the RFC 8628 device-code login flow and persist the token.
+
+    Internal helper — invoked as the first step of ``setup``. There is
+    no standalone ``hermes photon login`` command; Photon onboards
+    through the single ``setup`` surface like every other channel.
+    """
     def _print_code(code):
         target = code.verification_uri_complete or code.verification_uri
         print()
@@ -119,7 +123,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     token = photon_auth.load_photon_token()
     if not token:
         print("[1/4] No Photon token found — running device login...")
-        rc = _cmd_login(args)
+        rc = _run_device_login(args)
         if rc != 0:
             return rc
         token = photon_auth.load_photon_token()

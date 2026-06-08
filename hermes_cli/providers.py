@@ -167,6 +167,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="NOVITA_BASE_URL",
     ),
+    "cloud-temple": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.ai.cloud-temple.com/v1",
+        base_url_env_var="CLOUD_TEMPLE_BASE_URL",
+    ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
@@ -324,6 +329,11 @@ ALIASES: Dict[str, str] = {
     "novita-ai": "novita",
     "novitaai": "novita",
 
+    # cloud temple
+    "cloud_temple": "cloud-temple",
+    "cloudtemple": "cloud-temple",
+    "cloud-temple-llmaas": "cloud-temple",
+
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
@@ -371,6 +381,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
+    "cloud-temple": "Cloud Temple",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",

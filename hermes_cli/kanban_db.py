@@ -6764,6 +6764,12 @@ def _default_spawn(
     # board slug still forces it to the right directory.
     resolved_board = _normalize_board_slug(board) or get_current_board()
     env["HERMES_KANBAN_BOARD"] = resolved_board
+    # Make inline preflight expectations visible to spawned workers and logs.
+    # The dispatcher already resolves the concrete board/db/workspace paths above;
+    # these flags let runtime guardrails assert that Kanban work was launched
+    # through the checked path instead of an ad-hoc shell.
+    env["HERMES_RUNTIME_PREFLIGHT_SCOPE"] = "kanban"
+    env["HERMES_RUNTIME_PREFLIGHT_REQUIRED"] = "1"
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are

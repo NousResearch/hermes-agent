@@ -2054,6 +2054,16 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # Add a compact execution-safety footer to every decomposed child
+        # body. This makes auto-decomposed missions self-governing even
+        # when a worker profile does not have the full orchestrator skill
+        # loaded: preflight first, split broad work into lanes, defer heavy
+        # autonomy to approved overnight windows, and report only grounded
+        # status. Set runtime_guardrails.enabled=false to preserve raw
+        # decomposer output.
+        "runtime_guardrails": {
+            "enabled": True,
+        },
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The

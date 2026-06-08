@@ -268,6 +268,34 @@ def _normalize_assignee_choice(
     return chosen
 
 
+_RUNTIME_GUARDRAILS = """Runtime guardrails:
+- Runtime preflight: before state-changing work, verify repo/path, git state, required credentials, model/tool availability, and the exact command or file scope.
+- If the task is too broad, decompose into scoped lanes before executing; keep independent lanes parallel and gate synthesis/review on parent results.
+- Apply the overnight approval gate: do not start heavy, recurring, quota-expensive, or long-running autonomous work during daytime unless the user explicitly approved it for now. Prefer cheap/read-only checks or prepare an overnight plan.
+- Report only grounded status from tool output; if blocked, name the missing prerequisite and the safest next action.
+""".strip()
+
+
+def _runtime_guardrails_enabled(cfg: dict) -> bool:
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    guard_cfg = kanban_cfg.get("runtime_guardrails", {}) if isinstance(kanban_cfg, dict) else {}
+    if isinstance(guard_cfg, dict) and "enabled" in guard_cfg:
+        return bool(guard_cfg.get("enabled"))
+    return True
+
+
+def _append_runtime_guardrails(body: str, cfg: dict) -> str:
+    if not _runtime_guardrails_enabled(cfg):
+        return body
+    clean = body.strip()
+    if "Runtime preflight" in clean and "overnight approval gate" in clean:
+        return clean
+    if not clean:
+        return _RUNTIME_GUARDRAILS
+    return f"{clean}\n\n{_RUNTIME_GUARDRAILS}"
+
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -433,7 +461,7 @@ def decompose_task(
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
         children.append({
             "title": title.strip()[:200],
-            "body": body.strip(),
+            "body": _append_runtime_guardrails(body.strip(), cfg),
             "assignee": chosen,
             "parents": clean_parents,
         })

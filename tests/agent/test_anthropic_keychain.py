@@ -89,6 +89,15 @@ class TestReadClaudeCodeCredentialsFromKeychain:
             assert creds["expiresAt"] == 9999999999999
             assert creds["source"] == "macos_keychain"
 
+    def test_disable_macos_keychain_env_skips_security_command(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DISABLE_MACOS_KEYCHAIN", "1")
+
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            assert _read_claude_code_credentials_from_keychain() is None
+
+        mock_run.assert_not_called()
+
 
 class TestReadClaudeCodeCredentialsPriority:
     """Bug 4: Keychain must be checked before the JSON file."""

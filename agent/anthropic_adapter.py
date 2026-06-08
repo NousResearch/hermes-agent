@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
-from utils import base_url_host_matches, normalize_proxy_env_vars
+from utils import base_url_host_matches, env_var_enabled, normalize_proxy_env_vars
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -810,6 +810,10 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
     if platform.system() != "Darwin":
+        return None
+
+    if env_var_enabled("HERMES_DISABLE_MACOS_KEYCHAIN"):
+        logger.debug("Keychain: macOS Keychain access disabled by HERMES_DISABLE_MACOS_KEYCHAIN")
         return None
 
     try:

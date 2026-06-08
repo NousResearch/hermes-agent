@@ -224,30 +224,30 @@ def _format_beast_namespace_result(parse: Any) -> dict[str, str]:
 
     argument_count = len(args)
     if bool(_parse_value(parse, "is_read_only", False)):
-        detail = "read-only metadata" if subcommand == "sessions" else "read-only classification"
+        detail = "read-only metadata" if subcommand == "sessions" else "read-only context"
         message = (
-            f"AI Beast /beast classification: {command_label}\n"
+            f"AI Beast classification: {command_label}\n"
             f"subcommand={subcommand} argument_count={argument_count}\n"
             f"class={command_class}\n"
-            f"safety={detail}; no routing, binding, inbox, audit, memory, Kanban, durable continuation, Telegram, or service side effects."
+            f"This command is recognised as {detail}. No state was changed."
         )
         return {"decision": "handled", "message": message}
 
     if bool(_parse_value(parse, "is_proposal_only", False)):
         message = (
-            f"AI Beast /beast classification: {command_label}\n"
+            f"AI Beast classification: {command_label}\n"
             f"subcommand={subcommand} argument_count={argument_count}\n"
             f"class={command_class}\n"
-            "safety=proposal/approval-gated only; no binding was created and no command behaviour executed."
+            "This command is recognised but requires approval. No action occurred. It is approval-gated only."
         )
         return {"decision": "handled", "message": message}
 
     if bool(_parse_value(parse, "is_state_changing", False)):
         message = (
-            f"AI Beast /beast classification: {command_label}\n"
+            f"AI Beast classification: {command_label}\n"
             f"subcommand={subcommand} argument_count={argument_count}\n"
             f"class={command_class}\n"
-            "safety=state-changing/approval-gated only; not executed."
+            "This command is recognised but requires approval. No action occurred. It was not executed."
         )
         return {"decision": "handled", "message": message}
 

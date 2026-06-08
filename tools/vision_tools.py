@@ -1252,6 +1252,7 @@ async def _ocr_one_image_data_url(image_data_url: str, *, model: str,
         temperature=0,
         max_tokens=max_tokens,
         timeout=120,
+        or_title="Hermes-NativeOCR",
     )
     text = extract_content_or_reasoning(response)
     truncated = _is_truncated_response(response)
@@ -1266,6 +1267,7 @@ async def _ocr_one_image_data_url(image_data_url: str, *, model: str,
             temperature=0,
             max_tokens=max_tokens,
             timeout=120,
+            or_title="Hermes-NativeOCR",
         )
         text = extract_content_or_reasoning(response)
         truncated = _is_truncated_response(response)

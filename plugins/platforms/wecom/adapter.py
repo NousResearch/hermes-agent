@@ -225,6 +225,9 @@ class StreamTurn:
         self.seeded = False  # True after seed frame sent (prevents double seed)
         self.start_time = time.monotonic()
         self.expired = False
+        # Track the last content that was ACTUALLY sent to WeCom (not skipped).
+        # Used by finalize to detect duplicate content and avoid silent ack drops.
+        self.last_sent_content: str = ""
         # Throttle state for intermediate frames.
         # Time-based: skip frames arriving within STREAM_FRAME_SKIP_WINDOW.
         # Count-based: cap at MAX_INTERMEDIATE_FRAMES per turn.
@@ -728,6 +731,31 @@ class WeComAdapter(BasePlatformAdapter):
         req_id = self._payload_req_id(payload)
         cmd = str(payload.get("cmd") or "")
 
+        # --- Diagnostic: log ALL non-ping inbound payloads when any reply queue
+        # is active, to detect whether WeCom acks arrive at all.
+        if self._reply_queues and cmd != APP_CMD_PING:
+            logger.debug(
+                "[%s] _dispatch_payload[ALL]: req_id=%s cmd=%r active_queues=%s",
+                self.name, req_id or "(none)", cmd or "(empty)",
+                list(self._reply_queues.keys()),
+            )
+
+        # --- Diagnostic: log all payloads that carry a req_id matching an
+        # active reply queue, regardless of whether they get routed there.
+        # This helps diagnose ack timeout issues (e.g., ack arriving with
+        # unexpected cmd that gets filtered out).
+        if req_id and self._reply_queues.get(req_id):
+            queue = self._reply_queues[req_id]
+            has_pending = queue.pending_ack is not None
+            logger.debug(
+                "[%s] _dispatch_payload: req_id=%s cmd=%r has_pending_ack=%s "
+                "errcode=%s in_NON_RESPONSE=%s payload_keys=%s",
+                self.name, req_id, cmd, has_pending,
+                payload.get("body", {}).get("errcode", "N/A") if isinstance(payload.get("body"), dict) else "N/A",
+                cmd in NON_RESPONSE_COMMANDS,
+                list(payload.keys()),
+            )
+
         # Check reply queue ack first — aibot_respond_msg acks arrive with
         # the original inbound req_id and no cmd (or non-callback cmd).
         # This must be checked before _pending_responses to avoid the old
@@ -866,15 +894,29 @@ class WeComAdapter(BasePlatformAdapter):
         # Final frame: wait for pending ack to drain first
         if is_final and queue.pending_ack is not None:
             pending_frame = queue.pending_ack
+            _pending_stream = pending_frame.body.get("stream", {}) if isinstance(pending_frame.body.get("stream"), dict) else {}
+            logger.debug(
+                "[%s] _send_reply_queued: final waiting for pending ack drain — "
+                "req_id=%s pending_stream_id=%s pending_finish=%s pending_sent_at=%.1fs_ago",
+                self.name, normalized,
+                _pending_stream.get("id", "N/A"),
+                _pending_stream.get("finish", "N/A"),
+                time.monotonic() - (pending_frame.sent_at or time.monotonic()),
+            )
             try:
                 await asyncio.wait_for(
                     asyncio.shield(pending_frame.future),
                     timeout=self._REPLY_ACK_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                logger.debug(
-                    "[%s] Reply ack timeout waiting for pending (req_id=%s), proceeding with final",
+                logger.warning(
+                    "[%s] Reply ack timeout waiting for pending (req_id=%s) — "
+                    "pending_stream_id=%s pending_finish=%s elapsed=%.1fs. "
+                    "Possible causes: ack cmd filtered, ack req_id mismatch, or WeCom did not ack.",
                     self.name, normalized,
+                    _pending_stream.get("id", "N/A"),
+                    _pending_stream.get("finish", "N/A"),
+                    time.monotonic() - (pending_frame.sent_at or time.monotonic()),
                 )
             except Exception:
                 pass
@@ -891,6 +933,17 @@ class WeComAdapter(BasePlatformAdapter):
         # to find the pending frame to resolve it. Registering after would
         # miss the ack and timeout.
         queue.pending_ack = frame
+
+        # Diagnostic: log every frame send for ack tracking analysis
+        _stream_info = body.get("stream", {}) if isinstance(body.get("stream"), dict) else {}
+        logger.debug(
+            "[%s] _send_reply_queued: req_id=%s is_final=%s skip_if_pending=%s "
+            "stream_id=%s finish=%s content_len=%d",
+            self.name, normalized, is_final, skip_if_pending,
+            _stream_info.get("id", "N/A"),
+            _stream_info.get("finish", "N/A"),
+            len(_stream_info.get("content", "") or ""),
+        )
 
         # Send the frame
         try:
@@ -938,6 +991,14 @@ class WeComAdapter(BasePlatformAdapter):
             return False
         frame = queue.pending_ack
         if not frame.future.done():
+            _body = payload.get("body", {}) if isinstance(payload.get("body"), dict) else {}
+            logger.debug(
+                "[%s] _resolve_reply_ack: resolved req_id=%s is_final=%s "
+                "elapsed=%.2fs errcode=%s",
+                self.name, req_id, frame.is_final,
+                time.monotonic() - (frame.sent_at or time.monotonic()),
+                _body.get("errcode", "N/A"),
+            )
             frame.future.set_result(payload)
         queue.pending_ack = None
         # Cleanup empty queue
@@ -2443,10 +2504,18 @@ class WeComAdapter(BasePlatformAdapter):
 
             # Send the frame
             if finalize:
+                # WeCom may silently drop (no ack) a final frame whose content
+                # is identical to the preceding intermediate frame — it treats
+                # the frame as a duplicate despite the finish flag change.
+                # Append a zero-width space to ensure the content differs when
+                # the text matches the last ACTUALLY SENT intermediate content.
+                final_text = text
+                if text and text == turn.last_sent_content:
+                    final_text = text + "​"  # zero-width space
                 await self._send_stream_reply(
                     turn.req_id,
                     turn.stream_id,
-                    text,
+                    final_text,
                     finish=True,
                 )
                 turn.finalized = True
@@ -2484,6 +2553,7 @@ class WeComAdapter(BasePlatformAdapter):
                 turn._last_frame_sent_at = time.monotonic()
                 turn._intermediate_frames_sent += 1
                 turn.accumulated_text = text
+                turn.last_sent_content = text
 
             return True
 

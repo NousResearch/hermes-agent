@@ -592,23 +592,13 @@ class GatewayStreamConsumer:
         finalize_succeeded = False
         try:
             if self._native_stream_opened:
-                # Step 1: Flush accumulated content as mid-stream update
-                if self._accumulated and not is_cancelled:
-                    try:
-                        await self.adapter.send_stream_frame(
-                            self._accumulated,
-                            chat_id=self.chat_id,
-                            reply_to=self._initial_reply_to_id,
-                            turn_id=self._turn_id,
-                        )
-                    except Exception as e:
-                        logger.debug("Approval boundary: flush failed (non-critical): %s", e)
-
-                # Step 2: Finalize current stream
-                # If cancelled (timeout), send minimal finalize to just close the
-                # WeCom stream without visible content. WeCom requires at least
-                # some content for finalize to register, but a single space or
-                # zero-width char is invisible to users.
+                # Finalize current stream directly with accumulated content.
+                # Do NOT send an intermediate flush before finalize — WeCom may
+                # treat a final frame with identical content as the preceding
+                # intermediate as a duplicate and silently drop it (no ack),
+                # causing a 5-second timeout that disables native streaming.
+                # Dedup handling (zero-width space append) is done in the adapter
+                # layer (wecom.py send_stream_frame) to cover all finalize paths.
                 if is_cancelled:
                     finalize_text = "​"  # zero-width space: invisible but non-empty
                 else:

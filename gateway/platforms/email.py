@@ -18,12 +18,15 @@ Environment variables:
 import asyncio
 import email as email_lib
 import imaplib
+import json
 import logging
 import os
 import re
 import smtplib
 import ssl
 import uuid
+import urllib.error
+import urllib.request
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -262,6 +265,23 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+        self._response_delivery = str(
+            extra.get("response_delivery")
+            or os.getenv("EMAIL_RESPONSE_DELIVERY")
+            or "email"
+        ).strip().lower()
+        self._approval_discord_channel = str(
+            extra.get("approval_discord_channel")
+            or os.getenv("EMAIL_APPROVAL_DISCORD_CHANNEL")
+            or os.getenv("DISCORD_HOME_CHANNEL")
+            or ""
+        ).strip()
+        self._approval_discord_thread = str(
+            extra.get("approval_discord_thread")
+            or os.getenv("EMAIL_APPROVAL_DISCORD_THREAD_ID")
+            or os.getenv("DISCORD_HOME_CHANNEL_THREAD_ID")
+            or ""
+        ).strip()
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -517,6 +537,85 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Email] Send failed to %s: %s", chat_id, e)
             return SendResult(success=False, error=str(e))
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> SendResult:
+        """Deliver the gateway's automatic response to an inbound email.
+
+        The stock Email adapter replies by email.  For approval-gated email
+        intake, email is an input surface only: the response/approval card must
+        go to Discord, and explicit outbound email remains possible only via an
+        approved send/reply action that calls ``send`` directly.
+        """
+        if self._response_delivery not in {"discord", "discord_home", "approval_discord"}:
+            return await super()._send_with_retry(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                max_retries=max_retries,
+                base_delay=base_delay,
+            )
+
+        result = await asyncio.to_thread(self._send_discord_approval_message, content)
+        if not result.success:
+            logger.error(
+                "[Email] Discord approval delivery failed; suppressing email fallback: %s",
+                result.error,
+            )
+        return result
+
+    def _send_discord_approval_message(self, content: str) -> SendResult:
+        """Send an email-intake response to the configured Discord channel."""
+        token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+        channel_id = self._approval_discord_thread or self._approval_discord_channel
+        if not token:
+            return SendResult(success=False, error="DISCORD_BOT_TOKEN is not configured")
+        if not channel_id:
+            return SendResult(success=False, error="No Discord approval channel configured")
+
+        chunks = []
+        text = content or ""
+        while text:
+            chunks.append(text[:1900])
+            text = text[1900:]
+        if not chunks:
+            chunks = ["(empty email-intake response)"]
+
+        last_message_id = None
+        for idx, chunk in enumerate(chunks, start=1):
+            if len(chunks) > 1:
+                chunk = f"{chunk}\n\n({idx}/{len(chunks)})"
+            payload = json.dumps({"content": chunk}).encode("utf-8")
+            req = urllib.request.Request(
+                f"https://discord.com/api/v10/channels/{channel_id}/messages",
+                data=payload,
+                headers={
+                    "Authorization": f"Bot {token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "HermesEmailApprovalRelay/1.0",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    last_message_id = str(data.get("id") or "") or last_message_id
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", errors="replace")[:500]
+                return SendResult(success=False, error=f"Discord HTTP {e.code}: {detail}")
+            except Exception as e:
+                return SendResult(success=False, error=str(e))
+
+        logger.info("[Email] Routed inbound-email response to Discord channel %s", channel_id)
+        return SendResult(success=True, message_id=last_message_id)
 
     def _send_email(
         self,

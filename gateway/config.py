@@ -922,6 +922,23 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                # Generic platform extras that should work when users place
+                # them directly under ``platforms.<name>`` instead of nesting
+                # under ``extra``.  This keeps adapter-specific runtime knobs
+                # (for example email approval routing) from being silently
+                # dropped by PlatformConfig.from_dict().
+                for _extra_key in (
+                    "suppress_home_notice",
+                    "suppress_home_channel_notice",
+                    "response_delivery",
+                    "approval_discord_channel",
+                    "approval_discord_thread",
+                    "approval_discord_thread_id",
+                    "approval_policy_note",
+                    "skip_attachments",
+                ):
+                    if _extra_key in platform_cfg:
+                        bridged[_extra_key] = platform_cfg[_extra_key]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

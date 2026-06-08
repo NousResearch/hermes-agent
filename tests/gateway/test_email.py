@@ -233,6 +233,98 @@ class TestExtractAttachments(unittest.TestCase):
         mock_cache.assert_called_once()
 
 
+class TestEmailResponseDelivery(unittest.TestCase):
+    """Test approval-first response routing for inbound email."""
+
+    def test_yaml_platform_keys_are_bridged_into_email_extra(self):
+        from pathlib import Path
+        import tempfile
+        import yaml
+        from unittest.mock import patch
+
+        from gateway.config import Platform, load_gateway_config
+
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "config.yaml").write_text(yaml.safe_dump({
+                "platforms": {
+                    "email": {
+                        "response_delivery": "discord",
+                        "approval_discord_channel": "12345",
+                        "approval_discord_thread": "67890",
+                        "suppress_home_notice": True,
+                        "skip_attachments": True,
+                    }
+                }
+            }))
+            with patch.dict(os.environ, {
+                "HERMES_HOME": td,
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+            }, clear=False):
+                cfg = load_gateway_config()
+
+        extra = cfg.platforms[Platform.EMAIL].extra
+        self.assertEqual(extra["response_delivery"], "discord")
+        self.assertEqual(extra["approval_discord_channel"], "12345")
+        self.assertEqual(extra["approval_discord_thread"], "67890")
+        self.assertTrue(extra["suppress_home_notice"])
+        self.assertTrue(extra["skip_attachments"])
+
+    def test_discord_response_delivery_does_not_call_smtp_send(self):
+        import asyncio
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "DISCORD_BOT_TOKEN": "token",
+            "DISCORD_HOME_CHANNEL": "12345",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(
+                enabled=True,
+                extra={"response_delivery": "discord"},
+            ))
+
+        adapter._send_email = MagicMock(return_value="email-message-id")
+        adapter._send_discord_approval_message = MagicMock(
+            return_value=SendResult(success=True, message_id="discord-message-id")
+        )
+
+        result = asyncio.run(adapter._send_with_retry("rob@example.com", "approval card"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "discord-message-id")
+        adapter._send_discord_approval_message.assert_called_once_with("approval card")
+        adapter._send_email.assert_not_called()
+
+    def test_default_response_delivery_still_uses_email_send_path(self):
+        import asyncio
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_RESPONSE_DELIVERY": "",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="email-message-id"))
+
+        result = asyncio.run(adapter._send_with_retry("rob@example.com", "normal reply"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "email-message-id")
+        adapter.send.assert_awaited_once()
+
+
 class TestDispatchMessage(unittest.TestCase):
     """Test email message dispatch logic."""
 

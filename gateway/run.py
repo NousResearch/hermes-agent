@@ -841,6 +841,22 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
+def _suppress_home_channel_notice(platform_name: str) -> bool:
+    """Return True when a platform opts out of the first-run /sethome notice."""
+    try:
+        cfg = _load_gateway_config()
+        platforms = cfg.get("platforms") or {}
+        platform_cfg = platforms.get(platform_name) or {}
+        if not isinstance(platform_cfg, dict):
+            return False
+        return bool(
+            platform_cfg.get("suppress_home_notice")
+            or platform_cfg.get("suppress_home_channel_notice")
+        )
+    except Exception:
+        return False
+
+
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
@@ -9486,7 +9502,7 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
+            if not os.getenv(env_key) and not _suppress_home_channel_notice(platform_name):
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".

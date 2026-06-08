@@ -1092,6 +1092,18 @@ show_manual_install_hint() {
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
+    # An interrupted previous clone leaves a .git with no initial commit, where
+    # the update path's `git stash` / `git checkout` abort with "You do not
+    # have the initial commit yet" and fail the install (#40998). Move such a
+    # partial checkout aside -- never delete it, in case it holds something the
+    # user wants -- so the fresh-clone path below can proceed.
+    if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+        backup_dir="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
+        log_warn "Existing checkout at $INSTALL_DIR has no commits (interrupted clone)."
+        log_warn "Moving it aside to $backup_dir before re-cloning."
+        mv "$INSTALL_DIR" "$backup_dir"
+    fi
+
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
@@ -2307,6 +2319,16 @@ install_desktop() {
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
     ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
         log_error "Desktop workspace npm install failed"
+        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
+        # ~/.npm, so this non-root install can't write the shared cache. npm hides
+        # it behind a confusing EEXIST / "File exists" message while the real errno
+        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
+        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
+        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
+        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
+        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+        log_info "Then re-run this installer, or build manually:"
+        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
     }
     log_success "Desktop workspace dependencies installed"

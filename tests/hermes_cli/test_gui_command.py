@@ -70,7 +70,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
-    mock_install.assert_called_once_with("/usr/bin/npm", root, capture_output=False)
+    mock_install.assert_called_once_with("/usr/bin/npm", root, capture_output=False, env=None)
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]

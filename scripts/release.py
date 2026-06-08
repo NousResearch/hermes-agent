@@ -45,11 +45,33 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "alberto.regalado@ymail.com": "ARegalado1",
+    "alchemistchaos@protonmail.com": "AlchemistChaos",  # co-author only
+    "gilad@smiti.ai": "giladbau",
+    "yusufalweshdemir@gmail.com": "Dusk1e",
+    "804436395@qq.com": "LaPhilosophie",
+    "maxmitcham@mac.home": "maxtrigify",
+    "ccook@nvms.com": "ccook1963",
+    "kristian@agrointel.no": "kristianvast",
+    "thomas.paquette@gmail.com": "RyTsYdUp",
+    "techxacm@gmail.com": "ProgramCaiCai",
+    "266365592+bmoore210@users.noreply.github.com": "bmoore210",
+    "manishbyatroy@gmail.com": "manishbyatroy",
+    "chilltulpa@gmail.com": "TheGardenGallery",
     "al@randomsnowflake.me": "randomsnowflake",
+    "zakame@zakame.net": "zakame",
+    "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",
     "834740219@qq.com": "ViewWay",
     "harjoth.khara@gmail.com": "harjothkhara",
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
+    "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "adityamalik2833@gmail.com": "alarcritty",
+    "islam666@users.noreply.github.com": "islam666",
+    "25539605+lsaether@users.noreply.github.com": "lsaether",
+    "30080538+JimStenstrom@users.noreply.github.com": "JimStenstrom",
+    "rod.boev@gmail.com": "rodboev",
+    "70290504+dangelo352@users.noreply.github.com": "dangelo352",
     "zhaolei.vc@bytedance.com": "zhaoleibd",
     "jeffrobodie@gmail.com": "jeffrobodie-glitch",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
@@ -165,6 +187,7 @@ AUTHOR_MAP = {
     "AdamPlatin123@outlook.com": "AdamPlatin123",
     "32711803+waefrebeorn@users.noreply.github.com": "waefrebeorn",
     "32869278+dusterbloom@users.noreply.github.com": "dusterbloom",
+    "189737461+basilalshukaili@users.noreply.github.com": "basilalshukaili",
     "liuhao1024@users.noreply.github.com": "liuhao1024",
     "annguyenNous@users.noreply.github.com": "annguyenNous",
     "285874597+annguyenNous@users.noreply.github.com": "annguyenNous",
@@ -182,6 +205,8 @@ AUTHOR_MAP = {
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
     "jithendranaidunara@gmail.com": "JithendraNara",
+    "islam666@users.noreply.github.com": "islam666",
+    "30467832+islam666@users.noreply.github.com": "islam666",
     "jeremy@geocaching.com": "outdoorsea",
     "54763683+thedavidmurray@users.noreply.github.com": "thedavidmurray",
     "leone.parise@gmail.com": "leoneparise",
@@ -942,6 +967,7 @@ AUTHOR_MAP = {
     "limkuan24@gmail.com": "WideLee",
     "aviralarora002@gmail.com": "AviArora02-commits",
     "draixagent@gmail.com": "draix",
+    "martin.alca@gmail.com": "draix",
     "junminliu@gmail.com": "JimLiu",
     "jarvischer@gmail.com": "maxchernin",
     "levantam.98.2324@gmail.com": "LVT382009",
@@ -1207,6 +1233,7 @@ AUTHOR_MAP = {
     "teknium@hermes-agent": "teknium1",
     "web3blind@gmail.com": "web3blind",
     "ztzheng@163.com": "chengoak",  # PR #17467
+    "zwcf5200@163.com": "zwcf5200",  # PR #38661 (SSH remote cwd fix)
     "24110240104@m.fudan.edu.cn": "YuShu",  # co-author only
     "charliekerfoot@gmail.com": "CharlieKerfoot",  # PR #18951
     # Debug share upload-time redaction (May 2026)
@@ -1460,6 +1487,7 @@ AUTHOR_MAP = {
     "wasdhkzk@gmail.com": "whyhkzk",  # PR #32407 (sandbox-mirror inner-container guard; commits authored as whyhkzk + zhukun)
     "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
     "42903577+ohMyJason@users.noreply.github.com": "ohMyJason",  # PR #29810 (discover_models in custom_providers section 4)
+    "singhsanidhya741@gmail.com": "sanidhyasin",  # PR #40403 salvage (model.default_headers for custom OpenAI-compatible providers, #40033)
 }
 
 

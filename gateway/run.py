@@ -18765,8 +18765,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # ``os.kill(pid, 0)`` on Windows is NOT a no-op — use the
             # handle-based existence check instead.
             from gateway.status import _pid_exists
+            old_gateway_exited = False
             for _ in range(20):
                 if not _pid_exists(existing_pid):
+                    old_gateway_exited = True
                     break  # Process is gone
                 time.sleep(0.5)
             else:
@@ -18777,9 +18779,34 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 )
                 try:
                     terminate_pid(existing_pid, force=True)
-                    time.sleep(0.5)
-                except (ProcessLookupError, PermissionError, OSError):
+                except ProcessLookupError:
+                    old_gateway_exited = True
+                except (PermissionError, OSError):
                     pass
+                # Confirm the force-kill actually reaped the process before we
+                # clear its PID file / scoped locks. SIGKILL can fail to take
+                # (e.g. an uninterruptible-sleep or zombie-reaping parent), and
+                # if we blindly clear the metadata and start a fresh instance
+                # we end up with two live gateways fighting over the same
+                # token — the duplicate-gateway failure in #19471.
+                if not old_gateway_exited:
+                    for _ in range(20):
+                        if not _pid_exists(existing_pid):
+                            old_gateway_exited = True
+                            break
+                        time.sleep(0.25)
+                if not old_gateway_exited:
+                    logger.error(
+                        "Old gateway (PID %d) still appears alive after SIGKILL; "
+                        "aborting replacement to avoid a duplicate gateway.",
+                        existing_pid,
+                    )
+                    try:
+                        from gateway.status import clear_takeover_marker
+                        clear_takeover_marker()
+                    except Exception:
+                        pass
+                    return False
             remove_pid_file()
             # remove_pid_file() is a no-op when the PID doesn't match.
             # Force-unlink to cover the old-process-crashed case.

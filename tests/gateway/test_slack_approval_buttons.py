@@ -44,6 +44,7 @@ _ensure_slack_mock()
 
 from gateway.platforms.slack import SlackAdapter
 from gateway.config import PlatformConfig, Platform
+from gateway.platforms.base import MessageType
 
 
 def _make_adapter():
@@ -161,6 +162,54 @@ class TestSlackExecApproval:
         section_text = kwargs["blocks"][0]["text"]["text"]
         assert "..." in section_text
         assert len(section_text) < 5000
+
+
+class TestSlackThreadCommands:
+    """Regression tests for alternate Slack command prefix in threads."""
+
+    @pytest.mark.asyncio
+    async def test_bang_command_in_new_thread_is_not_prefixed_with_thread_context(self):
+        """`!status` in a Slack thread must still dispatch as `/status`.
+
+        Slack blocks native slash commands in threads, so SlackAdapter rewrites
+        a leading `!` to `/` for known commands. A later thread-context prepend
+        used to turn event text into `[Thread context ...]/status`, causing
+        MessageEvent.get_command() to return None and sending the command to the
+        LLM as ordinary text.
+        """
+        adapter = _make_adapter()
+        adapter._channel_team["D1"] = "T1"
+        adapter._user_name_cache = {"U1": "Justas"}
+        adapter._fetch_thread_context = AsyncMock(return_value="[Thread context]\n")
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="parent")
+
+        captured = []
+
+        async def _handler(event):
+            captured.append(event)
+            return None
+
+        adapter.set_message_handler(_handler)
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "channel": "D1",
+                "channel_type": "im",
+                "user": "U1",
+                "text": "!status",
+                "ts": "2000.2",
+                "thread_ts": "2000.0",
+                "team": "T1",
+            }
+        )
+        await asyncio.sleep(0.05)
+
+        assert len(captured) == 1
+        assert captured[0].text == "/status"
+        assert captured[0].message_type == MessageType.COMMAND
+        assert captured[0].get_command() == "status"
+        adapter._fetch_thread_context.assert_not_called()
 
 
 # ===========================================================================

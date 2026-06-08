@@ -2163,6 +2163,7 @@ class SlackAdapter(BasePlatformAdapter):
                 pass
 
         text = original_text
+        is_command_text = (original_text or "").startswith("/")
 
         # Extract quoted/forwarded content from Slack blocks.
         # Slack's modern composer embeds forwarded messages in the ``blocks``
@@ -2359,7 +2360,11 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
+        # Do not prepend thread context to slash commands: command dispatch
+        # relies on MessageEvent.text starting with '/', and Slack's native
+        # slash commands are blocked in threads so we also rewrite !status
+        # style commands to '/' above before this point.
+        if (not is_command_text) and is_thread_reply and not self._has_active_session_for_thread(
             channel_id=channel_id,
             thread_ts=event_thread_ts,
             user_id=user_id,
@@ -2375,7 +2380,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Determine message type
         msg_type = MessageType.TEXT
-        if (original_text or "").startswith("/"):
+        if is_command_text:
             msg_type = MessageType.COMMAND
 
         # Handle file attachments

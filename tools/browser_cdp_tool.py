@@ -20,13 +20,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
+
+# Default port Chrome / Chromium listens on when launched with
+# ``--remote-debugging-port``. We probe this on loopback in addition to
+# honoring explicit ``BROWSER_CDP_URL`` / ``browser.cdp_url`` overrides,
+# because many users launch Chrome manually for CDP access and never set
+# the override (they expect "Chrome is running on 9223" to be enough).
+_CDP_DEFAULT_PORTS: tuple = (9223, 9222)
 
 # ``websockets`` is a transitive dependency of hermes-agent (via fal_client
 # and firecrawl-py) and is already imported by gateway/platforms/feishu.py.
@@ -522,12 +531,63 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _cdp_endpoint_reachable(url: str, timeout: float = 0.4) -> bool:
+    """Return True if a TCP connection to the CDP endpoint succeeds.
+
+    This is a cheap reachability probe (no HTTP/WS handshake) that answers the
+    doctor/migrate question "is there a browser we could talk CDP to right
+    now?". A successful connect is enough to mark the ``browser-cdp`` toolset
+    available — actual call-time errors are surfaced by the tool handler.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = parsed.hostname or "127.0.0.1"
+    # CDP discovery ports are loopback-only by default. If the user supplied a
+    # non-loopback host, we still probe it (they clearly opted in), but we
+    # skip the probe if URL parsing produced no usable host/port.
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if not port:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, socket.timeout):
+        return False
+
+
+def _loopback_cdp_reachable(timeout: float = 0.4) -> bool:
+    """True if any well-known loopback CDP port accepts a TCP connection.
+
+    The Chrome family defaults to 9223; some distros / forks land on 9222. We
+    probe the loopback interface only — a remote open port without a
+    configured override is more likely a service we shouldn't silently
+    hijack.
+    """
+    for port in _CDP_DEFAULT_PORTS:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+                return True
+        except (OSError, socket.timeout):
+            continue
+    return False
+
+
 def _browser_cdp_check() -> bool:
     """Availability check for browser_cdp.
 
     The tool is only offered when the Python side can actually reach a CDP
     endpoint right now — meaning a static URL is set via ``/browser connect``
-    (``BROWSER_CDP_URL``) or ``browser.cdp_url`` in ``config.yaml``.
+    (``BROWSER_CDP_URL``) or ``browser.cdp_url`` in ``config.yaml`` *or* a
+    well-known loopback CDP port (9223/9222) is open, which covers the common
+    case of a user-launched ``chrome --remote-debugging-port=9223`` that was
+    never wired into the override.
 
     Backends that do *not* currently expose CDP to us — Camofox (REST-only),
     the default local agent-browser mode (Playwright hides its internal CDP
@@ -547,9 +607,20 @@ def _browser_cdp_check() -> bool:
     except ImportError as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp check: browser_tool import failed: %s", exc)
         return False
-    if not check_browser_requirements():
+    # 1. Explicit override wins (env var or config.yaml).
+    override = _get_cdp_override()
+    if override:
+        if _cdp_endpoint_reachable(override):
+            return True
+        # Override set but unreachable — don't fall through to a loopback
+        # probe; the user picked a specific endpoint, so we should not
+        # silently swap to a different browser.
         return False
-    return bool(_get_cdp_override())
+    # 2. Loopback probe covers the common "Chrome launched manually on
+    #    9223" case.  ``check_browser_requirements()`` is intentionally
+    #    skipped here: it requires the agent-browser CLI / Playwright
+    #    Chromium install, which is irrelevant to a raw CDP passthrough.
+    return _loopback_cdp_reachable()
 
 
 registry.register(

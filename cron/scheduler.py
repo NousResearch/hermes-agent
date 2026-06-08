@@ -1411,6 +1411,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Gap 2: when the script lives inside a skill directory, bump
         # that skill's usage so script-only (no_agent) invocations are
         # tracked.  Without this the curator prunes active skills.
+        #
+        # Defense-in-depth: currently unreachable because _run_job_script
+        # rejects paths outside HERMES_HOME/scripts/.  Kept for safety in
+        # case the script validator is ever relaxed to allow skills_dir
+        # paths.  See PR #42313 discussion.
         try:
             _script_resolved = Path(script_path).resolve()
             _skills_dir = _get_hermes_home() / "skills"
@@ -1517,6 +1522,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Gap 2: when the script lives inside a skill directory, bump
         # that skill's usage so script-only invocations are tracked.
+        # Defense-in-depth (see comment at ~L1411 for details).
         try:
             _script_resolved = Path(script_path).resolve()
             _skills_dir = _get_hermes_home() / "skills"

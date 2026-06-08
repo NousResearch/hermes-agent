@@ -442,6 +442,21 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
+def _stop_session_notification_poller(session: dict) -> None:
+    """Stop the per-session notification poller without finalizing the session.
+
+    Called synchronously when a session is detached from ``_sessions`` so the
+    poller does not keep dequeuing from the process-wide completion queue while
+    slow finalization work runs (possibly on a background thread). Without this,
+    a detached poller can race with other sessions' tests/pollers and emit
+    duplicate ``status.update`` events. ``_finalize_session`` still sets the
+    same stop event later; ``Event.set()`` is idempotent.
+    """
+    stop_event = session.get("_notif_stop")
+    if stop_event is not None:
+        stop_event.set()
+
+
 def _close_session_by_id(
     sid: str, *, end_reason: str = "tui_close", background: bool = False
 ) -> bool:
@@ -458,6 +473,7 @@ def _close_session_by_id(
         session = _sessions.pop(sid, None)
     if session is None:
         return False
+    _stop_session_notification_poller(session)
     if background:
         t = threading.Thread(
             target=_teardown_session,
@@ -4670,6 +4686,24 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _notification_poller_should_halt(
+    session: dict, stop_event: threading.Event, sid: str
+) -> bool:
+    """True when the poller must stop consuming the global completion queue.
+
+    ``session.close`` pops the session and sets ``_notif_stop`` immediately while
+    slow finalization may still run on a background thread. In that window
+    ``_finalized`` is not yet set, but the session is already gone from
+    ``_sessions`` — the poller must not dequeue unrelated events (which would
+    duplicate ``status.update`` in other sessions/tests). Pollers stopped in
+    tests while the session dict is still registered are unaffected.
+    """
+    if not stop_event.is_set() or session.get("_finalized"):
+        return False
+    with _sessions_lock:
+        return sid not in _sessions
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -4692,6 +4726,10 @@ def _notification_poller_loop(
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
             continue
+
+        if _notification_poller_should_halt(session, stop_event, sid):
+            process_registry.completion_queue.put(evt)
+            break
 
         # Multiple desktop sessions share this one process-wide queue. Only
         # consume events that belong to *this* session — otherwise a background
@@ -4742,7 +4780,19 @@ def _notification_poller_loop(
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
     # live sessions are set aside and re-queued so their poller still sees them.
+    # When the session was only detached (stop set, finalize still pending),
+    # re-queue everything without dispatching.
     deferred: list = []
+    if _notification_poller_should_halt(session, stop_event, sid):
+        while not process_registry.completion_queue.empty():
+            try:
+                deferred.append(process_registry.completion_queue.get_nowait())
+            except Exception:
+                break
+        for evt in deferred:
+            process_registry.completion_queue.put(evt)
+        return
+
     while not process_registry.completion_queue.empty():
         try:
             evt = process_registry.completion_queue.get_nowait()

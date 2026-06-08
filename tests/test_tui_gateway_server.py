@@ -1087,6 +1087,61 @@ def test_session_close_returns_promptly_despite_slow_finalization(monkeypatch):
         server._sessions.pop("slow-sid", None)
 
 
+def test_session_close_stops_notification_poller_before_background_finalize(monkeypatch):
+    """Detached sessions must not keep polling the global completion queue."""
+    from tools.process_registry import process_registry
+
+    finalize_started = threading.Event()
+    release_finalize = threading.Event()
+    emitted = []
+
+    def _slow_finalize(session, end_reason="tui_close"):
+        finalize_started.set()
+        release_finalize.wait(timeout=2.0)
+
+    sess = _session()
+    server._sessions["poll-sid"] = sess
+    monkeypatch.setattr(server, "_finalize_session", _slow_finalize)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    def _fake_submit(_rid, _sid, session, _text):
+        with session["history_lock"]:
+            session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _fake_submit)
+    stop = server._start_notification_poller("poll-sid", sess)
+    sess["_notif_stop"] = stop
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "poll-sid"}}
+        )
+        assert resp["result"]["closed"] is True
+        assert stop.is_set(), "notification poller must stop when session is detached"
+        assert finalize_started.wait(timeout=2.0), "background finalize did not start"
+
+        process_registry.completion_queue.put({
+            "type": "watch_match",
+            "session_id": "proc_leak_test",
+            "command": "tail -f app.log",
+            "pattern": "READY",
+            "output": "READY on port 8000",
+            "suppressed": 0,
+        })
+        time.sleep(0.6)
+
+        assert not any(
+            a[0] == "status.update" for a in emitted
+        ), "detached poller must not emit after session.close returns"
+    finally:
+        release_finalize.set()
+        server._sessions.pop("poll-sid", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 
@@ -1122,7 +1177,9 @@ def test_init_session_fires_reset_hook(monkeypatch):
         )
         assert ("on_session_reset", "session-key") in hooks
     finally:
-        server._sessions.pop(sid, None)
+        session = server._sessions.pop(sid, None)
+        if session is not None:
+            server._stop_session_notification_poller(session)
 
 
 def test_session_title_queues_when_db_row_not_ready(monkeypatch):
@@ -5953,7 +6010,10 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
 
     try:
         server._notification_poller_loop(stop, "sid_watch_dedup", sess)
-        status_calls = [a for a in emitted if a[0] == "status.update"]
+        status_calls = [
+            a for a in emitted
+            if a[0] == "status.update" and a[1] == "sid_watch_dedup"
+        ]
         assert len(status_calls) == 2
         status_text = "\n".join(call[2]["text"] for call in status_calls)
         assert "READY on port 8000" in status_text

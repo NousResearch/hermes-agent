@@ -34,6 +34,8 @@ interface VirtualSessionListProps {
   workingSessionIdSet: Set<string>
   /** Show device/source info on line 2 of each row. */
   showSourceBadge?: boolean
+  /** Show device name on line 2 of each row. */
+  showDeviceBadge?: boolean
   /** Presence lookup map for device nicknames. */
   presenceBySession?: Map<string, SessionPresenceRecord>
 }
@@ -53,6 +55,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   sortable,
   workingSessionIdSet,
   showSourceBadge = false,
+  showDeviceBadge = false,
   presenceBySession
 }) => {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
@@ -101,6 +104,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
         presence={presence}
         rowProps={commonProps}
         session={session}
+        showDeviceBadge={showDeviceBadge}
         showSourceBadge={showSourceBadge}
       />
     ) : (
@@ -111,6 +115,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
         presence={presence}
         ref={virtualizer.measureElement}
         session={session}
+        showDeviceBadge={showDeviceBadge}
         showSourceBadge={showSourceBadge}
       />
     )
@@ -139,10 +144,11 @@ interface VirtualSortableRowProps {
   rowProps: SessionRowCommonProps
   session: SessionInfo
   showSourceBadge?: boolean
+  showDeviceBadge?: boolean
   presence?: SessionPresenceRecord
 }
 
-function VirtualSortableRow({ index, measureRef, rowProps, session, showSourceBadge, presence }: VirtualSortableRowProps) {
+function VirtualSortableRow({ index, measureRef, rowProps, session, showSourceBadge, showDeviceBadge, presence }: VirtualSortableRowProps) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: session.id })
 
   // Merge dnd-kit's setNodeRef with the virtualizer's measureElement so
@@ -167,6 +173,7 @@ function VirtualSortableRow({ index, measureRef, rowProps, session, showSourceBa
       reorderable
       session={session}
       showSourceBadge={showSourceBadge}
+      showDeviceBadge={showDeviceBadge}
       style={{ transform: CSS.Transform.toString(transform), transition }}
     />
   )

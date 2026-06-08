@@ -168,25 +168,29 @@ const SOURCE_ICONS: Record<string, string> = {
   unknown: 'question',
 }
 
-function sourceGroupsFor(sessions: SessionInfo[], workingSessionIdSet: Set<string>): SidebarSessionGroup[] {
+function deviceGroupsFor(sessions: SessionInfo[], workingSessionIdSet: Set<string>): SidebarSessionGroup[] {
   const groups = new Map<string, SidebarSessionGroup>()
 
   for (const session of sessions) {
-    const raw = session.source || 'unknown'
-    const key = raw || 'unknown'
-    const label = SOURCE_LABELS[key] || key
+    const key = session.device_name || 'Unknown'
 
     let group = groups.get(key)
 
     if (!group) {
-      group = { id: `__src__${key}`, label, path: null, sessions: [], mode: 'source' as const }
+      group = {
+        id: `__dev__${key.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+        label: key,
+        path: null,
+        sessions: [],
+        mode: 'device' as const
+      }
       groups.set(key, group)
     }
 
     group.sessions.push(session)
   }
 
-  // Sort: active/working groups first (based on workingSessionIdSet), then alphabetical.
+  // Sort: groups with active/working sessions first, then alphabetical.
   const sorted = [...groups.values()]
   sorted.sort((a, b) => {
     const aHasWorking = a.sessions.some(s => workingSessionIdSet.has(s.id))
@@ -463,8 +467,8 @@ export function ChatSidebar({
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
 
-  const pinnedSourceGroups = useMemo(
-    () => (pinnedSessions.length > 0 ? sourceGroupsFor(pinnedSessions, workingSessionIdSet) : undefined),
+  const pinnedDeviceGroups = useMemo(
+    () => (pinnedSessions.length > 0 ? deviceGroupsFor(pinnedSessions, workingSessionIdSet) : undefined),
     [pinnedSessions, workingSessionIdSet]
   )
 
@@ -536,8 +540,8 @@ export function ChatSidebar({
     [agentSessions, workspaceOrderIds]
   )
 
-  const agentSourceGroups = useMemo(
-    () => (agentSessions.length > 0 ? sourceGroupsFor(agentSessions, workingSessionIdSet) : undefined),
+  const agentDeviceGroups = useMemo(
+    () => (agentSessions.length > 0 ? deviceGroupsFor(agentSessions, workingSessionIdSet) : undefined),
     [agentSessions, workingSessionIdSet]
   )
 
@@ -727,7 +731,7 @@ export function ChatSidebar({
           <Codicon name={archiveAllSubmitting ? 'loading' : 'archive'} size="0.75rem" spinning={archiveAllSubmitting} />
         </Button>
         <Button
-          aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+          aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by device'}
           className={cn(
             'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
             agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
@@ -738,7 +742,7 @@ export function ChatSidebar({
             setSidebarAgentsGrouped(!agentsGrouped)
           }}
           size="icon-xs"
-          title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
+          title={agentsGrouped ? 'Ungroup sessions' : 'Group by device'}
           variant="ghost"
         >
           <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
@@ -863,7 +867,7 @@ export function ChatSidebar({
               emptyState={<SidebarPinnedEmptyState />}
               footer={null}
               forceEmptyState={false}
-              groups={pinnedSourceGroups}
+              groups={pinnedDeviceGroups}
               label="Pinned"
               labelMeta={<SidebarCount>{pinnedSessions.length}</SidebarCount>}
               onArchiveSession={onArchiveSession}
@@ -902,7 +906,7 @@ export function ChatSidebar({
                 ) : null
               }
               forceEmptyState={showSessionSkeletons}
-              groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : agentSourceGroups}
+              groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : agentDeviceGroups}
               headerAction={sessionsHeaderAction}
               label="Sessions"
               labelMeta={recentsMeta}
@@ -1059,8 +1063,9 @@ function SidebarSourceGroup({
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
 }) {
   const [open, setOpen] = useState(true)
+  const isDeviceGroup = group.mode === 'device'
   const sourceKey = group.id.replace('__src__', '')
-  const iconName = SOURCE_ICONS[sourceKey] || 'question'
+  const iconName = isDeviceGroup ? 'device-desktop' : (SOURCE_ICONS[sourceKey] || 'question')
 
   return (
     <div className="grid gap-px">
@@ -1092,7 +1097,7 @@ interface SidebarSessionGroup {
   // Profile color for the ALL-profiles view; absent for workspace groups.
   color?: null | string
   loadingMore?: boolean
-  mode?: 'profile' | 'workspace' | 'source'
+  mode?: 'profile' | 'workspace' | 'source' | 'device'
   onLoadMore?: () => void
   totalCount?: number
 }
@@ -1158,8 +1163,15 @@ function SidebarSessionsSection({
   const dndActive = sortable && !!onReorder
 
   const renderRow = (session: SessionInfo) => {
-    const hasSourceGroups = groups?.length ? groups[0]?.mode === 'source' : false
-    const resolvedShowSourceBadge = showSourceBadge && !hasSourceGroups
+    const groupMode = groups?.length ? groups[0]?.mode : null
+    const isSourceGroups = groupMode === 'source'
+    const isDeviceGroups = groupMode === 'device'
+    // When grouped by device, show source on line 2.
+    // When grouped by workspace, show device name on line 2.
+    // When grouped by source, suppress line 2 (would be redundant).
+    // Flat list: show source.
+    const resolvedShowSourceBadge = showSourceBadge && !isSourceGroups && (isDeviceGroups || groupMode === null)
+    const resolvedShowDeviceBadge = isDeviceGroups ? false : !isSourceGroups && showSourceBadge
     const rowProps = {
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
@@ -1170,6 +1182,7 @@ function SidebarSessionsSection({
       onResume: () => onResumeSession(session.id),
       session,
       showSourceBadge: resolvedShowSourceBadge,
+      showDeviceBadge: resolvedShowDeviceBadge,
       presence: presenceBySession?.get(session.id),
     }
 
@@ -1199,8 +1212,9 @@ function SidebarSessionsSection({
     inner = emptyState
   } else if (groups?.length) {
     const isSourceGroups = groups[0]?.mode === 'source'
+    const isDeviceGroups = groups[0]?.mode === 'device'
     const groupNodes = groups.map(group =>
-      isSourceGroups ? (
+      isSourceGroups || isDeviceGroups ? (
         <SidebarSourceGroup
           group={group}
           key={group.id}
@@ -1223,7 +1237,7 @@ function SidebarSessionsSection({
       )
     )
 
-    inner = isSourceGroups ? (
+    inner = isSourceGroups || isDeviceGroups ? (
       groupNodes
     ) : dndActive ? (
       <SortableContext items={groups.map(g => wsId(g.id))} strategy={verticalListSortingStrategy}>
@@ -1243,6 +1257,7 @@ function SidebarSessionsSection({
         pinned={pinned}
         presenceBySession={presenceBySession}
         sessions={sessions}
+        showDeviceBadge={false}
         showSourceBadge={showSourceBadge}
         sortable={sortable}
         workingSessionIdSet={workingSessionIdSet}
@@ -1424,6 +1439,8 @@ interface SortableSessionRowProps {
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  showSourceBadge?: boolean
+  showDeviceBadge?: boolean
 }
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {

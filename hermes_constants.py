@@ -4,7 +4,9 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import json
 import os
+import socket
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -337,6 +339,87 @@ def is_termux() -> bool:
     """
     prefix = os.getenv("PREFIX", "")
     return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
+_DEVICE_NAME_CACHE: str | None = None
+
+
+def get_device_name() -> str:
+    """Return a human-friendly device name.
+
+    Resolution order:
+      1. ``device.name`` from ``config.yaml`` (user-set, editable in-app).
+      2. MeshBoard ``devices.json`` label for the matching hostname.
+      3. ``socket.gethostname()`` as fallback.
+
+    Result is cached for the process lifetime.
+    """
+    global _DEVICE_NAME_CACHE
+    if _DEVICE_NAME_CACHE is not None:
+        return _DEVICE_NAME_CACHE
+
+    # 1. config.yaml device.name
+    try:
+        cfg_path = get_config_path()
+        if cfg_path.exists():
+            import yaml  # deferred — yaml is always installed with Hermes
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            device_cfg = cfg.get("device")
+            if isinstance(device_cfg, dict):
+                name = device_cfg.get("name")
+                if isinstance(name, str) and name.strip():
+                    _DEVICE_NAME_CACHE = name.strip()
+                    return _DEVICE_NAME_CACHE
+            elif isinstance(device_cfg, str) and device_cfg.strip():
+                _DEVICE_NAME_CACHE = device_cfg.strip()
+                return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    # 2. MeshBoard devices.json label
+    try:
+        import platform
+        hostname = platform.node()
+        # Look for devices.json in common MeshBoard locations
+        for mesh_root in [
+            Path.home() / "Workspaces" / ".mesh",
+            Path(os.environ.get("MESHBOARD_RUNTIME", "")).expanduser()
+                if os.environ.get("MESHBOARD_RUNTIME") else None,
+        ]:
+            if mesh_root is None:
+                continue
+            devices_path = mesh_root / "registry" / "devices.json"
+            if devices_path.exists():
+                with open(devices_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for dev in data.get("devices", []):
+                    if str(dev.get("id", "")) == hostname:
+                        label = dev.get("label")
+                        if isinstance(label, str) and label.strip():
+                            _DEVICE_NAME_CACHE = label.strip()
+                            return _DEVICE_NAME_CACHE
+                # Also match by ssh_alias
+                for dev in data.get("devices", []):
+                    if str(dev.get("ssh_alias", "")) == hostname:
+                        label = dev.get("label")
+                        if isinstance(label, str) and label.strip():
+                            _DEVICE_NAME_CACHE = label.strip()
+                            return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    # 3. hostname fallback
+    try:
+        hn = socket.gethostname()
+        # Strip .local suffix for readability
+        if hn.endswith(".local"):
+            hn = hn[:-6]
+        _DEVICE_NAME_CACHE = hn or "unknown"
+    except Exception:
+        _DEVICE_NAME_CACHE = "unknown"
+
+    return _DEVICE_NAME_CACHE
 
 
 _wsl_detected: bool | None = None

@@ -317,6 +317,7 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)

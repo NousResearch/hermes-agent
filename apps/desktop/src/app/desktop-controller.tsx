@@ -23,6 +23,7 @@ import {
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
   pinSession,
+  setSidebarRevealed,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_SESSIONS_PAGE_SIZE,
@@ -300,6 +301,7 @@ export function DesktopController() {
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page — the empty-history-on-profile-switch bug.
       const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
       const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: ['cron']
       })
@@ -877,6 +879,7 @@ export function DesktopController() {
         id="chat-sidebar"
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
+        onHoverRevealChange={setSidebarRevealed}
         resizable
         side={sidebarSide}
         width={`${SIDEBAR_DEFAULT_WIDTH}px`}

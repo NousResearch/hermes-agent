@@ -39,6 +39,8 @@ export interface PaneProps {
    * track stays at 0px.
    */
   hoverReveal?: boolean
+  /** Called with the reveal state whenever a collapsed hoverReveal pane floats in/out. */
+  onHoverRevealChange?: (revealed: boolean) => void
   id: string
   maxWidth?: WidthValue
   minWidth?: WidthValue
@@ -205,6 +207,7 @@ export function Pane({
   id,
   maxWidth,
   minWidth,
+  onHoverRevealChange,
   resizable = false,
   width
 }: PaneProps) {
@@ -247,6 +250,12 @@ export function Pane({
       setHoverRevealed(false)
     }
   }, [overlayActive, hoverRevealed])
+
+  // Surface the effective reveal state to consumers (e.g. so the sidebar can
+  // render its full content while floated, not just while the track is open).
+  useEffect(() => {
+    onHoverRevealChange?.(overlayActive && hoverRevealed)
+  }, [onHoverRevealChange, overlayActive, hoverRevealed])
 
   const startResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {

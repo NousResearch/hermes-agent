@@ -49,6 +49,7 @@ import {
   $sidebarOpen,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
+  $sidebarRevealed,
   pinSession,
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
@@ -247,6 +248,10 @@ export function ChatSidebar({
   const { t } = useI18n()
   const s = t.sidebar
   const sidebarOpen = useStore($sidebarOpen)
+  // When collapsed but hover-revealed (floated over content), render the full
+  // sidebar — search field, pinned + recents — not just the nav rail.
+  const sidebarRevealed = useStore($sidebarRevealed)
+  const contentVisible = sidebarOpen || sidebarRevealed
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
@@ -629,7 +634,7 @@ export function ChatSidebar({
                       type="button"
                     >
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
-                      {sidebarOpen && (
+                      {contentVisible && (
                         <>
                           <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">
                             {s.nav[item.id] ?? item.label}
@@ -650,7 +655,7 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {sidebarOpen && showSessionSections && (
+        {contentVisible && showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
@@ -662,7 +667,7 @@ export function ChatSidebar({
           </div>
         )}
 
-        {sidebarOpen && showSessionSections && trimmedQuery && (
+        {contentVisible && showSessionSections && trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
@@ -686,7 +691,7 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && showSessionSections && !trimmedQuery && (
+        {contentVisible && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
@@ -708,7 +713,7 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && showSessionSections && !trimmedQuery && (
+        {contentVisible && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName={cn(
@@ -781,7 +786,7 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && !trimmedQuery && cronJobs.length > 0 && (
+        {contentVisible && !trimmedQuery && cronJobs.length > 0 && (
           <SidebarCronJobsSection
             jobs={cronJobs}
             label={s.cronJobs}
@@ -793,9 +798,9 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && !showSessionSections && <div className="min-h-0 flex-1" />}
+        {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
 
-        {sidebarOpen && (
+        {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
             <ProfileRail />
           </div>

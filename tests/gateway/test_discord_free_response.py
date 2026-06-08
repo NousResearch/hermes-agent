@@ -56,10 +56,19 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "general",
+        guild_name: str = "Hermes Server",
+        guild_id: int = 10,
+        category_id: int | None = None,
+    ):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=guild_id, name=guild_name)
+        self.category_id = category_id
+        self.parent_id = category_id
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -70,10 +79,19 @@ class FakeTextChannel:
 
 
 class FakeForumChannel:
-    def __init__(self, channel_id: int = 1, name: str = "support-forum", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "support-forum",
+        guild_name: str = "Hermes Server",
+        guild_id: int = 10,
+        category_id: int | None = None,
+    ):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=guild_id, name=guild_name)
+        self.category_id = category_id
+        self.parent_id = category_id
         self.type = 15
         self.topic = None
 
@@ -548,6 +566,117 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     assert event.source.chat_type == "group"
 
 
+@pytest.mark.asyncio
+async def test_discord_category_default_allows_mentionless_thread_response(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_THREAD_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    adapter.config.extra["category_defaults"] = {
+        "1501180412385558690": {
+            "require_mention": False,
+            "thread_response": True,
+        }
+    }
+
+    channel = FakeTextChannel(channel_id=321, category_id=1501180412385558690)
+    fake_thread = FakeThread(channel_id=654, name="auto-thread", parent=channel)
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(channel=channel, content="category-scoped no mention")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "654"
+    assert event.source.thread_id == "654"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_guild_default_requires_mention_and_auto_threads(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_THREAD_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    adapter.config.extra["guild_defaults"] = {
+        "828550767811493920": {
+            "require_mention": True,
+            "thread_response": True,
+        }
+    }
+
+    channel = FakeTextChannel(channel_id=321, guild_id=828550767811493920)
+    adapter._auto_create_thread = AsyncMock()
+
+    await adapter._handle_message(make_message(channel=channel, content="guild-scoped no mention"))
+
+    adapter.handle_message.assert_not_awaited()
+    adapter._auto_create_thread.assert_not_awaited()
+
+    bot_user = adapter._client.user
+    fake_thread = FakeThread(channel_id=654, name="auto-thread", parent=channel)
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+    message = make_message(
+        channel=channel,
+        content=f"<@{bot_user.id}> guild-scoped mention",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "guild-scoped mention"
+    assert event.source.thread_id == "654"
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_defaults_override_category_and_guild(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_THREAD_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    adapter.config.extra["guild_defaults"] = {
+        "828550767811493920": {
+            "require_mention": True,
+            "thread_response": True,
+        }
+    }
+    adapter.config.extra["category_defaults"] = {
+        "1501180412385558690": {
+            "require_mention": False,
+            "thread_response": True,
+        }
+    }
+    adapter.config.extra["channel_defaults"] = {
+        "321": {
+            "require_mention": False,
+            "thread_response": False,
+        }
+    }
+
+    channel = FakeTextChannel(
+        channel_id=321,
+        guild_id=828550767811493920,
+        category_id=1501180412385558690,
+    )
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(channel=channel, content="channel override no thread")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.thread_id is None
+    assert event.source.chat_type == "group"
+
+
 
 
 @pytest.mark.asyncio
@@ -925,5 +1054,3 @@ async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
 
     adapter._auto_create_thread.assert_awaited_once()
     adapter._fetch_channel_context.assert_not_awaited()
-
-

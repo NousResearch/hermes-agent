@@ -959,7 +959,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         if _parent_id:
                             _channel_ids.add(_parent_id)
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
-                            return
+                            if adapter_self._discord_require_mention_for(message.channel):
+                                return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
 
@@ -3983,10 +3984,96 @@ class DiscordAdapter(BasePlatformAdapter):
         """Return whether Discord channel messages require a bot mention."""
         configured = self.config.extra.get("require_mention")
         if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() not in {"false", "0", "no", "off"}
-            return bool(configured)
+            return self._discord_bool(configured, default=True)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+
+    @staticmethod
+    def _discord_bool(value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            stripped = value.strip().lower()
+            if stripped in {"true", "1", "yes", "on"}:
+                return True
+            if stripped in {"false", "0", "no", "off"}:
+                return False
+            return default
+        return bool(value)
+
+    def _discord_scope_ids(self, channel: Any) -> tuple[list[str], str | None, str | None]:
+        """Return channel candidates, category id, and guild id for scoped config.
+
+        Channel candidates are ordered most-specific first.  For a thread this
+        means the thread id, then its parent channel id.  Category and guild
+        scope then follow in the caller, giving channel > category > guild
+        precedence.
+        """
+        channel_ids: list[str] = []
+        channel_id = str(getattr(channel, "id", "") or "")
+        if channel_id:
+            channel_ids.append(channel_id)
+
+        parent = getattr(channel, "parent", None)
+        parent_id = str(getattr(channel, "parent_id", "") or "") or str(getattr(parent, "id", "") or "")
+        if parent_id and parent_id not in channel_ids:
+            channel_ids.append(parent_id)
+
+        category = getattr(channel, "category", None)
+        category_id = (
+            str(getattr(channel, "category_id", "") or "")
+            or str(getattr(category, "id", "") or "")
+        )
+        if not category_id and parent is not None:
+            parent_category = getattr(parent, "category", None)
+            category_id = (
+                str(getattr(parent, "category_id", "") or "")
+                or str(getattr(parent_category, "id", "") or "")
+                or str(getattr(parent, "parent_id", "") or "")
+            )
+
+        guild = getattr(channel, "guild", None) or getattr(parent, "guild", None)
+        guild_id = str(getattr(guild, "id", "") or "")
+        return channel_ids, category_id or None, guild_id or None
+
+    def _discord_scoped_bool_value(
+        self,
+        key: str,
+        channel: Any,
+    ) -> bool | None:
+        """Resolve a bool from channel_defaults > category_defaults > guild_defaults."""
+        channel_ids, category_id, guild_id = self._discord_scope_ids(channel)
+        scopes = (
+            ("channel_defaults", channel_ids),
+            ("category_defaults", [category_id] if category_id else []),
+            ("guild_defaults", [guild_id] if guild_id else []),
+        )
+        for scope_name, ids in scopes:
+            scope_cfg = self.config.extra.get(scope_name)
+            if not isinstance(scope_cfg, dict):
+                continue
+            for scope_id in ids:
+                raw = scope_cfg.get(str(scope_id))
+                if not isinstance(raw, dict) or key not in raw:
+                    continue
+                return self._discord_bool(raw.get(key), default=False)
+        return None
+
+    def _discord_scoped_bool(
+        self,
+        key: str,
+        channel: Any,
+        *,
+        default: bool,
+    ) -> bool:
+        scoped = self._discord_scoped_bool_value(key, channel)
+        return default if scoped is None else scoped
+
+    def _discord_require_mention_for(self, channel: Any) -> bool:
+        return self._discord_scoped_bool(
+            "require_mention",
+            channel,
+            default=self._discord_require_mention(),
+        )
 
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
@@ -4082,6 +4169,14 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_thread_response_for(self, channel: Any, channel_ids: set[str]) -> bool:
+        """Return whether a message in ``channel`` should auto-thread its reply."""
+        scoped = self._discord_scoped_bool_value("thread_response", channel)
+        if scoped is not None:
+            return scoped
+        thread_response_channels = self._discord_thread_response_channels()
+        return "*" in thread_response_channels or bool(channel_ids & thread_response_channels)
 
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
@@ -4944,7 +5039,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
-            require_mention = self._discord_require_mention()
+            scoped_require_mention = self._discord_scoped_bool_value("require_mention", message.channel)
+            require_mention = self._discord_require_mention_for(message.channel)
             # Voice-linked text channels act as free-response while voice is active.
             # Only the exact bound channel gets the exemption, not sibling threads.
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
@@ -4954,6 +5050,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 "*" in free_channels
                 or bool(channel_ids & free_channels)
                 or is_voice_linked_channel
+                or scoped_require_mention is False
             )
 
             # Skip the mention check if the message is in a thread where
@@ -4978,8 +5075,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            thread_response_channels = self._discord_thread_response_channels()
-            force_thread = "*" in thread_response_channels or bool(channel_ids & thread_response_channels)
+            force_thread = self._discord_thread_response_for(message.channel, channel_ids)
             skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not force_thread)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
@@ -6643,9 +6739,15 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 
     Env vars take precedence over YAML — every assignment is guarded by
     ``not os.getenv(...)`` so explicit env vars survive a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    update.  Scoped defaults are returned as ``PlatformConfig.extra`` because
+    they need per-message channel/category/guild context.
     """
+    returned_extra: dict[str, Any] = {}
+    for scoped_key in ("channel_defaults", "category_defaults", "guild_defaults"):
+        scoped_cfg = discord_cfg.get(scoped_key)
+        if isinstance(scoped_cfg, dict):
+            returned_extra[scoped_key] = scoped_cfg
+
     if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
@@ -6730,7 +6832,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
-    return None  # all settings flow through env; nothing to merge into extras
+    return returned_extra or None
 
 
 def _is_connected(config) -> bool:

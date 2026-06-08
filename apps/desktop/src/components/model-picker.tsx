@@ -128,7 +128,7 @@ export function ModelPickerDialog({
           </CommandList>
         </Command>
 
-        <DialogFooter className="flex-row items-center justify-between gap-3 border-t border-border bg-card p-3 sm:justify-between">
+        <DialogFooter className="flex-row items-center justify-between gap-3 bg-card p-3 sm:justify-between">
           <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
             <Checkbox
               checked={persistGlobal || !sessionId}

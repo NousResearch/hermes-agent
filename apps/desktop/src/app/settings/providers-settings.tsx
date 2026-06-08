@@ -111,8 +111,9 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <SettingsCategoryHeading icon={KeyRound} title={p.connectAccount} />
         <Button
-          className="h-auto px-0 py-0 text-[length:var(--conversation-caption-font-size)]"
+          className="text-[length:var(--conversation-caption-font-size)]"
           onClick={onWantApiKey}
+          size="inline"
           type="button"
           variant="textStrong"
         >
@@ -143,8 +144,9 @@ function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; pr
       )}
       {collapsible && (
         <Button
-          className="h-auto px-0 py-1 text-[length:var(--conversation-caption-font-size)]"
+          className="py-1 text-[length:var(--conversation-caption-font-size)]"
           onClick={() => setShowAll(v => !v)}
+          size="inline"
           type="button"
           variant="text"
         >

@@ -1041,8 +1041,20 @@ def _get_env_config() -> Dict[str, Any]:
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
+    #
+    # `os.getcwd()` can raise FileNotFoundError when the worker's process
+    # CWD has been deleted out from under it (e.g. a kanban worker whose
+    # `terminal.cwd` config points at a project dir that was later moved
+    # or removed). In that case fall back to the user's home — the
+    # `workdir` parameter on individual calls is still honored by the
+    # command-execution layer, so the worker can recover by passing
+    # `workdir=<existing path>` explicitly. (Fixes: kanban workers
+    # blocked on terminal_tool.py:1045 os.getcwd() crash, 2026-06-08.)
     if env_type == "local":
-        default_cwd = os.getcwd()
+        try:
+            default_cwd = os.getcwd()
+        except (FileNotFoundError, OSError):
+            default_cwd = os.path.expanduser("~")
     elif env_type == "ssh":
         default_cwd = "~"
     else:

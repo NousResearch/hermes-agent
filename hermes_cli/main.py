@@ -282,6 +282,7 @@ from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.dump import build_dump_parser
 from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
+from hermes_cli.subcommands.marker import build_marker_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.version import build_version_parser
@@ -4101,6 +4102,12 @@ def cmd_import(args):
     from hermes_cli.backup import run_import
 
     run_import(args)
+
+
+def cmd_marker(args):
+    """Manage memory locations (markers)."""
+    from hermes_cli.marker_cmd import cmd_marker as _handle_marker
+    _handle_marker(args)
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
@@ -10877,6 +10884,11 @@ def main():
     # backup command  (parser built in hermes_cli/subcommands/backup.py)
     # =========================================================================
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
+
+    # =========================================================================
+    # marker command  (parser built in hermes_cli/subcommands/marker.py)
+    # =========================================================================
+    build_marker_parser(subparsers, cmd_marker=cmd_marker)
 
     # =========================================================================
     # checkpoints command

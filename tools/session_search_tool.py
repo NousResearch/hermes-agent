@@ -223,6 +223,39 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
+def _search_markers(db, query: str, current_session_id: Optional[str] = None) -> str:
+    """Return matching memory locations via FTS5 search."""
+    try:
+        from agent.memory_locations import MemoryLocationStore
+        store = MemoryLocationStore(session_db=db)
+        # Search globally or within current session
+        results = store.search_fts(query, session_id=current_session_id if current_session_id else None)
+        
+        formatted = []
+        for loc in results:
+            formatted.append({
+                "location_id": loc["id"],
+                "label": loc["label"],
+                "session_id": loc["session_id"],
+                "anchor_guid": loc["anchor_guid"],
+                "tags": loc.get("tags", []),
+                "is_persistent": bool(loc.get("is_persistent", 0)),
+                "sort_order": loc.get("sort_order", 0),
+                "snippet": loc.get("label_snippet", ""),
+            })
+            
+        return json.dumps({
+            "success": True,
+            "mode": "marker",
+            "results": formatted,
+            "count": len(formatted),
+            "message": f"Found {len(formatted)} memory location(s) matching '{query}'",
+        }, ensure_ascii=False)
+    except Exception as e:
+        logging.error("Error searching markers: %s", e, exc_info=True)
+        return tool_error(f"Failed to search markers: {e}", success=False)
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
@@ -593,6 +626,17 @@ def session_search(
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id)
 
+    # Handle marker: prefix for memory location search
+    query_stripped = query.strip()
+    if query_stripped.startswith("marker:"):
+        marker_query = query_stripped[7:].strip()
+        if not marker_query:
+            return json.dumps({
+                "success": False,
+                "error": "marker: prefix requires a search term (e.g., marker:bug)"
+            }, ensure_ascii=False)
+        return _search_markers(db, marker_query, current_session_id)
+
     # Parse role_filter
     role_list: Optional[List[str]] = None
     if isinstance(role_filter, str) and role_filter.strip():
@@ -675,7 +719,8 @@ SESSION_SEARCH_SCHEMA = {
         "  Reach for this on any \"what did we do about X\" / \"where did we leave Y\" / "
         "\"find the session where Z\" question — before gh, web search, or filesystem "
         "inspection. The session DB carries what was said when; external tools show "
-        "current world state."
+        "current world state.\n\n"
+        "  Use \"marker:query\" to search specifically within memory locations (markers)."
     ),
     "parameters": {
         "type": "object",

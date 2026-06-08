@@ -3387,7 +3387,84 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             pending_path.unlink(missing_ok=True)
             exit_code_path.unlink(missing_ok=True)
-            return t("gateway.update.start_failed", error=e)
+            logger.exception("Failed to spawn background update process: %s", e)
 
-        self._schedule_update_notification_watch()
-        return t("gateway.update.starting")
+    async def _handle_marker_command(self, event: MessageEvent) -> str:
+        """Handle /marker command for memory locations."""
+        parts = event.text.split()[1:] if event.text else []
+        action = parts[0].lower() if parts else "list"
+
+        # Defer import to avoid circular dependency
+        from hermes_state import SessionDB, get_last_init_error
+        from agent.memory_locations import MemoryLocationStore
+        from gateway.session import build_session_key
+
+        try:
+            db = SessionDB()
+        except Exception:
+            err = get_last_init_error() or "unknown error"
+            return f"Session database not available: {err}"
+
+        store = MemoryLocationStore(session_db=db)
+        session_key = build_session_key(event.source)
+
+        if action == "create":
+            label = " ".join(parts[1:]) if len(parts) > 1 else "Marker"
+            loc_id = store.create(
+                session_id=session_key,
+                label=label,
+                time_type="point",
+                is_persistent=False,
+            )
+            return f"Created memory location {loc_id}: '{label}'"
+
+        elif action == "list":
+            locations = store.list(session_id=session_key)
+            if not locations:
+                return "No memory locations found in this session."
+            
+            lines = ["Memory locations in this session:"]
+            for loc in locations:
+                label_str = loc.get("label", "")
+                if len(label_str) > 30:
+                    label_str = label_str[:30] + "..."
+                is_pers = " (persistent)" if loc.get("is_persistent") else ""
+                lines.append(f"- **{loc.get('id')}**: {label_str}{is_pers}")
+            return "\n".join(lines)
+
+        elif action == "goto":
+            if len(parts) < 2:
+                return "Usage: `/marker goto <id>`"
+            try:
+                loc_id = int(parts[1])
+            except ValueError:
+                return "Invalid location ID. Use a number."
+
+            loc = store.get(loc_id)
+            if not loc:
+                return f"Memory location {loc_id} not found."
+            
+            anchor_session_id = loc.get("session_id")
+            anchor_guid = loc.get("anchor_guid")
+            
+            if anchor_guid and anchor_session_id:
+                msg_id = store.resolve_anchor(anchor_guid, anchor_session_id)
+                if msg_id:
+                    return f"Jumping to location {loc_id} (Message ID: {msg_id}).\nSession: {anchor_session_id}"
+                return f"Warning: Anchor for location {loc_id} is orphaned."
+            return f"Location {loc_id} does not have a message anchor."
+
+        elif action == "delete":
+            if len(parts) < 2:
+                return "Usage: `/marker delete <id>`"
+            try:
+                loc_id = int(parts[1])
+            except ValueError:
+                return "Invalid location ID. Use a number."
+
+            if store.delete(loc_id):
+                return f"Deleted memory location {loc_id}."
+            return f"Memory location {loc_id} not found."
+
+        else:
+            return "Usage: `/marker [list|create <label>|goto <id>|delete <id>]`"

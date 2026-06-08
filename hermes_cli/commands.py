@@ -116,6 +116,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("marker", "Manage memory locations (markers)", "Session",
+               args_hint="[list|create|goto|delete]",
+               subcommands=("list", "create", "goto", "delete")),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
@@ -342,6 +345,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "marker",
         "new",
         "profile",
         "queue",

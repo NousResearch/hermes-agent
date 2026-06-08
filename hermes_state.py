@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,
+    message_guid TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1
 );
@@ -300,6 +301,49 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     acquired_at REAL NOT NULL,
     expires_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS memory_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    label TEXT NOT NULL,
+    time_type TEXT NOT NULL DEFAULT 'point',
+    anchor_guid TEXT,
+    anchor_end_guid TEXT,
+    color TEXT,
+    tags TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_persistent INTEGER NOT NULL DEFAULT 0,
+    origin TEXT NOT NULL DEFAULT 'manual',
+    recall_state TEXT,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_locations_session ON memory_locations(session_id);
+CREATE INDEX IF NOT EXISTS idx_memory_locations_persistent ON memory_locations(is_persistent);
+CREATE INDEX IF NOT EXISTS idx_memory_locations_anchor ON memory_locations(anchor_guid);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_locations_fts USING fts5(
+    label,
+    tags,
+    content='memory_locations',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS memory_locations_fts_insert AFTER INSERT ON memory_locations BEGIN
+    INSERT INTO memory_locations_fts(rowid, label, tags)
+    VALUES (new.id, new.label, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_locations_fts_delete AFTER DELETE ON memory_locations BEGIN
+    DELETE FROM memory_locations_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_locations_fts_update AFTER UPDATE ON memory_locations BEGIN
+    DELETE FROM memory_locations_fts WHERE rowid = old.id;
+    INSERT INTO memory_locations_fts(rowid, label, tags)
+    VALUES (new.id, new.label, new.tags);
+END;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
@@ -897,6 +941,24 @@ class SessionDB:
                 try:
                     cursor.execute(
                         "UPDATE messages SET active = 1 WHERE active IS NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < 16:
+                # v16: messages.message_guid for stable anchoring of memory locations.
+                # The reconciler adds the column. Here we backfill existing rows
+                # with a deterministic GUID (hash of session_id + id) to ensure
+                # uniqueness without requiring random generation on every row.
+                try:
+                    cursor.execute(
+                        "UPDATE messages SET message_guid = lower(hex(zeroblob(4)) || '-' || "
+                        "hex(zeroblob(2)) || '-' || '4' || substr(hex(zeroblob(2)), 2) || '-' || "
+                        "substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(zeroblob(2)), 2) || '-' || "
+                        "hex(zeroblob(6))) WHERE message_guid IS NULL"
+                    )
+                    cursor.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_guid ON messages(message_guid) "
+                        "WHERE message_guid IS NOT NULL"
                     )
                 except sqlite3.OperationalError:
                     pass

@@ -5156,6 +5156,36 @@ def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
     return ".png"
 
 
+def _is_decodable_image(img_bytes: bytes) -> bool:
+    """Return True only when *img_bytes* is an actual, decodable image.
+
+    ``_sniff_image_ext`` deliberately falls back to ``.png`` for any leading
+    bytes it does not recognise, so on its own it never rejects a payload — an
+    ``image.attach_bytes`` upload of arbitrary non-image bytes would be stored
+    in the gateway's images dir as a ``.png`` and queued for the next turn,
+    where it fails opaquely at vision time ("[analysis failed]" / a provider
+    HTTP 400). This is the image-side analogue of the ``%PDF-`` magic guard
+    ``pdf.attach`` already applies to its payload. Pillow is a core dependency
+    and is already used by ``_image_meta``; when it is genuinely unavailable we
+    fail OPEN (return True) rather than rejecting every upload.
+    """
+    try:
+        from PIL import Image
+    except Exception:
+        return True  # Pillow missing — can't validate, don't block the upload
+    from io import BytesIO
+
+    try:
+        # ``load()`` (not ``verify()``) — it actually decodes the pixel data,
+        # matching what the vision pipeline does downstream, and tolerates the
+        # minor CRC quirks real encoders emit that ``verify()`` rejects.
+        with Image.open(BytesIO(img_bytes)) as _probe:
+            _probe.load()
+        return True
+    except Exception:
+        return False
+
+
 def _allowed_image_extensions() -> frozenset[str]:
     try:
         from cli import _IMAGE_EXTENSIONS
@@ -5219,6 +5249,12 @@ def _(rid, params: dict) -> dict:
     if len(img_bytes) > _ATTACH_BYTES_MAX_BYTES:
         mb = _ATTACH_BYTES_MAX_BYTES // (1024 * 1024)
         return _err(rid, 4018, f"image too large ({len(img_bytes)} bytes; cap is {mb} MB)")
+    # Reject payloads that are not actually a decodable image before we write
+    # them to disk and queue them — _sniff_image_ext would otherwise relabel
+    # unknown bytes as ".png" and hand junk to the vision model. Mirrors the
+    # %PDF- guard pdf.attach applies above.
+    if not _is_decodable_image(img_bytes):
+        return _err(rid, 4017, "uploaded bytes are not a decodable image")
 
     filename = str(params.get("filename", "") or "")
     ext_hint = str(params.get("ext", "") or "").strip().lower()

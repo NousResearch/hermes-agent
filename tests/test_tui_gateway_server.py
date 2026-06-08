@@ -5972,6 +5972,41 @@ def test_image_attach_bytes_rejects_unsupported_extension(monkeypatch, tmp_path)
     assert resp["error"]["code"] == 4016
 
 
+def test_image_attach_bytes_rejects_non_image_bytes(monkeypatch, tmp_path):
+    """Valid base64 of non-image bytes is rejected (mirrors pdf.attach's %PDF-
+    guard). Without this, _sniff_image_ext relabels unknown bytes as ".png" and
+    the junk is written + queued, then fails opaquely at vision time."""
+    import base64 as _b64
+
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx7"] = _session()
+
+    not_image = _b64.b64encode(b"this is plainly not an image").decode("ascii")
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "abx7", "content_base64": not_image},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4017
+    # Nothing must have been written or queued for the junk upload.
+    assert server._sessions["abx7"].get("attached_images", []) == []
+    assert not (tmp_path / "images").exists() or not list((tmp_path / "images").iterdir())
+
+
+def test_is_decodable_image_helper():
+    import base64 as _b64
+
+    png = _b64.b64decode(_PNG_1X1_B64)
+    assert server._is_decodable_image(png) is True
+    assert server._is_decodable_image(b"not an image at all") is False
+    # A ".png"-looking header that is not a real PNG is still rejected.
+    assert server._is_decodable_image(b"\x89PNG\r\n\x1a\n" + b"0" * 32) is False
+
+
 def test_pdf_attach_requires_poppler(monkeypatch, tmp_path):
     """Without pdftoppm on PATH, pdf.attach returns a clear 5028."""
     _attach_bytes_cli(monkeypatch)

@@ -1084,6 +1084,19 @@ def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
 
 
+def _resolve_whisper_device_compute() -> tuple[str, str]:
+    """Resolve the faster-whisper device/compute type from the environment.
+
+    Both default to ``auto``. ``HERMES_WHISPER_DEVICE`` and
+    ``HERMES_WHISPER_COMPUTE_TYPE`` let operators force a specific backend
+    (e.g. ``cpu``/``int8``) on hosts where the ``auto`` picker commits to CUDA
+    but the runtime fails in ways the dlopen heuristic does not catch.
+    """
+    device = (os.getenv("HERMES_WHISPER_DEVICE") or "auto").strip() or "auto"
+    compute_type = (os.getenv("HERMES_WHISPER_COMPUTE_TYPE") or "auto").strip() or "auto"
+    return device, compute_type
+
+
 def _load_local_whisper_model(model_name: str):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
@@ -1094,14 +1107,18 @@ def _load_local_whisper_model(model_name: str):
     On those hosts the load itself sometimes succeeds and the dlopen failure
     only surfaces at first ``transcribe()`` call.
 
-    We try ``auto`` first (fast CUDA path when it works), and on any CUDA
-    library load failure fall back to CPU + int8.
+    Device/compute type honor ``HERMES_WHISPER_DEVICE`` /
+    ``HERMES_WHISPER_COMPUTE_TYPE`` (default ``auto``).  We try the resolved
+    device first (fast CUDA path when it works), and on any CUDA library load
+    failure fall back to CPU + int8 — unless the operator explicitly pinned
+    ``cpu``, in which case there is nothing to fall back from.
     """
     from faster_whisper import WhisperModel
+    device, compute_type = _resolve_whisper_device_compute()
     try:
-        return WhisperModel(model_name, device="auto", compute_type="auto")
+        return WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
-        if not _looks_like_cuda_lib_error(exc):
+        if device == "cpu" or not _looks_like_cuda_lib_error(exc):
             raise
         logger.warning(
             "faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "

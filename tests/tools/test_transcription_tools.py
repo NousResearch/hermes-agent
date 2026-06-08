@@ -1578,3 +1578,58 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+class TestWhisperDeviceEnv:
+    """HERMES_WHISPER_DEVICE / _COMPUTE_TYPE control the local backend."""
+
+    def test_defaults_to_auto(self, monkeypatch):
+        from tools.transcription_tools import _resolve_whisper_device_compute
+        monkeypatch.delenv("HERMES_WHISPER_DEVICE", raising=False)
+        monkeypatch.delenv("HERMES_WHISPER_COMPUTE_TYPE", raising=False)
+
+        assert _resolve_whisper_device_compute() == ("auto", "auto")
+
+    def test_honors_env_overrides(self, monkeypatch):
+        from tools.transcription_tools import _resolve_whisper_device_compute
+        monkeypatch.setenv("HERMES_WHISPER_DEVICE", "cpu")
+        monkeypatch.setenv("HERMES_WHISPER_COMPUTE_TYPE", "int8")
+
+        assert _resolve_whisper_device_compute() == ("cpu", "int8")
+
+    def test_blank_env_falls_back_to_auto(self, monkeypatch):
+        from tools.transcription_tools import _resolve_whisper_device_compute
+        monkeypatch.setenv("HERMES_WHISPER_DEVICE", "   ")
+        monkeypatch.setenv("HERMES_WHISPER_COMPUTE_TYPE", "")
+
+        assert _resolve_whisper_device_compute() == ("auto", "auto")
+
+    def test_loader_passes_env_device_to_model(self, monkeypatch):
+        import tools.transcription_tools as tt
+        monkeypatch.setenv("HERMES_WHISPER_DEVICE", "cuda")
+        monkeypatch.setenv("HERMES_WHISPER_COMPUTE_TYPE", "float16")
+        calls = []
+
+        def _fake_model(name, device, compute_type):
+            calls.append((name, device, compute_type))
+            return "model"
+
+        fake_module = types.SimpleNamespace(WhisperModel=_fake_model)
+        monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
+
+        assert tt._load_local_whisper_model("base") == "model"
+        assert calls == [("base", "cuda", "float16")]
+
+    def test_pinned_cpu_device_does_not_fall_back(self, monkeypatch):
+        import tools.transcription_tools as tt
+        monkeypatch.setenv("HERMES_WHISPER_DEVICE", "cpu")
+        monkeypatch.delenv("HERMES_WHISPER_COMPUTE_TYPE", raising=False)
+
+        def _fake_model(name, device, compute_type):
+            raise RuntimeError("Library libcublas.so.12 cannot be loaded")
+
+        fake_module = types.SimpleNamespace(WhisperModel=_fake_model)
+        monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
+
+        with pytest.raises(RuntimeError, match="libcublas"):
+            tt._load_local_whisper_model("base")

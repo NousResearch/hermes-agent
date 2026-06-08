@@ -1158,6 +1158,8 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    render_previous_session_tail,
+    should_bridge_previous_session,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -7707,8 +7709,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+        # Resolve previous-session bridge tail (only on the first turn after
+        # an auto-reset, when bridge is enabled and the prior session_id is
+        # known and SessionDB is up). Best-effort — silently no-op on error.
+        # Gating rules live in ``should_bridge_previous_session`` so they
+        # can be tested in isolation.
+        _bridge_tail: Optional[str] = None
+        try:
+            _bridge_cfg = getattr(self.config, "previous_session_bridge", None)
+            _prev_id = getattr(session_entry, "previous_session_id", None)
+            if should_bridge_previous_session(
+                bridge_enabled=bool(getattr(_bridge_cfg, "enabled", False)) if _bridge_cfg else False,
+                was_auto_reset=bool(getattr(session_entry, "was_auto_reset", False)),
+                previous_session_id=_prev_id,
+                has_session_db=self._session_db is not None,
+                shared_multi_user_session=bool(context.shared_multi_user_session),
+                redact_pii=bool(_redact_pii),
+            ):
+                # Narrow for the type checker — guaranteed by the predicate.
+                assert _prev_id is not None
+                assert self._session_db is not None
+                _prior_msgs = self._session_db.get_messages(_prev_id)
+                _rendered = render_previous_session_tail(
+                    _prior_msgs,
+                    max_exchanges=int(getattr(_bridge_cfg, "max_exchanges", 3)),
+                    max_chars=int(getattr(_bridge_cfg, "max_chars", 4000)),
+                )
+                if _rendered:
+                    _bridge_tail = _rendered
+        except Exception as _bridge_exc:
+            logger.debug("Previous-session bridge failed: %s", _bridge_exc)
+            _bridge_tail = None
+
         # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        context_prompt = build_session_context_prompt(
+            context,
+            redact_pii=_redact_pii,
+            previous_session_tail=_bridge_tail,
+        )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

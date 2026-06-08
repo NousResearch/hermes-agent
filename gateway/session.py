@@ -228,10 +228,110 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+def should_bridge_previous_session(
+    *,
+    bridge_enabled: bool,
+    was_auto_reset: bool,
+    previous_session_id: Optional[str],
+    has_session_db: bool,
+    shared_multi_user_session: bool,
+    redact_pii: bool,
+) -> bool:
+    """
+    Predicate for whether the previous-session bridge should fire on this turn.
+
+    Centralizes the gating rules so they can be tested in isolation and so
+    new constraints don't drift across call sites.
+
+    Returns True only when ALL of the following hold:
+    - the bridge feature is enabled in config
+    - this is the first turn after an idle/daily auto-reset
+    - the prior session_id is known (i.e. the prior session had activity)
+    - SessionDB is available to read the prior messages
+    - the session is not shared across multiple users (no cross-user leak)
+    - PII redaction is not active (we'd otherwise re-emit unredacted content)
+    """
+    if not bridge_enabled:
+        return False
+    if not was_auto_reset:
+        return False
+    if not previous_session_id:
+        return False
+    if not has_session_db:
+        return False
+    if shared_multi_user_session:
+        return False
+    if redact_pii:
+        return False
+    return True
+
+
+def render_previous_session_tail(
+    messages: List[Dict[str, Any]],
+    *,
+    max_exchanges: int,
+    max_chars: int,
+) -> str:
+    """
+    Render the tail of a prior session's messages as a system-prompt block.
+
+    Filters to user/assistant text turns only — system prompts, tool calls,
+    and tool results are skipped (irrelevant for conversational continuity
+    and full of noise that would burn context).
+
+    Keeps at most ``max_exchanges`` user+assistant pairs, taken from the END
+    of the conversation. Hard-caps body content at ``max_chars`` chars,
+    inserting a truncation marker if needed.
+
+    Returns "" when there are no eligible messages.
+    """
+    if not messages:
+        return ""
+
+    # Filter to user/assistant text turns. Tool calls live in role=assistant
+    # with content=None and tool_calls populated — drop those, keep only
+    # actual text replies.
+    convo = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if role not in ("user", "assistant"):
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        convo.append((role, content.strip()))
+
+    if not convo:
+        return ""
+
+    # Keep the trailing 2*max_exchanges turns (one user + one assistant each).
+    keep = max(1, 2 * int(max_exchanges))
+    convo = convo[-keep:]
+
+    body_lines = []
+    for role, content in convo:
+        label = "User" if role == "user" else "Assistant"
+        body_lines.append(f"{label}: {content}")
+    body = "\n\n".join(body_lines)
+
+    if len(body) > max_chars:
+        truncated = body[-max_chars:]
+        # Don't cut mid-line — start at the first newline boundary
+        nl = truncated.find("\n")
+        if nl != -1:
+            truncated = truncated[nl + 1:]
+        body = f"[…earlier turns truncated…]\n{truncated}"
+
+    header = "## Previous Session Tail"
+    intro = "(Auto-reset rotation; tool calls omitted.)"
+    return f"{header}\n{intro}\n\n{body}"
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
     redact_pii: bool = False,
+    previous_session_tail: Optional[str] = None,
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
@@ -418,6 +518,10 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
 
+    if previous_session_tail:
+        lines.append("")
+        lines.append(previous_session_tail)
+
     return "\n".join(lines)
 
 
@@ -491,6 +595,13 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # ID of the session that was just rotated out due to auto-reset.
+    # Used by the previous-session bridge to inject the tail of the prior
+    # conversation into the new session's system prompt. Only set when the
+    # rotation was an idle/daily auto-reset on a session that had activity;
+    # left None for explicit /reset, fresh first sessions, and empty rotations.
+    previous_session_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -521,6 +632,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "previous_session_id": self.previous_session_id,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -573,6 +685,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            previous_session_id=data.get("previous_session_id"),
         )
 
 
@@ -925,10 +1038,15 @@ class SessionStore:
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
+                    # Bridge the prior session_id forward, but ONLY when the
+                    # prior session had activity — there's no point stitching
+                    # context from an empty rotation.
+                    previous_session_id = entry.session_id if reset_had_activity else None
             else:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+                previous_session_id = None
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -945,6 +1063,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                previous_session_id=previous_session_id,
             )
 
             self._entries[session_key] = entry

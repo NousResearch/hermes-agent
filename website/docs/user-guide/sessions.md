@@ -484,6 +484,35 @@ Before a session is auto-reset, the agent is given a turn to save any important 
 
 Sessions with **active background processes** are never auto-reset, regardless of policy.
 
+### Previous-Session Bridge
+
+When a 1-on-1 messaging session auto-resets (idle or daily timeout) and the user sends a follow-up message, the gateway can inject a short tail of the prior conversation into the new session's system prompt. This gives the agent continuity with what the user last saw — useful when someone resumes mid-thought after stepping away.
+
+**Behaviour:**
+
+- Only triggers on **auto-reset** rotations (idle/daily). Explicit `/reset` or `/new` is always a clean slate.
+- Only the **last few user/assistant text exchanges** are rendered. Tool calls, tool results, and reasoning traces are omitted.
+- Rendered as a small block at the end of the system prompt, prefixed `(Auto-reset rotation; tool calls omitted.)`.
+- Best-effort: if the prior session_id can't be resolved (DB error, deleted session) the bridge is silently skipped and the new session starts fresh.
+
+**Privacy guards (always-on, not configurable):**
+
+- **Skipped for shared multi-user sessions** (group chats, channels) — never leaks one user's thread into another user's view.
+- **Skipped when `redact_pii` is enabled** for the platform — the redaction pipeline doesn't apply to the historical tail, so we skip rather than leak.
+- **Skipped on explicit `/reset` / `/new` / `force_new`** — the user asked for a clean slate; respect it.
+
+**Configuration** (top-level keys in `~/.hermes/config.yaml`, alongside `session_reset`):
+
+```yaml
+previous_session_bridge:
+  enabled: true        # set false to disable the bridge entirely
+  max_exchanges: 3     # how many user+assistant pairs to include
+  max_chars: 4000      # hard cap on the rendered body in characters
+                       # (excludes ~60 chars of framing; sized for ~1000 tokens)
+```
+
+Defaults are conservative — a few exchanges, ~1000 tokens of overhead — chosen to keep the prompt-cache hit rate high while still giving the agent enough recent context to feel like the same conversation.
+
 ## Storage Locations
 
 | What | Path | Description |

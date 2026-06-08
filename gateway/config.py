@@ -278,6 +278,42 @@ class SessionResetPolicy:
 
 
 @dataclass
+class PreviousSessionBridge:
+    """
+    Inject the tail of the most recent auto-reset session into the new
+    session's system prompt, so the agent has continuity with what the
+    user last saw.
+
+    Only triggers when:
+    - The previous session was auto-reset (idle/daily), not /reset or /new
+    - The previous session had real activity (at least one assistant reply)
+    - ``enabled`` is True
+    """
+    enabled: bool = True
+    max_exchanges: int = 3   # user+assistant pairs included in the tail
+    # Hard cap on the rendered conversation BODY in chars (the User:/Assistant:
+    # lines, not the surrounding header/intro). Total block size is roughly
+    # ``max_chars`` + ~60 chars of framing. Defaults sized for a ~1000-token
+    # ceiling on most tokenizers.
+    max_chars: int = 4000
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "max_exchanges": self.max_exchanges,
+            "max_chars": self.max_chars,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PreviousSessionBridge":
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), True),
+            max_exchanges=_coerce_int(data.get("max_exchanges"), 3),
+            max_chars=_coerce_int(data.get("max_chars"), 4000),
+        )
+
+
+@dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
     enabled: bool = False
@@ -469,6 +505,13 @@ class GatewayConfig:
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
     reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
     reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
+
+    # Previous-session bridge: when a session auto-resets due to idle/daily,
+    # inject the tail of the prior conversation into the new system prompt
+    # so the agent has continuity with what the user last saw.
+    previous_session_bridge: PreviousSessionBridge = field(
+        default_factory=PreviousSessionBridge
+    )
     
     # Reset trigger commands
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
@@ -586,6 +629,7 @@ class GatewayConfig:
                 p.value: c.to_dict() for p, c in self.platforms.items()
             },
             "default_reset_policy": self.default_reset_policy.to_dict(),
+            "previous_session_bridge": self.previous_session_bridge.to_dict(),
             "reset_by_type": {
                 k: v.to_dict() for k, v in self.reset_by_type.items()
             },
@@ -630,6 +674,12 @@ class GatewayConfig:
         default_policy = SessionResetPolicy()
         if "default_reset_policy" in data:
             default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])
+
+        bridge_data = data.get("previous_session_bridge")
+        previous_session_bridge = (
+            PreviousSessionBridge.from_dict(bridge_data)
+            if isinstance(bridge_data, dict) else PreviousSessionBridge()
+        )
         
         sessions_dir = get_hermes_home() / "sessions"
         if "sessions_dir" in data:
@@ -659,6 +709,7 @@ class GatewayConfig:
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
+            previous_session_bridge=previous_session_bridge,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
@@ -739,6 +790,10 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
+
+            psb = yaml_cfg.get("previous_session_bridge")
+            if isinstance(psb, dict):
+                gw_data["previous_session_bridge"] = psb
 
             qc = yaml_cfg.get("quick_commands")
             if qc is not None:

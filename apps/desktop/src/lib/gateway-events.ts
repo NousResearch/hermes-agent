@@ -7,37 +7,24 @@ interface RpcEventLike {
   type?: string
 }
 
-const SESSION_SCOPED_EVENT_TYPES = new Set([
-  'approval.request',
-  'clarify.request',
-  'error',
-  'message.complete',
-  'message.delta',
-  'message.start',
-  'reasoning.available',
-  'reasoning.delta',
-  'secret.request',
-  'status.update',
-  'subagent.complete',
-  'subagent.progress',
-  'subagent.spawn_requested',
-  'subagent.start',
-  'subagent.thinking',
-  'subagent.tool',
-  'sudo.request',
-  'thinking.delta'
-])
-
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
+/**
+ * Whether an unscoped event (no `session_id`) must be dropped rather than
+ * attributed to the focused chat.
+ *
+ * Only `subagent.*` qualifies: it describes background/async work that must
+ * never attach to whichever chat happens to be focused. Every other scoped
+ * event — message/reasoning/thinking/tool/status/prompt — is, when unscoped,
+ * the active turn's own output. The gateway always stamps a *background*
+ * session's events with that session's id, so a missing id can only mean "the
+ * focused turn". #42178 dropped those too, which silently swallowed the live
+ * answer; it then reappeared only after a transcript refetch (manual refresh).
+ */
 export function gatewayEventRequiresSessionId(eventType: string | undefined): boolean {
-  if (!eventType) {
-    return false
-  }
-
-  return SESSION_SCOPED_EVENT_TYPES.has(eventType) || eventType.startsWith('tool.')
+  return eventType?.startsWith('subagent.') ?? false
 }
 
 export function gatewayEventCompletedFileDiff(event: RpcEventLike): boolean {

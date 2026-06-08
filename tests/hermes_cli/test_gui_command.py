@@ -519,3 +519,78 @@ def test_gui_does_not_retry_when_purge_finds_nothing(tmp_path, monkeypatch, caps
     mock_purge.assert_called_once()
     assert mock_run.call_count == 1
     assert "Desktop GUI build failed" in capsys.readouterr().out
+
+
+class _FakeProc:
+    """Minimal psutil.Process stand-in for the lock-breaker tests."""
+
+    def __init__(self, pid: int, exe: str | None):
+        self.pid = pid
+        self.info = {"pid": pid, "exe": exe}
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+
+def test_stop_desktop_build_lock_noop_off_windows(tmp_path, monkeypatch):
+    """POSIX can unlink a running binary, so the helper is a no-op there."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+
+    proc = _FakeProc(4321, str(exe))
+    with patch("psutil.process_iter", return_value=[proc]) as it:
+        assert cli_main._stop_desktop_processes_locking_build(desktop_dir) == []
+    it.assert_not_called()
+    assert proc.terminated is False
+
+
+def test_stop_desktop_build_lock_terminates_only_release_procs(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    release = desktop_dir / "release" / "win-unpacked"
+    release.mkdir(parents=True)
+    locker_exe = release / "Hermes.exe"
+    locker_exe.write_text("", encoding="utf-8")
+    other_exe = tmp_path / "elsewhere" / "Hermes.exe"
+    other_exe.parent.mkdir(parents=True)
+    other_exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    monkeypatch.setattr(cli_main.os, "getpid", lambda: 999)
+
+    locker = _FakeProc(101, str(locker_exe))
+    unrelated = _FakeProc(102, str(other_exe))
+    selfish = _FakeProc(999, str(locker_exe))  # our own PID — never killed
+    no_exe = _FakeProc(103, None)
+
+    captured = {}
+
+    def _wait(procs, timeout=None):
+        captured["waited"] = list(procs)
+        return procs, []
+
+    with patch("psutil.process_iter", return_value=[locker, unrelated, selfish, no_exe]), \
+         patch("psutil.wait_procs", side_effect=_wait):
+        stopped = cli_main._stop_desktop_processes_locking_build(desktop_dir)
+
+    assert stopped == [101]
+    assert locker.terminated is True
+    assert unrelated.terminated is False
+    assert selfish.terminated is False
+    assert captured["waited"] == [locker]
+
+
+def test_stop_desktop_build_lock_no_release_dir(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    with patch("psutil.process_iter") as it:
+        assert cli_main._stop_desktop_processes_locking_build(desktop_dir) == []
+    it.assert_not_called()

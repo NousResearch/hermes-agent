@@ -1,8 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { $attentionSessionIds, mergeSessionPage, sessionPinId, setSessionAttention } from './session'
+import {
+  $attentionSessionIds,
+  $workingSessionIds,
+  getRecentlySettledSessionIds,
+  mergeSessionPage,
+  sessionPinId,
+  setSessionAttention,
+  setSessionWorking
+} from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -127,5 +135,63 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+})
+
+describe('getRecentlySettledSessionIds', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    $workingSessionIds.set([])
+
+    // Drain anything left in the grace map so tests stay isolated.
+    for (const id of getRecentlySettledSessionIds(Number.MAX_SAFE_INTEGER)) {
+      void id
+    }
+  })
+
+  it('keeps a session for the grace window after its turn settles, then drops it', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    $workingSessionIds.set([])
+
+    // A turn starts then ends: the working→idle transition grants grace.
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect(getRecentlySettledSessionIds()).toEqual(['s1'])
+
+    // Still inside the window.
+    vi.setSystemTime(29_000)
+    expect(getRecentlySettledSessionIds()).toEqual(['s1'])
+
+    // Past the window: the entry is pruned on read.
+    vi.setSystemTime(31_000)
+    expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+
+  it('does not grant grace when the session was never working (idle re-asserts)', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    $workingSessionIds.set([])
+
+    // updateSessionState re-asserts `false` for idle sessions on every tick;
+    // these must not pin an idle chat into the keep-set indefinitely.
+    setSessionWorking('idle', false)
+    setSessionWorking('idle', false)
+    expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+
+  it('clears the grace timer when the session goes busy again', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    $workingSessionIds.set([])
+
+    setSessionWorking('s2', true)
+    setSessionWorking('s2', false)
+    expect(getRecentlySettledSessionIds()).toEqual(['s2'])
+
+    // A new turn for the same session is "working" again — drop it from the
+    // settled set so it's tracked as working, not recently-finished.
+    setSessionWorking('s2', true)
+    expect(getRecentlySettledSessionIds()).toEqual([])
   })
 })

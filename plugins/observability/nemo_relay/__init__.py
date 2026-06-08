@@ -65,9 +65,11 @@ class _Runtime:
         self.sessions: dict[str, _SessionState] = {}
         self.subagent_parents: dict[str, _SubagentParent] = {}
         self.atof_exporter: Any = None
+        self._atof_subscriber_name = "hermes.nemo_relay.atof"
         self._plugin_config_initialized = self._configure_plugins_toml()
+        self._plugin_config_needs_reinit = False
         if not self._plugin_config_initialized:
-            self._configure_atof()
+            self._activate_direct_fallbacks()
 
     def _configure_plugins_toml(self) -> bool:
         if not self.settings.plugins_config:
@@ -78,16 +80,44 @@ class _Runtime:
             return False
         try:
             self._ensure_plugin_config_output_dirs(self.settings.plugins_config)
-            result = initialize(self.settings.plugins_config)
-            if inspect.isawaitable(result):
-                asyncio.run(result)
+            _resolve_awaitable(initialize(self.settings.plugins_config))
             return True
-        except RuntimeError:
-            logger.debug("NeMo Relay plugins.toml init skipped inside a running event loop")
-            return False
         except Exception as exc:
             logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
             return False
+
+    def _clear_plugins_toml(self) -> None:
+        if not self._plugin_config_initialized:
+            return
+        plugin_mod = getattr(self.nemo_relay, "plugin", None)
+        clear = getattr(plugin_mod, "clear", None)
+        if not callable(clear):
+            return
+        try:
+            _resolve_awaitable(clear())
+        finally:
+            self._plugin_config_initialized = False
+            self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+
+    def _activate_direct_fallbacks(self) -> None:
+        self._plugin_config_needs_reinit = False
+        self._configure_atof()
+
+    def _maybe_reinitialize_plugins_toml(self) -> None:
+        if not self._plugin_config_needs_reinit or self._plugin_config_initialized:
+            return
+        self._plugin_config_initialized = self._configure_plugins_toml()
+        if not self._plugin_config_initialized:
+            self._activate_direct_fallbacks()
+            return
+        self._clear_atof()
+        self._plugin_config_needs_reinit = False
+
+    def _plugins_toml_owns_exporter(self, exporter_name: str) -> bool:
+        return self._plugin_config_initialized and _observability_exporter_enabled(
+            self.settings.plugins_config,
+            exporter_name,
+        )
 
     def _ensure_plugin_config_output_dirs(self, config: dict[str, Any]) -> None:
         for component in config.get("components", []):
@@ -109,7 +139,7 @@ class _Runtime:
                     Path(output_directory).mkdir(parents=True, exist_ok=True)
 
     def _configure_atof(self) -> None:
-        if not self.settings.atof_enabled:
+        if not self.settings.atof_enabled or self.atof_exporter is not None:
             return
         config = self.nemo_relay.AtofExporterConfig()
         if self.settings.atof_output_directory:
@@ -121,16 +151,28 @@ class _Runtime:
         else:
             config.mode = self.nemo_relay.AtofExporterMode.Append
         self.atof_exporter = self.nemo_relay.AtofExporter(config)
-        self.atof_exporter.register("hermes.nemo_relay.atof")
+        self.atof_exporter.register(self._atof_subscriber_name)
+
+    def _clear_atof(self) -> None:
+        if self.atof_exporter is None:
+            return
+        deregister = getattr(self.atof_exporter, "deregister", None)
+        if callable(deregister):
+            try:
+                deregister(self._atof_subscriber_name)
+            except Exception:
+                logger.debug("NeMo Relay ATOF deregister failed", exc_info=True)
+        self.atof_exporter = None
 
     def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
+        self._maybe_reinitialize_plugins_toml()
         session_id = _session_id(kwargs)
         state = self.sessions.get(session_id)
         if state is not None:
             return state
 
         state = _SessionState(session_id=session_id)
-        if self.settings.atif_enabled:
+        if self.settings.atif_enabled and not self._plugins_toml_owns_exporter("atif"):
             state.atif_exporter = self.nemo_relay.AtifExporter(
                 session_id,
                 self.settings.atif_agent_name,
@@ -189,6 +231,13 @@ class _Runtime:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
             except Exception:
                 logger.debug("NeMo Relay ATIF deregister failed", exc_info=True)
+        if self._plugin_config_initialized and not self.sessions:
+            try:
+                self._clear_plugins_toml()
+            except Exception:
+                logger.debug("NeMo Relay plugins.toml clear failed", exc_info=True)
+        elif self.settings.plugins_config and not self.sessions:
+            self._plugin_config_needs_reinit = True
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
@@ -621,6 +670,19 @@ def _adaptive_mode(config: dict[str, Any] | None) -> str:
     if isinstance(mode, str) and mode.strip():
         return mode.strip()
     return "observe_only"
+
+
+def _observability_exporter_enabled(
+    plugins_config: dict[str, Any] | None,
+    exporter_name: str,
+) -> bool:
+    observability_config = _enabled_component_config(plugins_config, "observability")
+    if not isinstance(observability_config, dict):
+        return False
+    exporter_config = observability_config.get(exporter_name)
+    if not isinstance(exporter_config, dict):
+        return False
+    return exporter_config.get("enabled", True) is not False
 
 
 def _env(name: str) -> str:

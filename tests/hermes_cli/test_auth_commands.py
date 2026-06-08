@@ -397,13 +397,90 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entries = payload["credential_pool"]["openai-codex"]
-    entry = next(item for item in entries if item["source"] == "device_code")
+    # The add path now creates a distinct, self-contained ``manual:device_code``
+    # pool entry per account instead of routing through the singleton save path
+    # (which collapsed multiple accounts into the latest login — #39236).
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
     assert payload["active_provider"] == "openai-codex"
-    assert payload["providers"]["openai-codex"]["tokens"]["access_token"] == token
+    # No singleton ``providers.openai-codex`` block is written by the add path.
+    assert "openai-codex" not in payload.get("providers", {})
     assert entry["label"] == "codex@example.com"
-    assert entry["source"] == "device_code"
+    assert entry["source"] == "manual:device_code"
+    assert entry["access_token"] == token
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
+    """Two ``hermes auth add openai-codex`` runs for different ChatGPT
+    accounts must produce two independent pool entries with distinct tokens.
+
+    Regression for #39236: the add path used to route through the singleton
+    ``_save_codex_tokens`` save, so the second login overwrote the first
+    account's singleton-mirrored ``device_code`` entry instead of adding a
+    second independent one. ``hermes auth list`` showed two labels sharing
+    one token pair, and rotation silently always used the latest account.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    first_token = _jwt_with_email("first-codex@example.com")
+    second_token = _jwt_with_email("second-codex@example.com")
+    logins = iter(
+        [
+            {
+                "tokens": {
+                    "access_token": first_token,
+                    "refresh_token": "first-refresh-token",
+                },
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "last_refresh": "2026-03-23T10:00:00Z",
+            },
+            {
+                "tokens": {
+                    "access_token": second_token,
+                    "refresh_token": "second-refresh-token",
+                },
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "last_refresh": "2026-03-23T10:05:00Z",
+            },
+        ]
+    )
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+
+    from hermes_cli.auth_commands import auth_add_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+    auth_add_command(_Args())
+
+    pool = load_pool("openai-codex")
+    entries = pool.entries()
+
+    assert [entry.source for entry in entries] == [
+        "manual:device_code",
+        "manual:device_code",
+    ]
+    assert [entry.label for entry in entries] == [
+        "first-codex@example.com",
+        "second-codex@example.com",
+    ]
+    assert [entry.access_token for entry in entries] == [first_token, second_token]
+    assert [entry.refresh_token for entry in entries] == [
+        "first-refresh-token",
+        "second-refresh-token",
+    ]
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    # No singleton block — the add path is now pool-only.
+    assert "openai-codex" not in payload.get("providers", {})
+    # First add activated the provider; second add left it as-is.
+    assert payload["active_provider"] == "openai-codex"
 
 
 def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
@@ -1313,9 +1390,9 @@ def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     payload = json.loads((hermes_home / "auth.json").read_text())
     # Suppression marker must be cleared
     assert "openai-codex" not in payload.get("suppressed_sources", {})
-    # New pool entry must be present
+    # New pool entry must be present (distinct manual:device_code entry — #39236)
     entries = payload["credential_pool"]["openai-codex"]
-    assert any(e["source"] == "device_code" for e in entries)
+    assert any(e["source"] == "manual:device_code" for e in entries)
     assert payload["active_provider"] == "openai-codex"
 
 

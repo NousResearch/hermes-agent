@@ -348,7 +348,7 @@ export function Pane({
             hovered/focused. */}
         <div
           className={cn(
-            'pointer-events-auto absolute inset-y-0 z-30 overflow-hidden shadow-2xl transition-transform duration-200 ease-out',
+            'pointer-events-auto absolute inset-y-0 z-30 overflow-hidden transition-transform duration-200 ease-out',
             slot.side === 'left'
               ? hoverRevealed
                 ? 'translate-x-0'

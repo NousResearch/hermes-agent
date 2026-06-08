@@ -365,6 +365,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // users aren't surprised.  (Shares the memoized full-config read.)
     getFullConfigOnce()
       .then(cfg => {
+        // Config read failed (null from .catch(() => null)) — try the
+        // resume RPC anyway.  If the user had auto-resume enabled this
+        // recovers gracefully; if not, the RPC still works and we fall
+        // through to a new session when it yields nothing.
+        if (cfg === null) {
+          return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+            const target = r?.session_id
+
+            if (target) {
+              patchUiState({ status: 'resuming most recent (fallback)…' })
+              resumeById(target)
+              scheduleStartupPrompt()
+
+              return
+            }
+
+            patchUiState({ status: 'forging session…' })
+            newSession()
+            scheduleStartupPrompt()
+          })
+        }
+
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
           patchUiState({ status: 'forging session…' })
           newSession()

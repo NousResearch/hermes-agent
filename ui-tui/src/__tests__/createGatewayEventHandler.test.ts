@@ -810,6 +810,60 @@ describe('createGatewayEventHandler', () => {
     expect(resumeById).not.toHaveBeenCalled()
   })
 
+  it('on gateway.ready when config.get rejects but session.most_recent succeeds, resumes via fallback', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        throw new Error('gateway startup race')
+      }
+
+      if (method === 'session.most_recent') {
+        return { session_id: 'recent-from-fallback' }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('recent-from-fallback'))
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready when both config.get and session.most_recent reject, falls back to new session', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        throw new Error('gateway startup race')
+      }
+
+      if (method === 'session.most_recent') {
+        throw new Error('db locked')
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
   it('on gateway.ready with STARTUP_RESUME_ID set, the env wins over config auto_resume', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()

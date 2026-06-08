@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes Agent Telegram Gateway
+After=network-online.target nss-lookup.target systemd-resolved.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=leos
+WorkingDirectory=/home/leos/hermes-agent
+EnvironmentFile=/home/leos/.hermes/.env
+# DNS readiness guard: network-online.target nezaručuje funkční resolver.
+# Počká až 60s na resolvování api.telegram.org; když nenaběhne, spustí stejně (viditelný WARNING, žádný tichý fallback).
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do getent hosts api.telegram.org >/dev/null 2>&1 && { echo "[hermes] DNS ready"; exit 0; }; echo "[hermes] waiting for DNS ($i/30)"; sleep 2; done; echo "[hermes] WARNING: DNS still failing after 60s, starting anyway"; exit 0'
+ExecStart=/home/leos/hermes-agent/venv/bin/python -m gateway.run -v
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -510,6 +510,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "prompt_caching": "agent",
     "goals": "agent",
     "updates": "general",
+    # `onboarding.profile_build` is the only schema-surfaced onboarding field
+    # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
+    # it into the agent tab rather than spawning a one-field orphan category.
+    "onboarding": "agent",
     # Only `telegram.reactions` currently lives under telegram — fold it in
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
@@ -692,23 +696,41 @@ def _apply_main_model_assignment(
 ) -> dict:
     """Apply a main-slot model assignment to a ``model`` config dict in place.
 
-    Sets ``provider``/``default``, then reconciles ``base_url``: custom/local
-    providers persist the supplied endpoint URL (the runtime resolver reads
-    ``model.base_url`` from config and ignores ``OPENAI_BASE_URL``), while every
-    other provider clears any stale URL so the resolver picks that provider's
-    own default endpoint. The hardcoded ``context_length`` override is always
-    dropped since the new model may have a different context window.
+    Sets ``provider``/``default``, then reconciles ``base_url``:
+
+    - An explicitly supplied ``base_url`` is always persisted (covers
+      ``custom``/local endpoints and any provider whose key is bound to a
+      non-default host).
+    - Otherwise, a stale ``base_url`` is cleared ONLY when switching to a
+      *different* provider — that URL belonged to the old provider. When the
+      provider is unchanged and no new URL is supplied, the existing
+      ``base_url`` is preserved. This keeps a user's custom endpoint (e.g. a
+      Xiaomi MiMo Token Plan host, ``https://token-plan-*.xiaomimimo.com/v1``)
+      alive when they merely re-pick a model under the same provider — picking
+      a model previously wiped it, forcing the registry default and breaking
+      Token Plan keys.
+
+    The runtime resolver reads ``model.base_url`` from config (it ignores
+    ``OPENAI_BASE_URL``) and only honors it when the configured provider matches
+    and the pool entry is on the registry default, so preserving it here is what
+    lets the override actually route. The hardcoded ``context_length`` override
+    is always dropped since the new model may have a different context window.
 
     Returns the same dict (coerced to a fresh dict if the input wasn't one) so
-    callers can assign it straight back onto ``cfg["model"]``.
+    callers can assign it straight back onto the model config.
     """
     if not isinstance(model_cfg, dict):
         model_cfg = {}
+    prev_provider = str(model_cfg.get("provider") or "").strip().lower()
+    new_provider = provider.strip().lower()
     model_cfg["provider"] = provider
     model_cfg["default"] = model
-    if provider.strip().lower() == "custom" and base_url.strip():
+    if base_url.strip():
         model_cfg["base_url"] = base_url.strip()
-    elif model_cfg.get("base_url"):
+    elif model_cfg.get("base_url") and new_provider != prev_provider:
+        # Switching providers: the old URL belonged to the old provider, drop
+        # it so the new provider's default endpoint is used. Same-provider
+        # re-assignment keeps the user's configured base_url intact.
         model_cfg["base_url"] = ""
     model_cfg.pop("context_length", None)
     return model_cfg
@@ -772,6 +794,74 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+# Image MIME types this endpoint will serve. Extension-allowlisted so an
+# authenticated caller can't pull non-image files through it.
+_MEDIA_CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+}
+_MEDIA_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _media_serve_roots() -> list[Path]:
+    """Directories ``GET /api/media`` is allowed to read from.
+
+    Confined to where the agent and attach pipeline actually write media on the
+    gateway host — its images dir and cache subtree. This stops an authenticated
+    client from reading image-extension files anywhere on disk (e.g. a renamed
+    key or a screenshot outside the cache) merely because the suffix passes the
+    allowlist.
+    """
+    home = get_hermes_home()
+    roots = [home / "images", home / "screenshots", home / "cache"]
+    out: list[Path] = []
+    for root in roots:
+        try:
+            out.append(root.resolve())
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+@app.get("/api/media")
+async def get_media(path: str):
+    """Return a gateway-local image file as a base64 data URL.
+
+    Lets remote clients (the desktop app over the network, or the web dashboard
+    in a browser) display images the agent wrote to *this* machine's filesystem
+    — they can't read the gateway's local disk directly.
+
+    Auth-gated by the session token like every other /api route. Restricted to
+    an image-extension allowlist, a size cap, AND the gateway's own media roots
+    (resolved, symlink-safe) so it can't be used to read arbitrary files.
+    """
+    try:
+        target = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if target.suffix.lower() not in _MEDIA_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+
+    roots = _media_serve_roots()
+    if not any(target == root or root in target.parents for root in roots):
+        raise HTTPException(status_code=403, detail="Path outside media roots")
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if target.stat().st_size > _MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
 
 
 @app.get("/api/status")
@@ -5657,9 +5747,14 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     Cron runs are stored as ordinary sessions whose id is
     ``cron_{job_id}_{timestamp}`` (see cron/scheduler.run_job). A job's history
     is therefore every session whose id carries that prefix; ``source='cron'``
-    narrows it and the id substring binds it to this job. Powers the run-history
+    narrows it and the id prefix binds it to this job. Powers the run-history
     list under each job in the desktop cron detail. Same row shape as
     ``/api/sessions`` so the frontend can reuse SessionInfo.
+
+    Backed by ``SessionDB.list_cron_job_runs`` — a bounded ``[prefix, hi)``
+    id-range scan, not the compression-chain CTE used for the recents list,
+    so the cost scales with the requested window and not the (unbounded) total
+    cron history.
     """
     selected = profile or _find_cron_job_profile(job_id)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
@@ -5676,13 +5771,7 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 
     db = _open_session_db_for_profile(selected)
     try:
-        runs = db.list_sessions_rich(
-            source="cron",
-            id_query=f"cron_{canonical}_",
-            limit=limit_n,
-            offset=0,
-            order_by_last_active=True,
-        )
+        runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
         for s in runs:
             s["is_active"] = (
@@ -9202,6 +9291,52 @@ async def set_dashboard_theme(body: ThemeSetBody):
     config["dashboard"]["theme"] = body.name
     save_config(config)
     return {"ok": True, "theme": body.name}
+
+
+# Curated font-override ids. Kept in sync with FONT_CHOICES in
+# web/src/themes/fonts.ts — the frontend owns the stacks + webfont URLs;
+# the backend only needs the id allow-list so it can reject anything not
+# in the vetted catalog (the font's webfont URL is injected as a <link>,
+# so we never accept an arbitrary user-supplied id/URL here).
+_FONT_DEFAULT_ID = "theme"
+_FONT_CHOICES = frozenset({
+    "system-sans", "system-serif", "system-mono",
+    "inter", "ibm-plex-sans", "work-sans", "atkinson-hyperlegible", "dm-sans",
+    "spectral", "fraunces", "source-serif",
+    "jetbrains-mono", "ibm-plex-mono", "space-mono",
+})
+
+
+@app.get("/api/dashboard/font")
+async def get_dashboard_font():
+    """Return the active font override (``"theme"`` = use the theme's font)."""
+    config = load_config()
+    font = cfg_get(config, "dashboard", "font", default=_FONT_DEFAULT_ID)
+    if font not in _FONT_CHOICES:
+        font = _FONT_DEFAULT_ID
+    return {"font": font}
+
+
+class FontSetBody(BaseModel):
+    font: str
+
+
+@app.put("/api/dashboard/font")
+async def set_dashboard_font(body: FontSetBody):
+    """Set the dashboard font override (persists to config.yaml).
+
+    Accepts any id in the curated catalog, or ``"theme"`` to clear the
+    override and fall back to the active theme's own font. Unknown ids are
+    coerced to ``"theme"`` rather than 400'd so a stale client can't wedge
+    the picker.
+    """
+    font = body.font if body.font in _FONT_CHOICES else _FONT_DEFAULT_ID
+    config = load_config()
+    if "dashboard" not in config:
+        config["dashboard"] = {}
+    config["dashboard"]["font"] = font
+    save_config(config)
+    return {"ok": True, "font": font}
 
 
 # ---------------------------------------------------------------------------

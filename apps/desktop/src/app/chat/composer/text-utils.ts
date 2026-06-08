@@ -8,16 +8,31 @@ export interface TriggerState {
 
 const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
 
+/** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
+export function blobDedupeKey(blob: Blob): string {
+  if (blob instanceof File) {
+    return `file:${blob.name}:${blob.size}:${blob.type}:${blob.lastModified}`
+  }
+
+  return `blob:${blob.size}:${blob.type}`
+}
+
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
-  const seen = new Set<Blob>()
+  const seen = new Set<string>()
 
   const push = (blob: Blob | null) => {
-    if (!blob || blob.size === 0 || seen.has(blob)) {
+    if (!blob || blob.size === 0) {
       return
     }
 
-    seen.add(blob)
+    const key = blobDedupeKey(blob)
+
+    if (seen.has(key)) {
+      return
+    }
+
+    seen.add(key)
     blobs.push(blob)
   }
 
@@ -29,7 +44,8 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
     }
   }
 
-  if (clipboard.files?.length) {
+  // Chromium/Electron expose the same pasted image on both `items` and `files`.
+  if (blobs.length === 0 && clipboard.files?.length) {
     for (let i = 0; i < clipboard.files.length; i += 1) {
       const file = clipboard.files.item(i)
 

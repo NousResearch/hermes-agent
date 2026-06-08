@@ -301,6 +301,19 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
 
+    # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
+    # desktop build seeds at session OPEN (see seed_credits_at_session_start in
+    # tui_gateway), so this call is usually a no-op there (idempotent: skips when
+    # _credits_state already exists). For the plain CLI / any path that didn't seed
+    # at build, it primes credits state from /api/oauth/account (or a fixture) on the
+    # first turn so depletion / usage-band warnings fire. Fail-open inside the helper.
+    try:
+        from agent.credits_tracker import seed_credits_at_session_start
+
+        seed_credits_at_session_start(agent)
+    except Exception:
+        logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
+
     # Persist the system prompt snapshot in SQLite.  Failure here used
     # to log at DEBUG, which silently broke prefix-cache reuse on the
     # gateway path (fresh AIAgent per turn → reads from this row every
@@ -435,6 +448,9 @@ def run_conversation(
     # state registry.  Set BEFORE any tool dispatch so snapshots taken at
     # child-launch time see the parent's real id, not None.
     agent._current_task_id = effective_task_id
+    turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+    agent._current_turn_id = turn_id
+    agent._current_api_request_id = ""
     
     # Reset retry counters and iteration budget at the start of each turn
     # so subagent usage from a previous turn doesn't eat into the next one.
@@ -584,6 +600,19 @@ def run_conversation(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Crash-resilience: persist the inbound user turn as soon as the session row
+    # has a valid system prompt, before any provider call or tool execution can
+    # hang/kill the process. The normal end-of-turn persist still runs later;
+    # _last_flushed_db_idx makes this idempotent and prevents duplicate rows.
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning(
+            "Early turn-start session persistence failed for session=%s",
+            agent.session_id or "none",
+            exc_info=True,
+        )
+
     # ── Preflight context compression ──
     # Before entering the main loop, check if the loaded conversation
     # history already exceeds the model's context threshold.  This handles
@@ -625,7 +654,14 @@ def run_conversation(
             # Skipped when deferring — a deferred estimate is known to over-count
             # vs the last real provider prompt, so trusting it for the display
             # would re-introduce the very desync we're avoiding.
-            if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
+            _last = _compressor.last_prompt_tokens
+            # Do NOT overwrite the -1 sentinel. compress_context() sets
+            # last_prompt_tokens=-1 right after compression to mark "no real API
+            # usage yet". `(x or 0)` evaluates to -1 (truthy) for the sentinel,
+            # so the old comparison was always True and clobbered the sentinel
+            # with a schema-inflated rough estimate — re-triggering compression
+            # on the next turn (#36718). Treat any negative value as "no data".
+            if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
 
         if _preflight_deferred:
@@ -702,6 +738,8 @@ def run_conversation(
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
             user_message=original_user_message,
             conversation_history=list(messages),
             is_first_turn=(not bool(conversation_history)),
@@ -872,7 +910,8 @@ def run_conversation(
             for _si in range(len(messages) - 1, -1, -1):
                 _sm = messages[_si]
                 if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    marker = f"\n\nUser guidance: {_pre_api_steer}"
+                    from agent.prompt_builder import format_steer_marker
+                    marker = format_steer_marker(_pre_api_steer)
                     existing = _sm.get("content", "")
                     if isinstance(existing, str):
                         _sm["content"] = existing + marker
@@ -977,7 +1016,7 @@ def run_conversation(
             # Uses new dicts so the internal messages list retains the fields
             # for Codex Responses compatibility.
             if agent._should_sanitize_tool_calls():
-                agent._sanitize_tool_calls_for_strict_api(api_msg)
+                agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)
@@ -1153,6 +1192,8 @@ def run_conversation(
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
         api_kwargs = None  # Guard against UnboundLocalError in except handler
+        api_request_id = f"{turn_id}:api:{api_call_count}"
+        agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
             # ── Nous Portal rate limit guard ──────────────────────
@@ -1218,39 +1259,83 @@ def run_conversation(
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
-
                 try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
-                    request_messages = api_kwargs.get("messages")
-                    if not isinstance(request_messages, list):
-                        request_messages = api_kwargs.get("input")
-                    if not isinstance(request_messages, list):
-                        request_messages = api_messages
-                    # Shallow-copy the outer list so plugins that retain the
-                    # reference for async snapshotting don't observe later
-                    # mutations of api_messages.  The inner dicts are not
-                    # mutated by the agent loop, so a shallow copy is
-                    # sufficient; a deepcopy would walk every tool result
-                    # and base64 image on every API call.
-                    _invoke_hook(
-                        "pre_api_request",
+                    from hermes_cli.middleware import apply_llm_request_middleware
+
+                    _llm_request_mw = apply_llm_request_middleware(
+                        api_kwargs,
                         task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
                         session_id=agent.session_id or "",
-                        user_message=original_user_message,
-                        conversation_history=list(messages),
                         platform=agent.platform or "",
                         model=agent.model,
                         provider=agent.provider,
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
                         api_call_count=api_call_count,
-                        request_messages=list(request_messages) if isinstance(request_messages, list) else [],
-                        message_count=len(api_messages),
-                        tool_count=len(agent.tools or []),
-                        approx_input_tokens=approx_tokens,
-                        request_char_count=total_chars,
-                        max_tokens=agent.max_tokens,
                     )
+                    api_kwargs = _llm_request_mw.payload
+                    _original_api_kwargs = _llm_request_mw.original_payload
+                    _llm_middleware_trace = _llm_request_mw.trace
+                except Exception:
+                    _original_api_kwargs = dict(api_kwargs)
+                    _llm_middleware_trace = []
+
+                try:
+                    from hermes_cli.plugins import (
+                        has_hook,
+                        invoke_hook as _invoke_hook,
+                    )
+                    if has_hook("pre_api_request"):
+                        request_messages = api_kwargs.get("messages")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_kwargs.get("input")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_messages
+                        # Shallow-copy the outer list so plugins that retain the
+                        # reference for async snapshotting don't observe later
+                        # mutations of api_messages.  The inner dicts are not
+                        # mutated by the agent loop, so a shallow copy is
+                        # sufficient; a deepcopy would walk every tool result
+                        # and base64 image on every API call.
+                        #
+                        # The ``request_messages`` and ``conversation_history``
+                        # kwargs below are pre-existing raw passthroughs
+                        # consumed by the bundled langfuse plugin
+                        # (``plugins/observability/langfuse/__init__.py:_coerce_request_messages``).
+                        # They predate ``request`` and are intentionally NOT
+                        # sanitised — secrets are not expected here because
+                        # ``api_kwargs`` is the same object passed to the
+                        # provider client.  New consumers should read the
+                        # sanitised view from ``request["body"]["messages"]``.
+                        _request_payload = agent._api_request_payload_for_hook(api_kwargs)
+                        _invoke_hook(
+                            "pre_api_request",
+                            task_id=effective_task_id,
+                            turn_id=turn_id,
+                            api_request_id=api_request_id,
+                            session_id=agent.session_id or "",
+                            user_message=original_user_message,
+                            conversation_history=list(messages),
+                            platform=agent.platform or "",
+                            model=agent.model,
+                            provider=agent.provider,
+                            base_url=agent.base_url,
+                            api_mode=agent.api_mode,
+                            api_call_count=api_call_count,
+                            request_messages=list(request_messages)
+                            if isinstance(request_messages, list)
+                            else [],
+                            message_count=len(api_messages),
+                            tool_count=len(agent.tools or []),
+                            approx_input_tokens=approx_tokens,
+                            request_char_count=total_chars,
+                            max_tokens=agent.max_tokens,
+                            started_at=api_start_time,
+                            middleware_trace=list(_llm_middleware_trace),
+                            request=_request_payload,
+                        )
                 except Exception:
                     pass
 
@@ -1300,12 +1385,31 @@ def run_conversation(
                     if isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
 
-                if _use_streaming:
-                    response = agent._interruptible_streaming_api_call(
-                        api_kwargs, on_first_delta=_stop_spinner
-                    )
-                else:
-                    response = agent._interruptible_api_call(api_kwargs)
+                def _perform_api_call(next_api_kwargs):
+                    if _use_streaming:
+                        return agent._interruptible_streaming_api_call(
+                            next_api_kwargs, on_first_delta=_stop_spinner
+                        )
+                    return agent._interruptible_api_call(next_api_kwargs)
+
+                from hermes_cli.middleware import run_llm_execution_middleware
+
+                response = run_llm_execution_middleware(
+                    api_kwargs,
+                    _perform_api_call,
+                    original_request=_original_api_kwargs,
+                    task_id=effective_task_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    session_id=agent.session_id or "",
+                    platform=agent.platform or "",
+                    model=agent.model,
+                    provider=agent.provider,
+                    base_url=agent.base_url,
+                    api_mode=agent.api_mode,
+                    api_call_count=api_call_count,
+                    middleware_trace=list(_llm_middleware_trace),
+                )
                 
                 api_duration = time.time() - api_start_time
                 
@@ -1406,6 +1510,21 @@ def run_conversation(
                             error_details.append("response.choices is empty")
 
                 if response_invalid:
+                    agent._invoke_api_request_error_hook(
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        api_start_time=api_start_time,
+                        api_kwargs=api_kwargs,
+                        error_type="InvalidAPIResponse",
+                        error_message=", ".join(error_details) or "Invalid API response",
+                        status_code=getattr(getattr(response, "error", None), "code", None),
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        retryable=True,
+                        reason="invalid_response",
+                    )
                     # Stop spinner silently — retry status is now buffered
                     # and only surfaced if every retry+fallback exhausts.
                     if thinking_spinner:
@@ -2278,6 +2397,21 @@ def run_conversation(
                     classified.retryable, classified.should_compress,
                     classified.should_rotate_credential, classified.should_fallback,
                 )
+                agent._invoke_api_request_error_hook(
+                    task_id=effective_task_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    api_call_count=api_call_count,
+                    api_start_time=api_start_time,
+                    api_kwargs=api_kwargs,
+                    error_type=type(api_error).__name__,
+                    error_message=str(api_error),
+                    status_code=status_code,
+                    retry_count=retry_count,
+                    max_retries=max_retries,
+                    retryable=classified.retryable,
+                    reason=classified.reason.value,
+                )
 
                 if (
                     classified.reason == FailoverReason.billing
@@ -2659,6 +2793,61 @@ def run_conversation(
                 # A 413 is a payload-size error — the correct response is to
                 # compress history and retry, not abort immediately.
                 status_code = getattr(api_error, "status_code", None)
+
+                # ── Respect disabled auto-compaction on overflow ──────
+                # Ported from anomalyco/opencode#30749.  When the user has
+                # turned auto-compaction off (``compression.enabled: false``),
+                # NO automatic compaction trigger may fire — including the
+                # provider/request-size overflow recovery paths below
+                # (long-context-tier 429, 413 payload-too-large, and
+                # context-overflow).  Without this guard the proactive
+                # threshold path correctly honours the setting (see the
+                # preflight check and the post-response ``should_compress``
+                # gate) but a provider overflow error would still silently
+                # compress + rotate the session, bypassing the user's
+                # explicit choice.  Surface a terminal error instead so the
+                # user can compact manually (``/compress``), start fresh
+                # (``/new``), switch to a larger-context model, or reduce
+                # attachments.  Forced compaction via ``/compress``
+                # (``force=True``) is unaffected — it never reaches this loop.
+                _overflow_reasons = {
+                    FailoverReason.long_context_tier,
+                    FailoverReason.payload_too_large,
+                    FailoverReason.context_overflow,
+                }
+                if (
+                    classified.reason in _overflow_reasons
+                    and not getattr(agent, "compression_enabled", True)
+                ):
+                    agent._flush_status_buffer()
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Context overflow, but auto-compaction is disabled "
+                        f"(compression.enabled: false).",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 Run /compress to compact manually, /new to start fresh, "
+                        f"switch to a larger-context model, or reduce attachments.",
+                        force=True,
+                    )
+                    logger.error(
+                        f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
+                        f"auto-compaction disabled — not compressing."
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "messages": messages,
+                        "completed": False,
+                        "api_calls": api_call_count,
+                        "error": (
+                            "Context overflow and auto-compaction is disabled "
+                            "(compression.enabled: false). Run /compress to compact manually, "
+                            "/new to start fresh, or switch to a larger-context model."
+                        ),
+                        "partial": True,
+                        "failed": True,
+                        "compaction_disabled": True,
+                    }
 
                 # ── Anthropic Sonnet long-context tier gate ───────────
                 # Anthropic returns HTTP 429 "Extra usage is required for
@@ -3195,7 +3384,7 @@ def run_conversation(
                             else:  # nous
                                 agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
                                 agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: hermes auth add nous --type oauth", force=True)
+                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: hermes portal", force=True)
                                 agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
                                 # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
                                 # the model name even after a successful re-auth.
@@ -3378,6 +3567,12 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _final_summary,
+                        # Surface the classified reason so callers (notably the
+                        # kanban worker path in cli.py) can distinguish a
+                        # transient throttle from a real failure and choose a
+                        # different exit code. ``rate_limit`` / ``billing`` here
+                        # mean "quota wall, not a task error".
+                        "failure_reason": classified.reason.value,
                     }
 
                 # For rate limits, respect the Retry-After header if present
@@ -3501,29 +3696,44 @@ def run_conversation(
                     assistant_message.content = str(raw)
 
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
-                _assistant_text = assistant_message.content or ""
-                _invoke_hook(
-                    "post_api_request",
-                    task_id=effective_task_id,
-                    session_id=agent.session_id or "",
-                    platform=agent.platform or "",
-                    model=agent.model,
-                    provider=agent.provider,
-                    base_url=agent.base_url,
-                    api_mode=agent.api_mode,
-                    api_call_count=api_call_count,
-                    api_duration=api_duration,
-                    finish_reason=finish_reason,
-                    message_count=len(api_messages),
-                    response_model=getattr(response, "model", None),
-                    response=response,
-                    usage=agent._usage_summary_for_api_request_hook(response),
-                    assistant_message=assistant_message,
-                    assistant_content_chars=len(_assistant_text),
-                    assistant_tool_call_count=len(_assistant_tool_calls),
+                from hermes_cli.plugins import (
+                    has_hook,
+                    invoke_hook as _invoke_hook,
                 )
+                if has_hook("post_api_request"):
+                    _assistant_tool_calls = (
+                        getattr(assistant_message, "tool_calls", None) or []
+                    )
+                    _assistant_text = assistant_message.content or ""
+                    _api_ended_at = api_start_time + api_duration
+                    _invoke_hook(
+                        "post_api_request",
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        session_id=agent.session_id or "",
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        api_duration=api_duration,
+                        started_at=api_start_time,
+                        ended_at=_api_ended_at,
+                        finish_reason=finish_reason,
+                        message_count=len(api_messages),
+                        response_model=getattr(response, "model", None),
+                        response=agent._api_response_payload_for_hook(
+                            response,
+                            assistant_message,
+                            finish_reason=finish_reason,
+                        ),
+                        usage=agent._usage_summary_for_api_request_hook(response),
+                        assistant_message=assistant_message,
+                        assistant_content_chars=len(_assistant_text),
+                        assistant_tool_call_count=len(_assistant_tool_calls),
+                    )
             except Exception:
                 pass
 
@@ -4617,6 +4827,8 @@ def run_conversation(
             _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
+                task_id=effective_task_id,
+                turn_id=turn_id,
                 user_message=original_user_message,
                 assistant_response=final_response,
                 conversation_history=list(messages),
@@ -4736,6 +4948,8 @@ def run_conversation(
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
             completed=completed,
             interrupted=interrupted,
             model=agent.model,

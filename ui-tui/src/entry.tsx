@@ -75,7 +75,17 @@ const stopMemoryMonitor = startMemoryMonitor({
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)
   },
-  onHigh: (snap, dump) => process.stderr.write(dumpNotice(snap, dump))
+  onHigh: (snap, dump) => process.stderr.write(dumpNotice(snap, dump)),
+  // Sub-threshold abnormal heap growth (#34095). The TUI used to die silently
+  // here — Node OOMs from a render-tree blowup well below the exit threshold,
+  // so the only trace was a bare gateway `stdin EOF`. Persist a breadcrumb +
+  // stderr line so the next such death is attributable instead of silent.
+  onWarn: snap => {
+    recordParentLifecycle(`memory-warning fast heap growth heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}`)
+    process.stderr.write(
+      `hermes-tui: heap climbing fast (${formatBytes(snap.heapUsed)}) — a large tool output or long session may be straining memory\n`
+    )
+  }
 })
 
 if (process.env.HERMES_HEAPDUMP_ON_START === '1') {

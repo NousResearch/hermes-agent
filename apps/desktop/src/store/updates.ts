@@ -13,6 +13,7 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
+import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
 
@@ -85,12 +86,12 @@ export function reportBackendContract(contract: number | undefined): void {
   }
 
   notify({
-    action: { label: 'Update Hermes', onClick: () => void applyUpdates() },
+    action: { label: translateNow('notifications.updateHermes'), onClick: () => void applyUpdates() },
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
-    message: 'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
-    title: 'Backend out of date'
+    message: translateNow('notifications.backendOutOfDateMessage'),
+    title: translateNow('notifications.backendOutOfDateTitle')
   })
 }
 
@@ -121,7 +122,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 
   notify({
     action: {
-      label: "See what's new",
+      label: translateNow('notifications.seeWhatsNew'),
       onClick: () => {
         snoozeUpdateToast()
         openUpdatesWindow()
@@ -130,9 +131,9 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     durationMs: 0,
     id: UPDATE_TOAST_ID,
     kind: 'info',
-    message: `${behind} new change${behind === 1 ? '' : 's'} available.`,
+    message: translateNow('notifications.updateReadyMessage', behind),
     onDismiss: () => snoozeUpdateToast(),
-    title: 'Update ready'
+    title: translateNow('notifications.updateReadyTitle')
   })
 }
 
@@ -143,6 +144,34 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 export function openUpdatesWindow(): void {
   $updateOverlayOpen.set(true)
   void checkUpdates()
+}
+
+/** Re-read the running app's version from the Electron main process and
+ *  publish it on `$desktopVersion`. Called when the About panel mounts, the
+ *  update flow finishes, and the window regains focus, so the About text
+ *  stays in sync with the just-installed binary instead of frozen at the
+ *  value captured at first-load. */
+export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  // Best-effort UI sync: callers (checkUpdates, startUpdatePoller, window
+  // focus handler) all kick this off with `void refreshDesktopVersion()`,
+  // so any rejection from the IPC bridge (e.g. main process shutting down
+  // mid-reload, or the bridge not yet ready on first paint) would surface
+  // as an unhandled promise rejection in the renderer. Swallow it.
+  try {
+    const next = await window.hermesDesktop?.getVersion?.()
+
+    if (next) {
+      $desktopVersion.set(next)
+    }
+
+    return next ?? null
+  } catch {
+    return null
+  }
 }
 
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
@@ -158,6 +187,10 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
     const status = await bridge.check()
     $updateStatus.set(status)
     maybeNotifyUpdateAvailable(status)
+    // The update check pulls the latest hermes_cli + bundled package metadata
+    // into place. Re-read the running version so About reflects the now-fresh
+    // checkout rather than the one captured at process start.
+    void refreshDesktopVersion()
 
     return status
   } catch (error) {
@@ -249,7 +282,7 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   void checkUpdates()
-  void window.hermesDesktop?.getVersion?.().then(info => $desktopVersion.set(info))
+  void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
   window.addEventListener('focus', onFocus)
@@ -275,4 +308,8 @@ function onFocus() {
 
   lastFocusAt = now
   void checkUpdates()
+  // Cheap and safe to re-read on every (throttled) focus: the user may have
+  // updated Hermes from another window/CLI between focuses, and About should
+  // catch up without forcing a restart.
+  void refreshDesktopVersion()
 }

@@ -200,3 +200,29 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
             f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
             f"lockfile after bumping the pin"
         )
+
+
+def test_locale_catalogs_ship_in_both_wheel_and_sdist():
+    """Regression test for #27632 / #35374 / #23943.
+
+    locales/ is a bare data directory (no __init__.py), so it is invisible to
+    packages.find and to package-data (which attaches to a package). It must be
+    declared as setuptools data-files (wheel) AND grafted in MANIFEST.in
+    (sdist). Without both, sealed installs drop the catalogs and gateway/CLI
+    commands surface raw i18n keys like `gateway.reset.header_default`.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+    assert data_files.get("locales") == ["locales/*.yaml"], (
+        "pyproject [tool.setuptools.data-files] must declare "
+        'locales = ["locales/*.yaml"] so the wheel ships i18n catalogs'
+    )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft locales" in manifest, (
+        "MANIFEST.in must `graft locales` so the sdist ships i18n catalogs"
+    )
+
+    # Every on-disk catalog has the .yaml extension the globs above match.
+    on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
+    assert on_disk, "expected locales/*.yaml catalogs on disk"

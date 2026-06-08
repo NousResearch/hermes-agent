@@ -48,7 +48,7 @@ export interface OAuthProviderStatus {
 export interface OAuthProvider {
   cli_command: string
   docs_url: string
-  flow: 'device_code' | 'external' | 'pkce'
+  flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string
   name: string
   status: OAuthProviderStatus
@@ -73,6 +73,12 @@ export type OAuthStartResponse =
       user_code: string
       verification_url: string
     }
+  | {
+      auth_url: string
+      expires_in: number
+      flow: 'loopback'
+      session_id: string
+    }
 
 export interface OAuthSubmitResponse {
   message?: string
@@ -90,6 +96,10 @@ export interface OAuthPollResponse {
 export interface EnvVarInfo {
   advanced: boolean
   category: string
+  // True when this var is a messaging-platform credential owned by a card on
+  // the dedicated Messaging page. The Keys page hides these to avoid
+  // duplicating the richer channel-configuration UI.
+  channel_managed?: boolean
   description: string
   is_password: boolean
   is_set: boolean
@@ -203,6 +213,18 @@ export interface ModelOptionProvider {
   slug: string
   total_models?: number
   warning?: string
+  /** True when the provider has usable credentials. False for canonical
+   *  providers surfaced by `include_unconfigured` that the user hasn't set up
+   *  yet — render these with a setup affordance instead of hiding them. */
+  authenticated?: boolean
+  /** Auth flow for an unconfigured provider: "api_key" can be activated inline
+   *  by pasting `key_env`; anything else (oauth_*, external, aws_sdk, …) needs
+   *  the `hermes model` CLI / onboarding OAuth flow. */
+  auth_type?: string
+  /** Env var to paste an API key into, for unconfigured `api_key` providers. */
+  key_env?: string
+  /** True for providers defined via the user's `providers:` config block. */
+  is_user_defined?: boolean
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>
@@ -210,6 +232,14 @@ export interface ModelOptionProvider {
   free_tier?: boolean
   /** Nous only: paid models a free-tier user cannot select (shown disabled). */
   unavailable_models?: string[]
+  /** Per-model option support, keyed by model id (present when the picker
+   *  requested capabilities). Lets the UI gate fast/reasoning controls. */
+  capabilities?: Record<string, ModelCapabilities>
+}
+
+export interface ModelCapabilities {
+  fast: boolean
+  reasoning: boolean
 }
 
 export interface ModelOptionsResponse {
@@ -223,6 +253,14 @@ export interface PaginatedSessions {
   offset: number
   sessions: SessionInfo[]
   total: number
+  /** Listable conversation count per profile (children excluded), keyed by
+   *  profile name. Lets the sidebar scope its "Load more" footer to the active
+   *  profile instead of the global total. Present only on
+   *  `/api/profiles/sessions`. */
+  profile_totals?: Record<string, number>
+  /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
+   *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
+  errors?: Array<{ profile: string; error: string }>
 }
 
 export interface RpcEvent<T = unknown> {
@@ -259,6 +297,12 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  /** Owning profile name, set by the cross-profile aggregator
+   *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
+   *  which the UI treats as the default profile. */
+  profile?: string
+  /** True when {@link profile} is the default profile. */
+  is_default_profile?: boolean
 }
 
 export interface SessionMessage {
@@ -307,6 +351,7 @@ export interface SessionRuntimeInfo {
   tools?: Record<string, string[]>
   usage?: Partial<UsageStats>
   version?: string
+  yolo?: boolean
 }
 
 export interface UsageStats {
@@ -416,6 +461,8 @@ export interface CronJobUpdates {
 }
 
 export interface ProfileCreatePayload {
+  clone_all?: boolean
+  clone_from?: string
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
@@ -489,8 +536,12 @@ export interface ToolsetConfig {
 }
 
 export interface SessionSearchResult {
+  /** Lineage root of the matched conversation. Stable across compression and
+   *  used as the durable pin id; falls back to session_id when absent. */
+  lineage_root?: string | null
   model: string | null
   role: string | null
+  /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string
   session_started: number | null
   snippet: string
@@ -558,13 +609,26 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
+   *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
+  base_url?: string
   model: string
   provider: string
   scope: 'main' | 'auxiliary'
   task?: string
 }
 
+/** An auxiliary task still pinned to a provider that differs from the
+ *  newly-selected main provider after a main-model switch. */
+export interface StaleAuxAssignment {
+  task: string
+  provider: string
+  model: string
+}
+
 export interface ModelAssignmentResponse {
+  /** Persisted endpoint URL for custom/local providers (echoed back). */
+  base_url?: string
   /** Toolset keys auto-routed through the Nous Tool Gateway as a result of
    *  switching the main provider to Nous. Empty unless provider === 'nous'
    *  and the user is a paid subscriber with unconfigured tools. */
@@ -574,5 +638,9 @@ export interface ModelAssignmentResponse {
   provider?: string
   reset?: boolean
   scope?: string
+  /** Auxiliary slots still pinned to a different provider than the new main.
+   *  Switching main never clears aux pins; this lets the UI warn the user
+   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
+  stale_aux?: StaleAuxAssignment[]
   tasks?: string[]
 }

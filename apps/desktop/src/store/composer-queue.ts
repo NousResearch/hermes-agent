@@ -137,6 +137,26 @@ export const removeQueuedPrompt = (key: string | null | undefined, id: string): 
   return true
 }
 
+export const promoteQueuedPrompt = (key: string | null | undefined, id: string): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+  const index = queue.findIndex(e => e.id === id)
+
+  if (index <= 0) {
+    return false
+  }
+
+  const entry = queue[index]!
+  writeSession(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
+
+  return true
+}
+
 export const updateQueuedPrompt = (
   key: string | null | undefined,
   id: string,
@@ -187,4 +207,33 @@ export const clearQueuedPrompts = (key: string | null | undefined) => {
   }
 
   writeSession(sid, [])
+}
+
+/** Inputs to {@link shouldAutoDrainOnSettle}, captured at a `busy` transition. */
+export interface AutoDrainSettleInput {
+  wasBusy: boolean
+  isBusy: boolean
+  queueLength: number
+}
+
+/**
+ * Decide whether the composer should auto-drain the next queued prompt when a
+ * turn settles (busy transitions true → false).
+ *
+ * Queued turns always advance once the session is idle again, whether the turn
+ * finished naturally or the user interrupted it. Interrupting to reach a queued
+ * message is the whole point of the queue, so we never suppress the drain. The
+ * gateway guarantees a settle (message.complete + session.info running:false)
+ * even after an interrupt, so this single edge reliably advances the queue. To
+ * cancel queued turns the user deletes them from the panel.
+ */
+export const shouldAutoDrainOnSettle = (params: AutoDrainSettleInput): boolean => {
+  const { isBusy, queueLength, wasBusy } = params
+
+  // Only react to a true → false transition; ignore steady state and entry.
+  if (isBusy || !wasBusy) {
+    return false
+  }
+
+  return queueLength > 0
 }

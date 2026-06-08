@@ -225,6 +225,25 @@ def check_for_updates() -> Optional[int]:
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
 
+    # Docker images have no working tree to count commits against — the
+    # published image excludes `.git` (see .dockerignore) and sets no
+    # HERMES_REVISION (that's nix-only). Without this guard the checks below
+    # fall through to `check_via_pypi()`, whose PyPI-version mismatch flag (1)
+    # then gets rendered by the CLI banner and the TUI badge as a phantom
+    # "1 commit behind" — even though no git repo or commit math is involved,
+    # and `hermes update` correctly refuses to run in-place inside the
+    # container anyway. The dashboard's REST `/api/hermes/update/check`
+    # endpoint already short-circuits docker the same way (web_server.py);
+    # mirror that here so the banner/TUI surfaces agree. Returning None makes
+    # both the Rich banner (build_welcome_banner) and the Ink badge
+    # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    try:
+        from hermes_cli.config import detect_install_method
+        if detect_install_method() == "docker":
+            return None
+    except Exception:
+        pass
+
     # Read cache — invalidate if the embedded rev OR installed version has
     # changed since the last check. The version guard matters for pip installs:
     # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
@@ -625,6 +644,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
                     f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                )
+            elif srv.get("disabled"):
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— disabled[/]"
                 )
             else:
                 right_lines.append(

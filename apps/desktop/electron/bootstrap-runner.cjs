@@ -22,7 +22,7 @@
  *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...] }
  *   { type: 'stage',     name, state: 'running'|'succeeded'|'skipped'|'failed',
  *                        json?, durationMs?, error? }
- *   { type: 'log',       stage?, line }      // raw line from install.ps1
+ *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // raw line from install.ps1
  *   { type: 'complete',  marker: <written marker payload> }
  *   { type: 'failed',    stage?, error }     // bootstrap aborted
  *
@@ -76,6 +76,21 @@ function bootstrapCacheDir(hermesHome) {
   return path.join(hermesHome, 'bootstrap-cache')
 }
 
+// The install.sh / install.ps1 that ships inside the already-installed agent
+// checkout under ~/.hermes/hermes-agent. Used as a last-resort fallback when
+// the pinned commit can't be fetched from GitHub (e.g. a locally-built desktop
+// app stamped to an unpushed HEAD).
+function installedAgentInstallScript(hermesHome) {
+  if (!hermesHome) return null
+  const candidate = path.join(hermesHome, 'hermes-agent', 'scripts', installScriptName())
+  try {
+    fs.accessSync(candidate, fs.constants.R_OK)
+    return candidate
+  } catch {
+    return null
+  }
+}
+
 function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
@@ -101,7 +116,9 @@ function downloadInstallScript(commit, destPath) {
             .get(res.headers.location, res2 => {
               if (res2.statusCode !== 200) {
                 reject(
-                  new Error(`Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`)
+                  new Error(
+                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
+                  )
                 )
                 return
               }
@@ -121,7 +138,9 @@ function downloadInstallScript(commit, destPath) {
           out.close()
           try {
             fs.unlinkSync(tmpPath)
-          } catch {}
+          } catch {
+            void 0
+          }
           reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
           return
         }
@@ -134,20 +153,24 @@ function downloadInstallScript(commit, destPath) {
         out.on('error', err => {
           try {
             fs.unlinkSync(tmpPath)
-          } catch {}
+          } catch {
+            void 0
+          }
           reject(err)
         })
       })
       .on('error', err => {
         try {
           fs.unlinkSync(tmpPath)
-        } catch {}
+        } catch {
+          void 0
+        }
         reject(err)
       })
   })
 }
 
-async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit }) {
+async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, _download = downloadInstallScript }) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.cjs (path.resolve
   //    of APP_ROOT/../..).
@@ -168,25 +191,97 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
   const cached = cachedScriptPath(hermesHome, installStamp.commit)
   try {
     await fsp.access(cached, fs.constants.R_OK)
-    emit({ type: 'log', line: `[bootstrap] using cached ${installScriptName()} for ${installStamp.commit.slice(0, 12)}` })
+    emit({
+      type: 'log',
+      line: `[bootstrap] using cached ${installScriptName()} for ${installStamp.commit.slice(0, 12)}`
+    })
     return { path: cached, source: 'cache', commit: installStamp.commit, kind: installScriptKind() }
   } catch {
     // not cached; download
   }
 
-  emit({ type: 'log', line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub` })
-  await downloadInstallScript(installStamp.commit, cached)
-  emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
-  return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
+  emit({
+    type: 'log',
+    line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub`
+  })
+  try {
+    await _download(installStamp.commit, cached)
+    emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
+    return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
+  } catch (err) {
+    // The pinned commit may not be fetchable from GitHub -- most commonly a
+    // locally-built desktop app stamped to an unpushed HEAD (see
+    // write-build-stamp.cjs fromLocalGit). Fall back to the installer that
+    // ships inside the already-installed agent checkout so dev/self-builds can
+    // still bootstrap instead of dying with a fatal 404.
+    const installed = installedAgentInstallScript(hermesHome)
+    if (installed) {
+      emit({
+        type: 'log',
+        line:
+          `[bootstrap] GitHub fetch failed (${err.message}); ` +
+          `falling back to installed agent ${installScriptName()} at ${installed}`
+      })
+      try {
+        fs.mkdirSync(path.dirname(cached), { recursive: true })
+        fs.copyFileSync(installed, cached)
+        return { path: cached, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
+      } catch {
+        // Cache copy failed (read-only FS, etc.) -- use the source path directly.
+        return { path: installed, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
+      }
+    }
+    throw err
+  }
 }
 
 // ---------------------------------------------------------------------------
 // powershell wrapper
 // ---------------------------------------------------------------------------
 
+// Canonical PowerShell 5.1 location under a Windows root (%SystemRoot%).
+function powershellUnderRoot(root) {
+  return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+// Resolve the PowerShell interpreter to spawn.
+//
+// Spawning bare 'powershell.exe' trusts PATH to contain
+// %SystemRoot%\System32\WindowsPowerShell\v1.0. On machines whose PATH was
+// trimmed, truncated, or stored as a non-expanding REG_SZ (so %SystemRoot%
+// never expands), that lookup fails and the spawn dies with ENOENT before
+// install.ps1 ever runs — the installer stalls at "0 of 0 steps". Resolve by
+// absolute path first, then fall back to PATH (powershell 5.1, then pwsh 7),
+// then a bare name as a last resort.
+function resolveWindowsPowerShell() {
+  for (const v of ['SystemRoot', 'windir']) {
+    const root = process.env[v]
+    if (root) {
+      const candidate = powershellUnderRoot(root)
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        void 0
+      }
+    }
+  }
+  const pathDirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean)
+  for (const exe of ['powershell.exe', 'pwsh.exe']) {
+    for (const dir of pathDirs) {
+      const candidate = path.join(dir, exe)
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        void 0
+      }
+    }
+  }
+  return 'powershell.exe'
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome } = {}) {
   return new Promise((resolve, reject) => {
-    const ps = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+    const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
 
     const child = spawn(ps, fullArgs, {
@@ -207,7 +302,9 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       killed = true
       try {
         child.kill('SIGTERM')
-      } catch {}
+      } catch {
+        void 0
+      }
     }
     if (abortSignal) {
       if (abortSignal.aborted) {
@@ -229,7 +326,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
       }
     })
 
@@ -241,7 +338,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${line}` })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
       }
     })
 
@@ -253,8 +350,8 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
     child.on('close', (code, signal) => {
       if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
       // Flush any trailing bytes
-      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf })
-      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${stderrBuf}` })
+      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
       resolve({ stdout, stderr, code, signal, killed })
     })
   })
@@ -278,7 +375,9 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       killed = true
       try {
         child.kill('SIGTERM')
-      } catch {}
+      } catch {
+        void 0
+      }
     }
     if (abortSignal) {
       if (abortSignal.aborted) {
@@ -299,7 +398,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
       }
     })
 
@@ -311,7 +410,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${line}` })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
       }
     })
 
@@ -322,8 +421,8 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 
     child.on('close', (code, signal) => {
       if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
-      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf })
-      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${stderrBuf}` })
+      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
       resolve({ stdout, stderr, code, signal, killed })
     })
   })
@@ -369,7 +468,9 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
     hermesHome
   })
   if (result.code !== 0) {
-    throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`)
+    throw new Error(
+      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`
+    )
   }
   // The manifest is the LAST JSON line on stdout (install.ps1 may print
   // banner / info lines first depending on Console.OutputEncoding effects).
@@ -381,9 +482,13 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
       if (parsed && Array.isArray(parsed.stages)) {
         return parsed
       }
-    } catch {}
+    } catch {
+      void 0
+    }
   }
-  throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} produced no parseable JSON payload\n${result.stdout}`)
+  throw new Error(
+    `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} produced no parseable JSON payload\n${result.stdout}`
+  )
 }
 
 // Parse the JSON result frame from a stage run. The protocol guarantees
@@ -397,7 +502,9 @@ function parseStageResult(stdout) {
       if (parsed && typeof parsed.ok === 'boolean' && typeof parsed.stage === 'string') {
         return parsed
       }
-    } catch {}
+    } catch {
+      void 0
+    }
   }
   return null
 }
@@ -408,13 +515,20 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
 
   const isPosix = installerKind === 'posix'
   const args = isPosix
-    ? ['--stage', stage.name, '--non-interactive', '--json', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })]
+    ? [
+        '--stage',
+        stage.name,
+        '--non-interactive',
+        '--json',
+        ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })
+      ]
     : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp)]
-  const result = await (isPosix ? spawnBash : spawnPowerShell)(
-    scriptPath,
-    args,
-    { emit, stageName: stage.name, abortSignal, hermesHome }
-  )
+  const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
+    emit,
+    stageName: stage.name,
+    abortSignal,
+    hermesHome
+  })
 
   const durationMs = Date.now() - startedAt
 
@@ -449,7 +563,14 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
     emit(ev)
     return ev
   }
-  const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, json, error: json.reason || `exit code ${result.code}` }
+  const ev = {
+    type: 'stage',
+    name: stage.name,
+    state: 'failed',
+    durationMs,
+    json,
+    error: json.reason || `exit code ${result.code}`
+  }
   emit(ev)
   return ev
 }
@@ -489,7 +610,9 @@ async function runBootstrap(opts) {
     if (typeof onEvent === 'function') {
       try {
         onEvent({ type: 'failed', error: 'bootstrap cancelled by user' })
-      } catch {}
+      } catch {
+        void 0
+      }
     }
     return { ok: false, cancelled: true }
   }
@@ -501,7 +624,9 @@ async function runBootstrap(opts) {
   const emit = ev => {
     try {
       runLog.stream.write(JSON.stringify(ev) + '\n')
-    } catch {}
+    } catch {
+      void 0
+    }
     try {
       if (typeof onEvent === 'function') onEvent(ev)
     } catch (err) {
@@ -578,7 +703,9 @@ async function runBootstrap(opts) {
   } finally {
     try {
       runLog.stream.end()
-    } catch {}
+    } catch {
+      void 0
+    }
   }
 }
 
@@ -587,5 +714,7 @@ module.exports = {
   // Exposed for testability
   parseStageResult,
   resolveLocalInstallScript,
+  resolveInstallScript,
+  installedAgentInstallScript,
   cachedScriptPath
 }

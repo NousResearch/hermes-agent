@@ -60,6 +60,7 @@ from typing import List, Dict, Any, Optional
 # ModuleNotFoundError on broken/partial installs where `fire` isn't present.
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_constants import get_hermes_home
 
@@ -3807,6 +3808,41 @@ class AIAgent:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
                 self._client_kwargs.pop("default_headers", None)
+
+        # User-configured overrides win over URL/profile defaults — keep them
+        # applied across credential swaps and client rebuilds, not just at
+        # first construction.
+        self._apply_user_default_headers()
+
+    def _apply_user_default_headers(self) -> None:
+        """Merge user-configured request headers onto the OpenAI client.
+
+        Reads ``model.default_headers`` from config.yaml and merges it onto
+        ``self._client_kwargs["default_headers"]``, with user values taking
+        precedence over provider- and SDK-supplied defaults.
+
+        This exists for ``custom`` OpenAI-compatible endpoints sitting behind
+        a gateway/WAF that rejects the OpenAI Python SDK's identifying headers
+        (``User-Agent: OpenAI/Python ...``, ``X-Stainless-*``). Setting e.g.
+        ``model.default_headers: {User-Agent: curl/8.7.1}`` lets the request
+        reach such an upstream instead of failing with an opaque 4xx/502 even
+        though the same body works under ``curl``. (#40033)
+
+        Delegates the config read + merge to
+        ``agent.auxiliary_client._apply_user_default_headers`` so the main and
+        auxiliary clients can never drift on precedence or value handling.
+
+        No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
+        and when no overrides are configured.
+        """
+        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
+            return
+        from agent.auxiliary_client import (
+            _apply_user_default_headers as _merge_user_headers,
+        )
+        merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
+        if merged:
+            self._client_kwargs["default_headers"] = merged
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")

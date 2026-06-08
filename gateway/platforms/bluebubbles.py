@@ -597,6 +597,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     @staticmethod
     def _is_native_voice_wav_source(audio_path: str) -> bool:
         """Return True for WAV input that can go straight to Opus CAF."""
+        import wave
+
         if os.path.splitext(audio_path)[1].lower() != ".wav":
             return False
         try:

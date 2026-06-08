@@ -3428,10 +3428,39 @@
         onAddChild: props.onAddChild,
         onRemoveChild: props.onRemoveChild,
       }),
-      t.result ? h("div", { className: "hermes-kanban-section" },
-        h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
-        h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
-      ) : null,
+      (function () {
+        var finalResult = t.final_result || t.result || t.latest_summary || null;
+        var isDone = t.status === "done";
+        var isParent = (t.link_counts && t.link_counts.children > 0);
+        if (finalResult) {
+          var label = t.result
+            ? tx(i18n, "result", "Result")
+            : tx(i18n, "finalResult", "Final Result (run summary)");
+          return h("div", { className: "hermes-kanban-section" },
+            h("div", { className: "hermes-kanban-section-head" }, label),
+            h(MarkdownBlock, { source: finalResult, enabled: props.renderMarkdown }),
+          );
+        }
+        if (isDone && isParent) {
+          return h("div", { className: "hermes-kanban-section" },
+            h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
+            h("div", { className: "hermes-kanban-done-no-result hermes-kanban-done-parent-note" },
+              tx(i18n, "doneParentNote",
+                "This card is an orchestrator / parent task. The substantive results are in the child cards listed in Dependencies below."),
+            ),
+          );
+        }
+        if (isDone) {
+          return h("div", { className: "hermes-kanban-section" },
+            h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
+            h("div", { className: "hermes-kanban-done-no-result" },
+              tx(i18n, "doneNoResult",
+                "No final result was recorded. Check Run History, Logs, or Child Tasks for the worker output."),
+            ),
+          );
+        }
+        return null;
+      })(),
       h(AttachmentsSection, {
         attachments: attachments,
         boardSlug: props.boardSlug,

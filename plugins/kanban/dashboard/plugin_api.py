@@ -172,6 +172,7 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    d["final_result"] = task.result or latest_summary or None
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 

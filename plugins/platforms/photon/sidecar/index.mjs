@@ -1,40 +1,46 @@
 // Hermes Agent — Photon Spectrum sidecar
 //
-// Spawned by `plugins/platforms/photon/adapter.py` to bridge outbound
-// messaging to Photon's Spectrum platform. Inbound messages go directly
-// from Photon's webhook to Hermes' Python aiohttp receiver — this
-// sidecar handles ONLY outbound calls (which require the spectrum-ts
-// SDK because Photon has no public HTTP send endpoint today).
+// Spawned by `plugins/platforms/photon/adapter.py` to bridge BOTH directions
+// of messaging to Photon's Spectrum platform via the `spectrum-ts` SDK (the
+// SDK is TypeScript-only, so a Node sidecar is unavoidable — there is no
+// Python SDK and no public HTTP message API).
 //
-// Protocol:
-//   - The sidecar listens on http://127.0.0.1:${PORT} (loopback only)
-//   - Each request must include `X-Hermes-Sidecar-Token: ${TOKEN}`
-//   - POST /healthz                     -> {"ok": true}
-//   - POST /send                        -> {"ok": true, "messageId": "..."}
+// Inbound  (gRPC -> Hermes): the SDK's `app.messages` async iterator is a
+//   long-lived gRPC stream. We serialize each `[space, message]` to a
+//   normalized JSON event and stream it to the Python adapter over a
+//   loopback `GET /inbound` (NDJSON). We pause pulling from the stream while
+//   no consumer is attached so a backlog isn't pulled-and-lost before the
+//   gateway connects.
+// Outbound (Hermes -> gRPC): `/send` and `/typing` drive `space.send(...)` /
+//   `space.startTyping()` on the SDK.
+//
+// Protocol (all requests require `X-Hermes-Sidecar-Token: ${TOKEN}`):
+//   - GET  /inbound    -> 200 NDJSON stream; one JSON event per line, blank
+//                         lines are heartbeats. One consumer at a time.
+//   - POST /healthz     -> {"ok": true}
+//   - POST /send        -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...", "replyTo": "..." | null}
-//   - POST /send-attachment             -> {"ok": true, "messageId": "..."}
+//   - POST /send-attachment -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
 //              "kind": "attachment" | "voice", "replyTo": "..." | null}
-//   - POST /typing                      -> {"ok": true}
+//   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "..."}
-//   - POST /shutdown                    -> {"ok": true}; then process exits
+//   - POST /shutdown    -> {"ok": true}; then process exits
 //
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
-// exiting. Errors are logged to stderr; Python supervises restart.
+// exiting. Logs go to stderr; Python supervises restart.
 //
-// Env vars (all required):
-//   PHOTON_PROJECT_ID
+// Env vars (required):
+//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
 //   PHOTON_PROJECT_SECRET
 //   PHOTON_SIDECAR_PORT
 //   PHOTON_SIDECAR_TOKEN
-//
 // Optional:
-//   PHOTON_SIDECAR_BIND  (default 127.0.0.1)
-//   PHOTON_API_HOST      (passed through to spectrum-ts if its config
-//                         honours it)
+//   PHOTON_SIDECAR_BIND    (default 127.0.0.1)
 
 import http from "node:http";
+import { once } from "node:events";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
@@ -71,17 +77,104 @@ const app = await Spectrum({
   providers: [imessage.config()],
 });
 
-// Drain the inbound stream — Photon's webhook is the canonical inbound
-// path, but we still consume `app.messages` so spectrum-ts' internal
-// reconnect/heartbeat logic keeps running.  Each event is logged at
-// debug level; everything else is a no-op here.
+// ---------------------------------------------------------------------------
+// Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
+
+// At most one Python consumer is attached at a time (the gateway adapter).
+let consumerRes = null;
+let consumerWaiters = [];
+
+function waitForConsumer() {
+  if (consumerRes) return Promise.resolve();
+  return new Promise((resolve) => consumerWaiters.push(resolve));
+}
+
+function setConsumer(res) {
+  consumerRes = res;
+  const waiters = consumerWaiters;
+  consumerWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+function clearConsumer(res) {
+  if (consumerRes === res) consumerRes = null;
+}
+
+// Write one NDJSON line to the active consumer. Blocks until a consumer is
+// connected; if the write fails (consumer vanished mid-flight) we wait for a
+// new consumer and retry, so a message is never silently dropped here.
+async function deliver(line) {
+  for (;;) {
+    await waitForConsumer();
+    const res = consumerRes;
+    if (!res) continue;
+    try {
+      const flushed = res.write(line + "\n");
+      if (!flushed) await once(res, "drain");
+      return;
+    } catch {
+      clearConsumer(res);
+    }
+  }
+}
+
+function normalizeContent(content) {
+  if (!content || typeof content !== "object") {
+    return { type: "unknown" };
+  }
+  if (content.type === "text") {
+    return { type: "text", text: content.text || "" };
+  }
+  if (content.type === "attachment") {
+    // Bytes are reachable via content.read()/stream(); we surface metadata
+    // here and leave byte download to a follow-up (keeps the event small).
+    return {
+      type: "attachment",
+      id: content.id ?? null,
+      name: content.name ?? null,
+      mimeType: content.mimeType ?? null,
+      size: typeof content.size === "number" ? content.size : null,
+    };
+  }
+  return { type: content.type || "unknown" };
+}
+
+function normalizeEvent(space, message) {
+  try {
+    const msgSpace = message.space || {};
+    const ts = message.timestamp;
+    return {
+      messageId: message.id ?? null,
+      platform: message.platform || space.__platform || "iMessage",
+      space: {
+        id: space.id ?? msgSpace.id ?? null,
+        // iMessage spaces carry `type` ("dm"|"group") and `phone` directly.
+        type: space.type ?? msgSpace.type ?? "dm",
+        phone: space.phone ?? msgSpace.phone ?? null,
+      },
+      sender: { id: message.sender ? message.sender.id : null },
+      content: normalizeContent(message.content),
+      timestamp:
+        ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
+    };
+  } catch (e) {
+    console.error(
+      "photon-sidecar: failed to normalize inbound message: " + String(e)
+    );
+    return null;
+  }
+}
+
 (async () => {
   try {
-    for await (const [, message] of app.messages) {
-      console.error(
-        `photon-sidecar: drained inbound from ${message.platform} ` +
-          `space=${message.space?.id}`
-      );
+    for await (const [space, message] of app.messages) {
+      // Only forward inbound messages (ignore our own outbound echoes).
+      if (message && message.direction && message.direction !== "inbound") {
+        continue;
+      }
+      const event = normalizeEvent(space, message);
+      if (!event) continue;
+      await deliver(JSON.stringify(event));
     }
   } catch (e) {
     console.error(
@@ -90,6 +183,9 @@ const app = await Spectrum({
     );
   }
 })();
+
+// ---------------------------------------------------------------------------
+// HTTP control + inbound server (loopback only).
 
 async function readBody(req) {
   const chunks = [];
@@ -130,6 +226,39 @@ function ok(res, data) {
   res.end(JSON.stringify({ ok: true, ...data }));
 }
 
+function handleInbound(req, res) {
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/x-ndjson");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Connection", "keep-alive");
+  // One consumer at a time — a fresh connection (e.g. after a reconnect)
+  // supersedes the previous one.
+  if (consumerRes && consumerRes !== res) {
+    try {
+      consumerRes.end();
+    } catch {
+      /* ignore */
+    }
+  }
+  setConsumer(res);
+  // Heartbeat keeps the socket warm through idle periods and lets the Python
+  // side detect a dead pipe promptly.
+  const heartbeat = setInterval(() => {
+    try {
+      res.write("\n");
+    } catch {
+      /* ignore */
+    }
+  }, 25000);
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    clearConsumer(res);
+  };
+  req.on("close", cleanup);
+  req.on("aborted", cleanup);
+  res.on("error", cleanup);
+}
+
 async function resolveSpace(spaceId) {
   // spectrum-ts exposes the same Space methods via `app.space(spaceId)` /
   // narrowed helpers; we fall back through a few accessor shapes to
@@ -140,7 +269,6 @@ async function resolveSpace(spaceId) {
   if (app.spaces && typeof app.spaces.get === "function") {
     return await app.spaces.get(spaceId);
   }
-  // Last resort — the platform-narrowed helper.
   if (imessage) {
     const im = imessage(app);
     if (typeof im.space === "function") {
@@ -157,6 +285,10 @@ async function resolveSpace(spaceId) {
 const server = http.createServer(async (req, res) => {
   if (req.headers["x-hermes-sidecar-token"] !== sharedToken) {
     return unauthorized(res);
+  }
+  // Long-lived inbound NDJSON stream.
+  if (req.method === "GET" && req.url === "/inbound") {
+    return handleInbound(req, res);
   }
   if (req.method !== "POST") {
     res.statusCode = 405;
@@ -225,7 +357,9 @@ const server = http.createServer(async (req, res) => {
       const { spaceId } = body || {};
       if (!spaceId) return badRequest(res, "spaceId is required");
       const space = await resolveSpace(spaceId);
-      if (typeof space.typing === "function") {
+      if (typeof space.startTyping === "function") {
+        await space.startTyping();
+      } else if (typeof space.typing === "function") {
         await space.typing();
       } else if (typeof space.setTyping === "function") {
         await space.setTyping(true);

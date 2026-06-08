@@ -13,6 +13,7 @@ import { useStore } from '@nanostores/react'
 import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
   type ClipboardEvent,
+  type ComponentProps,
   type FC,
   type FocusEvent,
   type FormEvent,
@@ -48,13 +49,13 @@ import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/co
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
-import { DirectiveContent, DirectiveText } from '@/components/assistant-ui/directive-text'
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
-import { MarkdownText } from '@/components/assistant-ui/markdown-text'
+import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
@@ -73,6 +74,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
@@ -115,10 +118,6 @@ function messageContentText(content: unknown): string {
   return Array.isArray(content) ? content.map(partText).join('').trim() : ''
 }
 
-const INTERRUPTED_ONLY_RE = /^_?\[interrupted\]_?$/i
-
-const isInterruptedOnlyMessage = (text: string) => INTERRUPTED_ONLY_RE.test(text.trim())
-
 export const Thread: FC<{
   clampToComposer?: boolean
   cwd?: string | null
@@ -151,10 +150,7 @@ export const Thread: FC<{
   )
 
   const emptyPlaceholder = intro ? (
-    <div
-      className="flex min-h-0 w-full flex-col items-center justify-center"
-      style={{ paddingBottom: 'var(--composer-measured-height)' }}
-    >
+    <div className="flex min-h-0 w-full flex-col items-center justify-center pt-[var(--composer-measured-height)]">
       <Intro {...intro} />
     </div>
   ) : undefined
@@ -185,22 +181,26 @@ function pickPrimaryPreviewTarget(targets: string[]): string[] {
   return [localUrl || targets[targets.length - 1]]
 }
 
-const CenteredThreadSpinner: FC = () => (
-  <div
-    aria-label="Loading session"
-    className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
-    role="status"
-  >
-    <Loader
-      aria-hidden="true"
-      className="size-12 text-midground/70"
-      pathSteps={220}
-      role="presentation"
-      strokeScale={0.72}
-      type="rose-curve"
-    />
-  </div>
-)
+const CenteredThreadSpinner: FC = () => {
+  const { t } = useI18n()
+
+  return (
+    <div
+      aria-label={t.assistant.thread.loadingSession}
+      className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
+      role="status"
+    >
+      <Loader
+        aria-hidden="true"
+        className="size-12 text-midground/70"
+        pathSteps={220}
+        role="presentation"
+        strokeScale={0.72}
+        type="rose-curve"
+      />
+    </div>
+  )
+}
 
 const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
   const messageId = useAuiState(s => s.message.id)
@@ -218,7 +218,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
 
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isPlaceholder = messageStatus === 'running' && content.length === 0
-  const interruptedOnly = useMemo(() => isInterruptedOnlyMessage(messageText), [messageText])
+  const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
     return null
@@ -229,16 +229,16 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
+      data-streaming={messageStatus === 'running' ? 'true' : undefined}
+      ref={enterRef}
     >
       <div
-        className={cn(
-          'wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
-          interruptedOnly && 'text-[0.8rem] leading-5 text-muted-foreground/82'
-        )}
+        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+        {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -255,7 +255,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {messageText.trim().length > 0 && !interruptedOnly && (
+      {messageText.trim().length > 0 && (
         <AssistantFooter messageId={messageId} messageText={messageText} onBranchInNewChat={onBranchInNewChat} />
       )}
     </MessagePrimitive.Root>
@@ -280,10 +280,44 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 )
 
 const ResponseLoadingIndicator: FC = () => {
+  const { t } = useI18n()
   const elapsed = useElapsedSeconds()
 
   return (
-    <StatusRow data-slot="aui_response-loading" label="Hermes is loading a response">
+    <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>
+      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      <ActivityTimerText seconds={elapsed} />
+    </StatusRow>
+  )
+}
+
+// Seconds of no visible output (text or part count) before a still-running turn
+// is treated as stalled and the thinking indicator returns at the tail.
+const STREAM_STALL_S = 2
+
+// Tail "still thinking" indicator: the pre-first-token spinner goes away once
+// text flows, but if the stream then goes quiet mid-turn (tool think-time,
+// provider stall) nothing signals that work continues. Watch a per-render
+// activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
+// dither + a timer counting from the last activity.
+const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
+  const [stalled, setStalled] = useState(false)
+
+  useEffect(() => {
+    setStalled(false)
+    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_S * 1000)
+
+    return () => window.clearTimeout(id)
+  }, [activity])
+
+  const elapsed = useElapsedSeconds(stalled)
+
+  if (!stalled) {
+    return null
+  }
+
+  return (
+    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -332,6 +366,7 @@ const ThinkingDisclosure: FC<{
   pending?: boolean
   timerKey?: string
 }> = ({ children, messageRunning = false, pending = false, timerKey }) => {
+  const { t } = useI18n()
   // `null` = no explicit user toggle yet, defer to the streaming default.
   // The default is "auto-open while streaming, auto-collapse when done" so
   // reasoning surfaces a live preview without manual interaction. The first
@@ -370,7 +405,9 @@ const ThinkingDisclosure: FC<{
     observer.observe(content)
 
     return () => observer.disconnect()
-  }, [isPreview])
+    // Re-run when the disclosure toggles so the observer attaches to the new
+    // DOM after expand/collapse (refs are conditionally rendered on `open`).
+  }, [isPreview, open])
 
   return (
     <div
@@ -386,7 +423,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            Thinking
+            {t.assistant.thread.thinking}
           </span>
           {pending && (
             <ActivityTimerText
@@ -430,10 +467,24 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     s =>
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
-      s.message.parts
-        .slice(Math.max(0, startIndex), Math.min(s.message.parts.length, endIndex))
-        .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
+      s.message.parts.slice(Math.max(0, startIndex)).some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
+
+  // A reasoning group with no actual text is pure noise — drop the whole
+  // "Thinking" disclosure rather than leave an empty header eating a row. This
+  // applies live too: encrypted/spinner-coerced reasoning (Opus reasoning max)
+  // never carries visible text, and the bottom-of-thread loader already signals
+  // "thinking", so an empty header is never wanted. Real reasoning surfaces the
+  // instant its first token lands.
+  const hasContent = useAuiState(s =>
+    s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
+  )
+
+  if (!hasContent) {
+    return null
+  }
 
   return (
     <ThinkingDisclosure messageRunning={messageRunning} pending={pending} timerKey={`reasoning:${messageId}`}>
@@ -444,17 +495,19 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 
 const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
   const displayText = text.trimStart()
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const isRunning = status?.type === 'running' || messageRunning
 
   return (
-    <div
-      className={cn(
-        'whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/85',
-        status?.type === 'running' && 'shimmer text-muted-foreground/55'
+    <MarkdownTextContent
+      containerClassName={cn(
+        'text-xs leading-snug text-muted-foreground/85',
+        isRunning && 'shimmer text-muted-foreground/55'
       )}
-      data-slot="aui_reasoning-text"
-    >
-      {displayText}
-    </div>
+      containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+      isRunning={isRunning}
+      text={displayText}
+    />
   )
 }
 
@@ -486,7 +539,10 @@ function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
-function formatMessageTimestamp(value: Date | string | number | undefined): string {
+function formatMessageTimestamp(
+  value: Date | string | number | undefined,
+  labels: { today: (time: string) => string; yesterday: (time: string) => string }
+): string {
   if (!value) {
     return ''
   }
@@ -500,17 +556,19 @@ function formatMessageTimestamp(value: Date | string | number | undefined): stri
   const dayDelta = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86_400_000)
 
   if (dayDelta === 0) {
-    return `Today, ${TIME_FMT.format(date)}`
+    return labels.today(TIME_FMT.format(date))
   }
 
   if (dayDelta === 1) {
-    return `Yesterday, ${TIME_FMT.format(date)}`
+    return labels.yesterday(TIME_FMT.format(date))
   }
 
   return SHORT_FMT.format(date)
 }
 
 const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, onBranchInNewChat }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
@@ -529,15 +587,15 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
         )}
         data-slot="aui_msg-actions"
       >
-        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label="Copy" text={messageText} />
+        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label={copy.copy} text={messageText} />
         <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip="Refresh">
+          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
             <Codicon name="refresh" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
         <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
           <DropdownMenuTrigger asChild>
-            <TooltipIconButton tooltip="More actions">
+            <TooltipIconButton tooltip={copy.moreActions}>
               <Codicon name="ellipsis" />
             </TooltipIconButton>
           </DropdownMenuTrigger>
@@ -545,7 +603,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
             <MessageTimestamp />
             <DropdownMenuItem onSelect={() => onBranchInNewChat?.(messageId)}>
               <GitBranchIcon />
-              Branch in new chat
+              {copy.branchNewChat}
             </DropdownMenuItem>
             <ReadAloudItem messageId={messageId} text={messageText} />
           </DropdownMenuContent>
@@ -556,6 +614,8 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
 }
 
 const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, text }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const voicePlayback = useStore($voicePlayback)
 
   const readAloudStatus =
@@ -574,9 +634,9 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
     try {
       await playSpeechText(text, { messageId, source: 'read-aloud' })
     } catch (error) {
-      notifyError(error, 'Read aloud failed')
+      notifyError(error, copy.readAloudFailed)
     }
-  }, [messageId, text])
+  }, [copy.readAloudFailed, messageId, text])
 
   return (
     <DropdownMenuItem
@@ -587,14 +647,15 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
       }}
     >
       <Icon className={isPreparing ? 'animate-spin' : undefined} />
-      {isPreparing ? 'Preparing audio...' : isSpeaking ? 'Stop reading' : 'Read aloud'}
+      {isPreparing ? copy.preparingAudio : isSpeaking ? copy.stopReading : copy.readAloud}
     </DropdownMenuItem>
   )
 }
 
 const MessageTimestamp: FC = () => {
+  const { t } = useI18n()
   const createdAt = useAuiState(s => s.message.createdAt)
-  const label = formatMessageTimestamp(createdAt)
+  const label = formatMessageTimestamp(createdAt, t.assistant.thread)
 
   if (!label) {
     return null
@@ -609,13 +670,13 @@ const AssistantFooter: FC<MessageActionProps> = props => (
       className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
       hideWhenSingleBranch
     >
-      <BranchPickerPrimitive.Previous className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-left" size="0.875rem" />
       </BranchPickerPrimitive.Previous>
       <span className="tabular-nums">
         <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
       </span>
-      <BranchPickerPrimitive.Next className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-right" size="0.875rem" />
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
@@ -636,7 +697,7 @@ function messageAttachmentRefs(value: unknown): string[] {
 function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
   return (
     <div
-      className="group/user-message sticky top-0 z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
+      className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
       data-role="user"
       data-slot="aui_user-message-root"
     >
@@ -646,14 +707,14 @@ function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
 }
 
 // Shared "user bubble" base. Both the read-only message and the inline
-// edit composer render the same bubble surface (rounded glass card,
-// shadow-composer); they only differ in border weight, cursor, and
-// padding-right (the read-only view reserves room for the restore icon).
+// edit composer render the same bubble surface (rounded glass card);
+// they only differ in border weight, cursor, and padding-right (the
+// read-only view reserves room for the restore icon).
 const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left shadow-composer'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
-  'grid cursor-pointer place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
+  'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
 
 const USER_ACTION_ICON_SIZE = '0.6875rem'
 const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -translate-y-px" />
@@ -661,6 +722,8 @@ const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -transla
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
 }> = ({ onCancel }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -684,6 +747,32 @@ const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
+  // doesn't dominate the viewport while the response streams underneath; the
+  // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
+  // inner wrapper so the ResizeObserver only fires on real content / width
+  // changes, not on every frame while the outer max-height animates open.
+  const clampInnerRef = useRef<HTMLDivElement | null>(null)
+  const [bodyClamped, setBodyClamped] = useState(false)
+
+  const measureClamp = useCallback(() => {
+    const inner = clampInnerRef.current
+    const outer = inner?.parentElement
+
+    if (!inner || !outer) {
+      return
+    }
+
+    const styles = getComputedStyle(inner)
+    const lineHeight = parseFloat(styles.lineHeight) || 1.5 * parseFloat(styles.fontSize) || 20
+    const fullHeight = inner.scrollHeight
+
+    outer.style.setProperty('--human-msg-full', `${fullHeight}px`)
+    setBodyClamped(fullHeight > lineHeight * 2 + 1)
+  }, [])
+
+  useResizeObserver(measureClamp, clampInnerRef)
+
   const hasBody = messageText.trim().length > 0
   const isLatestUser = messageId === latestUserId
   const showStop = isLatestUser && threadRunning && Boolean(onCancel)
@@ -703,9 +792,14 @@ const UserMessage: FC<{
         </span>
       )}
       {hasBody && (
-        <span className="wrap-anywhere block whitespace-pre-line">
-          <MessagePrimitive.Parts components={{ Text: DirectiveText }} />
-        </span>
+        // Render the user's text through a minimal markdown pipeline:
+        // backtick `code` and ``` fenced ``` blocks, with directive chips
+        // (`@file:` etc.) still resolved inside the plain-text spans.
+        <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
+          <div ref={clampInnerRef}>
+            <UserMessageText className="wrap-anywhere" text={messageText} />
+          </div>
+        </div>
       )}
     </>
   )
@@ -721,10 +815,10 @@ const UserMessage: FC<{
               ) : (
                 <ActionBarPrimitive.Edit asChild>
                   <button
-                    aria-label="Edit message"
+                    aria-label={copy.editMessage}
                     className={bubbleClassName}
                     onClick={() => triggerHaptic('selection')}
-                    title="Edit message"
+                    title={copy.editMessage}
                     type="button"
                   >
                     {bubbleContent}
@@ -735,14 +829,14 @@ const UserMessage: FC<{
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (
                     <button
-                      aria-label="Stop"
+                      aria-label={copy.stop}
                       className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
                       onClick={event => {
                         event.preventDefault()
                         event.stopPropagation()
                         void onCancel?.()
                       }}
-                      title="Stop"
+                      title={copy.stop}
                       type="button"
                     >
                       {StopGlyph}
@@ -751,7 +845,7 @@ const UserMessage: FC<{
                     <span
                       aria-hidden="true"
                       className="flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary)"
-                      title="Editable checkpoint"
+                      title={copy.editableCheckpoint}
                     >
                       <Codicon name="discard" size="0.875rem" />
                     </span>
@@ -765,19 +859,19 @@ const UserMessage: FC<{
             >
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore previous checkpoint"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                title={copy.restorePrevious}
               >
-                Restore checkpoint
+                {copy.restoreCheckpoint}
               </BranchPickerPrimitive.Previous>
               <span className="checkpoint-divider opacity-55">
                 <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
               </span>
               <BranchPickerPrimitive.Next
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore next checkpoint"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                title={copy.restoreNext}
               >
-                Go forward
+                {copy.goForward}
               </BranchPickerPrimitive.Next>
             </BranchPickerPrimitive.Root>
           </div>
@@ -788,12 +882,30 @@ const UserMessage: FC<{
 }
 
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
+const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
 
 const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
 
   if (!text) {
     return null
+  }
+
+  const steerNote = text.match(STEER_NOTE_RE)
+
+  if (steerNote?.groups) {
+    return (
+      <MessagePrimitive.Root
+        className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <Codicon className="text-muted-foreground/55" name="compass" size="0.75rem" />
+        <span className="text-muted-foreground/55">steered</span>
+        <span className="text-muted-foreground/35">·</span>
+        <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span>
+      </MessagePrimitive.Root>
+    )
   }
 
   const slashStatus = text.match(SLASH_STATUS_RE)
@@ -830,6 +942,8 @@ interface UserEditComposerProps {
 }
 
 const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -840,6 +954,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  // See index.tsx: set in keydown when the open popover consumes a nav/control
+  // key so the matching keyup skips refreshTrigger (timing-immune vs reading
+  // `trigger`, which keyup sees as already-null after Escape).
+  const triggerKeyConsumedRef = useRef(false)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -964,8 +1082,15 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     setTrigger(detected)
-    setTriggerActive(0)
-  }, [])
+
+    // Only reset the highlight when the trigger actually changed (opened, or
+    // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
+    // caret move (mouseup) or a stray refresh — must preserve the user's
+    // current selection instead of snapping back to the first item.
+    if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
+      setTriggerActive(0)
+    }
+  }, [trigger])
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -1198,6 +1323,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx + 1) % triggerItems.length)
 
         return
@@ -1205,6 +1331,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
 
         return
@@ -1212,6 +1339,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
 
         if (item) {
@@ -1223,6 +1351,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'Escape') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         closeTrigger()
 
         return
@@ -1240,6 +1369,22 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       event.preventDefault()
       submitEdit(event.currentTarget)
     }
+  }
+
+  const handleKeyUp = () => {
+    // If this keyup belongs to a key the open trigger popover already consumed
+    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
+    // edit text, and for Escape the keydown already closed the menu — a refresh
+    // here would re-detect the still-present `/` and instantly reopen it. We
+    // read a ref set during keydown rather than `trigger`, because by keyup
+    // time React has re-rendered and `trigger` may already be null.
+    if (triggerKeyConsumedRef.current) {
+      triggerKeyConsumedRef.current = false
+
+      return
+    }
+
+    window.setTimeout(refreshTrigger, 0)
   }
 
   return (
@@ -1275,7 +1420,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             data-expanded={expanded ? 'true' : undefined}
           >
             <div
-              aria-label="Edit message"
+              aria-label={copy.editMessage}
               autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
@@ -1284,7 +1429,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
-              data-placeholder="Edit message"
+              data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}
@@ -1292,7 +1437,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onFocus={() => markActiveComposer('edit')}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
-              onKeyUp={() => window.setTimeout(refreshTrigger, 0)}
+              onKeyUp={handleKeyUp}
               onMouseUp={refreshTrigger}
               onPaste={handlePaste}
               ref={editorRef}
@@ -1301,7 +1446,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             />
             <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
             <button
-              aria-label="Send edited message"
+              aria-label={copy.sendEdited}
               className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
               disabled={!canSubmit || submitting}
               onClick={() => {
@@ -1311,7 +1456,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                   submitEdit(editor)
                 }
               }}
-              title="Send edited message"
+              title={copy.sendEdited}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

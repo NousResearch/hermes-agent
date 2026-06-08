@@ -192,6 +192,63 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
   return ["token", token];
 }
 
+/**
+ * Authenticated ``fetch`` for dashboard ``/api/...`` requests that aren't
+ * plain JSON — file uploads (``FormData``), binary downloads (blobs), etc.
+ * Mirrors ``fetchJSON``'s auth handling but returns the raw ``Response`` so
+ * the caller can read ``.blob()`` / ``.formData()`` / stream it.
+ *
+ * Auth, in both modes, exactly as ``fetchJSON`` does it:
+ *  - loopback / ``--insecure``: attach the ``X-Hermes-Session-Token`` header.
+ *  - gated OAuth: no token header (it's absent by design); the
+ *    ``hermes_session_at`` cookie rides along via ``credentials: 'include'``.
+ *
+ * Unlike ``fetchJSON`` this does NOT parse the body, does NOT throw on
+ * non-2xx (the caller decides — a 404 on a download is meaningful), and
+ * does NOT run the global 401 → /login redirect (binary endpoints aren't
+ * navigation targets). Callers that want the redirect behaviour should use
+ * ``fetchJSON``.
+ */
+export async function authedFetch(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token) {
+    setSessionHeader(headers, token);
+  }
+  return fetch(`${BASE}${url}`, {
+    ...init,
+    headers,
+    credentials: init?.credentials ?? "include",
+  });
+}
+
+/**
+ * Build an absolute ``ws(s)://`` URL for a dashboard WebSocket endpoint,
+ * with the correct auth query param appended for the active mode (fresh
+ * single-use ``ticket`` in gated mode, ``token`` in loopback). Plugins and
+ * the SPA should use this instead of hand-assembling a WS URL + reading
+ * ``window.__HERMES_SESSION_TOKEN__`` directly, so the gated-mode ticket
+ * path can never be forgotten.
+ *
+ * ``path`` is the dashboard-relative path (e.g.
+ * ``"/api/plugins/kanban/events"``); the base-path prefix and host are
+ * applied here. Extra query params can be supplied via ``params`` and are
+ * merged before the auth param.
+ */
+export async function buildWsUrl(
+  path: string,
+  params?: Record<string, string>,
+): Promise<string> {
+  const [authName, authValue] = await buildWsAuthParam();
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const qs = new URLSearchParams(params ?? {});
+  qs.set(authName, authValue);
+  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -333,6 +390,8 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  getCronDeliveryTargets: () =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
   createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -361,15 +420,58 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
-  // Profiles (minimal)
+  // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
-  createProfile: (body: { name: string; clone_from_default: boolean }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
+  getActiveProfile: () =>
+    fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
+  setActiveProfile: (name: string) =>
+    fetchJSON<{ ok: boolean; active: string }>("/api/profiles/active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  createProfile: (body: {
+    name: string;
+    clone_from_default: boolean;
+    clone_all?: boolean;
+    no_skills?: boolean;
+    description?: string;
+    provider?: string;
+    model?: string;
+  }) =>
+    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  updateProfileDescription: (name: string, description: string) =>
+    fetchJSON<{ ok: boolean; description: string; description_auto: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/description`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      },
+    ),
+  describeProfileAuto: (name: string, overwrite = true) =>
+    fetchJSON<ProfileDescribeAutoResult>(
+      `/api/profiles/${encodeURIComponent(name)}/describe-auto`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite }),
+      },
+    ),
+  setProfileModel: (name: string, provider: string, model: string) =>
+    fetchJSON<{ ok: boolean; provider: string; model: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, model }),
+      },
+    ),
   renameProfile: (name: string, newName: string) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>(
       `/api/profiles/${encodeURIComponent(name)}`,
@@ -411,6 +513,46 @@ export const api = {
       body: JSON.stringify({ name, enabled }),
     }),
   getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
+  toggleToolset: (name: string, enabled: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
+  getToolsetConfig: (name: string) =>
+    fetchJSON<ToolsetConfig>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/config`,
+    ),
+  selectToolsetProvider: (name: string, provider: string) =>
+    fetchJSON<{ ok: boolean; name: string; provider: string }>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider }),
+      },
+    ),
+  saveToolsetEnv: (name: string, env: Record<string, string>) =>
+    fetchJSON<ToolsetEnvResult>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ env }),
+      },
+    ),
+  runToolsetPostSetup: (name: string, key: string) =>
+    fetchJSON<ActionResponse & { key: string }>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      },
+    ),
 
   // Session search (FTS5)
   searchSessions: (q: string) =>
@@ -489,12 +631,46 @@ export const api = {
       `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
       { method: "POST" },
     ),
+  startTelegramOnboarding: (body: { bot_name?: string }) =>
+    fetchJSON<TelegramOnboardingStartResponse>(
+      "/api/messaging/telegram/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getTelegramOnboardingStatus: (pairingId: string) =>
+    fetchJSON<TelegramOnboardingStatusResponse>(
+      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
+  applyTelegramOnboarding: (
+    pairingId: string,
+    body: { allowed_user_ids: string[] },
+  ) =>
+    fetchJSON<TelegramOnboardingApplyResponse>(
+      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelTelegramOnboarding: (pairingId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
 
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
+  checkHermesUpdate: (force = false) =>
+    fetchJSON<UpdateCheckResponse>(
+      `/api/hermes/update/check${force ? "?force=true" : ""}`,
+    ),
   getActionStatus: (name: string, lines = 200) =>
     fetchJSON<ActionStatusResponse>(
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
@@ -564,6 +740,14 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
+    }),
+  getFontPref: () =>
+    fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
+  setFontPref: (font: string) =>
+    fetchJSON<{ ok: boolean; font: string }>("/api/dashboard/font", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ font }),
     }),
 
   // ── Admin: MCP servers ──────────────────────────────────────────────
@@ -749,6 +933,15 @@ export const api = {
   runDump: () => fetchJSON<ActionResponse>("/api/ops/dump", { method: "POST" }),
   runConfigMigrate: () =>
     fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
+  runDebugShare: (opts?: { redact?: boolean; lines?: number }) =>
+    fetchJSON<DebugShareResponse>("/api/ops/debug-share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redact: opts?.redact ?? true,
+        lines: opts?.lines ?? 200,
+      }),
+    }),
 
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
@@ -771,8 +964,18 @@ export const api = {
   updateSkillsFromHub: () =>
     fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
   searchSkillsHub: (q: string, source = "all", limit = 20) =>
-    fetchJSON<{ results: SkillHubResult[] }>(
+    fetchJSON<SkillHubSearchResponse>(
       `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+    ),
+  getSkillHubSources: () =>
+    fetchJSON<SkillHubSourcesResponse>("/api/skills/hub/sources"),
+  previewSkillFromHub: (identifier: string) =>
+    fetchJSON<SkillHubPreview>(
+      `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
+    ),
+  scanSkillFromHub: (identifier: string) =>
+    fetchJSON<SkillHubScan>(
+      `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
 };
 
@@ -802,6 +1005,16 @@ export interface ActionResponse {
   update_command?: string;
 }
 
+export interface DebugShareResponse {
+  ok: boolean;
+  // label -> paste URL, e.g. { Report: "https://paste.rs/abc", "agent.log": "..." }
+  urls: Record<string, string>;
+  // "label: error" strings for optional full-log uploads that failed.
+  failures: string[];
+  redacted: boolean;
+  auto_delete_seconds: number;
+}
+
 export interface SessionStoreStats {
   total: number;
   active_store: number;
@@ -818,6 +1031,77 @@ export interface SkillHubResult {
   trust_level: string;
   repo: string | null;
   tags: string[];
+}
+
+/** Lock-entry summary for an already-installed hub skill (keyed by identifier). */
+export interface SkillHubInstalledEntry {
+  name: string | null;
+  trust_level: string | null;
+  scan_verdict: string | null;
+}
+
+export interface SkillHubSearchResponse {
+  results: SkillHubResult[];
+  /** source_id -> number of results returned by that source. */
+  source_counts: Record<string, number>;
+  /** source ids that didn't return within the parallel-search timeout. */
+  timed_out: string[];
+  /** identifier -> installed lock entry (for "already installed" badges). */
+  installed: Record<string, SkillHubInstalledEntry>;
+}
+
+export interface SkillHubSource {
+  id: string;
+  label: string;
+  /** GitHub only: whether the API is currently rate-limited. */
+  rate_limited?: boolean;
+  /** hermes-index only: whether the centralized index loaded. */
+  available?: boolean;
+}
+
+export interface SkillHubSourcesResponse {
+  sources: SkillHubSource[];
+  index_available: boolean;
+  /** Featured/popular skills from the centralized index (zero extra API calls). */
+  featured: SkillHubResult[];
+  installed: Record<string, SkillHubInstalledEntry>;
+}
+
+export interface SkillHubPreview {
+  name: string;
+  description: string;
+  source: string;
+  identifier: string;
+  trust_level: string;
+  repo: string | null;
+  tags: string[];
+  /** Rendered SKILL.md content (the actual skill text). */
+  skill_md: string;
+  /** Relative paths of every file in the bundle. */
+  files: string[];
+}
+
+export interface SkillHubScanFinding {
+  severity: string;
+  category: string;
+  file: string;
+  line: number;
+  description: string;
+}
+
+export interface SkillHubScan {
+  name: string;
+  identifier: string;
+  source: string;
+  trust_level: string;
+  /** "safe" | "caution" | "dangerous". */
+  verdict: string;
+  summary: string;
+  /** Install-policy decision for this trust+verdict combo. */
+  policy: "allow" | "ask" | "block";
+  policy_reason: string;
+  findings: SkillHubScanFinding[];
+  severity_counts: Record<string, number>;
 }
 
 // ── Admin types ───────────────────────────────────────────────────────
@@ -1009,6 +1293,18 @@ export interface HookCreate {
   approve?: boolean;
 }
 
+export interface UpdateCheckResponse {
+  install_method: string;
+  current_version: string;
+  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
+  // count (nix/pypi), or null when the check could not run.
+  behind: number | null;
+  update_available: boolean;
+  can_apply: boolean;
+  update_command: string;
+  message: string | null;
+}
+
 export interface SystemStats {
   os: string;
   os_release: string;
@@ -1154,6 +1450,32 @@ export interface EnvVarInfo {
   is_password: boolean;
   tools: string[];
   advanced: boolean;
+  /** True when this var is a messaging-platform credential owned by the Channels page. */
+  channel_managed?: boolean;
+}
+
+export interface TelegramOnboardingStartResponse {
+  pairing_id: string;
+  suggested_username: string;
+  deep_link: string;
+  qr_payload: string;
+  expires_at: string;
+}
+
+export type TelegramOnboardingStatusResponse =
+  | { status: "waiting"; expires_at: string }
+  | {
+      status: "ready";
+      bot_username: string;
+      owner_user_id?: string;
+      expires_at: string;
+    };
+
+export interface TelegramOnboardingApplyResponse {
+  ok: boolean;
+  platform: "telegram";
+  bot_username?: string;
+  needs_restart: true;
 }
 
 export interface SessionMessage {
@@ -1234,6 +1556,18 @@ export interface AnalyticsResponse {
   };
 }
 
+export interface ActiveProfileInfo {
+  active: string;
+  current: string;
+}
+
+export interface ProfileDescribeAutoResult {
+  ok: boolean;
+  reason: string;
+  description: string | null;
+  description_auto: boolean;
+}
+
 export interface ProfileInfo {
   name: string;
   path: string;
@@ -1242,6 +1576,13 @@ export interface ProfileInfo {
   provider: string | null;
   has_env: boolean;
   skill_count: number;
+  gateway_running: boolean;
+  description: string;
+  description_auto: boolean;
+  distribution_name: string | null;
+  distribution_version: string | null;
+  distribution_source: string | null;
+  has_alias: boolean;
 }
 
 export interface ModelsAnalyticsModelEntry {
@@ -1303,6 +1644,13 @@ export interface CronJob {
   last_error?: string | null;
 }
 
+export interface CronDeliveryTarget {
+  id: string;
+  name: string;
+  home_target_set: boolean;
+  home_env_var: string | null;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -1317,6 +1665,39 @@ export interface ToolsetInfo {
   enabled: boolean;
   configured: boolean;
   tools: string[];
+}
+
+export interface ToolsetProviderEnvVar {
+  key: string;
+  prompt: string;
+  url: string | null;
+  default: string | null;
+  is_set: boolean;
+}
+
+export interface ToolsetProvider {
+  name: string;
+  badge: string;
+  tag: string;
+  env_vars: ToolsetProviderEnvVar[];
+  post_setup: string | null;
+  requires_nous_auth: boolean;
+  is_active: boolean;
+}
+
+export interface ToolsetConfig {
+  name: string;
+  has_category: boolean;
+  providers: ToolsetProvider[];
+  active_provider: string | null;
+}
+
+export interface ToolsetEnvResult {
+  ok: boolean;
+  name: string;
+  saved: string[];
+  skipped: string[];
+  is_set: Record<string, boolean>;
 }
 
 export interface SessionSearchResult {
@@ -1389,6 +1770,14 @@ export interface ModelAssignmentRequest {
   task?: string;
 }
 
+/** An auxiliary task still pinned to a provider that differs from the
+ *  newly-selected main provider after a main-model switch. */
+export interface StaleAuxAssignment {
+  task: string;
+  provider: string;
+  model: string;
+}
+
 export interface ModelAssignmentResponse {
   ok: boolean;
   scope?: string;
@@ -1396,6 +1785,10 @@ export interface ModelAssignmentResponse {
   model?: string;
   tasks?: string[];
   reset?: boolean;
+  /** Auxiliary slots still pinned to a different provider than the new main.
+   *  Switching main never clears aux pins; this lets the UI warn the user
+   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
+  stale_aux?: StaleAuxAssignment[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
@@ -1470,6 +1863,11 @@ export interface DashboardThemeSummary {
 export interface DashboardThemesResponse {
   active: string;
   themes: DashboardThemeSummary[];
+}
+
+export interface DashboardFontResponse {
+  /** Active font-override id, or "theme" when no override is set. */
+  font: string;
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────

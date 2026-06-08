@@ -29,15 +29,60 @@ def test_schtasks_fallback_does_not_hide_unknown_errors():
     assert gateway_windows._should_fall_back(1, "ERROR: The system cannot find the file specified.") is False
 
 
+def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
+    """A broken/empty locale must not leave us without a decoder (issue #38172)."""
+
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "")
+    assert gateway_windows._schtasks_encoding() == "utf-8"
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("locale exploded")
+
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", _boom)
+    assert gateway_windows._schtasks_encoding() == "utf-8"
+
+
+def test_exec_schtasks_decodes_with_replace_errors(monkeypatch):
+    """schtasks output must be decoded with errors='replace' so localized
+    (non-UTF-8) bytes never surface a UnicodeDecodeError traceback (#38172)."""
+
+    captured: dict[str, object] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\\Windows\\System32\\schtasks.exe")
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
+
+    assert (code, out, err) == (0, "ok", "")
+    assert captured["errors"] == "replace", "schtasks output must decode with errors='replace'"
+    assert isinstance(captured["encoding"], str) and captured["encoding"], (
+        "an explicit non-empty encoding must be passed to subprocess.run"
+    )
+    assert captured["text"] is True
+
+
 def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
     """Avoid uv's venv pythonw launcher because it respawns console python.exe."""
 
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
     site_packages = project / "venv" / "Lib" / "site-packages"
+    hermes_home = tmp_path / "hermes-home"
     base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
     scripts.mkdir(parents=True)
     site_packages.mkdir(parents=True)
+    hermes_home.mkdir()
     base.mkdir(parents=True)
 
     venv_python = scripts / "python.exe"
@@ -56,15 +101,53 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
     monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path / "hermes-home"))
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
 
     assert argv[:3] == [str(base_pythonw), "-m", "hermes_cli.main"]
-    assert cwd == str(project)
+    assert cwd == str(hermes_home.resolve())
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
     assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
+
+
+class TestStableWindowsGatewayWorkingDir:
+    def test_stable_gateway_working_dir_uses_hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+        assert gateway_windows._stable_gateway_working_dir(tmp_path / "checkout") == str(home.resolve())
+
+    def test_stable_gateway_working_dir_falls_back_to_project_root(self, tmp_path, monkeypatch):
+        missing = tmp_path / "missing" / ".hermes"
+        project = tmp_path / "checkout"
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: missing)
+        assert gateway_windows._stable_gateway_working_dir(project) == str(project)
+
+
+def test_write_task_script_anchors_cmd_cd_at_hermes_home(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    python_exe = project / "venv" / "Scripts" / "python.exe"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    script_path = tmp_path / "gateway.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(python_exe))
+    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+
+    written = gateway_windows._write_task_script()
+    content = script_path.read_text(encoding="utf-8")
+
+    assert written == script_path
+    assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(hermes_home.resolve()))}" in content
+    assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(project))}" not in content
 
 
 def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):

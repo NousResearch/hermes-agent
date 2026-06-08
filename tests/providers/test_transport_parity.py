@@ -80,6 +80,8 @@ class TestKimiParity:
         assert kw["max_completion_tokens"] == 32000
 
     def test_thinking_enabled(self, transport):
+        # xor contract (fix ce4e74b3): an explicit recognized effort sends
+        # reasoning_effort ONLY — never paired with extra_body.thinking.
         kw = transport.build_kwargs(
             model="kimi-k2",
             messages=_simple_messages(),
@@ -87,7 +89,20 @@ class TestKimiParity:
             provider_profile=get_provider_profile("kimi-coding"),
             reasoning_config={"enabled": True, "effort": "high"},
         )
+        assert kw.get("reasoning_effort") == "high"
+        assert "thinking" not in kw.get("extra_body", {})
+
+    def test_thinking_enabled_without_effort(self, transport):
+        # enabled but no effort → fall back to the thinking toggle, no effort.
+        kw = transport.build_kwargs(
+            model="kimi-k2",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("kimi-coding"),
+            reasoning_config={"enabled": True},
+        )
         assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+        assert "reasoning_effort" not in kw
 
     def test_thinking_disabled(self, transport):
         kw = transport.build_kwargs(
@@ -98,6 +113,7 @@ class TestKimiParity:
             reasoning_config={"enabled": False},
         )
         assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in kw
 
     def test_reasoning_effort_top_level(self, transport):
         """Kimi reasoning_effort is a TOP-LEVEL api_kwargs key, NOT in extra_body."""
@@ -111,7 +127,10 @@ class TestKimiParity:
         assert kw.get("reasoning_effort") == "high"
         assert "reasoning_effort" not in kw.get("extra_body", {})
 
-    def test_reasoning_effort_default_medium(self, transport):
+    def test_reasoning_effort_default_no_effort(self, transport):
+        # xor contract: enabled with no effort falls back to thinking-enabled
+        # and emits NO top-level reasoning_effort (previously defaulted to
+        # "medium" alongside thinking — the pairing this fix removes).
         kw = transport.build_kwargs(
             model="kimi-k2",
             messages=_simple_messages(),
@@ -119,7 +138,8 @@ class TestKimiParity:
             provider_profile=get_provider_profile("kimi-coding"),
             reasoning_config={"enabled": True},
         )
-        assert kw.get("reasoning_effort") == "medium"
+        assert "reasoning_effort" not in kw
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
 
 
 class TestOpenRouterParity:

@@ -43,6 +43,9 @@ export const en: Translations = {
     expand: "Expand",
     general: "General",
     messaging: "Messaging",
+    gateway: "Gateway",
+    gatewayHint:
+      "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     pluginLoadFailed:
       "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
     pluginNotRegistered:
@@ -276,6 +279,9 @@ export const en: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "set a home channel first",
+      noneConfigured:
+        "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },
   },
 
@@ -309,6 +315,38 @@ export const en: Translations = {
     created: "Created",
     deleted: "Deleted",
     renamed: "Renamed",
+    activeProfile: "Active profile",
+    activeBadge: "active",
+    setActive: "Set as active",
+    activeSet: "Active profile set",
+    gatewayRunning: "Gateway running",
+    gatewayStopped: "Gateway stopped",
+    gatewayRunningWarning:
+      "This profile's gateway is running — it will be stopped.",
+    aliasBadge: "alias",
+    description: "Description",
+    descriptionPlaceholder:
+      "What is this profile good at? Used to route kanban tasks by role.",
+    noDescription: "No description",
+    editDescription: "Edit description",
+    descriptionSaved: "Description saved",
+    reviewBadge: "review",
+    autoGenerate: "Auto-generate",
+    generating: "Generating…",
+    describeFailed: "Could not generate description",
+    distribution: "Distribution",
+    advancedOptions: "Advanced options",
+    cloneAll: "Clone everything (memories, sessions, skills, state)",
+    noSkillsOption: "Don't seed bundled skills",
+    descriptionOptional: "Description (optional)",
+    modelOptional: "Model (optional)",
+    modelInherit: "Inherit from clone / default",
+    modelLoading: "Loading models…",
+    modelNone: "No authenticated providers — set a key first",
+    editModel: "Change model",
+    modelSaved: "Model updated",
+    modelSelect: "Select a model",
+    actions: "Actions",
   },
 
   pluginsPage: {
@@ -480,6 +518,12 @@ export const en: Translations = {
   theme: {
     title: "Theme",
     switchTheme: "Switch theme",
+    fontTitle: "Font",
+    fontDefault: "Theme default",
+    fontDefaultHint: "Use the active theme's font",
+    fontSans: "Sans",
+    fontSerif: "Serif",
+    fontMono: "Mono",
   },
 
   achievements: {

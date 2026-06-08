@@ -410,16 +410,20 @@ class TestTickProfilePartition:
         import threading
         import cron.scheduler as sched
 
-        profile_job = {"id": "a", "name": "A", "profile": "default"}
-        parallel_job = {"id": "b", "name": "B", "profile": None}
+        # Two profile jobs (both sequential) + one parallel job.
+        profile_a = {"id": "a", "name": "A", "profile": "default"}
+        profile_b = {"id": "b", "name": "B", "profile": "default"}
+        parallel_job = {"id": "c", "name": "C", "profile": None}
 
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: [profile_job, parallel_job])
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [profile_a, profile_b, parallel_job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
 
         calls: list[tuple[str, str]] = []
+        order_lock = threading.Lock()
 
         def fake_run_job(job):
-            calls.append((job["id"], threading.current_thread().name))
+            with order_lock:
+                calls.append((job["id"], threading.current_thread().name))
             return True, "output", "response", None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
@@ -429,9 +433,17 @@ class TestTickProfilePartition:
 
         n = sched.tick(verbose=False)
 
-        assert n == 2
+        assert n == 3
         ids = [job_id for job_id, _thread_name in calls]
+        # Sequential profile jobs preserve submission order relative to each
+        # other (single-thread pool).
         assert ids.index("a") < ids.index("b")
-        main_thread_name = threading.current_thread().name
-        profile_thread_name = next(thread for job_id, thread in calls if job_id == "a")
-        assert profile_thread_name == main_thread_name
+        # Sequential (profile) jobs run on the persistent single-thread
+        # cron-seq pool — NOT the main thread — so a long profile job never
+        # blocks the ticker.  Parallel jobs run on the cron-parallel pool.
+        for jid in ("a", "b"):
+            seq_thread = next(t for job_id, t in calls if job_id == jid)
+            assert seq_thread != threading.current_thread().name
+            assert seq_thread.startswith("cron-seq"), seq_thread
+        par_thread = next(t for job_id, t in calls if job_id == "c")
+        assert par_thread.startswith("cron-parallel"), par_thread

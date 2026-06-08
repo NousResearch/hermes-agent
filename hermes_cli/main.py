@@ -105,6 +105,58 @@ def _set_process_title() -> None:
         pass
 
 
+# Cheap, dependency-free read of `display.interface` from config.yaml for the
+# earliest hot-path decisions (mouse-residue suppression, Termux fast launch)
+# that run *before* hermes_cli.config is importable. Mirrors the explicit
+# precedence used everywhere else: `--cli` always wins, then `--tui`/env, then
+# this config value. Cached so the multiple early callers don't re-parse YAML.
+_EARLY_INTERFACE_CACHE: "list | None" = None
+
+
+def _config_default_interface_early() -> str:
+    """Return the configured default interface ("cli"/"tui") via a minimal
+    YAML read. Best-effort: any error falls back to "cli" (legacy behavior)."""
+    global _EARLY_INTERFACE_CACHE
+    if _EARLY_INTERFACE_CACHE is not None:
+        return _EARLY_INTERFACE_CACHE[0]
+    value = "cli"
+    try:
+        home = os.environ.get("HERMES_HOME")
+        if home:
+            cfg_path = os.path.join(home, "config.yaml")
+        else:
+            cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
+        if os.path.exists(cfg_path):
+            import yaml as _yaml_iface
+
+            with open(cfg_path, encoding="utf-8") as _f:
+                raw = _yaml_iface.safe_load(_f) or {}
+            disp = raw.get("display", {})
+            if isinstance(disp, dict):
+                iface = disp.get("interface")
+                if isinstance(iface, str) and iface.strip().lower() == "tui":
+                    value = "tui"
+    except Exception:
+        value = "cli"  # best-effort — default to classic REPL on any error
+    _EARLY_INTERFACE_CACHE = [value]
+    return value
+
+
+def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
+    """Earliest TUI decision, usable before argparse/config imports.
+
+    Precedence: explicit ``--cli`` wins (forces classic REPL), then
+    ``--tui``/``HERMES_TUI=1``, then ``display.interface`` in config.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--cli" in argv:
+        return False
+    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+        return True
+    return _config_default_interface_early() == "tui"
+
+
 # Mouse-tracking residue suppression — runs BEFORE every other import on the
 # TUI hot path so the terminal stops emitting SGR/X10 mouse reports while the
 # Python launcher is still doing imports (≈100–300ms in cooked + echo mode,
@@ -116,7 +168,7 @@ def _set_process_title() -> None:
 def _suppress_mouse_residue_early() -> None:
     if os.environ.get("HERMES_TUI_NO_EARLY_DISABLE") == "1":
         return
-    if not (os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]):
+    if not _wants_tui_early():
         return
     try:
         # Skip when stdout is redirected (`hermes --tui … >log`, CI capture):
@@ -201,25 +253,53 @@ if _try_termux_ultrafast_version():
     raise SystemExit(0)
 
 import argparse
+import hashlib
 import json
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
 
 
-def _add_accept_hooks_flag(parser) -> None:
-    """Attach the ``--accept-hooks`` flag.  Shared across every agent
-    subparser so the flag works regardless of CLI position."""
-    parser.add_argument(
-        "--accept-hooks",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help=(
-            "Auto-approve unseen shell hooks without a TTY prompt "
-            "(equivalent to HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true)."
-        ),
-    )
+from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
+from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_cli.subcommands.gateway import build_gateway_parser
+from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.postinstall import build_postinstall_parser
+from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
+from hermes_cli.subcommands.slack import build_slack_parser
+from hermes_cli.subcommands.login import build_login_parser
+from hermes_cli.subcommands.logout import build_logout_parser
+from hermes_cli.subcommands.auth import build_auth_parser
+from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.webhook import build_webhook_parser
+from hermes_cli.subcommands.hooks import build_hooks_parser
+from hermes_cli.subcommands.doctor import build_doctor_parser
+from hermes_cli.subcommands.security import build_security_parser
+from hermes_cli.subcommands.dump import build_dump_parser
+from hermes_cli.subcommands.debug import build_debug_parser
+from hermes_cli.subcommands.backup import build_backup_parser
+from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
+from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.version import build_version_parser
+from hermes_cli.subcommands.update import build_update_parser
+from hermes_cli.subcommands.uninstall import build_uninstall_parser
+from hermes_cli.subcommands.dashboard import build_dashboard_parser
+from hermes_cli.subcommands.gui import build_gui_parser
+from hermes_cli.subcommands.logs import build_logs_parser
+from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.memory import build_memory_parser
+from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.tools import build_tools_parser
+from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.pairing import build_pairing_parser
+from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_cli.subcommands.mcp import build_mcp_parser
+from hermes_cli.subcommands.claw import build_claw_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -1183,6 +1263,59 @@ to avoid false-positive reinstalls on every launch.
 """
 
 
+def _workspace_root(dir: Path) -> Path:
+    """Return the npm workspace root for *dir*.
+
+    In a workspace checkout the single ``package-lock.json`` and hoisted
+    ``node_modules/`` live at the workspace root (the parent of the
+    sub-package directory).  Heuristic: if *dir* has a ``package.json``
+    but **no** ``package-lock.json``, and its **parent** has a
+    ``package-lock.json``, the parent is the workspace root.
+    Otherwise *dir* itself is the root (standalone project or
+    prebuilt-bundle layout).
+
+    Used by ``_tui_need_npm_install``, ``_make_tui_argv``, and
+    ``_build_web_ui`` so that lockfile/node_modules resolution and
+    ``npm install`` cwd stay consistent — a single helper prevents
+    the checks from diverging if someone accidentally creates a
+    sub-package lockfile (e.g. running ``npm install`` in the wrong
+    directory).
+    """
+    if (
+        (dir / "package.json").is_file()
+        and not (dir / "package-lock.json").is_file()
+        and (dir.parent / "package-lock.json").is_file()
+    ):
+        return dir.parent
+    return dir
+
+
+def _termux_workspace_install_context(
+    dir: Path, *, include_child_workspaces: bool = False
+) -> tuple[Path, tuple[str, ...]]:
+    """Return Termux-only ``(cwd, npm_args)`` for installing deps for *dir* only."""
+    ws_root = _workspace_root(dir)
+    if ws_root == dir:
+        return dir, ()
+
+    try:
+        workspace = dir.relative_to(ws_root).as_posix()
+    except ValueError:
+        return ws_root, ()
+
+    workspace_args: list[str] = ["--workspace", workspace]
+    if include_child_workspaces:
+        packages_dir = dir / "packages"
+        if packages_dir.is_dir():
+            for child in sorted(packages_dir.iterdir()):
+                if child.is_dir() and (child / "package.json").is_file():
+                    workspace_args.extend(
+                        ["--workspace", child.relative_to(ws_root).as_posix()]
+                    )
+    workspace_args.append("--include-workspace-root=false")
+    return ws_root, tuple(workspace_args)
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -1190,6 +1323,12 @@ def _tui_need_npm_install(root: Path) -> bool:
     ``package-lock.json`` (nix install layout only ships ``dist/`` +
     ``package.json``), skip reinstall entirely — the bundle is self-contained
     and there is nothing to install.
+
+    With npm workspaces the single ``package-lock.json`` and the hoisted
+    ``node_modules/`` live at the workspace root (the parent of the
+    ``ui-tui/`` directory).  The lockfile / ink / marker checks use that
+    workspace root; only the prebuilt-bundle sentinel stays relative to
+    *root* (``ui-tui/dist/entry.js``).
 
     Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
     (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
@@ -1208,19 +1347,21 @@ def _tui_need_npm_install(root: Path) -> bool:
     we'd rather not force a reinstall for them. Falls back to mtime
     comparison if either lockfile is unparseable.
     """
-    lock = root / "package-lock.json"
-    entry = root / "dist" / "entry.js"
     # Prebuilt self-contained bundle (nix / packaged release): no lockfile
     # shipped, dist/entry.js is the single runtime artefact.
+    entry = root / "dist" / "entry.js"
+    # With npm workspaces the lockfile lives at the workspace root.
+    ws_root = _workspace_root(root)
+    lock = ws_root / "package-lock.json"
     if entry.is_file() and not lock.is_file():
         return False
 
-    ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
+    ink = ws_root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
     if not lock.is_file():
         return False
-    marker = root / "node_modules" / ".package-lock.json"
+    marker = ws_root / "node_modules" / ".package-lock.json"
     if not marker.is_file():
         return True
 
@@ -1269,7 +1410,6 @@ _TUI_BUILD_INPUT_FILES = (
     "babel.compiler.config.cjs",
     "scripts/build.mjs",
     "packages/hermes-ink/package.json",
-    "packages/hermes-ink/package-lock.json",
     "packages/hermes-ink/index.js",
     "packages/hermes-ink/text-input.js",
 )
@@ -1436,14 +1576,45 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
+    #    Existing desktop behaviour runs npm from the workspace root.  Termux
+    #    scopes the install to ui-tui so launch does not pull desktop/web
+    #    dependencies into the hot path.
     did_install = False
-    if _tui_need_npm_install(tui_dir):
+    termux_startup = _is_termux_startup_environment()
+    termux_need_rebuild = False
+    if termux_startup and not tui_dev:
+        termux_need_rebuild = _tui_need_rebuild(tui_dir)
+
+    skip_install_for_fresh_termux_bundle = (
+        termux_startup and not tui_dev and not termux_need_rebuild
+    )
+    if (
+        not skip_install_for_fresh_termux_bundle
+        and _tui_need_npm_install(tui_dir)
+    ):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
+        npm_cwd = _workspace_root(tui_dir)
+        # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
+        # See #38772.
+        npm_workspace_args: tuple[str, ...] = ("--workspace", "ui-tui")
+        if termux_startup:
+            npm_cwd, npm_workspace_args = _termux_workspace_install_context(
+                tui_dir,
+                include_child_workspaces=True,
+            )
         result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=str(tui_dir),
+            [
+                npm,
+                "install",
+                *npm_workspace_args,
+                "--silent",
+                "--no-fund",
+                "--no-audit",
+                "--progress=false",
+            ],
+            cwd=str(npm_cwd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1489,8 +1660,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # Termux cold starts use the freshness check because esbuild startup is
     # expensive on old mobile CPUs.
     should_build = True
-    if _is_termux_startup_environment():
-        should_build = did_install or _tui_need_rebuild(tui_dir)
+    if termux_startup:
+        should_build = did_install or termux_need_rebuild
 
     if should_build:
         npm = _node_bin("npm")
@@ -1534,6 +1705,77 @@ def _normalize_tui_toolsets(toolsets: object) -> list[str]:
                 normalized.append(str(item).strip())
 
         return [item for item in normalized if item]
+
+
+def _read_cgroup_memory_limit() -> Optional[int]:
+    """Return the container memory limit in bytes, or None if unconstrained.
+
+    Node's V8 heap is NOT cgroup-aware: with a flat ``--max-old-space-size=8192``
+    it happily grows the heap toward 8GB regardless of the container's real
+    memory limit.  In a Docker/k8s container capped below ~9-10GB, the cgroup
+    OOM-killer SIGKILLs Node before V8's own heap monitor ever fires — which
+    runs no JS handler, writes no ``[tui-parent]`` breadcrumb, and the user
+    sees only a bare gateway ``stdin EOF``.  Reading the real cgroup limit lets
+    us size the heap cap below it so V8 GCs/exits gracefully instead of being
+    reaped silently.
+
+    Checks cgroup v2 (``/sys/fs/cgroup/memory.max``) then v1
+    (``/sys/fs/cgroup/memory/memory.limit_in_bytes``).  A literal ``max`` (v2)
+    or the v1 "unlimited" sentinel (a huge near-INT64 value) means no limit.
+    """
+    candidates = (
+        "/sys/fs/cgroup/memory.max",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
+    )
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+        except (OSError, ValueError):
+            continue
+        if raw == "max":
+            return None
+        if not raw:
+            # Blank/empty file: no usable value here. Fall through to the next
+            # candidate (don't mistake an empty v2 file for "unlimited").
+            continue
+        try:
+            limit = int(raw)
+        except ValueError:
+            continue
+        if limit <= 0:
+            continue
+        # cgroup v1 reports "unlimited" as a huge value (often
+        # 0x7FFFFFFFFFFFF000 ≈ 9.2 EB, sometimes PAGE_COUNTER_MAX). Anything
+        # at/above ~1 PB is effectively unconstrained — treat as no limit.
+        if limit >= (1 << 50):
+            return None
+        return limit
+    return None
+
+
+def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
+    """Pick a V8 ``--max-old-space-size`` (MB) that fits the container.
+
+    Returns ``default_mb`` (8192) when unconstrained or when the box is large
+    enough that 8GB fits.  In a memory-limited container, returns ~75% of the
+    cgroup limit so the heap + non-heap RSS stays under the cgroup ceiling,
+    clamped to a sane floor (1536MB — below this V8 GC-thrashes and the TUI
+    is barely usable).  Never exceeds ``default_mb``.
+    """
+    limit = _read_cgroup_memory_limit()
+    if not limit:
+        return default_mb
+    limit_mb = limit // (1024 * 1024)
+    # Leave headroom for non-heap RSS (Node internals, buffers, the Python
+    # gateway child shares the same cgroup): cap the heap at 75% of the limit.
+    sized = int(limit_mb * 0.75)
+    if sized >= default_mb:
+        return default_mb
+    # Floor so a tiny limit doesn't drive V8 into constant GC. If the container
+    # is smaller than the floor, honor the limit-derived value anyway (better a
+    # graceful V8 exit than a silent cgroup kill).
+    return max(1536, sized) if limit_mb > 2048 else sized
 
 
 def _launch_tui(
@@ -1631,16 +1873,23 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
-    # Guarantee an 8GB V8 heap for the TUI. Default node cap is ~1.5–4GB
+    # Guarantee a generous V8 heap for the TUI. Default node cap is ~1.5–4GB
     # depending on version and can fatal-OOM on long sessions with large
-    # transcripts / reasoning blobs. Token-level merge: respect any
+    # transcripts / reasoning blobs. We target 8GB on an unconstrained host,
+    # but V8 is NOT cgroup-aware: in a memory-limited Docker/k8s container a
+    # flat 8GB heap grows past the container limit and the cgroup OOM-killer
+    # SIGKILLs Node — running no JS handler, writing no breadcrumb, leaving the
+    # user with only a bare gateway `stdin EOF`. _resolve_tui_heap_mb() reads
+    # the real cgroup limit and sizes the cap below it so V8 GCs/exits
+    # gracefully (and the memory monitor's onCritical breadcrumb can fire)
+    # instead of being reaped silently. Token-level merge: respect any
     # user-supplied --max-old-space-size (they may have set it higher).
     # --expose-gc is *not* added here: Node rejects it in NODE_OPTIONS
     # ("--expose-gc is not allowed in NODE_OPTIONS") and refuses to start.
     # It is passed as a direct argv flag in _make_tui_argv() instead.
     _tokens = env.get("NODE_OPTIONS", "").split()
     if not any(t.startswith("--max-old-space-size=") for t in _tokens):
-        _tokens.append("--max-old-space-size=8192")
+        _tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
     env["NODE_OPTIONS"] = " ".join(_tokens)
     # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
     # Ink app.  Because we start from os.environ.copy(), an exported/stale value
@@ -1730,9 +1979,34 @@ def _sync_bundled_skills_quietly() -> None:
         pass
 
 
+def _resolve_use_tui(args) -> bool:
+    """Decide whether to launch the TUI for a chat/bare invocation.
+
+    Precedence (highest first):
+      1. ``--cli`` flag         → always classic REPL
+      2. ``--tui`` flag / ``HERMES_TUI=1`` → always TUI
+      3. ``display.interface`` config value ("cli" | "tui")
+      4. default → classic REPL
+
+    Explicit flags always win over config so muscle memory and scripts keep
+    working regardless of the configured default.
+    """
+    if getattr(args, "cli", False):
+        return False
+    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        iface = (load_config().get("display", {}) or {}).get("interface", "cli")
+        return isinstance(iface, str) and iface.strip().lower() == "tui"
+    except Exception:
+        return False
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
+    use_tui = _resolve_use_tui(args)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -2364,6 +2638,8 @@ def select_provider_and_model(args=None):
                 "api_key": entry.get("api_key", ""),
                 "key_env": entry.get("key_env", ""),
                 "model": entry.get("model", ""),
+                "models": entry.get("models", {}),
+                "discover_models": entry.get("discover_models", True),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
                 "api_key_ref": _lookup_ref(
@@ -4546,17 +4822,45 @@ def _model_flow_named_custom(config, provider_info):
         api_key = os.environ.get(key_env, "")
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
+    # Honor ``discover_models: false`` (default True) — when discovery is
+    # disabled, use the configured ``models:`` list verbatim and skip the
+    # live /models probe. This lets operators restrict the picker to the
+    # subset their plan actually serves instead of the endpoint's full
+    # catalog (#18726: Baidu Qianfan returns 100+ models for a 2-3 model
+    # plan). Same semantics as the slash-command picker (model_switch.py
+    # sections 3 & 4): default discovers, false keeps the explicit list.
+    discover = provider_info.get("discover_models", True)
+    if isinstance(discover, str):
+        discover = discover.lower() not in {"false", "no", "0"}
+    configured_models: list[str] = []
+    cfg_models = provider_info.get("models", {})
+    if isinstance(cfg_models, dict):
+        configured_models = [str(m) for m in cfg_models if str(m).strip()]
+    elif isinstance(cfg_models, list):
+        configured_models = [
+            str(m) for m in cfg_models if isinstance(m, str) and m.strip()
+        ]
+
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
     if saved_model:
         print(f"  Current:  {saved_model}")
     print()
 
-    print("Fetching available models...")
-    fetch_kwargs = {"timeout": 8.0}
-    if api_mode:
-        fetch_kwargs["api_mode"] = api_mode
-    models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+    if not discover and configured_models:
+        # Discovery disabled with an explicit list — use it verbatim, no probe.
+        print(f"Using configured models (discover_models: false): {len(configured_models)}")
+        models = configured_models
+    else:
+        print("Fetching available models...")
+        fetch_kwargs = {"timeout": 8.0}
+        if api_mode:
+            fetch_kwargs["api_mode"] = api_mode
+        models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+        # If the probe came back empty but the operator configured an explicit
+        # list, fall back to it rather than forcing manual entry.
+        if not models and configured_models:
+            models = configured_models
 
     if models:
         default_idx = 0
@@ -6371,7 +6675,9 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
+    from hermes_cli.banner import format_banner_version_label
+
+    print(format_banner_version_label())
     print(f"Project: {PROJECT_ROOT}")
 
     # Show Python version
@@ -6417,8 +6723,30 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Hermes Agent."""
-    _require_tty("uninstall")
+    """Uninstall Hermes Agent (or just the Chat GUI with --gui)."""
+    # Machine-readable install snapshot for the desktop app's uninstall UI.
+    # Must run before any TTY gate — it's called from a non-interactive child.
+    if getattr(args, "gui_summary", False):
+        from hermes_cli.gui_uninstall import gui_install_summary
+
+        print(json.dumps(gui_install_summary()))
+        return
+
+    # GUI-only uninstall. The desktop app shells out to this non-interactively
+    # with --yes, so only gate on a TTY when we actually need to prompt.
+    if getattr(args, "gui", False):
+        if not getattr(args, "yes", False):
+            _require_tty("uninstall --gui")
+        from hermes_cli.uninstall import run_gui_uninstall
+
+        run_gui_uninstall(args)
+        return
+
+    # Full/keep-data uninstall. ``--yes`` runs non-interactively (the desktop
+    # app's lite/full modes drive this from a detached cleanup script), so only
+    # gate on a TTY when we actually need to prompt for the option + confirm.
+    if not getattr(args, "yes", False):
+        _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)
@@ -6603,7 +6931,6 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
                     return True
     for meta in (
         "package.json",
-        "package-lock.json",
         "yarn.lock",
         "pnpm-lock.yaml",
         "vite.config.ts",
@@ -6612,6 +6939,10 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
         mp = web_dir / meta
         if mp.exists() and mp.stat().st_mtime > dist_mtime:
             return True
+    # Workspace root lockfile (single package-lock.json covers all workspaces).
+    root_lock = project_root / "package-lock.json"
+    if root_lock.exists() and root_lock.stat().st_mtime > dist_mtime:
+        return True
     return False
 
 
@@ -6713,12 +7044,66 @@ def _run_with_idle_timeout(
     return subprocess.CompletedProcess(cmd, rc, stdout=combined, stderr="")
 
 
+def _nixos_build_env() -> dict[str, str] | None:
+    """Return extra env vars for native module builds on NixOS.
+
+    On NixOS, python3 is typically not on the system PATH (it lives in
+    the Nix store and only enters PATH inside a nix-shell or when
+    explicitly installed as a system package).  node-gyp uses Python to
+    compile native addons like ``node-pty`` and its ``find-python.js``
+    does a bare ``PATH`` lookup — which fails on NixOS.
+
+    Two-tier resolution:
+    1. Fast path — the hermes venv's python3 (present in managed installs)
+    2. Fallback — resolves the absolute python3 path via ``nix-shell``
+
+    Returns an env dict suitable for ``subprocess.run(env=...)`` or
+    ``None`` when we are not on NixOS or python3 is already on PATH.
+    """
+    import re
+
+    try:
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not re.search(r"^ID=nixos$", os_release, re.M):
+        return None
+
+    # python3 already on PATH — nothing to do
+    if shutil.which("python3"):
+        return None
+
+    # Tier 1: fast path — hermes venv python3, no nix-shell overhead
+    for venv_name in ("venv", ".venv"):
+        venv_python = PROJECT_ROOT / venv_name / "bin" / "python3"
+        if venv_python.exists():
+            return {**os.environ, "PYTHON": str(venv_python)}
+
+    # Tier 2: nix-shell fallback — resolves the absolute python3 path once.
+    # Slower (~2–5 s for the nix-shell eval) but always works, even without
+    # a hermes venv (pip / non-managed / bare-git installs).  The resolved
+    # path is a self-contained Nix store binary (all deps via RPATH) so it
+    # stays valid even after the nix-shell exits.
+    try:
+        result = subprocess.run(
+            ["nix-shell", "-p", "python3", "--run", "which python3"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+        if result.returncode == 0:
+            python3_path = result.stdout.strip()
+            if python3_path and Path(python3_path).exists():
+                return {**os.environ, "PYTHON": python3_path}
+    except Exception:
+        pass  # nix-shell not available — caller will get None
+
+    return None
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -6735,6 +7120,7 @@ def _run_npm_install_deterministic(
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
+            env=env,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
@@ -6749,6 +7135,7 @@ def _run_npm_install_deterministic(
     return subprocess.run(
         install_cmd,
         cwd=cwd,
+        env=env,
         capture_output=capture_output,
         text=True,
         encoding="utf-8",
@@ -6808,7 +7195,19 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             if text:
                 _say(text)
 
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
+    npm_cwd = _workspace_root(web_dir)
+    # Scope the install to the web workspace only so that the full workspace
+    # graph (including apps/desktop with its Electron + node-pty deps) is never
+    # resolved here.  Without --workspace the root package.json's apps/* glob
+    # would pull in desktop on every web build. See #38772.
+    npm_workspace_args: tuple[str, ...] = ("--workspace", "web")
+    if _is_termux_startup_environment():
+        npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
+    r1 = _run_npm_install_deterministic(
+        npm,
+        npm_cwd,
+        extra_args=(*npm_workspace_args, "--silent"),
+    )
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -6816,7 +7215,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r1)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
@@ -6858,7 +7257,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r2)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     _say("  ✓ Web UI built")
     return True
@@ -6867,6 +7266,147 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
 def _desktop_dist_exists(desktop_dir: Path) -> bool:
     """Return True when a local desktop renderer build is present."""
     return (desktop_dir / "dist" / "index.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# Desktop build stamp — content-hash based skip logic
+# ---------------------------------------------------------------------------
+# The desktop Electron build is expensive.
+# Unlike the web UI (which uses mtime comparison), the desktop uses a
+# SHA-256 content hash of the source tree so that:
+#   - ``git checkout`` / ``git pull`` that touch mtimes but not content
+#     don't trigger a rebuild
+#   - ``hermes update`` can unconditionally call ``hermes desktop --build-only``
+#     and it will skip if nothing actually changed
+#   - ``hermes desktop`` (interactive launch) skips the build when the
+#     stamp matches, making repeated launches fast
+#
+# Stamp file: $HERMES_HOME/desktop-build-stamp.json
+# Schema:
+#   {
+#     "contentHash": "<sha256 hex of source files>",
+#     "sourceMode": true | false,
+#     "builtAt": "<ISO 8601>"
+#   }
+
+def _compute_desktop_content_hash(project_root: Path) -> str:
+    """Return a SHA-256 hex digest of all source files that feed the desktop build.
+
+    Covers ``apps/desktop/`` (excluding anything matched by .gitignore)
+    plus the root ``package.json`` / ``package-lock.json`` (workspace config
+    that determines dependency resolution for the desktop workspace).
+
+    Parses the repo-root ``.gitignore`` via *pathspec* so we automatically
+    skip ``node_modules/``, ``dist/``, ``*.pyc``, etc. without maintaining
+    a hardcoded skip-list.
+    """
+    h = hashlib.sha256()
+
+    def _hash_file(path: Path) -> None:
+        rel = str(path.relative_to(project_root))
+        h.update(rel.encode())
+        h.update(b"\0")
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+        except (OSError, IOError):
+            pass
+        h.update(b"\0")
+
+
+    from pathspec import PathSpec
+
+    gitignore = project_root / ".gitignore"
+    lines: list[str] = []
+    if gitignore.is_file():
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+    spec = PathSpec.from_lines("gitignore", lines)
+
+    # Root workspace config
+    for name in ("package.json", "package-lock.json"):
+        p = project_root / name
+        if p.is_file():
+            rel = str(p.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(p)
+
+    # Walk apps/desktop/ — prune ignored directories in-place
+    desktop_dir = project_root / "apps" / "desktop"
+    for dirpath, dirnames, filenames in os.walk(desktop_dir, topdown=True):
+        # Prune ignored directories so we never descend into them
+        dirnames[:] = [
+            d for d in dirnames
+            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
+        ]
+
+        for fn in sorted(filenames):
+            fp = Path(dirpath) / fn
+            rel = str(fp.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(fp)
+
+    return h.hexdigest()
+
+
+def _desktop_stamp_path() -> Path:
+    """Return the path to the desktop build stamp file under $HERMES_HOME."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "desktop-build-stamp.json"
+
+
+def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
+    """Return True when the desktop build output is stale or missing.
+
+    Compares the current content hash against the saved stamp. Also returns
+    True if the expected build artifact doesn't exist (e.g. first run after
+    ``hermes update`` that pulled new source but hasn't built yet).
+    """
+    # If there's no build output at all, we definitely need to build
+    if source_mode:
+        if not _desktop_dist_exists(desktop_dir):
+            return True
+    else:
+        if _desktop_packaged_executable(desktop_dir) is None:
+            return True
+
+    stamp_file = _desktop_stamp_path()
+    if not stamp_file.is_file():
+        return True
+
+    try:
+        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, KeyError):
+        return True
+
+    # If the mode changed (source vs packaged), force a rebuild
+    if stamp_data.get("sourceMode") != source_mode:
+        return True
+
+    saved_hash = stamp_data.get("contentHash")
+    if not saved_hash:
+        return True
+
+    current_hash = _compute_desktop_content_hash(project_root)
+    return current_hash != saved_hash
+
+
+def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
+    """Write the desktop build stamp after a successful build."""
+    stamp_file = _desktop_stamp_path()
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        content_hash = _compute_desktop_content_hash(project_root)
+        from datetime import datetime, timezone
+        stamp_data = {
+            "contentHash": content_hash,
+            "sourceMode": source_mode,
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+        }
+        stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        # Never let stamp-writing block or fail a build
+        logger.debug("Failed to write desktop build stamp: %s", exc)
 
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
@@ -6884,12 +7424,110 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         candidates = [
             release_dir / "linux-unpacked" / "hermes",
             release_dir / "linux-unpacked" / "Hermes",
+            release_dir / "linux-arm64-unpacked" / "hermes",
+            release_dir / "linux-arm64-unpacked" / "Hermes",
         ]
 
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _electron_download_cache_dirs() -> list[Path]:
+    """Return the per-user Electron download cache directories for this OS.
+
+    electron-builder's ``app-builder unpack-electron`` extracts the Electron
+    distribution from a zip stored in this cache (NOT from node_modules), so a
+    corrupt zip here — not a bad workspace install — is what poisons the build.
+    Honors the ``electron_config_cache`` / ``ELECTRON_CACHE`` overrides that
+    ``@electron/get`` respects, then falls back to the platform defaults.
+    """
+    home = Path.home()
+    candidates: list[Path] = []
+    override = os.environ.get("electron_config_cache") or os.environ.get("ELECTRON_CACHE")
+    if override:
+        candidates.append(Path(override))
+    if sys.platform == "darwin":
+        candidates.append(home / "Library" / "Caches" / "electron")
+    elif sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.append(Path(local) / "electron" / "Cache")
+        candidates.append(home / "AppData" / "Local" / "electron" / "Cache")
+    else:
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg:
+            candidates.append(Path(xdg) / "electron")
+        candidates.append(home / ".cache" / "electron")
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for c in candidates:
+        rc = c.expanduser()
+        if rc not in seen:
+            seen.add(rc)
+            out.append(rc)
+    return out
+
+
+def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
+    """Clear the cached Electron download + half-written unpacked dir so the
+    next ``pack`` re-downloads and re-stages from scratch.
+
+    Root cause of the ``ENOENT … rename '…/linux-unpacked/electron' ->
+    '…/linux-unpacked/Hermes'`` desktop build failure: a corrupt zip in the
+    per-user Electron download cache (a partial download resumed into the same
+    file leaves prepended/concatenated junk, or an interrupted write truncates
+    it). electron-builder's ``app-builder unpack-electron`` extracts the
+    distribution from that cached zip (NOT from node_modules); a bad zip yields
+    a partial tree MISSING the 193 MB ``electron`` binary, so the final rename
+    dies. Re-running repeats the same broken extraction forever.
+
+    We deliberately do NOT try to detect corruption ourselves. stdlib
+    ``zipfile`` silently tolerates the prepended/concatenated junk that is the
+    most common corruption here — it reads from the end-of-central-directory
+    backward, so ``testzip()`` returns clean on exactly the zips ``unzip -t``
+    and ``@electron/get`` reject. Gating the purge on a self-rolled validator
+    would therefore skip the real-world case and never self-heal. Instead, on a
+    packaged-build failure we unconditionally remove the version's cached zips
+    and the stale unpacked dir, then let the caller retry once: ``@electron/get``
+    re-downloads with its own SHASUM verification (the real source of truth),
+    and ``before-pack.cjs`` re-wipes the unpacked dir. If the failure was
+    unrelated, a clean re-download is harmless and the retry fails the same way.
+
+    Best-effort: never raises. Returns the paths removed so the caller can log
+    them and decide whether a retry is worthwhile (empty list ⇒ nothing to
+    clear, so no point retrying).
+    """
+    removed: list[Path] = []
+
+    for cache_dir in _electron_download_cache_dirs():
+        if not cache_dir.is_dir():
+            continue
+        for zip_path in sorted(cache_dir.rglob("electron-*.zip")):
+            try:
+                zip_path.unlink()
+                removed.append(zip_path)
+            except OSError:
+                # Locked/permission-denied entry is out of our hands; let the
+                # build report its own error rather than masking it.
+                pass
+
+    # Drop the half-written unpacked dir too: an interrupted prior pack leaves
+    # a partial tree that poisons the rename even after the zip is fixed.
+    # (before-pack.cjs also handles this, but clearing it here makes the retry
+    # robust even if the hook is somehow skipped.)
+    release_dir = desktop_dir / "release"
+    if release_dir.is_dir():
+        for unpacked in release_dir.glob("*-unpacked"):
+            try:
+                shutil.rmtree(unpacked, ignore_errors=True)
+                removed.append(unpacked)
+            except OSError:
+                pass
+
+    return removed
 
 
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
@@ -6929,7 +7567,45 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
 
-def cmd_gui(args):
+def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
+    """Configure Electron's Linux SUID sandbox helper when required."""
+    if sys.platform != "linux":
+        return True
+
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    if not sandbox.exists():
+        print(f"✗ Hermes Desktop is missing Electron's Linux sandbox helper: {sandbox}")
+        return False
+
+    # Reject symlinks — chown/chmod must not follow an attacker-controlled
+    # link to an arbitrary path.  Use lstat() so we inspect the link itself
+    # rather than the target, and require a regular file.
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        print(f"✗ Cannot stat Electron's Linux sandbox helper: {sandbox}")
+        return False
+    if not stat.S_ISREG(sandbox_lstat.st_mode):
+        print(f"✗ Electron's Linux sandbox helper is not a regular file: {sandbox}")
+        return False
+
+    if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
+        return True
+
+    sudo = shutil.which("sudo")
+    if not sudo:
+        print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
+        return False
+
+    print("→ Configuring Electron Linux sandbox helper (sudo required)...")
+    for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
+        if subprocess.run(command, check=False).returncode != 0:
+            print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
+            return False
+    return True
+
+
+def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
@@ -6954,6 +7630,8 @@ def cmd_gui(args):
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
+    force_build = getattr(args, "force_build", False)
+
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
@@ -6965,7 +7643,7 @@ def cmd_gui(args):
     else:
         npm = None
 
-    if getattr(args, "skip_build", False):
+    if skip_build:
         if source_mode:
             if not _desktop_dist_exists(desktop_dir):
                 print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")
@@ -6986,27 +7664,62 @@ def cmd_gui(args):
         else:
             print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
     else:
-        print("→ Installing desktop workspace dependencies...")
-        install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False)
-        if install_result.returncode != 0:
-            print("✗ Desktop dependency install failed")
-            print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
-            sys.exit(install_result.returncode or 1)
+        # Check the content-hash stamp before doing any build work.
+        # If the source tree hasn't changed since the last successful build,
+        # skip the npm install + build entirely (saves a ton of useless work).
+        # --force-build overrides the stamp and always rebuilds.
+        build_needed = force_build or _desktop_build_needed(
+            desktop_dir, PROJECT_ROOT, source_mode=source_mode
+        )
+        if not build_needed:
+            build_label = "source build" if source_mode else "packaged app"
+            print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
+        else:
+            print("→ Installing desktop workspace dependencies...")
+            nixos_env = _nixos_build_env()
+            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            if install_result.returncode != 0:
+                print("✗ Desktop dependency install failed")
+                print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
+                sys.exit(install_result.returncode or 1)
 
-        build_label = "source build" if source_mode else "packaged app"
-        print(f"→ Building desktop {build_label}...")
-        build_script = "build" if source_mode else "pack"
-        build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-        if build_result.returncode != 0:
-            print("✗ Desktop GUI build failed")
-            print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
-            sys.exit(build_result.returncode or 1)
-        packaged_executable = _desktop_packaged_executable(desktop_dir)
-        if not source_mode:
-            # Locally-built apps are ad-hoc signed; make them relaunchable after
-            # an in-place self-update (otherwise macOS reports "Hermes is
-            # damaged"). No-op on non-macOS and on real-identity builds.
-            _desktop_macos_relaunchable_fixup(desktop_dir)
+            build_label = "source build" if source_mode else "packaged app"
+            print(f"→ Building desktop {build_label}...")
+            build_script = "build" if source_mode else "pack"
+            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode:
+                # A corrupt cached Electron zip makes `pack` fail with an ENOENT
+                # on the final `electron` -> `Hermes` rename: unpack-electron
+                # extracted a partial tree (missing the 193 MB binary) from the
+                # bad zip. We do NOT try to prove the zip is corrupt ourselves —
+                # stdlib zipfile silently tolerates the prepended/concatenated
+                # junk that is the most common corruption (a partial download
+                # resumed into the same file), so a `testzip()` gate would pass
+                # and never self-heal. Instead, on any packaged-build failure we
+                # purge the version's cached zip + the half-written unpacked dir
+                # and retry once: @electron/get re-downloads with its own SHASUM
+                # verification, which is the real source of truth. If the
+                # failure was something else, the clean re-download is harmless
+                # and the retry fails the same way.
+                purged = _purge_electron_build_cache(desktop_dir)
+                if purged:
+                    print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")
+                    for p in purged:
+                        print(f"    - {p}")
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0:
+                print("✗ Desktop GUI build failed")
+                print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
+                sys.exit(build_result.returncode or 1)
+            packaged_executable = _desktop_packaged_executable(desktop_dir)
+            if not source_mode:
+                # Locally-built apps are ad-hoc signed; make them relaunchable after
+                # an in-place self-update (otherwise macOS reports "Hermes is
+                # damaged"). No-op on non-macOS and on real-identity builds.
+                _desktop_macos_relaunchable_fixup(desktop_dir)
+
+            # Build succeeded — write the stamp so next run can skip
+            _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
 
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and then launches the desktop
@@ -7038,12 +7751,18 @@ def cmd_gui(args):
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)
 
+    if not _desktop_linux_sandbox_fixup(packaged_executable):
+        sys.exit(1)
+
     print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
     launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 
 
-def _find_stale_dashboard_pids() -> list[int]:
+def _find_stale_dashboard_pids(
+    *,
+    exclude_pids: set[int] | None = None,
+) -> list[int]:
     """Return PIDs of ``hermes dashboard`` processes other than ourselves.
 
     ``hermes dashboard`` is a long-lived server process commonly started and
@@ -7057,6 +7776,15 @@ def _find_stale_dashboard_pids() -> list[int]:
     after an update is to kill the stale process and let the user restart
     it.  This helper is just the detection step; see
     ``_kill_stale_dashboard_processes`` for the kill.
+
+    *exclude_pids* is an optional set of PIDs that must never be returned.
+    This is used by the Hermes Desktop Electron app to protect its own
+    backend child process: when the desktop spawns ``hermes dashboard`` as
+    a backend and triggers an auto-update, the update must not kill the
+    dashboard that the desktop itself manages.  The desktop sets the
+    environment variable ``HERMES_DESKTOP_CHILD_PID`` on the spawned
+    backend process; ``_kill_stale_dashboard_processes`` reads it and
+    passes it here.  (#37532)
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
@@ -7133,6 +7861,8 @@ def _find_stale_dashboard_pids() -> list[int]:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
 
+    if exclude_pids:
+        dashboard_pids = [p for p in dashboard_pids if p not in exclude_pids]
     return dashboard_pids
 
 
@@ -7284,7 +8014,27 @@ def _kill_stale_dashboard_processes(
     launch args (--host, --port, --insecure, --tui, --no-open).  The user
     restarts it manually; a hint is printed.
     """
-    pids = _find_stale_dashboard_pids()
+    # When the Hermes Desktop Electron app spawns this dashboard as a
+    # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
+    # path can skip killing the desktop-managed process.  (#37532)
+    exclude: set[int] | None = None
+    raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
+    if raw_pid:
+        # The desktop may manage several backends (one per active profile) and
+        # passes them comma-separated; a lone int still parses for back-compat.
+        parsed: set[int] = set()
+        for part in raw_pid.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                parsed.add(int(part))
+            except (ValueError, TypeError):
+                pass
+        if parsed:
+            exclude = parsed
+
+    pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
         return
 
@@ -7479,8 +8229,16 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+    # Keep managed uv current — runs `uv self update` if we already have one.
+    update_managed_uv()
+
+    uv_bin = ensure_uv()
+
     pip_cmd = [sys.executable, "-m", "pip"]
-    uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+    if not uv_bin:
+        uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         if _is_termux_env(uv_env):
@@ -7727,6 +8485,54 @@ def _restore_stashed_changes(
 
     print("⚠ Local changes were restored on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    return True
+
+
+def _discard_stashed_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+) -> bool:
+    """Throw away a stash created before an update, without applying it.
+
+    Used only on a NON-interactive update when the user has set
+    ``updates.non_interactive_local_changes: discard`` — i.e. they've opted out
+    of keeping local source edits on this machine. Drops the stash entry
+    instead of re-applying it, so the working tree stays clean at the freshly
+    pulled HEAD. Unlike ``git reset --hard`` + ``git clean -fd``, this only
+    affects what was stashed (tracked changes + the untracked files we
+    explicitly captured) — ignored paths like node_modules/venv/build outputs
+    are never touched, since they were never stashed.
+
+    Returns True if the stash was dropped, False on a git failure (in which
+    case the stash is left in place for safety).
+    """
+    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
+    if stash_selector is None:
+        print(
+            "⚠ Configured to discard local changes on non-interactive update, "
+            "but Hermes couldn't find the stash entry to drop."
+        )
+        _print_stash_cleanup_guidance(stash_ref)
+        return False
+
+    drop = subprocess.run(
+        git_cmd + ["stash", "drop", stash_selector],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if drop.returncode != 0:
+        print(
+            "⚠ Configured to discard local changes, but Hermes couldn't drop "
+            "the saved stash entry."
+        )
+        if drop.stderr.strip():
+            print(f"  {drop.stderr.strip().splitlines()[0]}")
+        _print_stash_cleanup_guidance(stash_ref, stash_selector)
+        return False
+
+    print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
     return True
 
 
@@ -8384,6 +9190,40 @@ def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
             pass
 
 
+def _run_quarantined_install(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    scripts_dir: Path | None = None,
+) -> None:
+    """Run an editable install, quarantining the running ``hermes.exe`` first.
+
+    Any ``pip install -e .`` (or ``--reinstall``) rewrites the entry-point
+    shims, and on Windows the live ``hermes.exe`` is the running process —
+    pip can neither delete nor overwrite it, so without quarantine the shim
+    is left missing and ``hermes`` drops off PATH. This wraps
+    :func:`_run_install_with_heartbeat` with the same rename-out-of-the-way /
+    restore-on-failure dance that the primary install path uses, so EVERY
+    install that touches the shims is protected — including the
+    verification-repair reinstalls in
+    :func:`_verify_core_dependencies_installed`, which previously called
+    ``_run_install_with_heartbeat`` directly and bypassed quarantine.
+
+    Off-Windows (``scripts_dir is None``) this is a thin pass-through.
+    """
+    moved: list[tuple[Path, Path]] = []
+    if scripts_dir is not None:
+        moved = _quarantine_running_hermes_exe(scripts_dir)
+    try:
+        _run_install_with_heartbeat(cmd, env=env)
+    except BaseException:
+        # Restore shims if pip/uv didn't write replacements (e.g. install
+        # failed before the entry-points step). Don't swallow the error.
+        if scripts_dir is not None:
+            _restore_quarantined_exes(moved)
+        raise
+
+
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     """Sweep ``hermes.exe.old.*`` left by prior updates.
 
@@ -8494,17 +9334,9 @@ def _install_python_dependencies_with_optional_fallback(
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
-        moved: list[tuple[Path, Path]] = []
-        if scripts_dir is not None:
-            moved = _quarantine_running_hermes_exe(scripts_dir)
-        try:
-            _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
-        except BaseException:
-            # Restore shims if uv didn't write replacements (e.g. install
-            # failed before the entry-points step). Don't swallow the error.
-            if scripts_dir is not None:
-                _restore_quarantined_exes(moved)
-            raise
+        _run_quarantined_install(
+            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
+        )
 
     try:
         _install(["install", "-e", f".[{group}]"])
@@ -8533,6 +9365,229 @@ def _install_python_dependencies_with_optional_fallback(
         print(
             f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}"
         )
+
+    # Belt-and-suspenders: verify every declared core dependency from
+    # pyproject.toml's [project.dependencies] is actually importable in the
+    # target venv. uv's incremental resolver has — in the wild — produced
+    # partial installs where a newly added base dep (e.g. ``pathspec``)
+    # silently fails to land on top of a half-stale venv, and the only
+    # symptom is a downstream subprocess crashing with ModuleNotFoundError
+    # hours later inside ``hermes update``'s desktop-rebuild or skill-sync
+    # stage. Reinstall with --reinstall to force resolution if anything is
+    # missing, then re-verify so the failure surfaces here instead of
+    # downstream.
+    _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
+
+
+def _verify_core_dependencies_installed(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    group: str = "all",
+) -> None:
+    """Check that every base dep from pyproject.toml is importable; if not, retry.
+
+    Reads ``pyproject.toml`` directly (so we don't trust the venv's stale
+    metadata), filters out deps gated by ``;`` environment markers that don't
+    apply to this platform, and runs ``importlib.metadata.version()`` in the
+    venv interpreter for each one. If anything is missing we reinstall the
+    base group with ``--reinstall`` to force uv to re-resolve, then check
+    again. We treat the final state as a warning rather than a hard failure
+    so a single broken-on-PyPI dep can't block an otherwise-successful
+    update — but the warning makes the partial install visible at the spot
+    that caused it, instead of hours later in a downstream subprocess.
+    """
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover — Python < 3.11 unsupported but be safe
+        return
+
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    if not pyproject.is_file():
+        return
+
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        raw_deps = data.get("project", {}).get("dependencies", []) or []
+    except Exception as e:
+        logger.debug("dep verification: failed to read pyproject.toml: %s", e)
+        return
+
+    # Parse each "name OP version ; marker" string into (dist_name, marker_obj).
+    # We use packaging.requirements when available (it ships with pip/uv envs),
+    # falling back to a naive split that's good enough for the canonical
+    # ``name==version[; marker]`` style this repo uses.
+    deps: list[tuple[str, "object | None"]] = []
+    try:
+        from packaging.requirements import Requirement  # type: ignore
+
+        for spec in raw_deps:
+            try:
+                req = Requirement(spec)
+                deps.append((req.name, req.marker))
+            except Exception:
+                continue
+    except Exception:
+        for spec in raw_deps:
+            head = spec.split(";", 1)[0]
+            for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
+                if op in head:
+                    head = head.split(op, 1)[0]
+                    break
+            name = head.strip().split("[", 1)[0].strip()
+            if name:
+                deps.append((name, None))
+
+    # Apply environment markers to drop deps that don't apply on this platform
+    # (e.g. ``ptyprocess ; sys_platform != 'win32'`` is correctly skipped on
+    # Windows). Without markers we'd false-positive every cross-platform exclusion.
+    applicable: list[str] = []
+    for name, marker in deps:
+        if marker is None:
+            applicable.append(name)
+            continue
+        try:
+            if marker.evaluate():  # type: ignore[union-attr]
+                applicable.append(name)
+        except Exception:
+            applicable.append(name)
+
+    if not applicable:
+        return
+
+    # Run the check inside the venv Python — sys.executable here may be the
+    # outer Python that drove ``hermes update``, not the venv we just wrote
+    # to. The uv install_cmd_prefix encodes which environment we targeted
+    # (either ``[uv, pip]`` with VIRTUAL_ENV in env, or
+    # ``[sys.executable, -m, pip]`` for the in-process Python); resolve the
+    # right interpreter for the verification.
+    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None:
+        return
+
+    def _missing_deps() -> list[str]:
+        check_script = (
+            "import importlib.metadata as md, sys\n"
+            "missing=[]\n"
+            "for name in sys.argv[1:]:\n"
+            "    try: md.version(name)\n"
+            "    except md.PackageNotFoundError: missing.append(name)\n"
+            "print('\\n'.join(missing))\n"
+        )
+        try:
+            result = subprocess.run(
+                [str(venv_python), "-c", check_script, *applicable],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+        except Exception as e:
+            logger.debug("dep verification: subprocess failed: %s", e)
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    missing = _missing_deps()
+    if not missing:
+        return
+
+    print(
+        f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
+        f"{', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}"
+    )
+    print("  → Reinstalling base group with --reinstall to repair...")
+
+    # Reinstall base group with --reinstall so uv re-resolves from scratch
+    # against the current pyproject. We don't pass ``[{group}]`` here on
+    # purpose — the missing dep is in *base* deps; rerunning the full all-
+    # extras install can cost minutes and trips on whatever optional extra
+    # was already broken upstream. Base is fast and is what's actually wrong.
+    #
+    # Quarantine the running ``hermes.exe`` first: ``--reinstall -e .``
+    # rewrites the entry-point shims, and on Windows pip can't overwrite the
+    # live launcher, which would leave ``hermes`` off PATH.
+    scripts_dir = _venv_scripts_dir() if _is_windows() else None
+    repair_args = ["install", "--reinstall", "-e", "."]
+    try:
+        _run_quarantined_install(
+            install_cmd_prefix + repair_args, env=env, scripts_dir=scripts_dir
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning("dep verification: repair install failed: %s", e)
+        print("  ⚠ Repair install failed; check `hermes update` output above.")
+        return
+
+    still_missing = _missing_deps()
+    if not still_missing:
+        print("  ✓ All declared core dependencies now installed")
+        return
+
+    # Last-ditch: install each remaining missing dep with its pin directly.
+    # Useful when uv's resolver thinks the env is satisfied but the on-disk
+    # package metadata says otherwise (rare but observed).
+    name_to_spec = {}
+    for spec in raw_deps:
+        head = spec.split(";", 1)[0].strip()
+        bare = head
+        for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
+            if op in bare:
+                bare = bare.split(op, 1)[0]
+                break
+        name_to_spec[bare.strip().split("[", 1)[0].strip()] = head
+
+    specs = [name_to_spec.get(n, n) for n in still_missing]
+    print(
+        f"  → Force-installing remaining missing dep(s): {', '.join(specs)}"
+    )
+    try:
+        _run_install_with_heartbeat(
+            install_cmd_prefix + ["install", "--reinstall", *specs], env=env
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning("dep verification: per-package repair failed: %s", e)
+        print(
+            f"  ⚠ Could not install: {', '.join(still_missing)}. "
+            "Run `hermes update --force` after closing other hermes processes."
+        )
+        return
+
+    final_missing = _missing_deps()
+    if final_missing:
+        print(
+            f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "
+            "Run `hermes update --force` after closing other hermes processes."
+        )
+    else:
+        print("  ✓ All declared core dependencies now installed")
+
+
+def _resolve_install_target_python(
+    install_cmd_prefix: list[str], env: dict[str, str] | None
+) -> Path | None:
+    """Figure out which Python interpreter the install just targeted.
+
+    ``_install_python_dependencies_with_optional_fallback`` is called with
+    either ``[uv, pip]`` (and a ``VIRTUAL_ENV`` env var pointing at the
+    target venv) or ``[sys.executable, -m, pip]`` (the in-process Python).
+    The verification step needs the *resulting* environment's Python so
+    ``importlib.metadata`` queries the right site-packages.
+    """
+    if env and "VIRTUAL_ENV" in env:
+        venv_root = Path(env["VIRTUAL_ENV"])
+        scripts = venv_root / ("Scripts" if _is_windows() else "bin")
+        candidate = scripts / ("python.exe" if _is_windows() else "python")
+        if candidate.exists():
+            return candidate
+
+    # Fallback: assume install_cmd_prefix[0] is the python interpreter (the
+    # ``[sys.executable, -m, pip]`` shape). Skip if it looks like ``uv``.
+    if install_cmd_prefix:
+        first = Path(install_cmd_prefix[0])
+        if first.exists() and "uv" not in first.name.lower():
+            return first
+
+    return None
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
@@ -8580,16 +9635,27 @@ def _install_psutil_android_compat(
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
-    """Best-effort uv bootstrap on Termux for faster update installs."""
-    uv_bin = shutil.which("uv")
-    if uv_bin or not _is_termux_env():
-        return uv_bin
+    """Best-effort uv bootstrap on Termux for faster update installs.
+
+    The normal path (``ensure_uv()`` in managed_uv) installs the managed
+    standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
+    installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
+    which gets a Termux-compatible binary.
+    """
+    from hermes_cli.managed_uv import resolve_uv
+
+    existing = resolve_uv()
+    if existing:
+        return existing
+    if not _is_termux_env():
+        return None
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
         subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
     except Exception:
         pass
-    return shutil.which("uv")
+    # After pip install, check managed path first, then PATH
+    return resolve_uv() or shutil.which("uv")
 
 
 def _update_node_dependencies() -> None:
@@ -8597,45 +9663,52 @@ def _update_node_dependencies() -> None:
     if not npm:
         return
 
-    paths = (
-        ("repo root", PROJECT_ROOT),
-        ("ui-tui", PROJECT_ROOT / "ui-tui"),
-    )
-    if not any((path / "package.json").exists() for _, path in paths):
+    if not (PROJECT_ROOT / "package.json").exists():
         return
 
+    # With a single workspace lockfile the root install would cover ALL
+    # workspaces — but apps/desktop pulls in Electron as a devDependency,
+    # and its postinstall downloads a ~200MB binary.  Most users don't
+    # need desktop during `hermes update`, so we install root-only first
+    # then add just the workspaces the CLI/TUI/web build actually requires.
+    # Desktop deps are installed on demand by the desktop launcher
+    # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
-    for label, path in paths:
-        if not (path / "package.json").exists():
-            continue
+    extra_args = ["--no-fund", "--no-audit", "--progress=false"]
 
-        # Stream npm output (no `--silent`, no `capture_output`) so any
-        # optional dependency postinstall scripts (e.g. `agent-browser`'s
-        # Chromium fetch on first install) print progress instead of
-        # appearing to hang silently for minutes (#18840).  The
-        # `_UpdateOutputStream` wrapper installed by the updater mirrors
-        # streamed output to ``~/.hermes/logs/update.log`` so nothing is lost.
-        #
-        # The repo root install also passes `--workspaces=false` so npm
-        # does not recursively install every `apps/*` workspace (dashboard,
-        # desktop, shared) — those are installed/built on demand via
-        # `_build_web_ui()` and the desktop launchers.
-        extra_args = ["--no-fund", "--no-audit", "--progress=false"]
-        if path == PROJECT_ROOT:
-            extra_args.append("--workspaces=false")
+    nixos_env = _nixos_build_env()
 
-        result = _run_npm_install_deterministic(
-            npm,
-            path,
-            extra_args=tuple(extra_args),
-            capture_output=False,
-        )
-        if result.returncode == 0:
-            print(f"  ✓ {label}")
-            continue
+    # Step 1: root install (no workspace recursion).
+    root_args = [*extra_args, "--workspaces=false"]
+    root_result = _run_npm_install_deterministic(
+        npm,
+        PROJECT_ROOT,
+        extra_args=tuple(root_args),
+        capture_output=False,
+        env=nixos_env,
+    )
+    if root_result.returncode != 0:
+        print("  ⚠ npm install failed in repo root")
+        stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
+        if stderr:
+            print(f"    {stderr.splitlines()[-1]}")
+        return
 
-        print(f"  ⚠ npm install failed in {label}")
-        stderr = (result.stderr or "").strip() if result.stderr else ""
+    # Step 2: install only the workspaces update needs (ui-tui, web).
+    # --workspace selects specific workspaces; the rest (desktop) are skipped.
+    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
+    ws_result = _run_npm_install_deterministic(
+        npm,
+        PROJECT_ROOT,
+        extra_args=tuple(ws_args),
+        capture_output=False,
+        env=nixos_env,
+    )
+    if ws_result.returncode == 0:
+        print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
+    else:
+        print("  ⚠ npm workspace install failed")
+        stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
 
@@ -9237,7 +10310,12 @@ def _cmd_update_pip(args):
     print(f"→ Current version: {__version__}")
     print("→ Checking PyPI for updates...")
 
-    uv = shutil.which("uv")
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+    # Keep managed uv current before using it.
+    update_managed_uv()
+
+    uv = ensure_uv()
     in_venv = sys.prefix != sys.base_prefix
     # pipx-managed installs live under .../pipx/venvs/<name>/...
     pipx_managed = "pipx" in sys.prefix.split(os.sep)
@@ -9252,7 +10330,8 @@ def _cmd_update_pip(args):
 
     if is_uv_tool_install():
         if not uv:
-            print("✗ Detected a uv-tool install but `uv` is not on PATH; install uv and retry.")
+            print("✗ Detected a uv-tool install but managed uv install failed.")
+            print("  Install uv manually: https://docs.astral.sh/uv/getting-started/installation/")
             sys.exit(1)
         cmd = [uv, "tool", "upgrade", "hermes-agent"]
     elif pipx_managed and pipx:
@@ -9295,6 +10374,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     assume_yes = bool(getattr(args, "yes", False))
 
+    # Whether this update is running without a human at the keyboard.
+    # Interactive terminal updates always stash-and-ask (unchanged behavior);
+    # only non-interactive updates (desktop/chat app, gateway, `--yes`) consult
+    # the `updates.non_interactive_local_changes` config setting to decide
+    # whether to auto-restore stashed local source changes or throw them away.
+    _non_interactive_update = (
+        gateway_mode
+        or assume_yes
+        or not (sys.stdin.isatty() and sys.stdout.isatty())
+    )
+    discard_local_changes = False
+    if _non_interactive_update:
+        try:
+            from hermes_cli.config import load_config
+
+            _update_cfg = (load_config() or {}).get("updates", {})
+            if isinstance(_update_cfg, dict):
+                _mode = str(_update_cfg.get("non_interactive_local_changes", "stash")).lower()
+                discard_local_changes = _mode == "discard"
+        except Exception as exc:
+            # Never let a config read failure change the safe default.
+            logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
+            discard_local_changes = False
+
     print("⚕ Updating Hermes Agent...")
     print()
 
@@ -9330,7 +10433,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
             sys.exit(1)
 
@@ -9620,6 +10723,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
                     print(f"  Restore manually with: git stash apply")
+                elif discard_local_changes:
+                    # Non-interactive update + user opted into discarding local
+                    # source edits (updates.non_interactive_local_changes:
+                    # discard). Throw the stash away instead of re-applying it.
+                    _discard_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                    )
                 else:
                     _restore_stashed_changes(
                         git_cmd,
@@ -9648,8 +10760,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
+        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+        # Keep managed uv current — runs `uv self update` if we already have one.
+        update_managed_uv()
+
+        uv_bin = ensure_uv()
+
         pip_cmd = [sys.executable, "-m", "pip"]
-        uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+        if not uv_bin:
+            uv_bin = _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
 
         if uv_bin:
@@ -9696,6 +10816,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
+
+        # Rebuild the desktop app if the source tree changed since the last
+        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
+        # internally, so this is effectively a no-op when nothing changed.
+        # Only bother if the user has a desktop app installed (indicated by
+        # an existing packaged executable or desktop dist); people who have
+        # never run ``hermes desktop`` shouldn't be forced into a full
+        # Electron build by ``hermes update``.
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
+            print("→ Checking if desktop app needs rebuilding...")
+            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+            # Stream the build output live (long Electron builds otherwise
+            # look hung). On the rare nonzero exit, retry once after waiting
+            # again for the venv — this covers a still-settling rebuild window
+            # the first wait didn't fully catch.
+            build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+            if build_result.returncode != 0:
+                build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+            if build_result.returncode != 0:
+                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
         print()
         print("✓ Code updated!")
@@ -10682,7 +11824,8 @@ def cmd_profile(args):
                 )
                 print(f"Skills:         {p.skill_count} installed")
                 if p.alias_path:
-                    print(f"Alias:          {p.name} → hermes -p {p.name}")
+                    alias_display = p.alias_name or p.name
+                    print(f"Alias:          {alias_display} → hermes -p {p.name}")
                 break
         print()
         return
@@ -10714,7 +11857,7 @@ def cmd_profile(args):
             name = p.name
             model = (p.model or "—")[:26]
             gw = "running" if p.gateway_running else "stopped"
-            alias = p.name if p.alias_path else "—"
+            alias = (p.alias_name or p.name) if p.alias_path else "—"
             if p.is_default:
                 alias = "—"
             if p.distribution_name:
@@ -10964,6 +12107,8 @@ def cmd_profile(args):
             _check_gateway_running,
             _count_skills,
             _read_distribution_meta,
+            _get_wrapper_dir,
+            find_alias_for_profile,
         )
 
         if not profile_exists(name):
@@ -10974,7 +12119,7 @@ def cmd_profile(args):
         gw = _check_gateway_running(profile_dir)
         skills = _count_skills(profile_dir)
         dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
-        wrapper = _get_wrapper_dir() / name
+        alias_name = find_alias_for_profile(name)
 
         print(f"\nProfile: {name}")
         print(f"Path:    {profile_dir}")
@@ -10993,8 +12138,10 @@ def cmd_profile(args):
             if dist_source:
                 print(f"Installed from: {dist_source}")
             print(f"  (run `hermes profile info {name}` for full manifest)")
-        if wrapper.exists():
-            print(f"Alias:   {wrapper}")
+        if alias_name:
+            is_windows = sys.platform == "win32"
+            wrapper = _get_wrapper_dir() / (f"{alias_name}.bat" if is_windows else alias_name)
+            print(f"Alias:   {alias_name} → hermes -p {name}  ({wrapper})")
         print()
 
     elif action == "alias":
@@ -11364,7 +12511,7 @@ def cmd_dashboard(args):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
     elif getattr(args, "skip_build", False):
-        # --skip-build trusts the caller to have pre-built the web UI.
+        # --build-mode skip trusts the caller to have pre-built the web UI.
         # Verify the dist actually exists; otherwise the server will start
         # and serve 404s with no obvious cause (issue #23817).
         _dist_root = (
@@ -11374,7 +12521,7 @@ def cmd_dashboard(args):
         )
         if not (_dist_root / "index.html").exists():
             print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  cd web && npm install && npm run build")
+            print("  Pre-build first:  npm install --workspace web && npm run build -w web")
             print("  Or drop --skip-build to build automatically.")
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
@@ -11397,14 +12544,22 @@ def cmd_dashboard(args):
 
     from hermes_cli.web_server import start_server
 
-    embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
+    # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
+    # available — the desktop app and the dashboard's own Chat tab both rely on
+    # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
-        embedded_chat=embedded_chat,
     )
+
+
+def cmd_dashboard_register(args):
+    """Register a self-hosted dashboard OAuth client with Nous Portal."""
+    from hermes_cli.dashboard_register import cmd_dashboard_register as _impl
+
+    _impl(args)
 
 
 def cmd_completion(args, parser=None):
@@ -11676,7 +12831,10 @@ def _try_termux_fast_cli_launch() -> bool:
     argv = sys.argv[1:]
     if "-h" in argv or "--help" in argv:
         return False
-    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+    # Let the TUI fast path (or full dispatch) handle anything that resolves to
+    # the TUI — explicit --tui/env or display.interface=tui. `--cli` forces this
+    # to stay False so the classic fast path still runs.
+    if _wants_tui_early(argv):
         return False
 
     if _is_termux_fast_version_argv(argv):
@@ -11751,7 +12909,7 @@ def _try_termux_fast_tui_launch() -> bool:
     if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
         return False
 
-    wants_tui = os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]
+    wants_tui = _wants_tui_early(sys.argv[1:])
     if not wants_tui:
         return False
 
@@ -11770,11 +12928,165 @@ def _try_termux_fast_tui_launch() -> bool:
         return False
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
-    if not (getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"):
+    if not _resolve_use_tui(args):
         return False
 
     cmd_chat(args)
     return True
+
+
+def cmd_memory(args):
+    sub = getattr(args, "memory_command", None)
+    if sub == "off":
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        if not isinstance(config.get("memory"), dict):
+            config["memory"] = {}
+        config["memory"]["provider"] = ""
+        save_config(config)
+        print("\n  ✓ Memory provider: built-in only")
+        print("  Saved to config.yaml\n")
+    elif sub == "reset":
+        from hermes_constants import get_hermes_home, display_hermes_home
+
+        mem_dir = get_hermes_home() / "memories"
+        target = getattr(args, "target", "all")
+        files_to_reset = []
+        if target in {"all", "memory"}:
+            files_to_reset.append(("MEMORY.md", "agent notes"))
+        if target in {"all", "user"}:
+            files_to_reset.append(("USER.md", "user profile"))
+
+        # Check what exists
+        existing = [
+            (f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()
+        ]
+        if not existing:
+            print(
+                f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n"
+            )
+            return
+
+        print(f"\n  This will permanently erase the following memory files:")
+        for f, desc in existing:
+            path = mem_dir / f
+            size = path.stat().st_size
+            print(f"    ◆ {f} ({desc}) — {size:,} bytes")
+
+        if not getattr(args, "yes", False):
+            try:
+                answer = input("\n  Type 'yes' to confirm: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Cancelled.\n")
+                return
+            if answer != "yes":
+                print("  Cancelled.\n")
+                return
+
+        for f, desc in existing:
+            (mem_dir / f).unlink()
+            print(f"  ✓ Deleted {f} ({desc})")
+
+        print(
+            f"\n  Memory reset complete. New sessions will start with a blank slate."
+        )
+        print(f"  Files were in: {display_hermes_home()}/memories/\n")
+    else:
+        from hermes_cli.memory_setup import memory_command
+
+        memory_command(args)
+
+
+def cmd_acp(args):
+    """Launch Hermes Agent as an ACP server."""
+    try:
+        from acp_adapter.entry import main as acp_main
+
+        acp_argv = []
+        if getattr(args, "acp_version", False):
+            acp_argv.append("--version")
+        if getattr(args, "check", False):
+            acp_argv.append("--check")
+        if getattr(args, "setup", False):
+            acp_argv.append("--setup")
+        if getattr(args, "setup_browser", False):
+            acp_argv.append("--setup-browser")
+        if getattr(args, "assume_yes", False):
+            acp_argv.append("--yes")
+        acp_main(acp_argv)
+    except ImportError:
+        print("ACP dependencies not installed.", file=sys.stderr)
+        print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_tools(args):
+    action = getattr(args, "tools_action", None)
+    if action in {"list", "disable", "enable"}:
+        from hermes_cli.tools_config import tools_disable_enable_command
+
+        tools_disable_enable_command(args)
+    elif action == "post-setup":
+        from hermes_cli.tools_config import run_post_setup_command
+
+        sys.exit(run_post_setup_command(args))
+    else:
+        _require_tty("tools")
+        from hermes_cli.tools_config import tools_command
+
+        tools_command(args)
+
+
+def cmd_insights(args):
+    try:
+        from hermes_state import SessionDB
+        from agent.insights import InsightsEngine
+
+        db = SessionDB()
+        engine = InsightsEngine(db)
+        report = engine.generate(days=args.days, source=args.source)
+        print(engine.format_terminal(report))
+        db.close()
+    except Exception as e:
+        print(f"Error generating insights: {e}")
+
+
+def cmd_skills(args):
+    # Route 'config' action to skills_config module
+    if getattr(args, "skills_action", None) == "config":
+        _require_tty("skills config")
+        from hermes_cli.skills_config import skills_command as skills_config_command
+
+        skills_config_command(args)
+    else:
+        from hermes_cli.skills_hub import skills_command
+
+        skills_command(args)
+
+
+def cmd_pairing(args):
+    from hermes_cli.pairing import pairing_command
+
+    pairing_command(args)
+
+
+def cmd_plugins(args):
+    from hermes_cli.plugins_cmd import plugins_command
+
+    plugins_command(args)
+
+
+def cmd_mcp(args):
+    from hermes_cli.mcp_config import mcp_command
+
+    mcp_command(args)
+
+
+def cmd_claw(args):
+    from hermes_cli.claw import claw_command
+
+    claw_command(args)
 
 
 def main():
@@ -11809,64 +13121,9 @@ def main():
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
-    # model command
+    # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================
-    model_parser = subparsers.add_parser(
-        "model",
-        help="Select default model and provider",
-        description="Interactively select your inference provider and default model",
-    )
-    model_parser.add_argument(
-        "--refresh",
-        action="store_true",
-        help="Wipe the model picker disk cache and re-fetch every provider's live /v1/models list.",
-    )
-    model_parser.add_argument(
-        "--portal-url",
-        help="Portal base URL for Nous login (default: production portal)",
-    )
-    model_parser.add_argument(
-        "--inference-url",
-        help="Inference API base URL for Nous login (default: production inference API)",
-    )
-    model_parser.add_argument(
-        "--client-id",
-        default=None,
-        help="OAuth client id to use for Nous login (default: hermes-cli)",
-    )
-    model_parser.add_argument(
-        "--scope", default=None, help="OAuth scope to request for Nous login"
-    )
-    model_parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not attempt to open the browser automatically during Nous login",
-    )
-    model_parser.add_argument(
-        "--manual-paste",
-        action="store_true",
-        help=(
-            "For loopback OAuth providers (xai-oauth, ...): skip the local "
-            "callback listener and paste the failed callback URL from your "
-            "browser instead. Use on browser-only remotes (Cloud Shell, "
-            "Codespaces, EC2 Instance Connect, ...). See #26923."
-        ),
-    )
-    model_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=15.0,
-        help="HTTP request timeout in seconds for Nous login (default: 15)",
-    )
-    model_parser.add_argument(
-        "--ca-bundle", help="Path to CA bundle PEM file for Nous TLS verification"
-    )
-    model_parser.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Disable TLS verification for Nous login (testing only)",
-    )
-    model_parser.set_defaults(func=cmd_model)
+    build_model_parser(subparsers, cmd_model=cmd_model)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain
@@ -11979,243 +13236,9 @@ def main():
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
-    # gateway command
+    # gateway + proxy commands  (parsers built in hermes_cli/subcommands/gateway.py)
     # =========================================================================
-    gateway_parser = subparsers.add_parser(
-        "gateway",
-        help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)",
-    )
-    gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
-
-    # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser(
-        "run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)"
-    )
-    gateway_run.add_argument(
-        "-v",
-        "--verbose",
-        action="count",
-        default=0,
-        help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)",
-    )
-    gateway_run.add_argument(
-        "-q", "--quiet", action="store_true", help="Suppress all stderr log output"
-    )
-    gateway_run.add_argument(
-        "--replace",
-        action="store_true",
-        help="Replace any existing gateway instance (useful for systemd)",
-    )
-    gateway_run.add_argument(
-        "--no-supervise",
-        action="store_true",
-        help=(
-            "Inside the s6-overlay Docker image, normally `gateway run` is "
-            "automatically redirected to the supervised s6 service (so the "
-            "gateway gets auto-restart on crash, plus a supervised dashboard "
-            "if HERMES_DASHBOARD is set). Pass --no-supervise to opt out and "
-            "get the historical pre-s6 foreground behavior: the gateway is "
-            "the container's main process and the container exits with the "
-            "gateway's exit code. No effect outside an s6 container."
-        ),
-    )
-    _add_accept_hooks_flag(gateway_run)
-    _add_accept_hooks_flag(gateway_parser)
-
-    # gateway start
-    gateway_start = gateway_subparsers.add_parser(
-        "start", help="Start the installed systemd/launchd background service"
-    )
-    gateway_start.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_start.add_argument(
-        "--all",
-        action="store_true",
-        help="Kill ALL stale gateway processes across all profiles before starting",
-    )
-
-    # gateway stop
-    gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
-    gateway_stop.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_stop.add_argument(
-        "--all",
-        action="store_true",
-        help="Stop ALL gateway processes across all profiles",
-    )
-
-    # gateway restart
-    gateway_restart = gateway_subparsers.add_parser(
-        "restart", help="Restart gateway service"
-    )
-    gateway_restart.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_restart.add_argument(
-        "--all",
-        action="store_true",
-        help="Kill ALL gateway processes across all profiles before restarting",
-    )
-
-    # gateway status
-    gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
-    gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
-    gateway_status.add_argument(
-        "-l",
-        "--full",
-        action="store_true",
-        help="Show full, untruncated service/log output where supported",
-    )
-    gateway_status.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-
-    # gateway install
-    gateway_install = gateway_subparsers.add_parser(
-        "install", help="Install gateway as a systemd/launchd background service"
-    )
-    gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
-    gateway_install.add_argument(
-        "--system",
-        action="store_true",
-        help="Install as a Linux system-level service (starts at boot)",
-    )
-    gateway_install.add_argument(
-        "--run-as-user",
-        dest="run_as_user",
-        help="User account the Linux system service should run as",
-    )
-    gateway_install.add_argument(
-        "--start-now",
-        dest="start_now",
-        action="store_true",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--no-start-now",
-        dest="start_now",
-        action="store_false",
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--start-on-login",
-        dest="start_on_login",
-        action="store_true",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--no-start-on-login",
-        dest="start_on_login",
-        action="store_false",
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--elevated-handoff",
-        dest="elevated_handoff",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-
-    # gateway uninstall
-    gateway_uninstall = gateway_subparsers.add_parser(
-        "uninstall", help="Uninstall gateway service"
-    )
-    gateway_uninstall.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-
-    # gateway list
-    gateway_subparsers.add_parser("list", help="List all profiles and their gateway status")
-
-    # gateway setup
-    gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
-
-    # gateway migrate-legacy
-    gateway_migrate_legacy = gateway_subparsers.add_parser(
-        "migrate-legacy",
-        help="Remove legacy hermes.service units from pre-rename installs",
-        description=(
-            "Stop, disable, and remove legacy Hermes gateway unit files "
-            "(e.g. hermes.service) left over from older installs. Profile "
-            "units (hermes-gateway-<profile>.service) and unrelated "
-            "third-party services are never touched."
-        ),
-    )
-    gateway_migrate_legacy.add_argument(
-        "--dry-run",
-        dest="dry_run",
-        action="store_true",
-        help="List what would be removed without doing it",
-    )
-    gateway_migrate_legacy.add_argument(
-        "-y",
-        "--yes",
-        dest="yes",
-        action="store_true",
-        help="Skip the confirmation prompt",
-    )
-
-    # =========================================================================
-    # proxy command — local OpenAI-compatible proxy that attaches the user's
-    # OAuth-authenticated provider credentials to outbound requests. Lets
-    # external apps (OpenViking, Karakeep, Open WebUI, ...) ride a logged-in
-    # subscription without copy-pasting static API keys.
-    # =========================================================================
-    proxy_parser = subparsers.add_parser(
-        "proxy",
-        help="Local OpenAI-compatible proxy to OAuth providers",
-        description=(
-            "Run a local HTTP server that forwards OpenAI-compatible requests "
-            "to an OAuth-authenticated provider (e.g. Nous Portal). External "
-            "apps can point at the proxy with any bearer token; the proxy "
-            "attaches your real credentials."
-        ),
-    )
-    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
-
-    proxy_start = proxy_subparsers.add_parser(
-        "start", help="Run the proxy in the foreground"
-    )
-    proxy_start.add_argument(
-        "--provider",
-        default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.",
-    )
-    proxy_start.add_argument(
-        "--host",
-        default=None,
-        help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.",
-    )
-    proxy_start.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Bind port (default: 8645)",
-    )
-
-    proxy_subparsers.add_parser(
-        "status", help="Show which proxy upstreams are ready"
-    )
-    proxy_subparsers.add_parser(
-        "providers", help="List available proxy upstream providers"
-    )
-    proxy_parser.set_defaults(func=cmd_proxy)
-    gateway_parser.set_defaults(func=cmd_gateway)
+    build_gateway_parser(subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy)
 
     # =========================================================================
     # lsp command
@@ -12229,119 +13252,24 @@ def main():
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     # =========================================================================
-    # setup command
+    # setup command  (parser built in hermes_cli/subcommands/setup.py)
     # =========================================================================
-    setup_parser = subparsers.add_parser(
-        "setup",
-        help="Interactive setup wizard",
-        description="Configure Hermes Agent with an interactive wizard. "
-        "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent",
-    )
-    setup_parser.add_argument(
-        "section",
-        nargs="?",
-        choices=["model", "tts", "terminal", "gateway", "tools", "agent"],
-        default=None,
-        help="Run a specific setup section instead of the full wizard",
-    )
-    setup_parser.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="Non-interactive mode (use defaults/env vars)",
-    )
-    setup_parser.add_argument(
-        "--reset", action="store_true", help="Reset configuration to defaults"
-    )
-    setup_parser.add_argument(
-        "--reconfigure",
-        action="store_true",
-        help="(Default on existing installs.) Re-run the full wizard, "
-        "showing current values as defaults. Kept for backwards "
-        "compatibility — a bare 'hermes setup' now does this.",
-    )
-    setup_parser.add_argument(
-        "--quick",
-        action="store_true",
-        help="On existing installs: only prompt for items that are missing "
-        "or unset, instead of running the full reconfigure wizard.",
-    )
-    setup_parser.add_argument(
-        "--portal",
-        action="store_true",
-        help="One-shot Nous Portal setup: log in via OAuth, set Nous as the "
-        "inference provider, and opt into the Tool Gateway. Skips the "
-        "rest of the wizard.",
-    )
-    setup_parser.set_defaults(func=cmd_setup)
+    build_setup_parser(subparsers, cmd_setup=cmd_setup)
 
     # =========================================================================
-    # postinstall command
+    # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)
     # =========================================================================
-    postinstall_parser = subparsers.add_parser(
-        "postinstall",
-        help="Bootstrap non-Python deps for pip installs (node, browser, ripgrep, ffmpeg)",
-        description="One-shot post-install for pip users. Installs system "
-        "dependencies that pip cannot provide, then runs setup if needed.",
-    )
-    postinstall_parser.set_defaults(func=cmd_postinstall)
+    build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
 
     # =========================================================================
-    # whatsapp command
+    # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)
     # =========================================================================
-    whatsapp_parser = subparsers.add_parser(
-        "whatsapp",
-        help="Set up WhatsApp integration",
-        description="Configure WhatsApp and pair via QR code",
-    )
-    whatsapp_parser.set_defaults(func=cmd_whatsapp)
+    build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
 
     # =========================================================================
-    # slack command
+    # slack command  (parser built in hermes_cli/subcommands/slack.py)
     # =========================================================================
-    slack_parser = subparsers.add_parser(
-        "slack",
-        help="Slack integration helpers (manifest generation, etc.)",
-        description="Slack integration helpers for Hermes.",
-    )
-    slack_sub = slack_parser.add_subparsers(dest="slack_command")
-    slack_manifest = slack_sub.add_parser(
-        "manifest",
-        help="Print or write a Slack app manifest with every gateway command "
-        "registered as a native slash (/btw, /stop, /model, ...)",
-        description=(
-            "Generate a Slack app manifest that registers every gateway "
-            "command in COMMAND_REGISTRY as a first-class Slack slash "
-            "command (matching Discord and Telegram parity). Paste the "
-            "output into Slack app config → Features → App Manifest → "
-            "Edit, then Save. Reinstall the app if Slack prompts for it."
-        ),
-    )
-    slack_manifest.add_argument(
-        "--write",
-        nargs="?",
-        const=True,
-        default=None,
-        metavar="PATH",
-        help="Write manifest to a file instead of stdout. With no PATH "
-        "writes to $HERMES_HOME/slack-manifest.json.",
-    )
-    slack_manifest.add_argument(
-        "--name",
-        default=None,
-        help='Bot display name (default: "Hermes")',
-    )
-    slack_manifest.add_argument(
-        "--description",
-        default=None,
-        help="Bot description shown in Slack's app directory.",
-    )
-    slack_manifest.add_argument(
-        "--slashes-only",
-        action="store_true",
-        help="Emit only the features.slash_commands array (for merging "
-        "into an existing manifest manually).",
-    )
-    slack_parser.set_defaults(func=cmd_slack)
+    build_slack_parser(subparsers, cmd_slack=cmd_slack)
 
     # =========================================================================
     # send command — pipe shell-script output to any configured platform
@@ -12350,402 +13278,34 @@ def main():
     register_send_subparser(subparsers)
 
     # =========================================================================
-    # login command
+    # login command  (parser built in hermes_cli/subcommands/login.py)
     # =========================================================================
-    login_parser = subparsers.add_parser(
-        "login",
-        help="Authenticate with an inference provider",
-        description="Run OAuth device authorization flow for Hermes CLI",
-    )
-    login_parser.add_argument(
-        "--provider",
-        choices=["nous", "openai-codex", "xai-oauth"],
-        default=None,
-        help="Provider to authenticate with (default: nous)",
-    )
-    login_parser.add_argument(
-        "--portal-url", help="Portal base URL (default: production portal)"
-    )
-    login_parser.add_argument(
-        "--inference-url",
-        help="Inference API base URL (default: production inference API)",
-    )
-    login_parser.add_argument(
-        "--client-id", default=None, help="OAuth client id to use (default: hermes-cli)"
-    )
-    login_parser.add_argument("--scope", default=None, help="OAuth scope to request")
-    login_parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not attempt to open the browser automatically",
-    )
-    login_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=15.0,
-        help="HTTP request timeout in seconds (default: 15)",
-    )
-    login_parser.add_argument(
-        "--ca-bundle", help="Path to CA bundle PEM file for TLS verification"
-    )
-    login_parser.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Disable TLS verification (testing only)",
-    )
-    login_parser.set_defaults(func=cmd_login)
+    build_login_parser(subparsers, cmd_login=cmd_login)
 
     # =========================================================================
-    # logout command
+    # logout command  (parser built in hermes_cli/subcommands/logout.py)
     # =========================================================================
-    logout_parser = subparsers.add_parser(
-        "logout",
-        help="Clear authentication for an inference provider",
-        description="Remove stored credentials and reset provider config",
-    )
-    logout_parser.add_argument(
-        "--provider",
-        choices=["nous", "openai-codex", "xai-oauth", "spotify"],
-        default=None,
-        help="Provider to log out from (default: active provider)",
-    )
-    logout_parser.set_defaults(func=cmd_logout)
-
-    auth_parser = subparsers.add_parser(
-        "auth",
-        help="Manage pooled provider credentials",
-    )
-    auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
-    auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
-    auth_add.add_argument(
-        "provider",
-        help="Provider id (for example: anthropic, openai-codex, openrouter)",
-    )
-    auth_add.add_argument(
-        "--type",
-        dest="auth_type",
-        choices=["oauth", "api-key", "api_key"],
-        help="Credential type to add",
-    )
-    auth_add.add_argument("--label", help="Optional display label")
-    auth_add.add_argument(
-        "--api-key", help="API key value (otherwise prompted securely)"
-    )
-    auth_add.add_argument("--portal-url", help="Nous portal base URL")
-    auth_add.add_argument("--inference-url", help="Nous inference base URL")
-    auth_add.add_argument("--client-id", help="OAuth client id")
-    auth_add.add_argument("--scope", help="OAuth scope override")
-    auth_add.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not auto-open a browser for OAuth login",
-    )
-    auth_add.add_argument(
-        "--manual-paste",
-        action="store_true",
-        help=(
-            "Skip the loopback callback listener and paste the failed "
-            "callback URL from your browser instead. Use this on "
-            "browser-only remotes (GCP Cloud Shell, GitHub Codespaces, "
-            "EC2 Instance Connect, ...) where 127.0.0.1 on the remote "
-            "isn't reachable from your laptop. See #26923."
-        ),
-    )
-    auth_add.add_argument(
-        "--timeout", type=float, help="OAuth/network timeout in seconds"
-    )
-    auth_add.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Disable TLS verification for OAuth login",
-    )
-    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
-    auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
-    auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
-    auth_remove = auth_subparsers.add_parser(
-        "remove", help="Remove a pooled credential by index, id, or label"
-    )
-    auth_remove.add_argument("provider", help="Provider id")
-    auth_remove.add_argument(
-        "target", help="Credential index, entry id, or exact label"
-    )
-    auth_reset = auth_subparsers.add_parser(
-        "reset", help="Clear exhaustion status for all credentials for a provider"
-    )
-    auth_reset.add_argument("provider", help="Provider id")
-    auth_status = auth_subparsers.add_parser(
-        "status", help="Show auth status for a provider"
-    )
-    auth_status.add_argument("provider", help="Provider id")
-    auth_logout = auth_subparsers.add_parser(
-        "logout", help="Log out a provider and clear stored auth state"
-    )
-    auth_logout.add_argument("provider", help="Provider id")
-    auth_spotify = auth_subparsers.add_parser(
-        "spotify", help="Authenticate Hermes with Spotify via PKCE"
-    )
-    auth_spotify.add_argument(
-        "spotify_action",
-        nargs="?",
-        choices=["login", "status", "logout"],
-        default="login",
-    )
-    auth_spotify.add_argument(
-        "--client-id", help="Spotify app client_id (or set HERMES_SPOTIFY_CLIENT_ID)"
-    )
-    auth_spotify.add_argument(
-        "--redirect-uri",
-        help="Allow-listed localhost redirect URI for your Spotify app",
-    )
-    auth_spotify.add_argument("--scope", help="Override requested Spotify scopes")
-    auth_spotify.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not attempt to open the browser automatically",
-    )
-    auth_spotify.add_argument(
-        "--timeout", type=float, help="Callback/token exchange timeout in seconds"
-    )
-    auth_parser.set_defaults(func=cmd_auth)
+    build_logout_parser(subparsers, cmd_logout=cmd_logout)
 
     # =========================================================================
-    # status command
+    # auth command  (parser built in hermes_cli/subcommands/auth.py)
     # =========================================================================
-    status_parser = subparsers.add_parser(
-        "status",
-        help="Show status of all components",
-        description="Display status of Hermes Agent components",
-    )
-    status_parser.add_argument(
-        "--all", action="store_true", help="Show all details (redacted for sharing)"
-    )
-    status_parser.add_argument(
-        "--deep", action="store_true", help="Run deep checks (may take longer)"
-    )
-    status_parser.set_defaults(func=cmd_status)
+    build_auth_parser(subparsers, cmd_auth=cmd_auth)
 
     # =========================================================================
-    # cron command
+    # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
-    cron_parser = subparsers.add_parser(
-        "cron", help="Cron job management", description="Manage scheduled tasks"
-    )
-    cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
-
-    # cron list
-    cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
-    cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
-
-    # cron create/add
-    cron_create = cron_subparsers.add_parser(
-        "create", aliases=["add"], help="Create a scheduled job"
-    )
-    cron_create.add_argument(
-        "schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'"
-    )
-    cron_create.add_argument(
-        "prompt", nargs="?", help="Optional self-contained prompt or task instruction"
-    )
-    cron_create.add_argument("--name", help="Optional human-friendly job name")
-    cron_create.add_argument(
-        "--deliver",
-        help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id",
-    )
-    cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
-    cron_create.add_argument(
-        "--skill",
-        dest="skills",
-        action="append",
-        help="Attach a skill. Repeat to add multiple skills.",
-    )
-    cron_create.add_argument(
-        "--script",
-        help=(
-            "Path to a script under ~/.hermes/scripts/. Default mode: "
-            "script stdout is injected into the agent's prompt each run. "
-            "With --no-agent: the script IS the job and its stdout is "
-            "delivered verbatim. .sh/.bash files run via bash, everything "
-            "else via Python."
-        ),
-    )
-    cron_create.add_argument(
-        "--no-agent",
-        dest="no_agent",
-        action="store_true",
-        default=False,
-        help=(
-            "Skip the LLM entirely — run --script on schedule and deliver "
-            "its stdout directly. Empty stdout = silent. Classic watchdog "
-            "pattern (memory alerts, disk alerts, CI pings)."
-        ),
-    )
-    cron_create.add_argument(
-        "--workdir",
-        help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
-    )
-    cron_create.add_argument(
-        "--profile",
-        help="Hermes profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
-    )
-
-    # cron edit
-    cron_edit = cron_subparsers.add_parser(
-        "edit", help="Edit an existing scheduled job"
-    )
-    cron_edit.add_argument("job_id", help="Job ID to edit")
-    cron_edit.add_argument("--schedule", help="New schedule")
-    cron_edit.add_argument("--prompt", help="New prompt/task instruction")
-    cron_edit.add_argument("--name", help="New job name")
-    cron_edit.add_argument("--deliver", help="New delivery target")
-    cron_edit.add_argument("--repeat", type=int, help="New repeat count")
-    cron_edit.add_argument(
-        "--skill",
-        dest="skills",
-        action="append",
-        help="Replace the job's skills with this set. Repeat to attach multiple skills.",
-    )
-    cron_edit.add_argument(
-        "--add-skill",
-        dest="add_skills",
-        action="append",
-        help="Append a skill without replacing the existing list. Repeatable.",
-    )
-    cron_edit.add_argument(
-        "--remove-skill",
-        dest="remove_skills",
-        action="append",
-        help="Remove a specific attached skill. Repeatable.",
-    )
-    cron_edit.add_argument(
-        "--clear-skills",
-        action="store_true",
-        help="Remove all attached skills from the job",
-    )
-    cron_edit.add_argument(
-        "--script",
-        help=(
-            "Path to a script under ~/.hermes/scripts/. Pass empty string to clear. "
-            "With --no-agent the script IS the job; otherwise its stdout is "
-            "injected into the agent's prompt each run."
-        ),
-    )
-    cron_edit.add_argument(
-        "--no-agent",
-        dest="no_agent",
-        action="store_const",
-        const=True,
-        default=None,
-        help=(
-            "Enable no-agent mode on this job (requires --script or an "
-            "existing script on the job)."
-        ),
-    )
-    cron_edit.add_argument(
-        "--agent",
-        dest="no_agent",
-        action="store_const",
-        const=False,
-        help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
-    )
-    cron_edit.add_argument(
-        "--workdir",
-        help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
-    )
-    cron_edit.add_argument(
-        "--profile",
-        help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
-    )
-
-    # lifecycle actions
-    cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
-    cron_pause.add_argument("job_id", help="Job ID to pause")
-
-    cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
-    cron_resume.add_argument("job_id", help="Job ID to resume")
-
-    cron_run = cron_subparsers.add_parser(
-        "run", help="Run a job on the next scheduler tick"
-    )
-    cron_run.add_argument("job_id", help="Job ID to trigger")
-    _add_accept_hooks_flag(cron_run)
-
-    cron_remove = cron_subparsers.add_parser(
-        "remove", aliases=["rm", "delete"], help="Remove a scheduled job"
-    )
-    cron_remove.add_argument("job_id", help="Job ID to remove")
-
-    # cron status
-    cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
-
-    # cron tick (mostly for debugging)
-    cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
-    _add_accept_hooks_flag(cron_tick)
-    _add_accept_hooks_flag(cron_parser)
-    cron_parser.set_defaults(func=cmd_cron)
+    build_status_parser(subparsers, cmd_status=cmd_status)
 
     # =========================================================================
-    # webhook command
+    # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
-    webhook_parser = subparsers.add_parser(
-        "webhook",
-        help="Manage dynamic webhook subscriptions",
-        description="Create, list, and remove webhook subscriptions for event-driven agent activation",
-    )
-    webhook_subparsers = webhook_parser.add_subparsers(dest="webhook_action")
+    build_cron_parser(subparsers, cmd_cron=cmd_cron)
 
-    wh_sub = webhook_subparsers.add_parser(
-        "subscribe", aliases=["add"], help="Create a webhook subscription"
-    )
-    wh_sub.add_argument("name", help="Route name (used in URL: /webhooks/<name>)")
-    wh_sub.add_argument(
-        "--prompt", default="", help="Prompt template with {dot.notation} payload refs"
-    )
-    wh_sub.add_argument(
-        "--events", default="", help="Comma-separated event types to accept"
-    )
-    wh_sub.add_argument("--description", default="", help="What this subscription does")
-    wh_sub.add_argument(
-        "--skills", default="", help="Comma-separated skill names to load"
-    )
-    wh_sub.add_argument(
-        "--deliver",
-        default="log",
-        help="Delivery target: log, telegram, discord, slack, etc.",
-    )
-    wh_sub.add_argument(
-        "--deliver-chat-id",
-        default="",
-        help="Target chat ID for cross-platform delivery",
-    )
-    wh_sub.add_argument(
-        "--secret", default="", help="HMAC secret (auto-generated if omitted)"
-    )
-    wh_sub.add_argument(
-        "--deliver-only",
-        action="store_true",
-        help="Skip the agent — deliver the rendered prompt directly as the "
-        "message. Zero LLM cost. Requires --deliver to be a real target "
-        "(not 'log').",
-    )
-
-    webhook_subparsers.add_parser(
-        "list", aliases=["ls"], help="List all dynamic subscriptions"
-    )
-
-    wh_rm = webhook_subparsers.add_parser(
-        "remove", aliases=["rm"], help="Remove a subscription"
-    )
-    wh_rm.add_argument("name", help="Subscription name to remove")
-
-    wh_test = webhook_subparsers.add_parser(
-        "test", help="Send a test POST to a webhook route"
-    )
-    wh_test.add_argument("name", help="Subscription name to test")
-    wh_test.add_argument(
-        "--payload", default="", help="JSON payload to send (default: test payload)"
-    )
-
-    webhook_parser.set_defaults(func=cmd_webhook)
+    # =========================================================================
+    # webhook command  (parser built in hermes_cli/subcommands/webhook.py)
+    # =========================================================================
+    build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
     # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing
@@ -12764,250 +13324,36 @@ def main():
     # =========================================================================
     # hooks command — shell-hook inspection and management
     # =========================================================================
-    hooks_parser = subparsers.add_parser(
-        "hooks",
-        help="Inspect and manage shell-script hooks",
-        description=(
-            "Inspect shell-script hooks declared in ~/.hermes/config.yaml, "
-            "test them against synthetic payloads, and manage the first-use "
-            "consent allowlist at ~/.hermes/shell-hooks-allowlist.json."
-        ),
-    )
-    hooks_subparsers = hooks_parser.add_subparsers(dest="hooks_action")
-
-    hooks_subparsers.add_parser(
-        "list",
-        aliases=["ls"],
-        help="List configured hooks with matcher, timeout, and consent status",
-    )
-
-    _hk_test = hooks_subparsers.add_parser(
-        "test",
-        help="Fire every hook matching <event> against a synthetic payload",
-    )
-    _hk_test.add_argument(
-        "event",
-        help="Hook event name (e.g. pre_tool_call, pre_llm_call, subagent_stop)",
-    )
-    _hk_test.add_argument(
-        "--for-tool",
-        dest="for_tool",
-        default=None,
-        help=(
-            "Only fire hooks whose matcher matches this tool name "
-            "(used for pre_tool_call / post_tool_call)"
-        ),
-    )
-    _hk_test.add_argument(
-        "--payload-file",
-        dest="payload_file",
-        default=None,
-        help=(
-            "Path to a JSON file whose contents are merged into the "
-            "synthetic payload before execution"
-        ),
-    )
-
-    _hk_revoke = hooks_subparsers.add_parser(
-        "revoke",
-        aliases=["remove", "rm"],
-        help="Remove a command's allowlist entries (takes effect on next restart)",
-    )
-    _hk_revoke.add_argument(
-        "command",
-        help="The exact command string to revoke (as declared in config.yaml)",
-    )
-
-    hooks_subparsers.add_parser(
-        "doctor",
-        help=(
-            "Check each configured hook: exec bit, allowlist, mtime drift, "
-            "JSON validity, and synthetic run timing"
-        ),
-    )
-
-    hooks_parser.set_defaults(func=cmd_hooks)
+    # hooks command  (parser built in hermes_cli/subcommands/hooks.py)
+    # =========================================================================
+    build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
 
     # =========================================================================
-    # doctor command
+    # doctor command  (parser built in hermes_cli/subcommands/doctor.py)
     # =========================================================================
-    doctor_parser = subparsers.add_parser(
-        "doctor",
-        help="Check configuration and dependencies",
-        description="Diagnose issues with Hermes Agent setup",
-    )
-    doctor_parser.add_argument(
-        "--fix", action="store_true", help="Attempt to fix issues automatically"
-    )
-    doctor_parser.add_argument(
-        "--ack",
-        metavar="ADVISORY_ID",
-        default=None,
-        help=(
-            "Acknowledge a security advisory by ID and exit. After ack, the "
-            "advisory will no longer trigger startup banners. Run `hermes "
-            "doctor` first to see active advisories and their IDs."
-        ),
-    )
-    doctor_parser.set_defaults(func=cmd_doctor)
+    build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
 
     # =========================================================================
     # security command — on-demand supply-chain audit
     # =========================================================================
-    security_parser = subparsers.add_parser(
-        "security",
-        help="Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers",
-        description=(
-            "On-demand vulnerability scan against OSV.dev. Covers the Hermes "
-            "venv (installed PyPI dists), Python deps declared by plugins under "
-            "~/.hermes/plugins/, and pinned npx/uvx MCP servers in config.yaml. "
-            "Does NOT scan globally-installed packages or editor/browser extensions."
-        ),
-    )
-    security_subparsers = security_parser.add_subparsers(
-        dest="security_command",
-        metavar="<subcommand>",
-    )
-
-    audit_parser = security_subparsers.add_parser(
-        "audit",
-        help="Run a one-shot supply-chain audit",
-        description="Query OSV.dev for known vulnerabilities in installed components.",
-    )
-    audit_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON instead of human-readable text",
-    )
-    audit_parser.add_argument(
-        "--fail-on",
-        default="critical",
-        choices=["low", "moderate", "high", "critical"],
-        help="Exit non-zero when any finding meets this severity (default: critical)",
-    )
-    audit_parser.add_argument(
-        "--skip-venv",
-        action="store_true",
-        help="Skip scanning the Hermes Python venv",
-    )
-    audit_parser.add_argument(
-        "--skip-plugins",
-        action="store_true",
-        help="Skip scanning plugin requirements files",
-    )
-    audit_parser.add_argument(
-        "--skip-mcp",
-        action="store_true",
-        help="Skip scanning pinned MCP servers in config.yaml",
-    )
-    audit_parser.set_defaults(func=cmd_security)
-    security_parser.set_defaults(func=cmd_security)
+    # security command  (parser built in hermes_cli/subcommands/security.py)
+    # =========================================================================
+    build_security_parser(subparsers, cmd_security=cmd_security)
 
     # =========================================================================
-    # dump command
+    # dump command  (parser built in hermes_cli/subcommands/dump.py)
     # =========================================================================
-    dump_parser = subparsers.add_parser(
-        "dump",
-        help="Dump setup summary for support/debugging",
-        description="Output a compact, plain-text summary of your Hermes setup "
-        "that can be copy-pasted into Discord/GitHub for support context",
-    )
-    dump_parser.add_argument(
-        "--show-keys",
-        action="store_true",
-        help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set",
-    )
-    dump_parser.set_defaults(func=cmd_dump)
+    build_dump_parser(subparsers, cmd_dump=cmd_dump)
 
     # =========================================================================
-    # debug command
+    # debug command  (parser built in hermes_cli/subcommands/debug.py)
     # =========================================================================
-    debug_parser = subparsers.add_parser(
-        "debug",
-        help="Debug tools — upload logs and system info for support",
-        description="Debug utilities for Hermes Agent. Use 'hermes debug share' to "
-        "upload a debug report (system info + recent logs) to a paste "
-        "service and get a shareable URL.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-    hermes debug share              Upload debug report and print URL
-    hermes debug share --lines 500  Include more log lines
-    hermes debug share --expire 30  Keep paste for 30 days
-    hermes debug share --local      Print report locally (no upload)
-    hermes debug share --no-redact  Disable upload-time secret redaction
-    hermes debug delete <url>       Delete a previously uploaded paste
-""",
-    )
-    debug_sub = debug_parser.add_subparsers(dest="debug_command")
-    share_parser = debug_sub.add_parser(
-        "share",
-        help="Upload debug report to a paste service and print a shareable URL",
-    )
-    share_parser.add_argument(
-        "--lines",
-        type=int,
-        default=200,
-        help="Number of log lines to include per log file (default: 200)",
-    )
-    share_parser.add_argument(
-        "--expire",
-        type=int,
-        default=7,
-        help="Paste expiry in days (default: 7)",
-    )
-    share_parser.add_argument(
-        "--local",
-        action="store_true",
-        help="Print the report locally instead of uploading",
-    )
-    share_parser.add_argument(
-        "--no-redact",
-        action="store_true",
-        help=(
-            "Disable upload-time secret redaction (default: redact). Logs "
-            "are normally run through agent.redact.redact_sensitive_text "
-            "with force=True before upload so credentials are not leaked "
-            "into the public paste service."
-        ),
-    )
-    delete_parser = debug_sub.add_parser(
-        "delete",
-        help="Delete a paste uploaded by 'hermes debug share'",
-    )
-    delete_parser.add_argument(
-        "urls",
-        nargs="*",
-        default=[],
-        help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
-    )
-    debug_parser.set_defaults(func=cmd_debug)
+    build_debug_parser(subparsers, cmd_debug=cmd_debug)
 
     # =========================================================================
-    # backup command
+    # backup command  (parser built in hermes_cli/subcommands/backup.py)
     # =========================================================================
-    backup_parser = subparsers.add_parser(
-        "backup",
-        help="Back up Hermes home directory to a zip file",
-        description="Create a zip archive of your entire Hermes configuration, "
-        "skills, sessions, and data (excludes the hermes-agent codebase). "
-        "Use --quick for a fast snapshot of just critical state files.",
-    )
-    backup_parser.add_argument(
-        "-o",
-        "--output",
-        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)",
-    )
-    backup_parser.add_argument(
-        "-q",
-        "--quick",
-        action="store_true",
-        help="Quick snapshot: only critical state files (config, state.db, .env, auth, cron)",
-    )
-    backup_parser.add_argument(
-        "-l", "--label", help="Label for the snapshot (only used with --quick)"
-    )
-    backup_parser.set_defaults(func=cmd_backup)
+    build_backup_parser(subparsers, cmd_backup=cmd_backup)
 
     # =========================================================================
     # checkpoints command
@@ -13024,366 +13370,24 @@ Examples:
     _register_checkpoints_cli(checkpoints_parser)
 
     # =========================================================================
-    # import command
+    # import command  (parser built in hermes_cli/subcommands/import_cmd.py)
     # =========================================================================
-    import_parser = subparsers.add_parser(
-        "import",
-        help="Restore a Hermes backup from a zip file",
-        description="Extract a previously created Hermes backup into your "
-        "Hermes home directory, restoring configuration, skills, "
-        "sessions, and data",
-    )
-    import_parser.add_argument("zipfile", help="Path to the backup zip file")
-    import_parser.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Overwrite existing files without confirmation",
-    )
-    import_parser.set_defaults(func=cmd_import)
+    build_import_cmd_parser(subparsers, cmd_import=cmd_import)
 
     # =========================================================================
-    # config command
+    # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
-    config_parser = subparsers.add_parser(
-        "config",
-        help="View and edit configuration",
-        description="Manage Hermes Agent configuration",
-    )
-    config_subparsers = config_parser.add_subparsers(dest="config_command")
-
-    # config show (default)
-    config_subparsers.add_parser("show", help="Show current configuration")
-
-    # config edit
-    config_subparsers.add_parser("edit", help="Open config file in editor")
-
-    # config set
-    config_set = config_subparsers.add_parser("set", help="Set a configuration value")
-    config_set.add_argument(
-        "key", nargs="?", help="Configuration key (e.g., model, terminal.backend)"
-    )
-    config_set.add_argument("value", nargs="?", help="Value to set")
-
-    # config path
-    config_subparsers.add_parser("path", help="Print config file path")
-
-    # config env-path
-    config_subparsers.add_parser("env-path", help="Print .env file path")
-
-    # config check
-    config_subparsers.add_parser("check", help="Check for missing/outdated config")
-
-    # config migrate
-    config_subparsers.add_parser("migrate", help="Update config with new options")
-
-    config_parser.set_defaults(func=cmd_config)
+    build_config_parser(subparsers, cmd_config=cmd_config)
 
     # =========================================================================
-    # pairing command
+    # pairing command  (parser built in hermes_cli/subcommands/pairing.py)
     # =========================================================================
-    pairing_parser = subparsers.add_parser(
-        "pairing",
-        help="Manage DM pairing codes for user authorization",
-        description="Approve or revoke user access via pairing codes",
-    )
-    pairing_sub = pairing_parser.add_subparsers(dest="pairing_action")
-
-    pairing_sub.add_parser("list", help="Show pending + approved users")
-
-    pairing_approve_parser = pairing_sub.add_parser(
-        "approve", help="Approve a pairing code"
-    )
-    pairing_approve_parser.add_argument(
-        "platform", help="Platform name (telegram, discord, slack, whatsapp)"
-    )
-    pairing_approve_parser.add_argument("code", help="Pairing code to approve")
-
-    pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
-    pairing_revoke_parser.add_argument("platform", help="Platform name")
-    pairing_revoke_parser.add_argument("user_id", help="User ID to revoke")
-
-    pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
-
-    def cmd_pairing(args):
-        from hermes_cli.pairing import pairing_command
-
-        pairing_command(args)
-
-    pairing_parser.set_defaults(func=cmd_pairing)
+    build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)
 
     # =========================================================================
-    # skills command
+    # skills command  (parser built in hermes_cli/subcommands/skills.py)
     # =========================================================================
-    skills_parser = subparsers.add_parser(
-        "skills",
-        help="Search, install, configure, and manage skills",
-        description="Search, install, inspect, audit, configure, and manage skills from skills.sh, well-known agent skill endpoints, GitHub, ClawHub, and other registries.",
-    )
-    skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
-
-    skills_browse = skills_subparsers.add_parser(
-        "browse", help="Browse all available skills (paginated)"
-    )
-    skills_browse.add_argument(
-        "--page", type=int, default=1, help="Page number (default: 1)"
-    )
-    skills_browse.add_argument(
-        "--size", type=int, default=20, help="Results per page (default: 20)"
-    )
-    skills_browse.add_argument(
-        "--source",
-        default="all",
-        choices=[
-            "all",
-            "official",
-            "skills-sh",
-            "well-known",
-            "github",
-            "clawhub",
-            "lobehub",
-            "browse-sh",
-        ],
-        help="Filter by source (default: all)",
-    )
-
-    skills_search = skills_subparsers.add_parser(
-        "search", help="Search skill registries"
-    )
-    skills_search.add_argument("query", help="Search query")
-    skills_search.add_argument(
-        "--source",
-        default="all",
-        choices=[
-            "all",
-            "official",
-            "skills-sh",
-            "well-known",
-            "github",
-            "clawhub",
-            "lobehub",
-            "browse-sh",
-        ],
-    )
-    skills_search.add_argument("--limit", type=int, default=10, help="Max results")
-    skills_search.add_argument(
-        "--json",
-        action="store_true",
-        help="Output JSON instead of a table (full identifiers, scripting-friendly)",
-    )
-
-    skills_install = skills_subparsers.add_parser("install", help="Install a skill")
-    skills_install.add_argument(
-        "identifier",
-        help="Skill identifier (e.g. openai/skills/skill-creator) or a direct HTTP(S) URL to a SKILL.md file",
-    )
-    skills_install.add_argument(
-        "--category", default="", help="Category folder to install into"
-    )
-    skills_install.add_argument(
-        "--name",
-        default="",
-        help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
-    )
-    skills_install.add_argument(
-        "--force", action="store_true", help="Install despite blocked scan verdict"
-    )
-    skills_install.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt (needed in TUI mode)",
-    )
-
-    skills_inspect = skills_subparsers.add_parser(
-        "inspect", help="Preview a skill without installing"
-    )
-    skills_inspect.add_argument("identifier", help="Skill identifier")
-
-    skills_list = skills_subparsers.add_parser("list", help="List installed skills")
-    skills_list.add_argument(
-        "--source", default="all", choices=["all", "hub", "builtin", "local"]
-    )
-    skills_list.add_argument(
-        "--enabled-only",
-        action="store_true",
-        help="Hide disabled skills. Use with -p <profile> to see exactly "
-        "which skills will load for that profile.",
-    )
-
-    skills_check = skills_subparsers.add_parser(
-        "check", help="Check installed hub skills for updates"
-    )
-    skills_check.add_argument(
-        "name", nargs="?", help="Specific skill to check (default: all)"
-    )
-
-    skills_update = skills_subparsers.add_parser(
-        "update", help="Update installed hub skills"
-    )
-    skills_update.add_argument(
-        "name",
-        nargs="?",
-        help="Specific skill to update (default: all outdated skills)",
-    )
-
-    skills_audit = skills_subparsers.add_parser(
-        "audit", help="Re-scan installed hub skills"
-    )
-    skills_audit.add_argument(
-        "name", nargs="?", help="Specific skill to audit (default: all)"
-    )
-    skills_audit.add_argument(
-        "--deep",
-        action="store_true",
-        help="Run AST-level analysis on Python files (opt-in diagnostic)",
-    )
-
-    skills_uninstall = skills_subparsers.add_parser(
-        "uninstall", help="Remove a hub-installed skill"
-    )
-    skills_uninstall.add_argument("name", help="Skill name to remove")
-
-    skills_reset = skills_subparsers.add_parser(
-        "reset",
-        help="Reset a bundled skill — clears 'user-modified' tracking so updates work again",
-        description=(
-            "Clear a bundled skill's entry from the sync manifest (~/.hermes/skills/.bundled_manifest) "
-            "so future 'hermes update' runs stop marking it as user-modified. Pass --restore to also "
-            "replace the current copy with the bundled version."
-        ),
-    )
-    skills_reset.add_argument(
-        "name", help="Skill name to reset (e.g. google-workspace)"
-    )
-    skills_reset.add_argument(
-        "--restore",
-        action="store_true",
-        help="Also delete the current copy and re-copy the bundled version",
-    )
-    skills_reset.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt when using --restore",
-    )
-
-    skills_opt_out = skills_subparsers.add_parser(
-        "opt-out",
-        help="Stop bundled skills from being seeded into this profile",
-        description=(
-            "Write the .no-bundled-skills marker so the installer, "
-            "`hermes update`, and any direct sync stop seeding bundled skills "
-            "into the active profile. By default nothing already on disk is "
-            "touched. Pass --remove to ALSO delete bundled skills that are "
-            "unmodified (user-edited and hub/local skills are never removed)."
-        ),
-    )
-    skills_opt_out.add_argument(
-        "--remove",
-        action="store_true",
-        help="Also delete already-present unmodified bundled skills",
-    )
-    skills_opt_out.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt when using --remove",
-    )
-
-    skills_opt_in = skills_subparsers.add_parser(
-        "opt-in",
-        help="Re-enable bundled-skill seeding (undo opt-out)",
-        description=(
-            "Remove the .no-bundled-skills marker so bundled skills are seeded "
-            "again on the next `hermes update`. Pass --sync to re-seed now."
-        ),
-    )
-    skills_opt_in.add_argument(
-        "--sync",
-        action="store_true",
-        help="Re-seed bundled skills immediately instead of waiting for update",
-    )
-
-    skills_repair_official = skills_subparsers.add_parser(
-        "repair-official",
-        help="Backfill or restore official optional skills from repo source",
-        description=(
-            "Repair official optional skill provenance. By default, only backfills "
-            "hub metadata for exact matches. Pass --restore to replace missing or "
-            "mutated active copies from optional-skills/, moving existing copies to "
-            "a restore backup first. Use name 'all' to repair every optional skill."
-        ),
-    )
-    skills_repair_official.add_argument(
-        "name", help="Official optional skill folder/frontmatter name, or 'all'"
-    )
-    skills_repair_official.add_argument(
-        "--restore",
-        action="store_true",
-        help="Restore from official optional source, backing up existing matching copies",
-    )
-    skills_repair_official.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt when using --restore",
-    )
-
-    skills_publish = skills_subparsers.add_parser(
-        "publish", help="Publish a skill to a registry"
-    )
-    skills_publish.add_argument("skill_path", help="Path to skill directory")
-    skills_publish.add_argument(
-        "--to", default="github", choices=["github", "clawhub"], help="Target registry"
-    )
-    skills_publish.add_argument(
-        "--repo", default="", help="Target GitHub repo (e.g. openai/skills)"
-    )
-
-    skills_snapshot = skills_subparsers.add_parser(
-        "snapshot", help="Export/import skill configurations"
-    )
-    snapshot_subparsers = skills_snapshot.add_subparsers(dest="snapshot_action")
-    snap_export = snapshot_subparsers.add_parser(
-        "export", help="Export installed skills to a file"
-    )
-    snap_export.add_argument("output", help="Output JSON file path (use - for stdout)")
-    snap_import = snapshot_subparsers.add_parser(
-        "import", help="Import and install skills from a file"
-    )
-    snap_import.add_argument("input", help="Input JSON file path")
-    snap_import.add_argument(
-        "--force", action="store_true", help="Force install despite caution verdict"
-    )
-
-    skills_tap = skills_subparsers.add_parser("tap", help="Manage skill sources")
-    tap_subparsers = skills_tap.add_subparsers(dest="tap_action")
-    tap_subparsers.add_parser("list", help="List configured taps")
-    tap_add = tap_subparsers.add_parser("add", help="Add a GitHub repo as skill source")
-    tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
-    tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
-    tap_rm.add_argument("name", help="Tap name to remove")
-
-    # config sub-action: interactive enable/disable
-    skills_subparsers.add_parser(
-        "config",
-        help="Interactive skill configuration — enable/disable individual skills",
-    )
-
-    def cmd_skills(args):
-        # Route 'config' action to skills_config module
-        if getattr(args, "skills_action", None) == "config":
-            _require_tty("skills config")
-            from hermes_cli.skills_config import skills_command as skills_config_command
-
-            skills_config_command(args)
-        else:
-            from hermes_cli.skills_hub import skills_command
-
-            skills_command(args)
-
-    skills_parser.set_defaults(func=cmd_skills)
+    build_skills_parser(subparsers, cmd_skills=cmd_skills)
 
     # =========================================================================
     # bundles command — skill bundles (alias /<name> for multiple skills)
@@ -13402,95 +13406,9 @@ Examples:
     bundles_parser.set_defaults(func=bundles_command)
 
     # =========================================================================
-    # plugins command
+    # plugins command  (parser built in hermes_cli/subcommands/plugins.py)
     # =========================================================================
-    plugins_parser = subparsers.add_parser(
-        "plugins",
-        help="Manage plugins — install, update, remove, list",
-        description="Install plugins from Git repositories, update, remove, or list them.",
-    )
-    plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
-
-    plugins_install = plugins_subparsers.add_parser(
-        "install", help="Install a plugin from a Git URL or owner/repo"
-    )
-    plugins_install.add_argument(
-        "identifier",
-        help="Git URL or owner/repo shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)",
-    )
-    plugins_install.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Remove existing plugin and reinstall",
-    )
-    _install_enable_group = plugins_install.add_mutually_exclusive_group()
-    _install_enable_group.add_argument(
-        "--enable",
-        action="store_true",
-        help="Auto-enable the plugin after install (skip confirmation prompt)",
-    )
-    _install_enable_group.add_argument(
-        "--no-enable",
-        action="store_true",
-        help="Install disabled (skip confirmation prompt); enable later with `hermes plugins enable <name>`",
-    )
-
-    plugins_update = plugins_subparsers.add_parser(
-        "update", help="Pull latest changes for an installed plugin"
-    )
-    plugins_update.add_argument("name", help="Plugin name to update")
-
-    plugins_remove = plugins_subparsers.add_parser(
-        "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin"
-    )
-    plugins_remove.add_argument("name", help="Plugin directory name to remove")
-
-    plugins_list = plugins_subparsers.add_parser(
-        "list", aliases=["ls"], help="List installed plugins"
-    )
-    plugins_list.add_argument(
-        "--enabled",
-        action="store_true",
-        help="Show only enabled plugins",
-    )
-    plugins_list.add_argument(
-        "--user",
-        action="store_true",
-        help="Show only user-installed plugins (including git plugins)",
-    )
-    plugins_list.add_argument(
-        "--no-bundled",
-        action="store_true",
-        help="Hide bundled plugins",
-    )
-    plugins_list.add_argument(
-        "--plain",
-        action="store_true",
-        help="Print compact plain-text output instead of a Rich table",
-    )
-    plugins_list.add_argument(
-        "--json",
-        action="store_true",
-        help="Print machine-readable JSON",
-    )
-
-    plugins_enable = plugins_subparsers.add_parser(
-        "enable", help="Enable a disabled plugin"
-    )
-    plugins_enable.add_argument("name", help="Plugin name to enable")
-
-    plugins_disable = plugins_subparsers.add_parser(
-        "disable", help="Disable a plugin without removing it"
-    )
-    plugins_disable.add_argument("name", help="Plugin name to disable")
-
-    def cmd_plugins(args):
-        from hermes_cli.plugins_cmd import plugins_command
-
-        plugins_command(args)
-
-    plugins_parser.set_defaults(func=cmd_plugins)
+    build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 
     # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.
@@ -13559,190 +13477,14 @@ Examples:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
 
     # =========================================================================
-    # memory command
+    # memory command  (parser built in hermes_cli/subcommands/memory.py)
     # =========================================================================
-    memory_parser = subparsers.add_parser(
-        "memory",
-        help="Configure external memory provider",
-        description=(
-            "Set up and manage external memory provider plugins.\n\n"
-            "Available providers: honcho, openviking, mem0, hindsight,\n"
-            "holographic, retaindb, byterover.\n\n"
-            "Only one external provider can be active at a time.\n"
-            "Built-in memory (MEMORY.md/USER.md) is always active."
-        ),
-    )
-    memory_sub = memory_parser.add_subparsers(dest="memory_command")
-    _setup_parser = memory_sub.add_parser(
-        "setup", help="Interactive provider selection and configuration"
-    )
-    _setup_parser.add_argument(
-        "provider",
-        nargs="?",
-        default=None,
-        help="Provider to configure directly (e.g. honcho), skipping the picker",
-    )
-    memory_sub.add_parser("status", help="Show current memory provider config")
-    memory_sub.add_parser("off", help="Disable external provider (built-in only)")
-    _reset_parser = memory_sub.add_parser(
-        "reset",
-        help="Erase all built-in memory (MEMORY.md and USER.md)",
-    )
-    _reset_parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
-    _reset_parser.add_argument(
-        "--target",
-        choices=["all", "memory", "user"],
-        default="all",
-        help="Which store to reset: 'all' (default), 'memory', or 'user'",
-    )
-
-    def cmd_memory(args):
-        sub = getattr(args, "memory_command", None)
-        if sub == "off":
-            from hermes_cli.config import load_config, save_config
-
-            config = load_config()
-            if not isinstance(config.get("memory"), dict):
-                config["memory"] = {}
-            config["memory"]["provider"] = ""
-            save_config(config)
-            print("\n  ✓ Memory provider: built-in only")
-            print("  Saved to config.yaml\n")
-        elif sub == "reset":
-            from hermes_constants import get_hermes_home, display_hermes_home
-
-            mem_dir = get_hermes_home() / "memories"
-            target = getattr(args, "target", "all")
-            files_to_reset = []
-            if target in {"all", "memory"}:
-                files_to_reset.append(("MEMORY.md", "agent notes"))
-            if target in {"all", "user"}:
-                files_to_reset.append(("USER.md", "user profile"))
-
-            # Check what exists
-            existing = [
-                (f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()
-            ]
-            if not existing:
-                print(
-                    f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n"
-                )
-                return
-
-            print(f"\n  This will permanently erase the following memory files:")
-            for f, desc in existing:
-                path = mem_dir / f
-                size = path.stat().st_size
-                print(f"    ◆ {f} ({desc}) — {size:,} bytes")
-
-            if not getattr(args, "yes", False):
-                try:
-                    answer = input("\n  Type 'yes' to confirm: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print("\n  Cancelled.\n")
-                    return
-                if answer != "yes":
-                    print("  Cancelled.\n")
-                    return
-
-            for f, desc in existing:
-                (mem_dir / f).unlink()
-                print(f"  ✓ Deleted {f} ({desc})")
-
-            print(
-                f"\n  Memory reset complete. New sessions will start with a blank slate."
-            )
-            print(f"  Files were in: {display_hermes_home()}/memories/\n")
-        else:
-            from hermes_cli.memory_setup import memory_command
-
-            memory_command(args)
-
-    memory_parser.set_defaults(func=cmd_memory)
+    build_memory_parser(subparsers, cmd_memory=cmd_memory)
 
     # =========================================================================
-    # tools command
+    # tools command  (parser built in hermes_cli/subcommands/tools.py)
     # =========================================================================
-    tools_parser = subparsers.add_parser(
-        "tools",
-        help="Configure which tools are enabled per platform",
-        description=(
-            "Enable, disable, or list tools for CLI, Telegram, Discord, etc.\n\n"
-            "Built-in toolsets use plain names (e.g. web, memory).\n"
-            "MCP tools use server:tool notation (e.g. github:create_issue).\n\n"
-            "Run 'hermes tools' with no subcommand for the interactive configuration UI."
-        ),
-    )
-    tools_parser.add_argument(
-        "--summary",
-        action="store_true",
-        help="Print a summary of enabled tools per platform and exit",
-    )
-    tools_sub = tools_parser.add_subparsers(dest="tools_action")
-
-    # hermes tools list [--platform cli]
-    tools_list_p = tools_sub.add_parser(
-        "list",
-        help="Show all tools and their enabled/disabled status",
-    )
-    tools_list_p.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to show (default: cli)",
-    )
-
-    # hermes tools disable <name...> [--platform cli]
-    tools_disable_p = tools_sub.add_parser(
-        "disable",
-        help="Disable toolsets or MCP tools",
-    )
-    tools_disable_p.add_argument(
-        "names",
-        nargs="+",
-        metavar="NAME",
-        help="Toolset name (e.g. web) or MCP tool in server:tool form",
-    )
-    tools_disable_p.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to apply to (default: cli)",
-    )
-
-    # hermes tools enable <name...> [--platform cli]
-    tools_enable_p = tools_sub.add_parser(
-        "enable",
-        help="Enable toolsets or MCP tools",
-    )
-    tools_enable_p.add_argument(
-        "names",
-        nargs="+",
-        metavar="NAME",
-        help="Toolset name or MCP tool in server:tool form",
-    )
-    tools_enable_p.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to apply to (default: cli)",
-    )
-
-    def cmd_tools(args):
-        action = getattr(args, "tools_action", None)
-        if action in {"list", "disable", "enable"}:
-            from hermes_cli.tools_config import tools_disable_enable_command
-
-            tools_disable_enable_command(args)
-        else:
-            _require_tty("tools")
-            from hermes_cli.tools_config import tools_command
-
-            tools_command(args)
-
-    tools_parser.set_defaults(func=cmd_tools)
+    build_tools_parser(subparsers, cmd_tools=cmd_tools)
 
     # =========================================================================
     # computer-use command — manage Computer Use (cua-driver) on macOS
@@ -13814,103 +13556,9 @@ Examples:
 
     computer_use_parser.set_defaults(func=cmd_computer_use)
     # =========================================================================
-    # mcp command — manage MCP server connections
+    # mcp command  (parser built in hermes_cli/subcommands/mcp.py)
     # =========================================================================
-    mcp_parser = subparsers.add_parser(
-        "mcp",
-        help="Manage MCP servers and run Hermes as an MCP server",
-        description=(
-            "Manage MCP server connections and run Hermes as an MCP server.\n\n"
-            "MCP servers provide additional tools via the Model Context Protocol.\n"
-            "Use 'hermes mcp add' to connect to a new server, or\n"
-            "'hermes mcp serve' to expose Hermes conversations over MCP."
-        ),
-    )
-    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
-
-    mcp_serve_p = mcp_sub.add_parser(
-        "serve",
-        help="Run Hermes as an MCP server (expose conversations to other agents)",
-    )
-    mcp_serve_p.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging on stderr",
-    )
-    _add_accept_hooks_flag(mcp_serve_p)
-
-    mcp_add_p = mcp_sub.add_parser(
-        "add", help="Add an MCP server (discovery-first install)"
-    )
-    mcp_add_p.add_argument("name", help="Server name (used as config key)")
-    mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")
-    # dest="mcp_command" so this flag does not clobber the top-level
-    # subparser's args.command attribute, which the dispatcher reads to
-    # route to cmd_mcp.  Without an explicit dest, argparse derives
-    # dest="command" from the flag name and sets it to None when the
-    # flag is omitted, causing `hermes mcp add ...` to fall through to
-    # interactive chat.
-    mcp_add_p.add_argument(
-        "--command", dest="mcp_command", help="Stdio command (e.g. npx)"
-    )
-    mcp_add_p.add_argument(
-        "--args", nargs="*", default=[], help="Arguments for stdio command"
-    )
-    mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
-    mcp_add_p.add_argument("--preset", help="Known MCP preset name")
-    mcp_add_p.add_argument(
-        "--env",
-        nargs="*",
-        default=[],
-        help="Environment variables for stdio servers (KEY=VALUE)",
-    )
-
-    mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
-    mcp_rm_p.add_argument("name", help="Server name to remove")
-
-    mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
-
-    mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
-    mcp_test_p.add_argument("name", help="Server name to test")
-
-    mcp_cfg_p = mcp_sub.add_parser(
-        "configure", aliases=["config"], help="Toggle tool selection"
-    )
-    mcp_cfg_p.add_argument("name", help="Server name to configure")
-
-    mcp_login_p = mcp_sub.add_parser(
-        "login",
-        help="Force re-authentication for an OAuth-based MCP server",
-    )
-    mcp_login_p.add_argument("name", help="Server name to re-authenticate")
-
-    # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
-    mcp_sub.add_parser(
-        "picker",
-        help="Interactive catalog picker (also the default for `hermes mcp`)",
-    )
-    mcp_sub.add_parser(
-        "catalog",
-        help="List Nous-approved MCPs available for one-click install",
-    )
-    mcp_install_p = mcp_sub.add_parser(
-        "install",
-        help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)",
-    )
-    mcp_install_p.add_argument(
-        "identifier",
-        help="Catalog entry name (or `official/<name>`)",
-    )
-
-    _add_accept_hooks_flag(mcp_parser)
-
-    def cmd_mcp(args):
-        from hermes_cli.mcp_config import mcp_command
-
-        mcp_command(args)
-
-    mcp_parser.set_defaults(func=cmd_mcp)
+    build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
 
     # =========================================================================
     # sessions command
@@ -14186,460 +13834,39 @@ Examples:
     sessions_parser.set_defaults(func=cmd_sessions)
 
     # =========================================================================
-    # insights command
+    # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
-    insights_parser = subparsers.add_parser(
-        "insights",
-        help="Show usage insights and analytics",
-        description="Analyze session history to show token usage, costs, tool patterns, and activity trends",
-    )
-    insights_parser.add_argument(
-        "--days", type=int, default=30, help="Number of days to analyze (default: 30)"
-    )
-    insights_parser.add_argument(
-        "--source", help="Filter by platform (cli, telegram, discord, etc.)"
-    )
-
-    def cmd_insights(args):
-        try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
-
-            db = SessionDB()
-            engine = InsightsEngine(db)
-            report = engine.generate(days=args.days, source=args.source)
-            print(engine.format_terminal(report))
-            db.close()
-        except Exception as e:
-            print(f"Error generating insights: {e}")
-
-    insights_parser.set_defaults(func=cmd_insights)
+    build_insights_parser(subparsers, cmd_insights=cmd_insights)
 
     # =========================================================================
-    # claw command (OpenClaw migration)
+    # claw command  (parser built in hermes_cli/subcommands/claw.py)
     # =========================================================================
-    claw_parser = subparsers.add_parser(
-        "claw",
-        help="OpenClaw migration tools",
-        description="Migrate settings, memories, skills, and API keys from OpenClaw to Hermes",
-    )
-    claw_subparsers = claw_parser.add_subparsers(dest="claw_action")
-
-    # claw migrate
-    claw_migrate = claw_subparsers.add_parser(
-        "migrate",
-        help="Migrate from OpenClaw to Hermes",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
-        "Always shows a preview before making changes.",
-    )
-    claw_migrate.add_argument(
-        "--source", help="Path to OpenClaw directory (default: ~/.openclaw)"
-    )
-    claw_migrate.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview only — stop after showing what would be migrated",
-    )
-    claw_migrate.add_argument(
-        "--preset",
-        choices=["user-data", "full"],
-        default="full",
-        help="Migration preset (default: full). Neither preset imports secrets — "
-        "pass --migrate-secrets to include API keys.",
-    )
-    claw_migrate.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing files (default: refuse to apply when the plan has conflicts)",
-    )
-    claw_migrate.add_argument(
-        "--migrate-secrets",
-        action="store_true",
-        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.). "
-        "Required even under --preset full.",
-    )
-    claw_migrate.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="Skip the pre-migration zip snapshot of ~/.hermes/ (by default a "
-        "single restore-point archive is written to ~/.hermes/backups/ "
-        "before apply; restorable with 'hermes import').",
-    )
-    claw_migrate.add_argument(
-        "--workspace-target", help="Absolute path to copy workspace instructions into"
-    )
-    claw_migrate.add_argument(
-        "--skill-conflict",
-        choices=["skip", "overwrite", "rename"],
-        default="skip",
-        help="How to handle skill name conflicts (default: skip)",
-    )
-    claw_migrate.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-
-    # claw cleanup
-    claw_cleanup = claw_subparsers.add_parser(
-        "cleanup",
-        aliases=["clean"],
-        help="Archive leftover OpenClaw directories after migration",
-        description="Scan for and archive leftover OpenClaw directories to prevent state fragmentation",
-    )
-    claw_cleanup.add_argument(
-        "--source", help="Path to a specific OpenClaw directory to clean up"
-    )
-    claw_cleanup.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview what would be archived without making changes",
-    )
-    claw_cleanup.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-
-    def cmd_claw(args):
-        from hermes_cli.claw import claw_command
-
-        claw_command(args)
-
-    claw_parser.set_defaults(func=cmd_claw)
+    build_claw_parser(subparsers, cmd_claw=cmd_claw)
 
     # =========================================================================
-    # version command
+    # version command  (parser built in hermes_cli/subcommands/version.py)
     # =========================================================================
-    version_parser = subparsers.add_parser("version", help="Show version information")
-    version_parser.set_defaults(func=cmd_version)
-
-    # =========================================================================
-    # update command
-    # =========================================================================
-    update_parser = subparsers.add_parser(
-        "update",
-        help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies",
-    )
-    update_parser.add_argument(
-        "--gateway",
-        action="store_true",
-        default=False,
-        help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
-    )
-    update_parser.add_argument(
-        "--check",
-        action="store_true",
-        default=False,
-        help="Check whether an update is available without installing anything",
-    )
-    update_parser.add_argument(
-        "--no-backup",
-        action="store_true",
-        default=False,
-        help="Skip the pre-update backup for this run (overrides updates.pre_update_backup)",
-    )
-    update_parser.add_argument(
-        "--backup",
-        action="store_true",
-        default=False,
-        help="Force a pre-update backup for this run (off by default; overrides updates.pre_update_backup)",
-    )
-    update_parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        default=False,
-        help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
-    )
-    update_parser.add_argument(
-        "--branch",
-        default=None,
-        metavar="NAME",
-        help=(
-            "Update against this branch instead of the default (main). "
-            "If the local checkout is on a different branch, hermes will "
-            "switch to the requested branch first (auto-stashing any "
-            "uncommitted changes)."
-        ),
-    )
-    update_parser.add_argument(
-        "--force",
-        action="store_true",
-        default=False,
-        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
-    )
-    update_parser.set_defaults(func=cmd_update)
+    build_version_parser(subparsers, cmd_version=cmd_version)
 
     # =========================================================================
-    # uninstall command
+    # update command  (parser built in hermes_cli/subcommands/update.py)
     # =========================================================================
-    uninstall_parser = subparsers.add_parser(
-        "uninstall",
-        help="Uninstall Hermes Agent",
-        description="Remove Hermes Agent from your system. Can keep configs/data for reinstall.",
-    )
-    uninstall_parser.add_argument(
-        "--full",
-        action="store_true",
-        help="Full uninstall - remove everything including configs and data",
-    )
-    uninstall_parser.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-    uninstall_parser.set_defaults(func=cmd_uninstall)
+    build_update_parser(subparsers, cmd_update=cmd_update)
 
     # =========================================================================
-    # acp command
+    # uninstall command  (parser built in hermes_cli/subcommands/uninstall.py)
     # =========================================================================
-    acp_parser = subparsers.add_parser(
-        "acp",
-        help="Run Hermes Agent as an ACP (Agent Client Protocol) server",
-        description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
-    )
-    _add_accept_hooks_flag(acp_parser)
-    acp_parser.add_argument(
-        "--version",
-        action="store_true",
-        dest="acp_version",
-        help="Print Hermes ACP version and exit",
-    )
-    acp_parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Verify ACP dependencies and adapter imports, then exit",
-    )
-    acp_parser.add_argument(
-        "--setup",
-        action="store_true",
-        help="Run interactive Hermes provider/model setup for ACP terminal auth",
-    )
-    acp_parser.add_argument(
-        "--setup-browser",
-        action="store_true",
-        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
-             "for browser tool support (idempotent).",
-    )
-    acp_parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        dest="assume_yes",
-        help="Accept all prompts (used by --setup-browser to skip the "
-             "~400 MB Chromium download confirmation).",
-    )
-
-    def cmd_acp(args):
-        """Launch Hermes Agent as an ACP server."""
-        try:
-            from acp_adapter.entry import main as acp_main
-
-            acp_argv = []
-            if getattr(args, "acp_version", False):
-                acp_argv.append("--version")
-            if getattr(args, "check", False):
-                acp_argv.append("--check")
-            if getattr(args, "setup", False):
-                acp_argv.append("--setup")
-            if getattr(args, "setup_browser", False):
-                acp_argv.append("--setup-browser")
-            if getattr(args, "assume_yes", False):
-                acp_argv.append("--yes")
-            acp_main(acp_argv)
-        except ImportError:
-            print("ACP dependencies not installed.", file=sys.stderr)
-            print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
-            sys.exit(1)
-
-    acp_parser.set_defaults(func=cmd_acp)
+    build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
 
     # =========================================================================
-    # profile command
+    # acp command  (parser built in hermes_cli/subcommands/acp.py)
     # =========================================================================
-    profile_parser = subparsers.add_parser(
-        "profile",
-        help="Manage profiles — multiple isolated Hermes instances",
-    )
-    profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
+    build_acp_parser(subparsers, cmd_acp=cmd_acp)
 
-    profile_subparsers.add_parser("list", help="List all profiles")
-    profile_use = profile_subparsers.add_parser(
-        "use", help="Set sticky default profile"
-    )
-    profile_use.add_argument("profile_name", help="Profile name (or 'default')")
-
-    profile_create = profile_subparsers.add_parser(
-        "create", help="Create a new profile"
-    )
-    profile_create.add_argument(
-        "profile_name", help="Profile name (lowercase, alphanumeric)"
-    )
-    profile_create.add_argument(
-        "--clone",
-        action="store_true",
-        help="Copy config.yaml, .env, SOUL.md from active profile",
-    )
-    profile_create.add_argument(
-        "--clone-all",
-        action="store_true",
-        help="Full copy of active profile (all state)",
-    )
-    profile_create.add_argument(
-        "--clone-from",
-        metavar="SOURCE",
-        help="Source profile to clone from (default: active)",
-    )
-    profile_create.add_argument(
-        "--no-alias", action="store_true", help="Skip wrapper script creation"
-    )
-    profile_create.add_argument(
-        "--no-skills",
-        action="store_true",
-        help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
-    )
-    profile_create.add_argument(
-        "--description",
-        default=None,
-        help="One- or two-sentence description of what this profile is good at. "
-             "Used by the kanban decomposer to route tasks based on role instead "
-             "of profile name alone. Skip and add later via `hermes profile describe`.",
-    )
-
-    profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
-    profile_delete.add_argument("profile_name", help="Profile to delete")
-    profile_delete.add_argument(
-        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
-    )
-
-    profile_describe = profile_subparsers.add_parser(
-        "describe",
-        help="Read or set a profile's description (used by the kanban orchestrator)",
-    )
-    profile_describe.add_argument(
-        "profile_name",
-        nargs="?",
-        default=None,
-        help="Profile to describe (omit + use --all --auto to sweep)",
-    )
-    profile_describe.add_argument(
-        "--text",
-        default=None,
-        help="Set description to this exact text (overwrites any existing description)",
-    )
-    profile_describe.add_argument(
-        "--auto",
-        action="store_true",
-        help="Auto-generate description via the auxiliary LLM "
-             "(uses auxiliary.profile_describer)",
-    )
-    profile_describe.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="With --auto, replace user-authored descriptions too (default: only "
-             "fill in missing or previously-auto descriptions)",
-    )
-    profile_describe.add_argument(
-        "--all",
-        dest="all_missing",
-        action="store_true",
-        help="With --auto, run on every profile missing a description",
-    )
-
-    profile_show = profile_subparsers.add_parser("show", help="Show profile details")
-    profile_show.add_argument("profile_name", help="Profile to show")
-
-    profile_alias = profile_subparsers.add_parser(
-        "alias", help="Manage wrapper scripts"
-    )
-    profile_alias.add_argument("profile_name", help="Profile name")
-    profile_alias.add_argument(
-        "--remove", action="store_true", help="Remove the wrapper script"
-    )
-    profile_alias.add_argument(
-        "--name",
-        dest="alias_name",
-        metavar="NAME",
-        help="Custom alias name (default: profile name)",
-    )
-
-    profile_rename = profile_subparsers.add_parser("rename", help="Rename a profile")
-    profile_rename.add_argument("old_name", help="Current profile name")
-    profile_rename.add_argument("new_name", help="New profile name")
-
-    profile_export = profile_subparsers.add_parser(
-        "export", help="Export a profile to archive"
-    )
-    profile_export.add_argument("profile_name", help="Profile to export")
-    profile_export.add_argument(
-        "-o", "--output", default=None, help="Output file (default: <name>.tar.gz)"
-    )
-
-    profile_import = profile_subparsers.add_parser(
-        "import", help="Import a profile from archive"
-    )
-    profile_import.add_argument("archive", help="Path to .tar.gz archive")
-    profile_import.add_argument(
-        "--name",
-        dest="import_name",
-        metavar="NAME",
-        help="Profile name (default: inferred from archive)",
-    )
-
-    # ---------- Distribution subcommands (issue #20456) ----------
-    profile_install = profile_subparsers.add_parser(
-        "install",
-        help="Install a profile distribution from a git URL or local directory",
-        description=(
-            "Install a Hermes profile distribution. SOURCE can be a git URL "
-            "(github.com/user/repo, https://..., git@...) or a local "
-            "directory containing distribution.yaml at its root."
-        ),
-    )
-    profile_install.add_argument(
-        "source",
-        help="Distribution source (git URL or local directory)",
-    )
-    profile_install.add_argument(
-        "--name", dest="install_name", metavar="NAME",
-        help="Override profile name (default: read from manifest)",
-    )
-    profile_install.add_argument(
-        "--alias", action="store_true",
-        help="Create a shell wrapper alias for the installed profile",
-    )
-    profile_install.add_argument(
-        "--force", action="store_true",
-        help="Overwrite an existing profile of the same name (user data preserved)",
-    )
-    profile_install.add_argument(
-        "-y", "--yes", action="store_true",
-        help="Skip manifest preview confirmation",
-    )
-
-    profile_update = profile_subparsers.add_parser(
-        "update",
-        help="Re-pull a distribution and apply updates (user data preserved)",
-        description=(
-            "Fetch the distribution from its recorded source and overwrite "
-            "distribution-owned files (SOUL.md, skills/, cron/, mcp.json). "
-            "User data (memories, sessions, auth, .env) is never touched. "
-            "config.yaml is preserved unless --force-config is passed."
-        ),
-    )
-    profile_update.add_argument("profile_name", help="Profile to update")
-    profile_update.add_argument(
-        "--force-config", action="store_true",
-        help="Also overwrite config.yaml (normally preserved to keep user overrides)",
-    )
-    profile_update.add_argument(
-        "-y", "--yes", action="store_true",
-        help="Skip confirmation",
-    )
-
-    profile_info = profile_subparsers.add_parser(
-        "info",
-        help="Show a profile's distribution manifest (version, requirements, source)",
-    )
-    profile_info.add_argument("profile_name", help="Profile to inspect")
-
-    profile_parser.set_defaults(func=cmd_profile)
+    # =========================================================================
+    # profile command  (parser built in hermes_cli/subcommands/profile.py)
+    # =========================================================================
+    build_profile_parser(subparsers, cmd_profile=cmd_profile)
 
     # =========================================================================
     # completion command
@@ -14658,61 +13885,14 @@ Examples:
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
 
     # =========================================================================
-    # dashboard command
+    # dashboard command  (parser built in hermes_cli/subcommands/dashboard.py)
     # =========================================================================
-    dashboard_parser = subparsers.add_parser(
-        "dashboard",
-        help="Start the web UI dashboard",
-        description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
+    build_dashboard_parser(
+        subparsers,
+        cmd_dashboard=cmd_dashboard,
+        cmd_dashboard_register=cmd_dashboard_register,
     )
-    dashboard_parser.add_argument(
-        "--port", type=int, default=9119, help="Port (default 9119)"
-    )
-    dashboard_parser.add_argument(
-        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
-    )
-    dashboard_parser.add_argument(
-        "--no-open", action="store_true", help="Don't open browser automatically"
-    )
-    dashboard_parser.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
-    )
-    dashboard_parser.add_argument(
-        "--tui",
-        action="store_true",
-        help=(
-            "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
-            "Alternatively set HERMES_DASHBOARD_TUI=1."
-        ),
-    )
-    dashboard_parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help=(
-            "Skip the web UI build step and serve the existing dist directly. "
-            "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build"
-        ),
-    )
-    # Lifecycle flags — mutually exclusive with each other and with the
-    # start-a-server flags above (if both are passed, --stop / --status win
-    # because they exit before the server is started).  The dashboard has
-    # no service manager and no PID file, so these scan the process table
-    # for `hermes dashboard` cmdlines and SIGTERM them directly — the same
-    # path `hermes update` uses to clean up stale dashboards.
-    dashboard_parser.add_argument(
-        "--stop",
-        action="store_true",
-        help="Stop all running hermes dashboard processes and exit",
-    )
-    dashboard_parser.add_argument(
-        "--status",
-        action="store_true",
-        help="List running hermes dashboard processes and exit",
-    )
-    dashboard_parser.set_defaults(func=cmd_dashboard)
+
 
     # =========================================================================
     # desktop (a.k.a. gui) command
@@ -14723,138 +13903,19 @@ Examples:
     # to be the one that appears in --help (argparse promotes the primary
     # name; aliases stay hidden).
     # =========================================================================
-    gui_parser = subparsers.add_parser(
-        "desktop",
-        aliases=["gui"],
-        help="Build and launch the native desktop app",
-        description=(
-            "Launch the Hermes Electron desktop app. By default this installs "
-            "workspace Node dependencies, builds the current OS's unpacked "
-            "Electron app, then launches that packaged artifact."
-        ),
-    )
-    gui_parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
-    )
-    gui_parser.add_argument(
-        "--source",
-        action="store_true",
-        help="Launch via `electron .` against apps/desktop/dist instead of the packaged app",
-    )
-    gui_parser.add_argument(
-        "--build-only",
-        action="store_true",
-        help="Build the desktop app but do not launch it (used by the installer's --update flow)",
-    )
-    gui_parser.add_argument(
-        "--fake-boot",
-        action="store_true",
-        help="Enable deterministic desktop boot delays for validating startup UI",
-    )
-    gui_parser.add_argument(
-        "--ignore-existing",
-        action="store_true",
-        help="Force Desktop to ignore any hermes CLI already on PATH during backend resolution",
-    )
-    gui_parser.add_argument(
-        "--hermes-root",
-        help="Override the Hermes source root used by Desktop (sets HERMES_DESKTOP_HERMES_ROOT)",
-    )
-    gui_parser.add_argument(
-        "--cwd",
-        help="Initial project directory for Desktop chat sessions (sets HERMES_DESKTOP_CWD)",
-    )
-    gui_parser.set_defaults(func=cmd_gui)
+    # gui command  (parser built in hermes_cli/subcommands/gui.py)
+    # =========================================================================
+    build_gui_parser(subparsers, cmd_gui=cmd_gui)
 
     # =========================================================================
-    # logs command
+    # logs command  (parser built in hermes_cli/subcommands/logs.py)
     # =========================================================================
-    logs_parser = subparsers.add_parser(
-        "logs",
-        help="View and filter Hermes log files",
-        description="View, tail, and filter agent.log / errors.log / gateway.log / gui.log",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-    hermes logs                    Show last 50 lines of agent.log
-    hermes logs -f                 Follow agent.log in real time
-    hermes logs errors             Show last 50 lines of errors.log
-    hermes logs gateway -n 100     Show last 100 lines of gateway.log
-    hermes logs gui -f             Follow gui.log in real time
-    hermes logs --level WARNING    Only show WARNING and above
-    hermes logs --session abc123   Filter by session ID
-    hermes logs --component tools  Only show tool-related lines
-    hermes logs --since 1h         Lines from the last hour
-    hermes logs --since 30m -f     Follow, starting from 30 min ago
-    hermes logs list               List available log files with sizes
-""",
-    )
-    logs_parser.add_argument(
-        "log_name",
-        nargs="?",
-        default="agent",
-        help="Log to view: agent (default), errors, gateway, gui, or 'list' to show available files",
-    )
-    logs_parser.add_argument(
-        "-n",
-        "--lines",
-        type=int,
-        default=50,
-        help="Number of lines to show (default: 50)",
-    )
-    logs_parser.add_argument(
-        "-f",
-        "--follow",
-        action="store_true",
-        help="Follow the log in real time (like tail -f)",
-    )
-    logs_parser.add_argument(
-        "--level",
-        metavar="LEVEL",
-        help="Minimum log level to show (DEBUG, INFO, WARNING, ERROR)",
-    )
-    logs_parser.add_argument(
-        "--session",
-        metavar="ID",
-        help="Filter lines containing this session ID substring",
-    )
-    logs_parser.add_argument(
-        "--since",
-        metavar="TIME",
-        help="Show lines since TIME ago (e.g. 1h, 30m, 2d)",
-    )
-    logs_parser.add_argument(
-        "--component",
-        metavar="NAME",
-        help="Filter by component: gateway, agent, tools, cli, cron, gui",
-    )
-    logs_parser.set_defaults(func=cmd_logs)
+    build_logs_parser(subparsers, cmd_logs=cmd_logs)
 
     # =========================================================================
-    # prompt-size command
+    # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
-    prompt_size_parser = subparsers.add_parser(
-        "prompt-size",
-        help="Show a byte breakdown of the system prompt + tool schemas",
-        description=(
-            "Report the fixed prompt budget for a fresh session: system "
-            "prompt total, skills index, memory, user profile, and tool-schema "
-            "JSON. Runs offline (no API call)."
-        ),
-    )
-    prompt_size_parser.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
-    )
-    prompt_size_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit the breakdown as JSON",
-    )
-    prompt_size_parser.set_defaults(func=cmd_prompt_size)
+    build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
 
     # =========================================================================
     # Parse and execute

@@ -3257,6 +3257,26 @@ class GatewayRunner:
         )
 
     @staticmethod
+    def _load_reasoning_stream_ttl(platform: "Platform") -> int:
+        """Load reasoning_stream_ttl_seconds from per-platform display section.
+
+        Reads ``display.platforms.<platform>.reasoning_stream_ttl_seconds``.
+        0 means delete immediately after the answer lands (OpenClaw parity).
+        Positive integers keep the reasoning bubble visible for that many
+        seconds as a breadcrumb before cleaning it up.
+        """
+        cfg = _load_gateway_runtime_config()
+        key = f"display.platforms.{_platform_config_key(platform)}.reasoning_stream_ttl_seconds"
+        raw = cfg_get(cfg, *key.split("."))
+        if raw is None:
+            return 0
+        try:
+            _val = int(float(raw))
+            return max(0, _val)
+        except (ValueError, TypeError):
+            return 0
+
+    @staticmethod
     def _load_busy_input_mode() -> str:
         """Load gateway drain-time busy-input behavior from config/env."""
         mode = os.getenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "").strip().lower()
@@ -19696,9 +19716,18 @@ class GatewayRunner:
                 _rs_chat_id = source.chat_id
                 _rs_adapter_ref = _rs_adapter
                 _rs_loop = asyncio.get_running_loop()
+                # Read TTL at registration time (single read, not on
+                # every potential cleanup retry).  0 = delete immediately
+                # (OpenClaw parity), >0 = keep as breadcrumb for N secs.
+                _rs_ttl = self._load_reasoning_stream_ttl(source.platform)
 
                 def _cleanup_reasoning_bubble() -> None:
                     async def _delete_one() -> None:
+                        if _rs_ttl > 0:
+                            try:
+                                await asyncio.sleep(_rs_ttl)
+                            except asyncio.CancelledError:
+                                return
                         try:
                             await _rs_adapter_ref.delete_message(
                                 _rs_chat_id, _rs_msg_id

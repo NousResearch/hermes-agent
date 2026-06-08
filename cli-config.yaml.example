@@ -958,6 +958,11 @@ display:
   #         # parity: live visibility into reasoning, clean final
   #         # conversation. Requires a streaming reasoning model.
   #         reasoning_stream: true
+  #         # How long to keep the reasoning bubble as a visible breadcrumb
+  #         # before auto-deleting it (seconds).  0 = delete immediately
+  #         # (OpenClaw default, conversation stays clean).
+  #         # Positive values < 60 give a few seconds to read, then clean up.
+  #         # reasoning_stream_ttl_seconds: 10
   cleanup_progress: false
 
   # Gateway-only natural mid-turn assistant updates.

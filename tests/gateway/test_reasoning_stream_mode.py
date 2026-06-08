@@ -78,7 +78,6 @@ class TestReasoningStreamCommand:
 
         assert runner._show_reasoning is True
         assert runner._reasoning_stream_per_platform.get("telegram") is True
-        # Both keys should be persisted
         import yaml
         with open(hermes_home / "config.yaml") as f:
             cfg = yaml.safe_load(f)
@@ -104,7 +103,6 @@ class TestReasoningStreamCommand:
 
         assert runner._show_reasoning is True
         assert runner._reasoning_stream_per_platform.get("telegram") is False
-        # Both keys should be persisted as show_reasoning=true, stream=false
         import yaml
         with open(hermes_home / "config.yaml") as f:
             cfg = yaml.safe_load(f)
@@ -153,7 +151,6 @@ class TestReasoningStreamCommand:
 
         result = await runner._handle_reasoning_command(_make_event("/reasoning"))
 
-        # The stream marker should appear in the status output
         assert "stream" in result.lower()
 
     @pytest.mark.asyncio
@@ -173,6 +170,49 @@ class TestReasoningStreamCommand:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         assert gateway_run.GatewayRunner._load_reasoning_stream(Platform.TELEGRAM) is True
         assert gateway_run.GatewayRunner._load_reasoning_stream(Platform.DISCORD) is False
+
+    @pytest.mark.asyncio
+    async def test_load_reasoning_stream_ttl_default_0(self, tmp_path, monkeypatch):
+        """TTL defaults to 0 (delete immediately)."""
+        hermes_home = _write_config(tmp_path, "display:\n  platforms:\n    telegram:\n      reasoning_stream: true\n")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        ttl = gateway_run.GatewayRunner._load_reasoning_stream_ttl(Platform.TELEGRAM)
+        assert ttl == 0
+
+    @pytest.mark.asyncio
+    async def test_load_reasoning_stream_ttl_custom(self, tmp_path, monkeypatch):
+        hermes_home = _write_config(
+            tmp_path,
+            "display:\n  platforms:\n    telegram:\n      reasoning_stream: true\n"
+            "      reasoning_stream_ttl_seconds: 30\n",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        ttl = gateway_run.GatewayRunner._load_reasoning_stream_ttl(Platform.TELEGRAM)
+        assert ttl == 30
+
+    @pytest.mark.asyncio
+    async def test_load_reasoning_stream_ttl_clamped_non_negative(self, tmp_path, monkeypatch):
+        """Negative TTL values are clamped to 0."""
+        hermes_home = _write_config(
+            tmp_path,
+            "display:\n  platforms:\n    telegram:\n      reasoning_stream: true\n"
+            "      reasoning_stream_ttl_seconds: -5\n",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        ttl = gateway_run.GatewayRunner._load_reasoning_stream_ttl(Platform.TELEGRAM)
+        assert ttl == 0
+
+    @pytest.mark.asyncio
+    async def test_load_reasoning_stream_ttl_invalid_str(self, tmp_path, monkeypatch):
+        """Non-numeric TTL values are silently treated as 0."""
+        hermes_home = _write_config(
+            tmp_path,
+            "display:\n  platforms:\n    telegram:\n      reasoning_stream: true\n"
+            "      reasoning_stream_ttl_seconds: infinite\n",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        ttl = gateway_run.GatewayRunner._load_reasoning_stream_ttl(Platform.TELEGRAM)
+        assert ttl == 0
 
 
 # ── ReasoningStreamConsumer tests ─────────────────────────────────────
@@ -195,7 +235,6 @@ class TestReasoningStreamConsumer:
         ok = await c.send_initial()
         assert ok is True
         assert c.message_id == "42"
-        # First call should be the placeholder
         adapter.send.assert_awaited_once()
         args, kwargs = adapter.send.call_args
         assert "Reasoning" in (kwargs.get("content") or args[1] if len(args) > 1 else kwargs.get("content"))
@@ -204,8 +243,6 @@ class TestReasoningStreamConsumer:
     async def test_send_initial_returns_false_when_no_message_id(self):
         adapter = MagicMock()
         adapter.SUPPORTS_MESSAGE_EDITING = True
-        # Adapter returns a result with no message_id (some platforms
-        # accept sends but don't return an ID).
         result = MagicMock()
         result.message_id = None
         adapter.send = AsyncMock(return_value=result)
@@ -228,19 +265,12 @@ class TestReasoningStreamConsumer:
         c = ReasoningStreamConsumer(adapter, "chat-1", edit_interval=0.01)
         c.on_delta("")
         c.on_delta(None)
-        # No way to introspect the queue directly without internals;
-        # the contract is just that empty/None is dropped without
-        # raising.  We just assert it didn\'t raise.
         assert c.emitted_any is False
 
     def test_on_delta_queues_text(self):
-        """on_delta() queues text for the run() loop to consume."""
         adapter = MagicMock()
         c = ReasoningStreamConsumer(adapter, "chat-1", edit_interval=0.01)
         c.on_delta("hello")
-        # Queue is private but we can verify the contract that
-        # emitted_any is set after the run loop consumes the delta.
-        # (Direct mutation is tested in test_run_* tests below.)
         assert c._queue.qsize() == 1
 
     @pytest.mark.asyncio
@@ -269,9 +299,7 @@ class TestReasoningStreamConsumer:
         c.on_delta("world")
         c.finish()
         await asyncio.wait_for(c.run(), timeout=2.0)
-        # At least one edit should have fired (the final one)
         assert adapter.edit_message.await_count >= 1
-        # The final edit should have the accumulated text
         last_call = adapter.edit_message.call_args_list[-1]
         content = last_call.kwargs.get("content", "")
         assert "hello" in content
@@ -280,7 +308,6 @@ class TestReasoningStreamConsumer:
 
     @pytest.mark.asyncio
     async def test_run_no_op_when_initial_send_failed(self):
-        """If send_initial() never set _message_id, run() is a no-op."""
         adapter = MagicMock()
         adapter.SUPPORTS_MESSAGE_EDITING = True
         adapter.send = AsyncMock(return_value=_make_send_result(None))
@@ -290,23 +317,18 @@ class TestReasoningStreamConsumer:
         c.on_delta("hello")
         c.finish()
         await asyncio.wait_for(c.run(), timeout=2.0)
-        # No edits should have happened
         assert adapter.edit_message.await_count == 0
-        # finalized_message_id stays None so cleanup is skipped
         assert c.finalized_message_id is None
 
     @pytest.mark.asyncio
     async def test_run_skips_redundant_edits(self):
-        """Same text twice in a row should not produce a duplicate edit."""
         adapter = MagicMock()
         adapter.SUPPORTS_MESSAGE_EDITING = True
         adapter.send = AsyncMock(return_value=_make_send_result("1"))
         adapter.edit_message = AsyncMock()
         c = ReasoningStreamConsumer(adapter, "chat-1", edit_interval=10.0)
-        # edit_interval is high so throttling kicks in
         await c.send_initial()
         c.on_delta("x")
         c.finish()
         await asyncio.wait_for(c.run(), timeout=1.0)
-        # Exactly one edit (the final one) — throttled the intermediate
         assert adapter.edit_message.await_count == 1

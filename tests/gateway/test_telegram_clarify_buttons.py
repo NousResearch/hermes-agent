@@ -98,10 +98,8 @@ class TestTelegramSendClarify:
         kwargs = adapter._bot.send_message.call_args[1]
         assert kwargs["chat_id"] == 12345
         assert "Which option?" in kwargs["text"]
-        # Full option text rendered in the message body (not just buttons)
-        assert "1. alpha" in kwargs["text"]
-        assert "2. beta" in kwargs["text"]
-        assert "3. gamma" in kwargs["text"]
+        # Short labels (≤24 chars) → text buttons, no numbered list in body
+        assert "1. alpha" not in kwargs["text"]
         # InlineKeyboardMarkup with N+1 buttons (3 choices + Other)
         markup = kwargs["reply_markup"]
         assert markup is not None
@@ -188,6 +186,71 @@ class TestTelegramSendClarify:
         # Must NOT contain raw <script> — html.escape should have neutralized
         assert "<script>" not in kwargs["text"]
         assert "&lt;script&gt;" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_short_labels_use_text_buttons(self):
+        """When ALL choice labels are ≤ 24 chars, buttons show label text
+        directly and the message body has no numbered list."""
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 200
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Pick one",
+            choices=["🌱 Plant rescue", "✈️ Travel parser", "🎨 Art gen"],
+            clarify_id="cid-short",
+            session_key="sk-short",
+        )
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        # No numbered list in body for short labels
+        assert "1. " not in kwargs["text"]
+        assert "2. " not in kwargs["text"]
+        assert "Pick one" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_mixed_labels_use_numeric_buttons(self):
+        """When ANY choice label exceeds 24 chars, fall back to numeric
+        buttons and render the numbered list in the body."""
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 201
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Pick one",
+            choices=["short", "x" * 25, "tiny"],
+            clarify_id="cid-mixed",
+            session_key="sk-mixed",
+        )
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        # Numbered list in body for long labels
+        assert "1. short" in kwargs["text"]
+        assert "2. " in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_exactly_24_char_label_uses_text_buttons(self):
+        """Labels exactly at the 24-char boundary use text buttons."""
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 202
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Choose",
+            choices=["a" * 24],
+            clarify_id="cid-exact",
+            session_key="sk-exact",
+        )
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        # Exactly 24 chars → text buttons, no numbered list
+        assert "1. " not in kwargs["text"]
 
 
 # ===========================================================================

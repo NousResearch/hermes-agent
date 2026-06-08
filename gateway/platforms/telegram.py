@@ -2808,11 +2808,23 @@ class TelegramAdapter(BasePlatformAdapter):
             text = f"❓ {_html.escape(question)}"
             thread_id = self._metadata_thread_id(metadata)
 
-            if choices:
-                # Render full option text in the message body so mobile
-                # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
+            # Adaptive button rendering: if ALL choice labels fit within
+            # _CLARIFY_BUTTON_LABEL_MAX chars, render the label text
+            # directly on each button and skip the numbered list in the
+            # body.  Otherwise fall back to the classic numeric buttons
+            # + full option list so mobile users aren't hurt by truncation.
+            _CLARIFY_BUTTON_LABEL_MAX = 24
+            use_text_buttons = (
+                choices
+                and all(len(str(c)) <= _CLARIFY_BUTTON_LABEL_MAX for c in choices)
+            )
+
+            if choices and not use_text_buttons:
+                # Long labels: render full option text in the message body
+                # so mobile users can read long choices that would be
+                # truncated in inline button labels.  Buttons keep short
+                # numeric labels (1, 2, …, Other) to avoid Telegram
+                # truncation.
                 option_lines = "\n".join(
                     f"{i + 1}. {_html.escape(str(c))}"
                     for i, c in enumerate(choices)
@@ -2830,10 +2842,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
                 rows = []
-                for idx in range(len(choices)):
+                for idx, choice in enumerate(choices):
+                    label = str(choice) if use_text_buttons else str(idx + 1)
                     rows.append([
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            label,
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])

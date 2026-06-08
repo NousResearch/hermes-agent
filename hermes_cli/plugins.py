@@ -1240,10 +1240,13 @@ class PluginManager:
     def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType:
         """Load a pip-installed plugin via its entry-point reference."""
         for ep, search_path in self._iter_entry_points():
-            if ep.name == manifest.name and ep.value == manifest.path:
+            if (
+                ep.name == manifest.name
+                and ep.value == manifest.path
+                and search_path == manifest.entrypoint_search_path
+            ):
                 if search_path:
-                    for plugin_path in self._plugin_entrypoint_paths():
-                        self._ensure_sys_path(plugin_path)
+                    self._ensure_sys_path(search_path)
                 return ep.load()
 
         raise ImportError(

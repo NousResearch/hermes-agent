@@ -8,8 +8,10 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
     get_session_env,
+    get_terminal_cwd,
     set_session_vars,
     clear_session_vars,
+    _TERMINAL_CWD,
     _VAR_MAP,
     _UNSET,
 )
@@ -322,3 +324,106 @@ async def test_run_in_executor_with_context_propagates_exceptions():
 
     with pytest.raises(ValueError, match="boom"):
         await runner._run_in_executor_with_context(blow_up)
+
+
+# ---------------------------------------------------------------------------
+# get_terminal_cwd precedence tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_terminal_cwd_unset_falls_back_to_env_var(monkeypatch, tmp_path):
+    """When the contextvar is _UNSET, the legacy TERMINAL_CWD env var wins.
+
+    This is the CLI / cron-scheduler flow: cron mutates
+    os.environ["TERMINAL_CWD"] to point at the per-job workdir, then the
+    agent calls get_terminal_cwd() and must see that workdir.
+    """
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert get_terminal_cwd() == str(tmp_path)
+
+
+def test_get_terminal_cwd_unset_no_env_returns_default(monkeypatch):
+    """With nothing set and no default, returns os.getcwd()."""
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    assert get_terminal_cwd() == os.getcwd()
+
+
+def test_get_terminal_cwd_explicit_default(monkeypatch):
+    """Explicit default is returned when neither contextvar nor env var is set."""
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    assert get_terminal_cwd("/explicit/default") == "/explicit/default"
+
+
+def test_get_terminal_cwd_contextvar_wins_over_env_var(monkeypatch, tmp_path):
+    """An explicit set_session_vars(terminal_cwd=...) call beats the env var.
+
+    This is the gateway concurrency story: each asyncio task gets its own
+    cwd via the contextvar, so concurrent messages don't clobber each other
+    through process-global os.environ.
+    """
+    monkeypatch.setenv("TERMINAL_CWD", "/cron/env/value")
+    tokens = set_session_vars(terminal_cwd=str(tmp_path))
+    try:
+        assert get_terminal_cwd() == str(tmp_path)
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_set_session_vars_without_terminal_cwd_leaves_contextvar_unset(
+    monkeypatch, tmp_path
+):
+    """set_session_vars() without terminal_cwd must not mask the env var.
+
+    Without this, the cron scheduler's flow (set_session_vars(...) → then
+    os.environ['TERMINAL_CWD'] = workdir) would silently break: the
+    contextvar would hold "" and shadow the env var the scheduler just set.
+    """
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    tokens = set_session_vars(platform="", chat_id="", chat_name="")
+    try:
+        # contextvar stays at _UNSET sentinel → env var fallback applies
+        assert _TERMINAL_CWD.get() is _UNSET
+        assert get_terminal_cwd() == str(tmp_path)
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_clear_session_vars_suppresses_env_var_fallback(monkeypatch):
+    """Explicitly cleared contextvar must not leak stale env-var state.
+
+    Matches the invariant on get_session_env: once a session is torn down,
+    subsequent reads should return the caller default, NOT a value left
+    over in os.environ from a prior gateway session.
+    """
+    monkeypatch.setenv("TERMINAL_CWD", "/stale/prior/session")
+    tokens = set_session_vars(terminal_cwd="/active")
+    clear_session_vars(tokens)
+    # _TERMINAL_CWD now holds "" (explicitly cleared).  Default must win.
+    assert get_terminal_cwd("/expected/default") == "/expected/default"
+
+
+@pytest.mark.asyncio
+async def test_get_terminal_cwd_isolated_across_concurrent_tasks(monkeypatch):
+    """Two concurrent tasks must each read their own terminal_cwd.
+
+    This is the actual concurrency bug the contextvar refactor exists to
+    fix.  With process-global state, task B would overwrite task A's cwd.
+    """
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    results = {}
+
+    async def handler(label: str, cwd: str, delay: float):
+        tokens = set_session_vars(terminal_cwd=cwd)
+        try:
+            await asyncio.sleep(delay)
+            results[label] = get_terminal_cwd()
+        finally:
+            clear_session_vars(tokens)
+
+    task_a = asyncio.create_task(handler("a", "/cwd/a", 0.15))
+    await asyncio.sleep(0.05)
+    task_b = asyncio.create_task(handler("b", "/cwd/b", 0.05))
+    await asyncio.gather(task_a, task_b)
+
+    assert results["a"] == "/cwd/a"
+    assert results["b"] == "/cwd/b"

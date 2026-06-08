@@ -100,8 +100,9 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    resolve_proxy_url,
+    download_public_url_bytes_aiohttp,
     proxy_kwargs_for_aiohttp,
+    resolve_proxy_url,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -1069,33 +1070,19 @@ class MatrixAdapter(BasePlatformAdapter):
             )
 
         try:
-            # Try aiohttp first (always available), fall back to httpx
-            try:
-                import aiohttp as _aiohttp
-                _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
-                async with _aiohttp.ClientSession(**_sess_kw) as http:
-                    async with http.get(
-                        image_url,
-                        timeout=_aiohttp.ClientTimeout(total=30),
-                        **_req_kw,
-                    ) as resp:
-                        resp.raise_for_status()
-                        data = await resp.read()
-                        ct = resp.content_type or "image/png"
-                        fname = (
-                            image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
-                        )
-            except ImportError:
-                import httpx
-                _httpx_kw: dict = {}
-                if self._proxy_url:
-                    _httpx_kw["proxy"] = self._proxy_url
-                async with httpx.AsyncClient(**_httpx_kw) as http:
-                    resp = await http.get(image_url, follow_redirects=True, timeout=30)
-                    resp.raise_for_status()
-                    data = resp.content
-                    ct = resp.headers.get("content-type", "image/png")
-                    fname = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
+            import aiohttp as _aiohttp
+
+            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
+            async with _aiohttp.ClientSession(**_sess_kw) as http:
+                data, ct, final_url = await download_public_url_bytes_aiohttp(
+                    http,
+                    image_url,
+                    timeout=_aiohttp.ClientTimeout(total=30),
+                    request_kwargs=_req_kw,
+                )
+                if ct == "application/octet-stream":
+                    ct = "image/png"
+                fname = final_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
         except Exception as exc:
             logger.warning("Matrix: failed to download image %s: %s", image_url, exc)
             return await self.send(

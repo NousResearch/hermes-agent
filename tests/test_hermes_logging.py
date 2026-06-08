@@ -66,6 +66,11 @@ class TestSetupLogging:
         assert log_dir == hermes_home / "logs"
         assert log_dir.is_dir()
 
+    def test_sets_private_directory_permissions(self, hermes_home):
+        log_dir = hermes_logging.setup_logging(hermes_home=hermes_home)
+        mode = stat.S_IMODE(log_dir.stat().st_mode)
+        assert mode == 0o700
+
     def test_creates_agent_log_handler(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
         root = logging.getLogger()
@@ -160,6 +165,7 @@ class TestSetupLogging:
 
         agent_log = hermes_home / "logs" / "agent.log"
         assert agent_log.exists()
+        assert stat.S_IMODE(agent_log.stat().st_mode) == 0o600
         content = agent_log.read_text()
         assert "test message for agent.log" in content
 

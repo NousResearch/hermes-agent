@@ -63,19 +63,18 @@ MUTATING_TOOL_NAMES = frozenset(
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
-    Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    Warnings are enabled by default and hard stops bound repeated deterministic
+    loops before they can consume the full turn iteration budget.
     """
 
     warnings_enabled: bool = True
-    hard_stop_enabled: bool = False
+    hard_stop_enabled: bool = True
     exact_failure_warn_after: int = 2
-    exact_failure_block_after: int = 5
+    exact_failure_block_after: int = 2
     same_tool_failure_warn_after: int = 3
-    same_tool_failure_halt_after: int = 8
+    same_tool_failure_halt_after: int = 3
     no_progress_warn_after: int = 2
-    no_progress_block_after: int = 5
+    no_progress_block_after: int = 2
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 

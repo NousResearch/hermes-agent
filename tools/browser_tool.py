@@ -807,6 +807,51 @@ def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Di
     return target
 
 
+
+def _is_windows_batch_file(path: str) -> bool:
+    """Return True when *path* names a Windows batch shim."""
+    return Path(path).suffix.lower() in {".cmd", ".bat"}
+
+
+def _npx_cli_candidates(npx_path: str) -> List[str]:
+    """Return likely npm npx CLI script locations for a resolved npx shim."""
+    npx_dir = os.path.dirname(npx_path)
+    return [
+        os.path.join(npx_dir, "node_modules", "npm", "bin", "npx-cli.js"),
+        os.path.join(os.path.dirname(npx_dir), "node_modules", "npm", "bin", "npx-cli.js"),
+    ]
+
+
+def _resolve_npx_agent_browser_prefix() -> List[str]:
+    """Build a safe argv prefix for the synthetic ``npx agent-browser`` fallback.
+
+    Windows Node installs commonly expose ``npx`` as ``npx.cmd``. Passing
+    model-controlled browser arguments through that batch file lets cmd.exe
+    reinterpret metacharacters such as ``&`` inside valid URLs. Bypass the
+    batch shim by running npm's JavaScript CLI through node.exe directly.
+    """
+    npx_bin = shutil.which("npx") or "npx"
+    if os.name != "nt" or not _is_windows_batch_file(npx_bin):
+        return [npx_bin, "agent-browser"]
+
+    node_bin = shutil.which("node") or shutil.which("node.exe")
+    npx_cli = next((candidate for candidate in _npx_cli_candidates(npx_bin) if os.path.isfile(candidate)), None)
+    if node_bin and npx_cli:
+        return [node_bin, npx_cli, "agent-browser"]
+
+    raise FileNotFoundError(
+        "Unsafe Windows npx batch shim detected, but npm's npx-cli.js could not "
+        "be resolved for a safe node.exe launch. Install agent-browser directly "
+        f"with: {_browser_install_hint()}"
+    )
+
+
+def _browser_command_prefix(browser_cmd: str) -> List[str]:
+    """Return the executable argv prefix for an agent-browser command."""
+    if browser_cmd == "npx agent-browser":
+        return _resolve_npx_agent_browser_prefix()
+    return [browser_cmd]
+
 def _run_chrome_fallback_command(
     task_id: str,
     command: str,
@@ -858,16 +903,10 @@ def _run_chrome_fallback_command(
             )
         return {"success": False, "error": hint}
 
-    # On Windows npx is npx.cmd — use shutil.which so CreateProcessW can
-    # execute the batch shim.  shutil.which honours PATHEXT on Windows and
-    # returns the plain executable on POSIX.  If npx isn't on PATH (Termux,
-    # bare container), fall back to the bare name and let Popen raise with
-    # a readable "FileNotFoundError: 'npx'" rather than WinError 193.
-    if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
-    else:
-        cmd_prefix = [browser_cmd]
+    try:
+        cmd_prefix = _browser_command_prefix(browser_cmd)
+    except FileNotFoundError as e:
+        return {"success": False, "error": str(e)}
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
@@ -1959,14 +1998,10 @@ def _run_browser_command(
     if engine != "auto" and not _is_camofox_mode() and not session_info.get("cdp_url"):
         backend_args += ["--engine", engine]
 
-    # Keep concrete executable paths intact, even when they contain spaces.
-    # Only the synthetic npx fallback needs to expand into multiple argv items.
-    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
-    if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
-    else:
-        cmd_prefix = [browser_cmd]
+    try:
+        cmd_prefix = _browser_command_prefix(browser_cmd)
+    except FileNotFoundError as e:
+        return {"success": False, "error": str(e)}
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",
@@ -2394,7 +2429,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
-                "error": "Blocked: redirect landed on a private/internal address",
+                "error": "Blocked: redirect landed on a private or internal address",
             })
 
         response = {

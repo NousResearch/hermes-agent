@@ -36,6 +36,42 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+_DINGTALK_EXTRA_KEYS = {
+    "allowed_chats",
+    "allowed_users",
+    "free_response_chats",
+    "mention_patterns",
+    "require_mention",
+}
+
+
+def _dingtalk_extra_from_platform_block(
+    platform_name: str, block: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return DingTalk adapter settings written at platforms.dingtalk root."""
+    if platform_name != Platform.DINGTALK.value:
+        return {}
+    return {key: block[key] for key in _DINGTALK_EXTRA_KEYS if key in block}
+
+
+def _platform_yaml_section(
+    yaml_cfg: Dict[str, Any], platform_name: str
+) -> Dict[str, Any]:
+    """Merge top-level and platforms.<name> YAML sections for env bridging."""
+    platforms_cfg = yaml_cfg.get("platforms", {})
+    nested_cfg = {}
+    if isinstance(platforms_cfg, dict):
+        candidate = platforms_cfg.get(platform_name, {})
+        if isinstance(candidate, dict):
+            nested_cfg = candidate
+
+    top_level_cfg = yaml_cfg.get(platform_name, {})
+    if not isinstance(top_level_cfg, dict):
+        top_level_cfg = {}
+
+    return {**nested_cfg, **top_level_cfg}
+
+
 def _coerce_float(value: Any, default: float) -> float:
     """Coerce numeric config values, falling back on malformed input."""
     if value is None:
@@ -746,8 +782,21 @@ def load_gateway_config() -> GatewayConfig:
                     existing = platforms_data.get(plat_name, {})
                     if not isinstance(existing, dict):
                         existing = {}
-                    # Deep-merge extra dicts so gateway.json defaults survive
-                    merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    # Deep-merge extra dicts so gateway.json defaults survive.
+                    # DingTalk documents its adapter gates directly under
+                    # platforms.dingtalk; preserve those fields in extra where
+                    # DingTalkAdapter reads them.
+                    merged_extra = {
+                        **existing.get("extra", {}),
+                        **plat_block.get("extra", {}),
+                    }
+                    # Backfill DingTalk compatibility keys from the platform
+                    # block without overriding explicitly configured
+                    # platforms.<name>.extra values.
+                    for key, value in _dingtalk_extra_from_platform_block(
+                        plat_name, plat_block
+                    ).items():
+                        merged_extra.setdefault(key, value)
                     if plat_name == Platform.SLACK.value and "enabled" in plat_block:
                         merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
@@ -783,6 +832,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if plat == Platform.DINGTALK:
+                    for key in ("allowed_chats", "allowed_users", "free_response_chats"):
+                        if key in platform_cfg:
+                            bridged[key] = platform_cfg[key]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
@@ -1011,7 +1064,7 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
 
             # DingTalk settings → env vars (env vars take precedence)
-            dingtalk_cfg = yaml_cfg.get("dingtalk", {})
+            dingtalk_cfg = _platform_yaml_section(yaml_cfg, Platform.DINGTALK.value)
             if isinstance(dingtalk_cfg, dict):
                 if "require_mention" in dingtalk_cfg and not os.getenv("DINGTALK_REQUIRE_MENTION"):
                     os.environ["DINGTALK_REQUIRE_MENTION"] = str(dingtalk_cfg["require_mention"]).lower()

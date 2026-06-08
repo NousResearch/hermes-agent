@@ -7,3 +7,8 @@
 **Vulnerability:** `subprocess.run` calls in `hermes_cli/tools_config.py` (specifically in `_pip_install` and `_run_post_setup` hooks) were executing without environment sanitization.
 **Learning:** This could leak sensitive Hermes-managed API keys and secrets to external package managers (like `npm` or `pip`) or installation scripts (like the `cua-driver` curl-to-bash script).
 **Prevention:** Always apply `_sanitize_subprocess_env` from `tools.environments.local` to the environment dictionary before passing it to `subprocess.run` or `subprocess.Popen`.
+
+## 2024-05-30 - [Sanitize Subprocess Environments in `tools/transcription_tools.py`]
+**Vulnerability:** `subprocess.run` calls in `tools/transcription_tools.py` (specifically in `_prepare_local_audio` and `_transcribe_local_command`) were executing without environment sanitization.
+**Learning:** This could leak sensitive Hermes-managed API keys and secrets to external processes (like `ffmpeg` or `faster-whisper` binaries).
+**Prevention:** Always apply `_sanitize_subprocess_env` from `tools.environments.local` to the environment dictionary before passing it to `subprocess.run` or `subprocess.Popen`.

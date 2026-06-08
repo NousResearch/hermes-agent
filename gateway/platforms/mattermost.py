@@ -27,7 +27,9 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    PublicUrlDownloadHTTPError,
     SendResult,
+    download_public_url_bytes_aiohttp,
 )
 
 logger = logging.getLogger(__name__)
@@ -408,7 +410,9 @@ class MattermostAdapter(BasePlatformAdapter):
         from tools.url_safety import is_safe_url
         if not is_safe_url(url):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
-            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+            return await self.send(
+                chat_id, f"{caption or ''}\n{url}".strip(), reply_to
+            )
 
         import aiohttp
 
@@ -418,24 +422,39 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status >= 500 or resp.status == 429:
-                        if attempt < 2:
-                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
-                                         attempt + 1, url[:80], resp.status)
-                            await asyncio.sleep(1.5 * (attempt + 1))
-                            continue
-                    if resp.status >= 400:
-                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
-                    file_data = await resp.read()
-                    ct = resp.content_type or "application/octet-stream"
-                    break
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                file_data, ct, final_url = await download_public_url_bytes_aiohttp(
+                    self._session,
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                )
+                fname = final_url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"
+                break
+            except PublicUrlDownloadHTTPError as exc:
+                should_retry = exc.status == 429 or exc.status >= 500
+                if should_retry and attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                logger.warning(
+                    "Mattermost: failed to download %s: %s",
+                    url,
+                    exc,
+                )
+                return await self.send(
+                    chat_id, f"{caption or ''}\n{url}".strip(), reply_to
+                )
+            except Exception as exc:
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
-                logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
-                return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                logger.warning(
+                    "Mattermost: failed to download %s after %d attempts: %s",
+                    url,
+                    attempt + 1,
+                    exc,
+                )
+                return await self.send(
+                    chat_id, f"{caption or ''}\n{url}".strip(), reply_to
+                )
 
         if file_data is None:
             logger.warning("Mattermost: download returned no data for %s", url)
@@ -547,21 +566,24 @@ class MattermostAdapter(BasePlatformAdapter):
                             logger.warning("Mattermost: blocked unsafe image URL in batch")
                             continue
                         try:
-                            async with self._session.get(
-                                image_url, timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
-                                if resp.status >= 400:
-                                    logger.warning(
-                                        "Mattermost: failed to download image (HTTP %d): %s",
-                                        resp.status, image_url[:80],
-                                    )
-                                    continue
-                                file_data = await resp.read()
-                                ct = resp.content_type or "image/png"
+                            file_data, ct, final_url = await download_public_url_bytes_aiohttp(
+                                self._session,
+                                image_url,
+                                timeout=aiohttp.ClientTimeout(total=30),
+                            )
                         except Exception as dl_err:
-                            logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
+                            logger.warning(
+                                "Mattermost: download failed for %s: %s",
+                                image_url[:80],
+                                dl_err,
+                            )
                             continue
-                        fname = image_url.rsplit("/", 1)[-1].split("?")[0] or f"image_{len(file_ids)}.png"
+                        if ct == "application/octet-stream":
+                            ct = "image/png"
+                        fname = (
+                            final_url.rsplit("/", 1)[-1].split("?")[0]
+                            or f"image_{len(file_ids)}.png"
+                        )
 
                     fid = await self._upload_file(chat_id, file_data, fname, ct)
                     if fid:
@@ -848,5 +870,4 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-
 

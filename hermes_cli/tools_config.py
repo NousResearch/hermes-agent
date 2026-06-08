@@ -1197,24 +1197,16 @@ def _get_platform_tools(
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
-    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
+    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform.
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
     else:
         explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
-    if include_default_mcp_servers:
-        if "no_mcp" in toolset_names:
-            # Operator opted out of MCP for this platform — keep only the
-            # MCP servers they explicitly named alongside no_mcp.
-            enabled_toolsets.update(explicit_mcp_servers)
-        else:
-            # No no_mcp sentinel — surface every enabled MCP server even when
-            # platform_toolsets lists explicit builtin toolsets. The user's
-            # explicit builtin selection is the platform allowlist; MCP servers
-            # configured globally should not need to be re-listed per platform.
-            enabled_toolsets.update(enabled_mcp_servers)
+
+    if include_default_mcp_servers and not has_explicit_platform_toolsets:
+        enabled_toolsets.update(enabled_mcp_servers)
     else:
         enabled_toolsets.update(explicit_mcp_servers)
 
@@ -1234,8 +1226,8 @@ def _get_platform_tools(
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
     """Save the selected toolset keys for a platform to config.
 
-    Preserves any non-configurable toolset entries (like MCP server names)
-    that were already in the config for this platform.
+    Preserves unknown entries (like MCP server names) that were already in
+    the config for this platform.
     """
     config.setdefault("platform_toolsets", {})
 
@@ -1246,6 +1238,8 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         ts for ts in enabled_toolset_keys
         if _toolset_allowed_for_platform(ts, platform)
     }
+
+    from toolsets import validate_toolset
 
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
@@ -1263,11 +1257,13 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         existing_toolsets = []
     existing_toolsets = [str(ts) for ts in existing_toolsets]
 
-    # Preserve any entries that are NOT configurable toolsets and NOT platform
-    # defaults (i.e. only MCP server names should be preserved)
+    # Preserve unknown entries (typically MCP server names) while dropping any
+    # valid hidden toolset/alias that could override unchecked selections.
     preserved_entries = {
         entry for entry in existing_toolsets
-        if entry not in configurable_keys and entry not in platform_default_keys
+        if entry not in configurable_keys
+        and entry not in platform_default_keys
+        and not validate_toolset(entry)
     }
     # Opening `hermes tools` is the user's opt-in to reconfigure tools, so treat
     # saving from the picker as consent to clear the "no_mcp" sentinel. The

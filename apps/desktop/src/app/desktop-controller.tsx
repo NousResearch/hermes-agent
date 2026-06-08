@@ -249,10 +249,15 @@ export function DesktopController() {
         preserveIds.add(activeSessionId)
       }
 
-      try {
-        await autoArchiveOldSessions([...preserveIds])
-      } catch (error) {
-        console.warn('Hermes session auto-archive skipped', error)
+      // Only run auto-archive on the first refresh (boot). Subsequent
+      // cascading refreshes from message events skip this to save a round-trip.
+      const isFirst = requestId <= 2
+      if (isFirst) {
+        try {
+          await autoArchiveOldSessions([...preserveIds])
+        } catch (error) {
+          console.warn('Hermes session auto-archive skipped', error)
+        }
       }
 
       // Require at least one message so abandoned/empty "Untitled" drafts (one
@@ -581,13 +586,13 @@ export function DesktopController() {
     refreshSessions
   })
 
+  // Skip redundant session refresh — useGatewayBoot.boot() already calls refreshSessions()
   useEffect(() => {
     if (gatewayState === 'open') {
       void refreshCurrentModel()
       void refreshActiveProfile()
-      void refreshSessions().catch(() => undefined)
     }
-  }, [gatewayState, refreshCurrentModel, refreshSessions])
+  }, [gatewayState, refreshCurrentModel])
 
   useRouteResume({
     activeSessionId,

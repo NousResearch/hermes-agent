@@ -1682,26 +1682,22 @@ async def get_profiles_sessions(
     include_archived = archived == "include"
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
-    per_profile = min(max(limit + offset, limit), 500)
+    per_profile = min(max(limit + offset, limit), 100)
 
     merged: List[Dict[str, Any]] = []
     total = 0
     profile_totals: Dict[str, int] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
-    for name, home in targets:
+
+    def _query_profile(name: str, home: str) -> tuple:
+        """Query a single profile DB, returning (sessions, count, error)."""
         db_path = Path(home) / "state.db"
         if not db_path.exists():
-            continue
+            return ([], 0, None)
+        db = None
         try:
-            # Read-only: this loop runs on every sidebar refresh, so it must
-            # never DDL/write-lock another profile's live DB (see SessionDB
-            # read_only docstring).
             db = SessionDB(db_path=db_path, read_only=True)
-        except Exception as exc:
-            errors.append({"profile": name, "error": str(exc)})
-            continue
-        try:
             rows = db.list_sessions_rich(
                 limit=per_profile,
                 offset=0,
@@ -1716,8 +1712,7 @@ async def get_profiles_sessions(
                 archived_only=archived_only,
                 exclude_children=True,
             )
-            total += profile_total
-            profile_totals[name] = profile_total
+            tagged = []
             for s in rows:
                 s["profile"] = name
                 s["is_default_profile"] = name == "default"
@@ -1726,11 +1721,27 @@ async def get_profiles_sessions(
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
                 s["archived"] = bool(s.get("archived"))
-                merged.append(s)
+                tagged.append(s)
+            return (tagged, profile_total, None)
         except Exception as exc:
-            errors.append({"profile": name, "error": str(exc)})
+            return ([], 0, {"profile": name, "error": str(exc)})
         finally:
-            db.close()
+            if db:
+                db.close()
+
+    # Query all profiles in parallel using threads (SQLite reads are thread-safe
+    # with shared cache disabled — each SessionDB opens its own connection).
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(targets), 8)) as pool:
+        futures = {pool.submit(_query_profile, name, str(home)): name
+                   for name, home in targets}
+        for future in concurrent.futures.as_completed(futures):
+            rows, profile_total, err = future.result()
+            if err:
+                errors.append(err)
+            profile_totals[futures[future]] = profile_total
+            total += profile_total
+            merged.extend(rows)
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)

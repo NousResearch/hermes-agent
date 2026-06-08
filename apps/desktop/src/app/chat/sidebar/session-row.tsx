@@ -7,9 +7,11 @@ import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { resolveDeviceNickname } from '@/lib/device-nickname'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
+import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
@@ -25,6 +27,10 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Presence record for this session (from another device). */
+  presence?: SessionPresenceRecord
+  /** If true, show the device source badge next to the title. */
+  showSourceBadge?: boolean
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -54,9 +60,11 @@ export function SidebarSessionRow({
   onDelete,
   onPin,
   onResume,
+  presence,
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  showSourceBadge = false,
   className,
   style,
   ref,
@@ -71,6 +79,9 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+
+  // Device source badge: resolve hostname → nickname from presence record
+  const deviceNickname = presence?.host ? resolveDeviceNickname(presence.host) : null
 
   return (
     <SessionContextMenu
@@ -179,8 +190,13 @@ export function SidebarSessionRow({
             <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
           </span>
           )}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
+          <span className="min-w-0 flex-1 flex items-center gap-1.5 text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+            <span className="truncate">{title}</span>
+            {showSourceBadge && deviceNickname && (
+              <span className="shrink-0 rounded-[3px] bg-(--ui-text-quaternary)/10 px-1 py-px text-[0.5625rem] leading-none font-medium uppercase tracking-wide text-(--ui-text-tertiary)" title={`Device: ${deviceNickname}`}>
+                {deviceNickname}
+              </span>
+            )}
           </span>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">

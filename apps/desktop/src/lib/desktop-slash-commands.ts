@@ -183,6 +183,18 @@ export function isDesktopSlashSuggestion(command: string): boolean {
   return DESKTOP_COMMANDS.has(canonical) && !DESKTOP_ALIASES.has(normalized)
 }
 
+/**
+ * True for commands the desktop fulfils by opening the model picker overlay
+ * (e.g. `/model`) rather than executing a slash command. The caller opens the
+ * picker UI instead of printing the "uses the desktop model picker" notice.
+ */
+export function isModelPickerCommand(command: string): boolean {
+  const normalized = normalizeCommand(command)
+  const canonical = canonicalDesktopSlashCommand(normalized)
+
+  return PICKER_OWNED_COMMANDS.has(canonical)
+}
+
 export function desktopSlashUnavailableMessage(command: string): string | null {
   const normalized = normalizeCommand(command)
   const canonical = canonicalDesktopSlashCommand(normalized)

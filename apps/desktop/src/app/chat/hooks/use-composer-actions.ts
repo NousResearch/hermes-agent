@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import {
   addComposerAttachment,
@@ -193,9 +194,11 @@ const attachToMain = (attachment: ComposerAttachment) => {
 }
 
 export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
+  const { t } = useI18n()
+  const copy = t.desktop
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
-  }, [])
+  }, [copy.imagePreviewFailed])
 
   const addTerminalSelectionAttachment = useCallback((text: string, label = 'selection') => {
     const trimmed = text.trim()
@@ -300,7 +303,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     } catch (err) {
-      notifyError(err, 'Image preview failed')
+      notifyError(err, copy.imagePreviewFailed)
 
       return true
     }
@@ -322,28 +325,28 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
 
         if (!savedPath) {
-          notify({ kind: 'error', title: 'Image attach', message: 'Failed to write image to disk.' })
+          notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })
 
           return false
         }
 
         return attachImagePath(savedPath)
       } catch (err) {
-        notifyError(err, 'Image attach failed')
+        notifyError(err, copy.imageAttachFailed)
 
         return false
       }
     },
-    [attachImagePath]
+    [attachImagePath, copy.imageAttach, copy.imageAttachFailed, copy.imageWriteFailed]
   )
 
   const pickImages = useCallback(async () => {
     const paths = await window.hermesDesktop?.selectPaths({
-      title: 'Attach images',
+      title: copy.attachImages,
       defaultPath: currentCwd || undefined,
       filters: [
         {
-          name: 'Images',
+          name: t.composer.images,
           extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
         }
       ]
@@ -356,7 +359,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     for (const path of paths) {
       await attachImagePath(path)
     }
-  }, [attachImagePath, currentCwd])
+  }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
 
   const pasteClipboardImage = useCallback(async () => {
     try {
@@ -365,8 +368,8 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       if (!path) {
         notify({
           kind: 'warning',
-          title: 'Clipboard',
-          message: 'No image found in clipboard'
+          title: copy.clipboard,
+          message: copy.noClipboardImage
         })
 
         return
@@ -374,9 +377,9 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       await attachImagePath(path)
     } catch (err) {
-      notifyError(err, 'Clipboard paste failed')
+      notifyError(err, copy.clipboardPasteFailed)
     }
-  }, [attachImagePath])
+  }, [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage])
 
   const attachContextFolderPath = useCallback(
     (folderPath: string) => {
@@ -477,12 +480,12 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       }
 
       if (!attached && lastFailure) {
-        notify({ kind: 'warning', title: 'Drop files', message: lastFailure })
+        notify({ kind: 'warning', title: copy.dropFiles, message: lastFailure })
       }
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath]
+    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
   )
 
   const removeAttachment = useCallback(

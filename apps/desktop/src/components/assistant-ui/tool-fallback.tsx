@@ -3,7 +3,6 @@
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react'
-import { useShallow } from 'zustand/shallow'
 
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -17,24 +16,18 @@ import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { FadeText } from '@/components/ui/fade-text'
+import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $approvalRequest } from '@/store/prompts'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
-import { APPROVAL_TOOLS, PendingToolApproval } from './tool-approval'
+import { PendingToolApproval } from './tool-approval'
 import {
-  groupCopyText as buildGroupCopyText,
   buildToolView,
   cleanVisibleText,
-  groupFailedStepCount,
-  groupPreviewTargets,
-  groupStatus,
-  groupTitle,
-  groupTotalDurationLabel,
   inlineDiffFromResult,
   isPreviewableTarget,
   looksRedundant,
@@ -47,14 +40,10 @@ import {
   type ToolStatus
 } from './tool-fallback-model'
 
-// Tool names that ChainToolFallback intercepts and renders as something
-// other than a ToolEntry — they don't count toward "is this a group of
-// tool calls?" because they have no visible tool block.
-const SPECIAL_TOOL_NAMES = new Set(['todo', 'image_generate', 'clarify'])
-
-// `true` when the current ToolEntry is being rendered inside a group
-// wrapper. Lets ToolEntry suppress per-row chrome (timer / preview) that
-// the group already shows.
+// `true` when a ToolEntry is rendered inside an embedding wrapper that owns
+// the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
+// false, so every row currently owns its own chrome; kept as a seam for any
+// future embedding surface.
 const ToolEmbedContext = createContext(false)
 
 // Shared header chrome for tool rows. Both the single-tool DisclosureRow
@@ -82,6 +71,13 @@ const TOOL_SECTION_SURFACE_CLASS =
 
 const TOOL_SECTION_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.7rem] leading-relaxed')
 
+interface ToolStatusCopy {
+  statusDone: string
+  statusError: string
+  statusRecovered: string
+  statusRunning: string
+}
+
 function rawTechnicalTrace(args: unknown, result: unknown): string {
   const parts = [args, result]
     .filter(value => value !== undefined && value !== null)
@@ -101,11 +97,11 @@ function rawTechnicalTrace(args: unknown, result: unknown): string {
   return parts.join('\n')
 }
 
-function statusGlyph(status: ToolStatus): ReactNode {
+function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
   if (status === 'running') {
     return (
       <BrailleSpinner
-        ariaLabel="Running"
+        ariaLabel={copy.statusRunning}
         className="size-3.5 shrink-0 text-[0.95rem] text-(--ui-text-tertiary)"
         spinner="breathe"
       />
@@ -113,22 +109,32 @@ function statusGlyph(status: ToolStatus): ReactNode {
   }
 
   if (status === 'error') {
-    return <AlertCircle aria-label="Error" className="size-3.5 shrink-0 text-destructive" />
+    return <AlertCircle aria-label={copy.statusError} className="size-3.5 shrink-0 text-destructive" />
   }
 
   if (status === 'warning') {
-    return <AlertCircle aria-label="Recovered" className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+    return (
+      <AlertCircle
+        aria-label={copy.statusRecovered}
+        className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+      />
+    )
   }
 
-  return <CheckCircle2 aria-label="Done" className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
+  return (
+    <CheckCircle2
+      aria-label={copy.statusDone}
+      className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85"
+    />
+  )
 }
 
 // Leading glyph for any tool-row header. Status (running/error/warning)
 // takes precedence; otherwise falls back to the tool's codicon. Returns
 // null when neither applies so callers can render unconditionally.
-function ToolGlyph({ icon, status }: { icon?: string; status?: ToolStatus }) {
+function ToolGlyph({ copy, icon, status }: { copy: ToolStatusCopy; icon?: string; status?: ToolStatus }) {
   const node = status ? (
-    statusGlyph(status)
+    statusGlyph(status, copy)
   ) : icon ? (
     <Codicon className="text-(--ui-text-tertiary)" name={icon} size="0.875rem" />
   ) : null
@@ -188,6 +194,8 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
 }
 
 function ToolEntry({ part }: ToolEntryProps) {
+  const { t } = useI18n()
+  const copy = t.assistant.tool
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
@@ -263,6 +271,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const hasExpandableContent = Boolean(
     (view.previewTarget && isPreviewableTarget(view.previewTarget)) ||
     view.imageUrl ||
+    view.inlineDiff ||
     showDetail ||
     hasSearchHits ||
     toolViewMode === 'technical'
@@ -293,7 +302,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           trailing={trailing}
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <ToolGlyph icon={view.icon} status={leadingStatus(isPending, view.status)} />
+            <ToolGlyph copy={copy} icon={view.icon} status={leadingStatus(isPending, view.status)} />
             <FadeText
               className={cn(
                 TOOL_HEADER_TITLE_CLASS,
@@ -319,7 +328,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt="Tool output" className="h-auto w-full object-cover" src={view.imageUrl} />
+              <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (
@@ -390,7 +399,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {showRawSearchDrilldown && (
             <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>Raw response</summary>
+              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
                 {view.rawResult}
               </pre>
@@ -403,153 +412,42 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
         </div>
       )}
-      {view.inlineDiff && <DiffLines text={view.inlineDiff} />}
+      {open && view.inlineDiff && <DiffLines text={view.inlineDiff} />}
     </div>
   )
 }
 
 /**
- * Always-present wrapper around the consecutive tool-call range that
- * `MessagePrimitive.Parts` already grouped for us. Renders a header +
- * collapsible body when there are 2+ visible tools; otherwise it's a
- * transparent passthrough that just owns the entry animation for the
- * single ToolEntry inside.
+ * Flat, Cursor-style tool list. assistant-ui hands us a *range* of
+ * consecutive tool-call parts, but how that range is sliced is unstable: a
+ * live stream interleaves narration/reasoning between calls (many tiny
+ * ranges), while the settled message reconstructs every tool_call back-to-back
+ * (one big range). Rendering a "Tool actions · N steps" group off that range
+ * therefore reshuffled the whole turn the instant it settled.
  *
- * Crucially, the wrapper element is the SAME `<div>` regardless of
- * group size — only the optional header element appears/disappears.
- * That preserves React identity for the inner `MessagePartByIndex`
- * children when the 1→2 transition happens, so existing tool blocks
- * never remount when a new tool joins them mid-stream.
- *
- * The previous design (per-tool ToolFallback computing its own group
- * lookup and conditionally returning either `<ToolEntry>` or
- * `<ToolGroup>`) flipped the React element type at the 1→2 transition
- * and tore down the existing tool entirely, which is what showed up as
- * "the previous tool's animation resets every time a new tool arrives."
+ * So we never group: each tool is a standalone row, and the wrapper just lays
+ * its children out on the tight `--tool-row-gap` rhythm. One range or ten,
+ * fragmented or consecutive, the result is pixel-identical — a tight, stable
+ * stack. The wrapper stays a single `<div>` of stable identity so children
+ * never remount as the range grows mid-stream. `ToolEmbedContext` is false so
+ * every row owns its own chrome (timer / preview / copy / inline approval).
  */
 export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
-  endIndex,
   startIndex
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
-
-  // Pull the visible tool parts in this range. `useShallow` makes this
-  // re-render only when the actual part references change (assistant-ui
-  // gives stable refs for unchanged parts), not on every text/reasoning
-  // delta elsewhere in the message.
-  const visibleParts = useAuiState(
-    useShallow((s: { message: { parts: readonly unknown[] } }) =>
-      s.message.parts.slice(startIndex, endIndex + 1).filter((p): p is ToolPart => {
-        if (!p || typeof p !== 'object') {
-          return false
-        }
-
-        const row = p as { toolName?: unknown; type?: unknown }
-
-        return row.type === 'tool-call' && typeof row.toolName === 'string' && !SPECIAL_TOOL_NAMES.has(row.toolName)
-      })
-    )
-  )
-
-  const isGroup = visibleParts.length > 1
-  const isRunning = messageRunning && visibleParts.some(p => p.result === undefined)
-  // Stable across the group's lifetime (start index doesn't shift when
-  // tools append to the end), so user-driven open/close persists across
-  // streaming.
-  const disclosureId = `tool-group:${messageId}:${startIndex}`
-  const userOpen = useDisclosureOpen(disclosureId)
-
-  // A live approval request must NEVER be buried inside a collapsed group —
-  // the user has to be able to act on it without first expanding "Tool
-  // actions · N steps". When an approval is in flight and this group hosts
-  // the pending approval-eligible tool that raised it (terminal /
-  // execute_code with no result yet — see tool-approval.tsx for why the
-  // single pending row IS the one that raised it), force the body open so
-  // the inline ApprovalBar surfaces. The user can still collapse the group
-  // again once the approval resolves.
-  const approvalRequest = useStore($approvalRequest)
-
-  const hostsLiveApproval =
-    approvalRequest !== null &&
-    messageRunning &&
-    visibleParts.some(p => p.result === undefined && APPROVAL_TOOLS.has(p.toolName))
-
-  const open = userOpen || hostsLiveApproval
-  const enterRef = useEnterAnimation(messageRunning, disclosureId)
-
-  const status = groupStatus(visibleParts)
-  const displayStatus = !isRunning && status === 'running' ? 'success' : status
-  const failedStepCount = useMemo(() => groupFailedStepCount(visibleParts), [visibleParts])
-  const totalDurationLabel = useMemo(() => groupTotalDurationLabel(visibleParts), [visibleParts])
-
-  const statusSummary =
-    displayStatus === 'running' || failedStepCount === 0
-      ? ''
-      : displayStatus === 'warning'
-        ? failedStepCount === 1
-          ? 'Recovered after 1 failed step'
-          : `Recovered after ${failedStepCount} failed steps`
-        : failedStepCount === 1
-          ? '1 step failed'
-          : `${failedStepCount} steps failed`
-
-  const groupCopyText = useMemo(() => buildGroupCopyText(visibleParts), [visibleParts])
-  const previewTargets = useMemo(() => groupPreviewTargets(visibleParts), [visibleParts])
+  const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
 
   return (
-    <ToolEmbedContext.Provider value={isGroup}>
-      <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" ref={enterRef}>
-        {isGroup && (
-          <DisclosureRow
-            key="header"
-            onToggle={() => setToolDisclosureOpen(disclosureId, !open)}
-            open={open}
-            trailing={
-              !isRunning && groupCopyText ? (
-                <CopyButton appearance="tool-row" label="Copy activity" stopPropagation text={groupCopyText} />
-              ) : undefined
-            }
-          >
-            <span className="flex min-w-0 items-center gap-1.5">
-              <ToolGlyph status={displayStatus === 'success' ? undefined : displayStatus} />
-              <FadeText
-                className={cn(
-                  TOOL_HEADER_TITLE_CLASS,
-                  displayStatus === 'error' && 'text-destructive',
-                  displayStatus === 'warning' && 'text-amber-700 dark:text-amber-300'
-                )}
-              >
-                {groupTitle(visibleParts)}
-              </FadeText>
-              {totalDurationLabel && <span className={TOOL_HEADER_DURATION_CLASS}>{totalDurationLabel}</span>}
-            </span>
-            {statusSummary && (
-              <FadeText
-                className={cn(
-                  TOOL_HEADER_SUBTITLE_CLASS,
-                  displayStatus === 'warning' ? 'text-amber-700/80 dark:text-amber-300/85' : 'text-destructive/85'
-                )}
-              >
-                {statusSummary}
-              </FadeText>
-            )}
-          </DisclosureRow>
-        )}
-        {isGroup && previewTargets.length > 0 && (
-          <div className="mt-2 grid w-full min-w-0 max-w-full gap-2 overflow-hidden pr-2 pl-3">
-            {previewTargets.map(target => (
-              <PreviewAttachment key={target} source="tool-result" target={target} />
-            ))}
-          </div>
-        )}
-        {/* Body is always rendered so children stay mounted across collapse/
-            expand and across the 1→2 group transition. `hidden` removes it
-            from a11y/visual flow without unmounting React subtree. */}
-        <div className={cn(isGroup && 'mt-0.5 w-full overflow-hidden pr-2 pl-3')} hidden={isGroup && !open} key="body">
-          {children}
-        </div>
+    <ToolEmbedContext.Provider value={false}>
+      <div
+        className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
+        data-slot="tool-block"
+        ref={enterRef}
+      >
+        {children}
       </div>
     </ToolEmbedContext.Provider>
   )

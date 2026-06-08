@@ -2907,7 +2907,8 @@ class TestConcurrentToolExecution:
         messages = []
 
         def fake_handle(name, args, task_id, **kwargs):
-            if args.get("q") == "boom":
+            tool_call_id = kwargs.get("tool_call_id", "")
+            if tool_call_id == "c1":
                 raise RuntimeError("boom")
             return "success"
 
@@ -2918,7 +2919,6 @@ class TestConcurrentToolExecution:
         # Results are ordered by tool_call_id; c1 raised, c2 succeeded.
         assert messages[0]["tool_call_id"] == "c1"
         assert "Error" in messages[0]["content"] or "boom" in messages[0]["content"]
-        # Second tool should succeed
         assert messages[1]["tool_call_id"] == "c2"
         assert "success" in messages[1]["content"]
 

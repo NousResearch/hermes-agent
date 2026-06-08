@@ -13,6 +13,7 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
+import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
 
@@ -85,12 +86,12 @@ export function reportBackendContract(contract: number | undefined): void {
   }
 
   notify({
-    action: { label: 'Update Hermes', onClick: () => void applyUpdates() },
+    action: { label: translateNow('notifications.updateHermes'), onClick: () => void applyUpdates() },
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
-    message: 'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
-    title: 'Backend out of date'
+    message: translateNow('notifications.backendOutOfDateMessage'),
+    title: translateNow('notifications.backendOutOfDateTitle')
   })
 }
 
@@ -121,7 +122,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 
   notify({
     action: {
-      label: "See what's new",
+      label: translateNow('notifications.seeWhatsNew'),
       onClick: () => {
         snoozeUpdateToast()
         openUpdatesWindow()
@@ -130,9 +131,9 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     durationMs: 0,
     id: UPDATE_TOAST_ID,
     kind: 'info',
-    message: `${behind} new change${behind === 1 ? '' : 's'} available.`,
+    message: translateNow('notifications.updateReadyMessage', behind),
     onDismiss: () => snoozeUpdateToast(),
-    title: 'Update ready'
+    title: translateNow('notifications.updateReadyTitle')
   })
 }
 

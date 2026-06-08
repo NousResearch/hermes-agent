@@ -320,5 +320,34 @@ class TestSteerCommandRegistry:
         assert should_bypass_active_session("steer") is True
 
 
-if __name__ == "__main__":  # pragma: no cover
-    pytest.main([__file__, "-v"])
+class TestSteerChannelNoteLazyImport:
+    """Regression: STEER_CHANNEL_NOTE must be lazily imported inside
+    build_system_prompt_parts to avoid ImportError during subagent spawn
+    (issue #41986).
+    """
+
+    def test_steer_channel_note_not_in_module_namespace(self):
+        """STEER_CHANNEL_NOTE must NOT be imported at module level in
+        system_prompt.py — it must be lazily imported inside
+        build_system_prompt_parts to avoid circular-import races during
+        subagent spawn."""
+        import agent.system_prompt as sp
+
+        # The name must not be in the module's top-level namespace.
+        assert "STEER_CHANNEL_NOTE" not in sp.__dict__, (
+            "STEER_CHANNEL_NOTE should not be a top-level import in "
+            "agent.system_prompt — it must be lazily imported inside "
+            "build_system_prompt_parts to avoid ImportError during "
+            "subagent spawn (issue #41986)"
+        )
+
+    def test_lazy_import_succeeds_at_runtime(self):
+        """The lazy import of STEER_CHANNEL_NOTE inside
+        build_system_prompt_parts must succeed when the function is
+        actually called (i.e. the import path is correct)."""
+        from agent.prompt_builder import STEER_CHANNEL_NOTE
+
+        # If this import succeeds, the lazy import inside
+        # build_system_prompt_parts will also succeed.
+        assert isinstance(STEER_CHANNEL_NOTE, str)
+        assert len(STEER_CHANNEL_NOTE) > 0

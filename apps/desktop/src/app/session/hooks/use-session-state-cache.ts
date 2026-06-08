@@ -9,6 +9,28 @@ import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionW
 
 import type { ClientSessionState } from '../../types'
 
+// Shallow per-message identity check. When a flush carries no transcript
+// changes, `preserveLocalAssistantErrors` returns the same message objects in
+// the same order, so reference equality per slot is enough to detect "nothing
+// to publish" and avoid a needless `$messages` churn.
+function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
+  if (a === b) {
+    return true
+  }
+
+  if (a.length !== b.length) {
+    return false
+  }
+
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) {
+      return false
+    }
+  }
+
+  return true
+}
+
 interface SessionStateCacheOptions {
   activeSessionId: string | null
   busyRef: MutableRefObject<boolean>
@@ -88,7 +110,20 @@ export function useSessionStateCache({
       return
     }
 
-    setMessages(preserveLocalAssistantErrors(pending.state.messages, $messages.get()))
+    // `preserveLocalAssistantErrors` always returns a fresh array, so publishing
+    // it unconditionally puts a new `$messages` reference on the store every
+    // flush — including the periodic `session.info` heartbeats that don't touch
+    // the transcript. That churns ChatView → runtimeMessageRepository → the
+    // assistant-ui runtime → the virtualizer, which re-measures and visibly
+    // jerks the scroll position while the user is reading. Skip the publish when
+    // the merged result is content-identical to what's already on screen.
+    const currentMessages = $messages.get()
+    const nextMessages = preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+
+    if (!sameMessageList(nextMessages, currentMessages)) {
+      setMessages(nextMessages)
+    }
+
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)

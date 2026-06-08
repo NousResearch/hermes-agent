@@ -264,8 +264,27 @@ function useThreadScrollAnchor({
       return
     }
 
+    // Already parked at the bottom: writing `scrollTop` is a no-op and the
+    // browser fires NO scroll event, so arming the programmatic gate here would
+    // leave it permanently set. Repeated pins (streaming heartbeats, the
+    // post-run lock loop) then accumulate the gate, and the next genuine user
+    // scroll-up is misread as one of our programmatic scrolls — re-arming
+    // sticky-bottom and yanking the viewport back down. Refresh trackers, bail.
+    const distFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
+
+    if (distFromBottom <= AT_BOTTOM_THRESHOLD) {
+      lastTopRef.current = el.scrollTop
+      lastHeightRef.current = el.scrollHeight
+      lastClientHeightRef.current = el.clientHeight
+
+      return
+    }
+
     // Hold the disarm gate across the scroll event the next line will fire.
-    programmaticScrollPendingRef.current += 1
+    // Set to 1 rather than incrementing: coalesced writes within a frame fire a
+    // single scroll event, so a counter > 1 can never drain and would swallow a
+    // later real user scroll.
+    programmaticScrollPendingRef.current = 1
     scrollElementToBottom(el)
     lastTopRef.current = el.scrollTop
     lastHeightRef.current = el.scrollHeight

@@ -369,7 +369,9 @@ export function Pane({
 
         {/* Floating panel — full-height, edge-anchored, slid off until revealed.
             group-hover (trigger or panel) OR data-forced slides it in; intent
-            delay on enter, instant on leave. Inert + transparent while hidden. */}
+            delay on enter, instant on leave. Inert + transparent while hidden.
+            Keyed on side so flipping panes remounts it off-screen on the new
+            edge instead of transitioning the transform across the viewport. */}
         <div
           className={cn(
             'pointer-events-none absolute inset-y-0 z-30 overflow-hidden',
@@ -378,6 +380,7 @@ export function Pane({
             'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)]',
             'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0'
           )}
+          key={edge}
           style={
             {
               [edge]: 0,

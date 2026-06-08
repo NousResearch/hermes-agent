@@ -4531,6 +4531,49 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+def clear_respawn_guard(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Clear respawn guard conditions for *task_id* so it can be re-spawned.
+
+    Removes the data that triggers the three guard reasons:
+
+    - ``recent_success``: deletes completed ``task_runs`` within the guard
+      window so ``check_respawn_guard`` no longer finds a recent success.
+    - ``blocker_auth``: clears ``last_failure_error`` on the task row.
+    - ``active_pr``: deletes recent comments containing GitHub PR URLs
+      within the PR guard window.
+
+    Returns ``True`` if the task exists (even if no guard was active),
+    ``False`` if the task ID is unknown.
+    """
+    row = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return False
+    now = int(time.time())
+    success_cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
+    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    with write_txn(conn):
+        # Remove recent completed runs that trigger "recent_success"
+        conn.execute(
+            "DELETE FROM task_runs "
+            "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
+            (task_id, success_cutoff),
+        )
+        # Clear failure error to remove "blocker_auth"
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = NULL WHERE id = ?",
+            (task_id,),
+        )
+        # Remove recent comments with PR URLs that trigger "active_pr"
+        for c in conn.execute(
+            "SELECT id, body FROM task_comments "
+            "WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                conn.execute("DELETE FROM task_comments WHERE id = ?", (c["id"],))
+    return True
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.

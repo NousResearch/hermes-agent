@@ -550,6 +550,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_unguard = sub.add_parser("unguard", help="Clear respawn guard for a task (allows immediate re-spawn)")
+    p_unguard.add_argument("task_ids", nargs="+", help="Task ID(s) to unguard")
+
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
@@ -899,6 +902,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
+        "unguard":  _cmd_unguard,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
         "dispatch": _cmd_dispatch,
@@ -1952,6 +1956,26 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}")
+    return 0 if not failed else 1
+
+
+def _cmd_unguard(args: argparse.Namespace) -> int:
+    ids = list(args.task_ids or [])
+    if not ids:
+        print("at least one task_id is required", file=sys.stderr)
+        return 1
+    failed: list[str] = []
+    with kb.connect() as conn:
+        for tid in ids:
+            if not kb.clear_respawn_guard(conn, tid):
+                failed.append(tid)
+                print(f"task {tid} not found", file=sys.stderr)
+            else:
+                guard = kb.check_respawn_guard(conn, tid)
+                if guard is None:
+                    print(f"✓ Unguarded {tid} — ready for dispatch")
+                else:
+                    print(f"✓ Cleared guards for {tid} (still guarded: {guard})")
     return 0 if not failed else 1
 
 

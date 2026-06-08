@@ -288,8 +288,33 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
-_find_shell = _find_bash
+def _find_shell() -> str:
+    """Find the user's login shell for background process spawning.
+
+    Unlike ``_find_bash`` (which always returns a bash binary for callers
+    that explicitly need bash), this function prefers the user's configured
+    ``$SHELL`` on POSIX so that ``spawn_local`` uses the shell the user
+    actually logs in with.
+
+    On macOS Catalina+ the default login shell is zsh, but
+    ``shutil.which("bash")`` still finds the system ``/bin/bash`` (GNU bash
+    3.2).  When bash 3.2 is invoked with ``-l`` (login) and stdin is
+    ``/dev/null``, it sources ``~/.bash_profile`` which on many macOS setups
+    contains ``exec /bin/zsh -l``.  That ``exec`` replaces bash with zsh but
+    drops the ``-c`` argument, so the background command never runs — the
+    subprocess exits 0 with no output and no side effects.
+
+    Preferring ``$SHELL`` avoids this entirely because zsh handles ``-lic``
+    correctly even with redirected stdin.
+
+    On Windows, ``$SHELL`` is typically bash (Git Bash), so behaviour is
+    unchanged — we fall through to ``_find_bash``.
+    """
+    if not _IS_WINDOWS:
+        user_shell = os.environ.get("SHELL")
+        if user_shell and os.path.isfile(user_shell):
+            return user_shell
+    return _find_bash()
 
 
 # Standard PATH entries for environments with minimal PATH.

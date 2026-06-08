@@ -297,6 +297,21 @@ def main():
     # Batch resolve GitHub paths for skills.sh entries
     all_skills = batch_resolve_paths(all_skills, auth)
 
+    # Collect which sources hit a GitHub API rate limit during the crawl.
+    # github / claude-marketplace / well-known all read api.github.com, so a
+    # rate-limited token zeroes all three at once — surfaced below so the
+    # failure message names the real cause instead of "source returned 0".
+    rate_limited_sources = {
+        name for name, source in sources.items()
+        if getattr(source, "is_rate_limited", False)
+    }
+    if rate_limited_sources:
+        print(
+            "  WARNING: GitHub API rate limit hit for: "
+            + ", ".join(sorted(rate_limited_sources)),
+            file=sys.stderr,
+        )
+
     # Deduplicate by identifier
     seen: dict[str, dict] = {}
     for skill in all_skills:
@@ -311,25 +326,9 @@ def main():
                     "browse-sh": 5, "claude-marketplace": 6, "lobehub": 7}
     deduped.sort(key=lambda s: (source_order.get(s["source"], 99), s["name"]))
 
-    # Build index
-    index = {
-        "version": INDEX_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "skill_count": len(deduped),
-        "skills": deduped,
-    }
-
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(index, f, separators=(",", ":"), ensure_ascii=False)
-
-    elapsed = time.time() - overall_start
-    file_size = os.path.getsize(OUTPUT_PATH)
-    print(f"\nDone! {len(deduped)} skills indexed in {elapsed:.0f}s")
-    print(f"Output: {OUTPUT_PATH} ({file_size / 1024:.0f} KB)")
-
     from collections import Counter
     by_source = Counter(s["source"] for s in deduped)
+    print(f"\nCrawled {len(deduped)} skills in {time.time() - overall_start:.0f}s")
     for src, count in sorted(by_source.items(), key=lambda x: -x[1]):
         resolved = sum(1 for s in deduped
                        if s["source"] == src and s.get("resolved_github_id"))
@@ -380,13 +379,45 @@ def main():
         )
         for line in health_errors:
             print(line, file=sys.stderr)
+        if rate_limited_sources:
+            print(
+                "\nGitHub API rate limit was hit during this crawl for: "
+                + ", ".join(sorted(rate_limited_sources))
+                + ". This is the usual cause of an all-GitHub-tap collapse "
+                "(github / claude-marketplace / well-known dropping to zero "
+                "together). Re-run with a higher-quota GITHUB_TOKEN.",
+                file=sys.stderr,
+            )
         print(
             "\nIf the drop is expected (e.g. a hub is genuinely shutting "
             "down), lower the floor in scripts/build_skills_index.py "
             "EXPECTED_FLOORS in the same PR.",
             file=sys.stderr,
         )
+        # IMPORTANT: do NOT write OUTPUT_PATH on failure. The index file is
+        # gitignored, so a fresh deploy checkout has no copy on disk — leaving
+        # it absent lets website/scripts/extract-skills.py fall back to the
+        # legacy snapshot cache (or skip the unified index) instead of reading
+        # a degenerate file. Writing-then-exiting-2 was the bug that shipped an
+        # index with every GitHub-API source dropped to zero: deploy-site.yml
+        # swallows the exit code with `|| echo non-fatal`, and the partial file
+        # was already on disk for extract-skills to pick up.
         sys.exit(2)
+
+    # Healthy — only now write the index out for the docs build to consume.
+    index = {
+        "version": INDEX_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "skill_count": len(deduped),
+        "skills": deduped,
+    }
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(index, f, separators=(",", ":"), ensure_ascii=False)
+    file_size = os.path.getsize(OUTPUT_PATH)
+    print(f"\nDone! {len(deduped)} skills indexed in "
+          f"{time.time() - overall_start:.0f}s")
+    print(f"Output: {OUTPUT_PATH} ({file_size / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":

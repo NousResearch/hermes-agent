@@ -3429,6 +3429,40 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_unfinished_action_promise_continues_in_chat_completions(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="Let me verify the GitHub credential and remote config.",
+            finish_reason="stop",
+        )
+        resp2 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp3 = _mock_response(content="GitHub access is verified.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="credential ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("clean up the GitHub token protocol")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "GitHub access is verified."
+        assert result["api_calls"] == 3
+        assert any(
+            msg.get("role") == "assistant"
+            and msg.get("finish_reason") == "incomplete"
+            and "GitHub credential" in (msg.get("content") or "")
+            for msg in result["messages"]
+        )
+        assert any(
+            msg.get("role") == "user"
+            and "unfinished action promise" in (msg.get("content") or "")
+            for msg in result["messages"]
+        )
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

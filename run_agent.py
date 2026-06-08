@@ -1365,15 +1365,24 @@ class AIAgent:
 
         return not self._has_natural_response_ending(visible_text)
 
+    def _looks_like_unfinished_action_promise(
+        self,
+        user_message: str,
+        assistant_content: str,
+        messages: List[Dict[str, Any]],
+    ) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_unfinished_action_promise``."""
+        from agent.agent_runtime_helpers import looks_like_unfinished_action_promise
+        return looks_like_unfinished_action_promise(self, user_message, assistant_content, messages)
+
     def _looks_like_codex_intermediate_ack(
         self,
         user_message: str,
         assistant_content: str,
         messages: List[Dict[str, Any]],
     ) -> bool:
-        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_codex_intermediate_ack``."""
-        from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
-        return looks_like_codex_intermediate_ack(self, user_message, assistant_content, messages)
+        """Backward-compatible forwarder for older tests/callers."""
+        return self._looks_like_unfinished_action_promise(user_message, assistant_content, messages)
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""

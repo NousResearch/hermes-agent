@@ -4081,10 +4081,9 @@ def run_conversation(
                 agent._clear_status_buffer()
 
                 if (
-                    agent.api_mode == "codex_responses"
-                    and agent.valid_tool_names
+                    agent.valid_tool_names
                     and codex_ack_continuations < 2
-                    and agent._looks_like_codex_intermediate_ack(
+                    and agent._looks_like_unfinished_action_promise(
                         user_message=user_message,
                         assistant_content=final_response,
                         messages=messages,
@@ -4098,8 +4097,10 @@ def run_conversation(
                     continue_msg = {
                         "role": "user",
                         "content": (
-                            "[System: Continue now. Execute the required tool calls and only "
-                            "send your final answer after completing the task.]"
+                            "[System: Continue now. You ended with an unfinished action "
+                            "promise but emitted no tool call. Execute the promised tool "
+                            "call now, or provide a final answer that does not promise "
+                            "future action.]"
                         ),
                     }
                     messages.append(continue_msg)

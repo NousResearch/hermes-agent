@@ -1986,78 +1986,74 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 
+def looks_like_unfinished_action_promise(
+    agent,
+    user_message: str,
+    assistant_content: str,
+    messages: List[Dict[str, Any]],
+) -> bool:
+    """Detect a non-final action promise that should continue instead of ending.
+
+    This is a runtime backstop for the common stutter pattern where the model
+    says "Let me check..." / "I'll verify..." but emits no tool call. Prompt
+    guidance already forbids that, but TUI/Signal both share this loop and need
+    the guard here so a text-only promise is not treated as a completed turn.
+    """
+    if not getattr(agent, "valid_tool_names", None):
+        return False
+
+    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
+    if not assistant_text or len(assistant_text) > 1200:
+        return False
+    if re.search(r"\blet me know\b", assistant_text):
+        return False
+
+    has_future_ack = bool(
+        re.search(
+            r"\b(i['’]ll|i will|i am going to|i['’]m going to|let me|i need to|next i(?: will|'ll))\b",
+            assistant_text,
+        )
+    )
+    if not has_future_ack:
+        return False
+
+    action_markers = (
+        "look into", "look at", "inspect", "scan", "check", "analyz",
+        "review", "explore", "read", "open", "run", "test", "fix",
+        "debug", "search", "find", "walkthrough", "report back",
+        "summarize", "verify", "confirm", "clean up", "identify",
+        "compare", "parse", "investigate", "list", "fetch", "clone",
+        "push", "pull", "patch", "update", "write", "create", "edit",
+    )
+    if not any(marker in assistant_text for marker in action_markers):
+        return False
+
+    task_markers = (
+        "directory", "current directory", "current dir", "cwd", "repo",
+        "repository", "codebase", "project", "folder", "filesystem",
+        "file tree", "files", "path", "config", "logs", "log", "token",
+        "credential", "github", "git", "remote", "branch", "script",
+        "service", "database", "docker", "wsl", "cron", "signal", "tui",
+    )
+    user_text = (user_message or "").strip().lower()
+    user_targets_task = (
+        any(marker in user_text for marker in task_markers)
+        or "~/" in user_text
+        or "/" in user_text
+    )
+    assistant_targets_task = any(marker in assistant_text for marker in task_markers)
+    prior_tool_result = any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages[-8:])
+    return user_targets_task or assistant_targets_task or prior_tool_result
+
+
 def looks_like_codex_intermediate_ack(
     agent,
     user_message: str,
     assistant_content: str,
     messages: List[Dict[str, Any]],
 ) -> bool:
-    """Detect a planning/ack message that should continue instead of ending the turn."""
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
-        return False
-
-    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
-    if not assistant_text:
-        return False
-    if len(assistant_text) > 1200:
-        return False
-
-    has_future_ack = bool(
-        re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
-    )
-    if not has_future_ack:
-        return False
-
-    action_markers = (
-        "look into",
-        "look at",
-        "inspect",
-        "scan",
-        "check",
-        "analyz",
-        "review",
-        "explore",
-        "read",
-        "open",
-        "run",
-        "test",
-        "fix",
-        "debug",
-        "search",
-        "find",
-        "walkthrough",
-        "report back",
-        "summarize",
-    )
-    workspace_markers = (
-        "directory",
-        "current directory",
-        "current dir",
-        "cwd",
-        "repo",
-        "repository",
-        "codebase",
-        "project",
-        "folder",
-        "filesystem",
-        "file tree",
-        "files",
-        "path",
-    )
-
-    user_text = (user_message or "").strip().lower()
-    user_targets_workspace = (
-        any(marker in user_text for marker in workspace_markers)
-        or "~/" in user_text
-        or "/" in user_text
-    )
-    assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
-    assistant_targets_workspace = any(
-        marker in assistant_text for marker in workspace_markers
-    )
-    return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
-
-
+    """Backward-compatible alias for the shared unfinished-action detector."""
+    return looks_like_unfinished_action_promise(agent, user_message, assistant_content, messages)
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
@@ -2493,6 +2489,7 @@ __all__ = [
     "invoke_tool",
     "repair_tool_call",
     "sanitize_api_messages",
+    "looks_like_unfinished_action_promise",
     "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",

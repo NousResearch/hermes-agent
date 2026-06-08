@@ -67,7 +67,16 @@ def normalize_url_for_request(url: str) -> str:
         except UnicodeError:
             ascii_host = hostname
         if ascii_host != hostname:
-            netloc = netloc.replace(hostname, ascii_host, 1)
+            # parsed.hostname is lowercased by urlsplit while parsed.netloc preserves the
+            # original case, so str.replace() of the lowercased hostname silently no-ops for
+            # any host with an uppercase letter (e.g. https://Köln.de). Rebuild netloc from
+            # structural parts so the IDNA host substitution is case-insensitive, never
+            # collides with matching text in userinfo, and preserves the raw port text
+            # verbatim (including a malformed port, which must still be rejected downstream).
+            # The rebuild only runs for IDNA-encodable hosts, never IP/IPv6 literals.
+            userinfo, at, host_port = parsed.netloc.rpartition("@")
+            _, colon, port = host_port.partition(":")
+            netloc = userinfo + at + ascii_host + colon + port
 
     path = quote(parsed.path, safe="/%:@!$&'()*+,;=")
     query = quote(parsed.query, safe="/%:@!$&'()*+,;=?")

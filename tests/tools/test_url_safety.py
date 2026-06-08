@@ -42,6 +42,28 @@ class TestNormalizeUrlForRequest:
             == "https://xn--mnich-kva.example/K%C3%B6ln"
         )
 
+    def test_idna_encodes_uppercase_hostname(self):
+        # urlsplit lowercases parsed.hostname but parsed.netloc keeps the original case, so a
+        # case-sensitive substitution silently no-ops for any capitalized IDN host.
+        assert (
+            normalize_url_for_request("https://Köln.de/wetter")
+            == "https://xn--kln-sna.de/wetter"
+        )
+
+    def test_idna_encodes_hostname_with_userinfo_and_port(self):
+        assert (
+            normalize_url_for_request("https://user:pw@Köln.de:8443/x")
+            == "https://user:pw@xn--kln-sna.de:8443/x"
+        )
+
+    def test_idna_preserves_malformed_port(self):
+        # a malformed port must survive normalization so it is still rejected downstream,
+        # not silently dropped to the default port.
+        assert (
+            normalize_url_for_request("https://münich.example:bad/x")
+            == "https://xn--mnich-kva.example:bad/x"
+        )
+
 
 class TestIsSafeUrl:
     def test_public_url_allowed(self):

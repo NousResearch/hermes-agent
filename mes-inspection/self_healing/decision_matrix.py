@@ -128,6 +128,7 @@ class DecisionMatrix:
     """自愈决策矩阵。"""
 
     def __init__(self, config: Dict[str, Any]):
+        self.config = config
         self.weights = {
             "data_risk": config.get("data_risk_weight", 0.30),
             "reversibility": config.get("reversibility_weight", 0.25),
@@ -233,11 +234,13 @@ class DecisionMatrix:
             ("oracle", "lock_wait"): ["列出锁持有者", "评估是否 kill 会话"],
             ("oracle", "slow_sql"): ["收集执行计划", "通知 DBA 优化"],
             ("elk", "cluster_red"): ["检查未分配分片", "尝试 reroute allocate"],
-            ("elk", "disk_full"): ["清理 7 天前索引: curl -X DELETE localhost:9200/mes-logs-*"],
+            ("elk", "disk_full"): ["清理 7 天前索引: curl -X DELETE {es_url}/mes-logs-*"],
             ("skywalking", "sla_drop"): ["生成链路分析报告", "定位慢接口"],
         }
         key = (scenario.component, scenario.fault_type)
-        return actions.get(key, ["收集更多信息"])
+        raw_actions = actions.get(key, ["收集更多信息"])
+        es_url = self.config.get("elk", {}).get("elasticsearch_url", "http://localhost:9200")
+        return [a.replace("{es_url}", es_url) for a in raw_actions]
 
     def _get_safety_notes(self, scenario: FaultScenario, level: HealLevel) -> List[str]:
         """获取安全注意事项。"""

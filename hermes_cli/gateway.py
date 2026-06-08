@@ -3067,12 +3067,45 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def _launchd_service_loaded_in_domain(domain: str, label: str) -> bool:
+    """Return True when launchd already knows ``label`` in ``domain``.
+
+    macOS keeps per-user LaunchAgents in distinct bootstrap domains.  Recent
+    Hermes builds prefer ``user/<uid>`` for macOS 26 background sessions, but
+    older installs — and some current hosts — may still have the same LaunchAgent
+    loaded in ``gui/<uid>``.  Restarting a running ``gui`` job through ``user``
+    produces a false "Could not find service" followed by a duplicate-label
+    bootstrap failure.  Probe the loaded domain first and manage the job where
+    it actually lives.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"{domain}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    uid = os.getuid()
+    label = get_launchd_label()
+    gui_domain = f"gui/{uid}"
+    user_domain = f"user/{uid}"
+
+    # Preserve the loaded domain for existing installs.  This avoids trying to
+    # bootstrap the same label into user/<uid> while launchd still has it loaded
+    # in gui/<uid> (seen as Bootstrap failed: 5 / File exists on macOS 26.5).
+    for domain in (gui_domain, user_domain):
+        if _launchd_service_loaded_in_domain(domain, label):
+            return domain
+
+    # Fresh install / fully unloaded service: keep the macOS 26-safe default
+    # introduced for #23387.
+    return user_domain  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and
@@ -3299,14 +3332,17 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
+    domain = _launchd_domain()
+    # Bootout/bootstrap so launchd picks up the new definition.  Keep the same
+    # domain for both calls; after bootout the probe would no longer see the old
+    # loaded job and could otherwise fall back to user/<uid> mid-refresh.
     subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
+        ["launchctl", "bootout", f"{domain}/{label}"],
         check=False,
         timeout=90,
     )
     subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        ["launchctl", "bootstrap", domain, str(plist_path)],
         check=False,
         timeout=30,
     )
@@ -3380,14 +3416,16 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+        domain = _launchd_domain()
+        target = f"{domain}/{label}"
         try:
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                ["launchctl", "bootstrap", domain, str(plist_path)],
                 check=True,
                 timeout=30,
             )
             subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                ["launchctl", "kickstart", target],
                 check=True,
                 timeout=30,
             )
@@ -3400,9 +3438,11 @@ def launchd_start():
         return
 
     refresh_launchd_plist_if_needed()
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
     try:
         subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+            ["launchctl", "kickstart", target],
             check=True,
             timeout=30,
         )
@@ -3413,12 +3453,12 @@ def launchd_start():
         print("↻ launchd job was unloaded; reloading service definition")
         try:
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                ["launchctl", "bootstrap", domain, str(plist_path)],
                 check=True,
                 timeout=30,
             )
             subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                ["launchctl", "kickstart", target],
                 check=True,
                 timeout=30,
             )
@@ -3517,8 +3557,9 @@ def _wait_for_gateway_exit(
 
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
+    domain: str | None = None
+    target: str | None = None
     from gateway.status import get_running_pid
 
     try:
@@ -3526,6 +3567,8 @@ def launchd_restart():
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             return
+        domain = _launchd_domain()
+        target = f"{domain}/{label}"
         if pid is not None:
             try:
                 terminate_pid(pid, force=False)
@@ -3549,11 +3592,13 @@ def launchd_restart():
                 return
             raise
         # Job not loaded — bootstrap and start fresh
+        if domain is None or target is None:
+            raise
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                ["launchctl", "bootstrap", domain, str(plist_path)],
                 check=True,
                 timeout=30,
             )

@@ -60,6 +60,7 @@ declare global {
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
+      scanVaultMd?: (vaultRoot: string) => Promise<HermesScanVaultMdResult>
       terminal: {
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
@@ -406,6 +407,11 @@ export interface HermesReadDirEntry {
 
 export interface HermesReadDirResult {
   entries: HermesReadDirEntry[]
+  error?: string
+}
+
+export interface HermesScanVaultMdResult {
+  files: string[]
   error?: string
 }
 

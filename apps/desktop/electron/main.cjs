@@ -5457,6 +5457,49 @@ ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
   }
 })
 
+const VAULT_SCAN_EXCLUDED_DIRS = new Set(['.git', '.obsidian', 'node_modules', '.trash', '.stversions'])
+const VAULT_SCAN_MAX_FILES = 50000
+
+ipcMain.handle('hermes:fs:scanVaultMd', async (_event, vaultRoot) => {
+  const resolved = path.resolve(String(vaultRoot || ''))
+
+  if (!resolved || !directoryExists(resolved)) {
+    return { files: [], error: 'invalid-path' }
+  }
+
+  const files = []
+
+  async function walk(dir) {
+    if (files.length >= VAULT_SCAN_MAX_FILES) return
+
+    let dirents
+    try {
+      dirents = await fs.promises.readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const d of dirents) {
+      if (files.length >= VAULT_SCAN_MAX_FILES) return
+
+      if (d.isDirectory()) {
+        if (!VAULT_SCAN_EXCLUDED_DIRS.has(d.name)) {
+          await walk(path.join(dir, d.name))
+        }
+      } else if (d.name.endsWith('.md')) {
+        files.push(path.join(dir, d.name))
+      }
+    }
+  }
+
+  try {
+    await walk(resolved)
+    return { files }
+  } catch (error) {
+    return { files, error: error?.code || 'scan-error' }
+  }
+})
+
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {
     throw new Error('PTY support is unavailable. Reinstall desktop dependencies and restart Hermes.')

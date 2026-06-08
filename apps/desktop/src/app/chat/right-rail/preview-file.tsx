@@ -14,6 +14,7 @@ import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { getStoredVaultRoot, getVaultIndex, resolveObsidianLinks, type VaultIndex } from '@/lib/wikilink-resolver'
 import type { PreviewTarget } from '@/store/preview'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
@@ -286,11 +287,13 @@ const MARKDOWN_COMPONENTS = {
   code: MarkdownCode
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+function MarkdownPreview({ text, filePath, vaultIndex }: { text: string; filePath: string; vaultIndex: VaultIndex | null }) {
+  const processed = useMemo(() => resolveObsidianLinks(text, filePath, vaultIndex), [text, filePath, vaultIndex])
+
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground">
       <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
+        {processed}
       </Streamdown>
     </div>
   )
@@ -416,6 +419,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
+  const [vaultIndex, setVaultIndex] = useState<VaultIndex | null>(null)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
 
@@ -423,6 +427,29 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // the same path as plain text files. `previewKind === 'binary'` arrives
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
+  const isMarkdown = isText && (state.language || target.language) === 'markdown'
+
+  // Load vault index when previewing a markdown file in an Obsidian vault
+  useEffect(() => {
+    if (!isMarkdown || !filePath) {
+      setVaultIndex(null)
+      return
+    }
+
+    let active = true
+    const vaultRoot = getStoredVaultRoot()
+
+    if (!vaultRoot) {
+      setVaultIndex(null)
+      return
+    }
+
+    void getVaultIndex(vaultRoot).then(index => {
+      if (active) setVaultIndex(index)
+    })
+
+    return () => { active = false }
+  }, [filePath, isMarkdown])
 
   const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
 
@@ -530,7 +557,6 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }
 
   if (isText && state.text !== undefined) {
-    const isMarkdown = (state.language || target.language) === 'markdown'
     const showRendered = isMarkdown && !renderMarkdownAsSource
 
     return (
@@ -542,7 +568,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         )}
         {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
         {showRendered ? (
-          <MarkdownPreview text={state.text} />
+          <MarkdownPreview filePath={filePath} text={state.text} vaultIndex={vaultIndex} />
         ) : (
           <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
         )}

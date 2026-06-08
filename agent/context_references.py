@@ -290,6 +290,7 @@ def _expand_git_reference(
             capture_output=True,
             text=True,
             timeout=30,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
@@ -482,6 +483,7 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
             capture_output=True,
             text=True,
             timeout=10,
+            stdin=subprocess.DEVNULL,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None

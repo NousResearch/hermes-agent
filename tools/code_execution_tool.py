@@ -1618,6 +1618,7 @@ def _is_usable_python(python_path: str) -> bool:
             timeout=5,
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            stdin=subprocess.DEVNULL,
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):

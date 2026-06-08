@@ -821,6 +821,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
             capture_output=True,
             text=True,
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
@@ -1165,7 +1166,7 @@ def run_oauth_setup_token() -> Optional[str]:
 
     # Run interactively — stdin/stdout/stderr inherited so user can interact
     try:
-        subprocess.run([claude_path, "setup-token"])
+        subprocess.run([claude_path, "setup-token"], stdin=subprocess.DEVNULL)
     except (KeyboardInterrupt, EOFError):
         return None
 

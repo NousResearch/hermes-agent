@@ -65,6 +65,7 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
             text=True,
             timeout=timeout,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
     except FileNotFoundError:

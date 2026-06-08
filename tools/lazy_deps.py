@@ -365,6 +365,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             r = subprocess.run(
                 [uv_bin, "pip", "install", *specs],
                 capture_output=True, text=True, timeout=timeout, env=uv_env,
+                stdin=subprocess.DEVNULL,
             )
             if r.returncode == 0:
                 return _InstallResult(True, r.stdout or "", r.stderr or "")
@@ -378,6 +379,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL,
         )
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
@@ -386,6 +388,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                stdin=subprocess.DEVNULL,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             return _InstallResult(False, "",
@@ -395,6 +398,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         r = subprocess.run(
             pip_cmd + ["install", *specs],
             capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
     except subprocess.TimeoutExpired as e:

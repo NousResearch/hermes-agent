@@ -301,6 +301,7 @@ class GitHubAuth:
             result = subprocess.run(
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, timeout=5,
+                stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()

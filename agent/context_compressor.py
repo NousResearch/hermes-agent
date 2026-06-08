@@ -11,9 +11,10 @@ Improvements over v2:
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
   - Token-budget tail protection instead of fixed message count
-  - Tool output pruning before LLM summarization (cheap pre-pass)
+  - Richer tool call/result detail in summarizer input
   - Scaled summary budget (proportional to compressed content)
   - Richer tool call/result detail in summarizer input
+  - Action ledger integration for tracking context management actions
 """
 
 import hashlib
@@ -31,6 +32,8 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.action_ledger import ActionLedger
+from agent.compaction_guard import CompactionGuard, CompactionGuardConfig
 
 logger = logging.getLogger(__name__)
 
@@ -675,11 +678,17 @@ class ContextCompressor(ContextEngine):
         # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
         # When a user-configured summary model fails and we recover by
-        # retrying on the main model, record the failure so gateway /
+        # retrying on the main model, record the failure so gateway /\
         # CLI callers can still warn the user even though compression
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+
+        # Action ledger for tracking context management actions
+        self.ledger = ActionLedger()
+
+        # Compaction guard for phone sessions
+        self.compaction_guard = CompactionGuard()
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1861,6 +1870,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if force and self._summary_failure_cooldown_until > 0.0:
             self._summary_failure_cooldown_until = 0.0
         n_messages = len(messages)
+        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        
+        # Record pre-compression state in action ledger
+        self.ledger.record_pre_compression(n_messages=n_messages, 
+                                            current_tokens=display_tokens)
+        
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
@@ -2074,5 +2089,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
-
+        
+        # Record post-compression state in action ledger
+        self.ledger.record_post_compression(
+            n_messages=len(compressed),
+            new_tokens=new_estimate,
+            saved_tokens=saved_estimate,
+            savings_pct=savings_pct,
+            summary_used=bool(summary),
+            fallback_used=self._last_summary_fallback_used,
+            error=self._last_summary_error,
+        )
+        
         return compressed

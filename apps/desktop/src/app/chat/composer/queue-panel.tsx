@@ -23,33 +23,34 @@ const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
 export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
 
   if (entries.length === 0) {
     return null
   }
 
   return (
-    <div className="rounded-2xl border border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] py-0.5 shadow-[0_0_0_1px_color-mix(in_srgb,var(--dt-card)_30%,transparent)_inset]">
+    <div className="rounded-t-2xl border border-b-0 border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] pt-0.5 pb-1 mx-1">
       <button
-        className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-[0.72rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
+        className="flex w-full items-center gap-1.5 px-2 text-left text-[0.6rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
         onClick={() => setCollapsed(open => !open)}
         type="button"
       >
-        <DisclosureCaret className="shrink-0" open={!collapsed} size="0.875rem" />
+        <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />
         <span className="truncate">{c.queued(entries.length)}</span>
       </button>
 
       {!collapsed && (
-        <div className="space-y-0.5 px-1.5 pb-0.5">
+        <div className="space-y-0.5 px-1 pb-0.5">
           {entries.map(entry => {
             const isEditing = editingId === entry.id
             const attachmentsCount = entry.attachments.length
+            const sendLabel = busy ? c.sendQueuedNext : c.sendQueuedNow
 
             return (
               <div
                 className={cn(
-                  'group/queue-row flex items-center gap-1.5 rounded-lg border border-transparent px-1.5 py-1',
+                  'group/queue-row flex items-center gap-1.5 rounded-lg border border-transparent px-1.5 py-0.5',
                   'transition-colors duration-300 ease-out hover:bg-(--chrome-action-hover) hover:transition-none',
                   isEditing && 'border-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
                 )}
@@ -63,11 +64,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                   <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, c)}</p>
                   {(attachmentsCount > 0 || isEditing) && (
                     <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
-                      {attachmentsCount > 0 && (
-                        <span>
-                          {c.attachments(attachmentsCount)}
-                        </span>
-                      )}
+                      {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
                       {isEditing && (
                         <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
                           {c.editingInComposer}
@@ -97,11 +94,11 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                       <Pencil size={11} />
                     </Button>
                   </Tip>
-                  <Tip label={c.sendQueuedNow}>
+                  <Tip label={sendLabel}>
                     <Button
-                      aria-label={c.sendQueuedNow}
+                      aria-label={sendLabel}
                       className="h-5 w-5 rounded-md"
-                      disabled={busy || isEditing}
+                      disabled={isEditing}
                       onClick={() => onSendNow(entry.id)}
                       size="icon-xs"
                       type="button"

@@ -126,6 +126,45 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     return elements
 
 
+def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
+    """Best-effort PNG/JPEG dimension sniffing without extra dependencies."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+        width = int.from_bytes(raw[16:20], "big")
+        height = int.from_bytes(raw[20:24], "big")
+        if width > 0 and height > 0:
+            return width, height
+
+    if raw.startswith(b"\xff\xd8"):
+        i = 2
+        n = len(raw)
+        while i + 9 < n:
+            if raw[i] != 0xFF:
+                i += 1
+                continue
+            marker = raw[i + 1]
+            i += 2
+            if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+                continue
+            if i + 2 > n:
+                break
+            segment_len = int.from_bytes(raw[i:i + 2], "big")
+            if segment_len < 2 or i + segment_len > n:
+                break
+            if marker in {
+                0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+            }:
+                if segment_len >= 7:
+                    height = int.from_bytes(raw[i + 3:i + 5], "big")
+                    width = int.from_bytes(raw[i + 5:i + 7], "big")
+                    if width > 0 and height > 0:
+                        return width, height
+                break
+            i += segment_len
+
+    return 0, 0
+
+
 def _split_tree_text(full_text: str) -> Tuple[str, str]:
     """Split get_window_state text into (summary_line, tree_markdown)."""
     lines = full_text.split("\n", 1)
@@ -277,9 +316,42 @@ class _CuaDriverSession:
         result = await self._session.call_tool(name, args)
         return _extract_tool_result(result)
 
+    @staticmethod
+    def _is_closed_session_error(exc: Exception) -> bool:
+        """Return True for MCP/stdio failures that are recoverable by reconnecting."""
+        name = exc.__class__.__name__
+        module = getattr(exc.__class__, "__module__", "")
+        return (
+            name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+            or (module.startswith("anyio") and "Resource" in name)
+            or isinstance(exc, (BrokenPipeError, EOFError))
+        )
+
+    def _restart_session_locked(self) -> None:
+        """Recreate the MCP session after the daemon/stdin transport was closed."""
+        try:
+            if self._started:
+                self._bridge.run(self._aexit(), timeout=5.0)
+        except Exception as e:
+            logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
+        self._started = False
+        self._bridge.run(self._aenter(), timeout=15.0)
+        self._started = True
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
-        return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        try:
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        except Exception as e:
+            if not self._is_closed_session_error(e):
+                raise
+            # Daemon restart closes the cached stdio channel. Reconnect once and
+            # retry exactly one more time — never loop, to avoid hammering a
+            # genuinely dead daemon.
+            logger.warning("cua-driver MCP session closed during %s; reconnecting once", name)
+            with self._lock:
+                self._restart_session_locked()
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
 
 
 def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
@@ -458,7 +530,12 @@ class CuaDriverBackend(ComputerUseBackend):
         png_bytes_len = 0
         if png_b64:
             try:
-                png_bytes_len = len(base64.b64decode(png_b64, validate=False))
+                raw = base64.b64decode(png_b64, validate=False)
+                png_bytes_len = len(raw)
+                detected_width, detected_height = _image_dimensions_from_bytes(raw)
+                if detected_width and detected_height:
+                    width = detected_width
+                    height = detected_height
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
 

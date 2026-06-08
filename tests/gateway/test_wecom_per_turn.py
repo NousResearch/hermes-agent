@@ -21,7 +21,7 @@ class TestPerTurnStreamIsolation:
             adapter._last_chat_req_ids["user-3"] = "req-3"
             adapter._send_json = AsyncMock()
             adapter._ws = AsyncMock(closed=False)
-            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+            adapter._send_reply_queued = AsyncMock(return_value={"errcode": 0})
 
             # User 1, 2, 3 all start streaming simultaneously
             await adapter.send_stream_frame("user1 content", chat_id="user-1", turn_id="turn-1")
@@ -72,7 +72,7 @@ class TestPerTurnStreamIsolation:
             adapter._send_json = AsyncMock()
             # Mock _ws with closed=False and async close()
             adapter._ws = AsyncMock(closed=False)
-            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+            adapter._send_reply_queued = AsyncMock(return_value={"errcode": 0})
 
             # Consumer 1 starts streaming
             await adapter.send_stream_frame("consumer1 frame1", chat_id="chat-1", turn_id="turn-1")
@@ -122,7 +122,7 @@ class TestPerTurnStreamIsolation:
             await adapter.send_stream_frame("C content", chat_id="user-C", turn_id="turn-C")
 
             # User A hits stream expired
-            adapter._send_reply_request = AsyncMock(
+            adapter._send_reply_queued = AsyncMock(
                 return_value={"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "expired"}
             )
             okA = await adapter.send_stream_frame(
@@ -133,7 +133,7 @@ class TestPerTurnStreamIsolation:
             assert "user-A:turn-A" not in adapter._stream_turns
 
             # Users B and C should NOT be affected (different chats)
-            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+            adapter._send_reply_queued = AsyncMock(return_value={"errcode": 0})
             okB = await adapter.send_stream_frame(
                 "B final", chat_id="user-B", finalize=True, turn_id="turn-B"
             )
@@ -170,7 +170,7 @@ class TestPerTurnStreamIsolation:
             assert "chat-1:turn-2" in adapter._stream_turns
 
             # Consumer 1 hits expired error on finalize
-            adapter._send_reply_request = AsyncMock(
+            adapter._send_reply_queued = AsyncMock(
                 return_value={"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"}
             )
             ok1 = await adapter.send_stream_frame(
@@ -181,7 +181,7 @@ class TestPerTurnStreamIsolation:
             assert "chat-1:turn-1" not in adapter._stream_turns  # turn-1 cleaned up
 
             # Consumer 2's existing turn can still finalize
-            adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+            adapter._send_reply_queued = AsyncMock(return_value={"errcode": 0})
             ok2 = await adapter.send_stream_frame(
                 "c2 final", chat_id="chat-1", finalize=True, turn_id="turn-2"
             )

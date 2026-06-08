@@ -197,20 +197,17 @@ class ReplyFrame:
 
 
 class ReplyQueue:
-    """Per-req_id reply frame queue with pending ack tracking.
+    """Per-req_id pending ack tracker.
 
     Ensures:
     - Intermediate frames skip if a previous frame's ack is pending
     - Final frames wait for pending ack before sending
-    - All frames are sent FIFO within the same req_id
 
     Aligned with official SDK's replyStreamNonBlocking + 5s ack timeout.
     """
     def __init__(self, req_id: str):
         self.req_id = req_id
-        self.queue: deque[ReplyFrame] = deque()
         self.pending_ack: Optional[ReplyFrame] = None
-        self.processing: bool = False
 
 
 class StreamTurn:
@@ -581,6 +578,7 @@ class WeComAdapter(BasePlatformAdapter):
             self._heartbeat_task = None
 
         self._fail_pending_responses(RuntimeError("WeCom adapter disconnected"))
+        self._fail_reply_queues(RuntimeError("WeCom adapter disconnected"))
         await self._cleanup_ws()
 
         if self._http_client:
@@ -677,6 +675,7 @@ class WeComAdapter(BasePlatformAdapter):
                     return
                 logger.warning("[%s] WebSocket error: %s", self.name, exc)
                 self._fail_pending_responses(RuntimeError("WeCom connection interrupted"))
+                self._fail_reply_queues(RuntimeError("WeCom connection interrupted"))
 
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
                 backoff_idx += 1
@@ -885,20 +884,26 @@ class WeComAdapter(BasePlatformAdapter):
         # Create future for THIS frame's ack
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         frame = ReplyFrame(body=body, future=future, is_final=is_final)
+        frame.sent_at = time.monotonic()
+
+        # Register as pending BEFORE sending to avoid race:
+        # If WeCom acks during _send_json await, _dispatch_payload needs
+        # to find the pending frame to resolve it. Registering after would
+        # miss the ack and timeout.
+        queue.pending_ack = frame
 
         # Send the frame
-        frame.sent_at = time.monotonic()
         try:
             await self._send_json(
                 {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized}, "body": body}
             )
         except Exception as e:
+            # Send failed — clear pending and reject future
+            if queue.pending_ack is frame:
+                queue.pending_ack = None
             if not future.done():
                 future.set_exception(e)
             raise
-
-        # Register as pending ack
-        queue.pending_ack = frame
 
         # For final frames: await the ack (blocking)
         if is_final:
@@ -906,12 +911,14 @@ class WeComAdapter(BasePlatformAdapter):
                 response = await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
                 return response
             except asyncio.TimeoutError:
-                # Final frame ack timeout — server might still process it
+                # Final frame ack timeout is a FAILURE — aligned with official SDK.
+                # The server might still render the content, but we can't confirm.
+                # Upper layer should fall back to proactive send() if possible.
                 logger.warning(
-                    "[%s] Final frame ack timeout (req_id=%s)",
+                    "[%s] Final frame ack timeout (req_id=%s) — treating as failure",
                     self.name, normalized,
                 )
-                return {"errcode": 0, "errmsg": "ack_timeout"}
+                raise RuntimeError(f"Final frame ack timeout (req_id={normalized})")
             finally:
                 if queue.pending_ack is frame:
                     queue.pending_ack = None
@@ -933,10 +940,17 @@ class WeComAdapter(BasePlatformAdapter):
         if not frame.future.done():
             frame.future.set_result(payload)
         queue.pending_ack = None
-        # Cleanup if queue is empty
-        if queue.pending_ack is None and not queue.queue:
+        # Cleanup empty queue
+        if queue.pending_ack is None:
             self._reply_queues.pop(req_id, None)
         return True
+
+    def _fail_reply_queues(self, error: Exception) -> None:
+        """Fail all pending reply acks (called on disconnect/error)."""
+        for queue in list(self._reply_queues.values()):
+            if queue.pending_ack and not queue.pending_ack.future.done():
+                queue.pending_ack.future.set_exception(error)
+        self._reply_queues.clear()
 
     @staticmethod
     def _new_req_id(prefix: str) -> str:

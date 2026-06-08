@@ -3330,6 +3330,37 @@ class TestVoiceTTSPlayback:
             "Run D2 source-backed research with sources on LiveKit versus Twilio for phone calls."
         ) is True
 
+    def test_opt_research_command_routes_to_research_profile(self):
+        """/opt is optimize-and-run, so research payloads must still use Hermes Research."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "/opt i need you to make a detailed research and find a solution to this problem "
+            "with sources, source anchorage, and a judge at the end"
+        ) is True
+
+    def test_opt_skill_payload_routes_user_instruction_to_research_profile(self):
+        """Slash skill expansion must route by the user's instruction, not SKILL.md boilerplate."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        skill_payload = (
+            "[IMPORTANT: The user has invoked the \"opt\" skill, indicating they want you to "
+            "follow its instructions.]\n\n"
+            "# /opt - PromptForge Optimizer\n"
+            "The user has provided the following instruction alongside the skill invocation: "
+            "Run detailed source-backed legal research with official sources and judge the answer."
+        )
+
+        assert _should_auto_load_hermes_research(skill_payload) is True
+
+    def test_opt_prompt_only_research_command_does_not_route(self):
+        """Prompt-only opt variants must remain optimization-only."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "/opt --prompt-only Run detailed research with sources on urgent passports."
+        ) is False
+
     def test_pipeline_best_practices_with_sources_still_routes_to_research_profile(self):
         """Pipeline wording alone is not enough to block explicit source-backed comparison requests."""
         from gateway.run import _should_auto_load_hermes_research

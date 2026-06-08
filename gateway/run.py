@@ -1464,6 +1464,12 @@ def _profile_router_user_intent_text(message: str) -> str:
     text = str(message or "").strip()
     if not text:
         return ""
+    skill_instruction_marker = (
+        "The user has provided the following instruction alongside the skill invocation:"
+    )
+    if skill_instruction_marker in text:
+        text = text.rsplit(skill_instruction_marker, 1)[1].strip()
+        text = re.split(r"\n\s*\[Runtime note:", text, maxsplit=1)[0].strip()
     voice_match = re.match(
         r"^\[The user sent a voice message.*?[\"“](?P<transcript>.*)[\"”]\]\s*$",
         text,
@@ -1471,6 +1477,38 @@ def _profile_router_user_intent_text(message: str) -> str:
     )
     if voice_match:
         text = voice_match.group("transcript").strip()
+    opt_match = re.match(
+        r"^\s*/(?:opt|optimize|optimizer)\b(?P<payload>.*)$",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if opt_match:
+        payload = opt_match.group("payload").strip()
+        payload_lower = " ".join(payload.lower().split())
+        prompt_only_markers = (
+            "explain",
+            "help",
+            "--prompt-only",
+            "--no-run",
+            "--dry-run",
+            "prompt only",
+            "optimize only",
+            "do not run",
+            "don't run",
+            "dont run",
+        )
+        if not payload or any(
+            payload_lower == marker or payload_lower.startswith(f"{marker} ")
+            for marker in prompt_only_markers
+        ):
+            return ""
+        payload = re.sub(
+            r"\s*\|\s*(?:run|execute|go|0|[1-9]\d*)\s*$",
+            "",
+            payload,
+            flags=re.IGNORECASE,
+        ).strip()
+        text = payload
     text = re.sub(r'^\[Replying to:\s*"(?:.|\n)*?"\]\s*\n+', "", text, flags=re.IGNORECASE)
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"`[^`]*`", " ", text)
@@ -1485,7 +1523,9 @@ def _should_auto_load_hermes_research(message: Optional[str]) -> bool:
     if not message:
         return False
     text = str(message).strip()
-    if not text or text.startswith("/"):
+    if not text:
+        return False
+    if text.startswith("[Hermes profile-router"):
         return False
     intent_text = _profile_router_user_intent_text(text)
     if not intent_text:
@@ -1612,8 +1652,11 @@ def _should_auto_load_hermes_research(message: Optional[str]) -> bool:
         if any(phrase in lowered for phrase in pipeline_diagnostic_phrases):
             return False
         explicit_external_research = re.search(
-            r"\b(run|perform|conduct|start|launch|do|compare|evaluate|find|research)\b.{0,80}"
-            r"\b(d[1-4]|deep[- ]research|source-backed|source backed|external sources|web research|research online|with sources|cite sources)\b",
+            r"\b(run|perform|conduct|start|launch|do|make|find|compare|benchmark|analyze|analyse)\b.{0,120}"
+            r"\b(d[1-4]|deep[- ]research|source-backed|source backed|external sources|web research|research online|with sources|cite sources|sources?)\b",
+            lowered,
+        ) or re.search(
+            r"\b(?:detailed|deep|source-backed|source backed)\s+research\b",
             lowered,
         )
         if not explicit_external_research:

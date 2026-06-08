@@ -2024,6 +2024,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Per-attempt diagnostic dict for the retry block to consume.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
+        # Defensive: strip Responses-only kwargs (instructions, input, ...)
+        # that can leak in under an api_mode-flip race. The Anthropic SDK
+        # raises a non-retryable TypeError on them, killing the turn. See
+        # #31673 / sanitize_anthropic_kwargs().
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+        sanitize_anthropic_kwargs(
+            api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
+        )
         # Use the Anthropic SDK's streaming context manager
         with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
             # The Anthropic SDK exposes the raw httpx response on

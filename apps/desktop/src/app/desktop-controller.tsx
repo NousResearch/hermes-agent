@@ -848,6 +848,7 @@ export function DesktopController() {
     <Pane
       defaultOpen={false}
       disabled={!chatOpen}
+      hoverReveal
       id="file-browser"
       key="file-browser"
       maxWidth={FILE_BROWSER_MAX_WIDTH}

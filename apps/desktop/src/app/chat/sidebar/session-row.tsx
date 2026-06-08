@@ -15,7 +15,7 @@ import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
+export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
   isPinned: boolean
   isSelected: boolean
@@ -31,6 +31,8 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   presence?: SessionPresenceRecord
   /** If true, show the device source badge next to the title. */
   showSourceBadge?: boolean
+  /** If true, show the device name (device_name) on line 2 instead of source. */
+  showDeviceBadge?: boolean
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -65,6 +67,7 @@ export function SidebarSessionRow({
   dragging = false,
   dragHandleProps,
   showSourceBadge = false,
+  showDeviceBadge = false,
   className,
   style,
   ref,
@@ -199,6 +202,9 @@ export function SidebarSessionRow({
                 profile={session.profile ?? null}
                 source={session.source}
               />
+            )}
+            {showDeviceBadge && session.device_name && (
+              <span className="block truncate text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{session.device_name}</span>
             )}
           </div>
         </button>

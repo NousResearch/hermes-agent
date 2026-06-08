@@ -314,6 +314,9 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Human-friendly device name (e.g. "ko-mac", "Taro"). Resolved from
+   *  config.yaml → MeshBoard devices.json → hostname at session creation. */
+  device_name?: null | string
 }
 
 export interface SessionPresenceRecord {

@@ -4370,6 +4370,47 @@ def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
     assert second_backup.exists()
 
 
+def test_health_guard_honors_ttl_cache_then_reprobes(tmp_path, monkeypatch):
+    """Health is cached for a bounded TTL, not the whole process lifetime.
+
+    Regression for the corruption *amplification* loop: the integrity probe
+    used to be skipped permanently once a path was in ``_INITIALIZED_PATHS``,
+    so a long-lived writer that first connected while healthy never
+    re-checked. When the file was later torn (e.g. an interrupted checkpoint),
+    that writer kept opening and checkpointing the damaged DB, compounding the
+    corruption on every cycle while only new/cold connects failed closed.
+    With a TTL'd health cache the writer re-probes and fails closed within one
+    window instead of never.
+    """
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    fake_now = [1000.0]
+    monkeypatch.setattr(kb.time, "monotonic", lambda: fake_now[0])
+
+    # Fresh, healthy DB. The first guard call probes and records an "ok" stamp.
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+    kb.init_db(db_path=db_path)
+    kb._guard_existing_db_is_healthy(db_path)
+    assert kb._LAST_HEALTH_OK.get(resolved) == 1000.0
+
+    # The file is torn after the healthy probe (external event).
+    _write_corrupt_db(db_path)
+
+    # Within the TTL the cached "ok" is honored — guard skips the probe and
+    # does not raise (bounded blast radius, not a permanent blind spot).
+    fake_now[0] = 1000.0 + kb._HEALTH_CHECK_TTL_SECONDS - 1
+    kb._guard_existing_db_is_healthy(db_path)
+
+    # Once the TTL elapses the guard re-probes, detects the damage, and fails
+    # closed — and evicts the stale stamp so subsequent connects keep failing
+    # closed instead of honoring a now-wrong "ok".
+    fake_now[0] = 1000.0 + kb._HEALTH_CHECK_TTL_SECONDS + 1
+    with pytest.raises(kb.KanbanDbCorruptError):
+        kb._guard_existing_db_is_healthy(db_path)
+    assert resolved not in kb._LAST_HEALTH_OK
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite

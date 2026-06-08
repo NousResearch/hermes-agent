@@ -813,6 +813,7 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
     # dropped first so the schema init pass re-runs on that fresh file.
     _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    _LAST_HEALTH_OK.pop(str((d / "kanban.db").resolve()), None)
 
     if archive:
         archive_root = boards_root() / "_archived"
@@ -1282,6 +1283,15 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+# Health (PRAGMA integrity_check) is a *separate* concern from "schema is
+# migrated": a DB that was healthy at first connect can be corrupted later
+# (e.g. a torn write from an interrupted checkpoint). Caching health for the
+# whole process lifetime lets a long-lived writer keep opening and
+# checkpointing an already-corrupt file, compounding the damage on every cycle
+# while new/cold connects correctly fail closed. Re-probe on a short TTL so a
+# writer notices post-init corruption within one window instead of never.
+_LAST_HEALTH_OK: dict[str, float] = {}
+_HEALTH_CHECK_TTL_SECONDS = 30.0
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
@@ -1657,7 +1667,12 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
             return
     except OSError:
         return
-    if str(resolved) in _INITIALIZED_PATHS:
+    # Re-probe periodically rather than trusting a one-shot lifetime cache:
+    # corruption can develop after first connect, and a writer that never
+    # re-checks will keep amplifying it. The cheap header check in connect()
+    # still runs on every connect; this bounds the *full* integrity probe.
+    last_ok = _LAST_HEALTH_OK.get(str(resolved))
+    if last_ok is not None and (time.monotonic() - last_ok) < _HEALTH_CHECK_TTL_SECONDS:
         return
     reason: Optional[str] = None
     try:
@@ -1674,7 +1689,11 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
+        _LAST_HEALTH_OK[str(resolved)] = time.monotonic()
         return
+    # Damaged: force the next connect to re-probe instead of honoring a stale
+    # "ok" timestamp, then fail closed.
+    _LAST_HEALTH_OK.pop(str(resolved), None)
     backup = _backup_corrupt_db(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
@@ -1845,6 +1864,7 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
+        _LAST_HEALTH_OK.pop(resolved, None)
     with contextlib.closing(connect(path)):
         pass
     return path

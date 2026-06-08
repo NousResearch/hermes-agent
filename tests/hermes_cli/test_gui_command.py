@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,8 @@ def _ns(**kw):
         ignore_existing=False,
         hermes_root=None,
         cwd=None,
+        install_launcher=False,
+        launcher_name="Hermes Desktop",
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -151,6 +154,123 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     mock_install.assert_not_called()
     mock_run.assert_called_once()
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
+
+
+def test_gui_skip_build_exits_when_macos_app_is_already_running(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main._desktop_running_pids", return_value=[12345]), \
+         patch("hermes_cli.main._desktop_focus_running_macos_app", return_value=True) as mock_focus, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_focus.assert_not_called()
+    mock_run.assert_not_called()
+
+
+def test_desktop_macos_app_bundle_for_executable_finds_containing_bundle(tmp_path, monkeypatch):
+    packaged_exe = _make_packaged_executable(_make_desktop_tree(tmp_path), monkeypatch)
+
+    assert cli_main._desktop_macos_app_bundle_for_executable(packaged_exe) == packaged_exe.parents[2]
+
+
+def test_desktop_running_pids_matches_packaged_executable_and_ignores_self(monkeypatch):
+    monkeypatch.setattr(cli_main.os, "getpid", lambda: 11)
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    packaged_exe = Path("/Applications/Hermes.app/Contents/MacOS/Hermes")
+    output = "\n".join(
+        [
+            "11 /Applications/Hermes.app/Contents/MacOS/Hermes",
+            "22 /Applications/Hermes.app/Contents/MacOS/Hermes",
+            "33 /Applications/Other.app/Contents/MacOS/Other",
+        ]
+    )
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def communicate(self, timeout):
+            assert timeout == 5
+            return output, ""
+
+    with patch("hermes_cli.main.subprocess.Popen", FakePopen):
+        assert cli_main._desktop_running_pids(packaged_exe) == [22]
+
+
+def test_desktop_launcher_script_uses_cwd_and_skips_duplicate_launch():
+    script = cli_main._desktop_launcher_script(Path("/Users/me/My Project"), background=False)
+
+    assert "DEFAULT_LAUNCH_CWD='/Users/me/My Project'" in script
+    assert 'pgrep -f "$APP_EXECUTABLE"' in script
+    assert 'exec hermes desktop --skip-build --cwd "$LAUNCH_CWD"' in script
+
+
+def test_install_macos_launchers_writes_command_and_spotlight_app(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    icon = packaged_exe.parents[2] / "Contents" / "Resources" / "icon.icns"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"icns")
+    home = tmp_path / "home"
+    desktop = home / "Desktop"
+    desktop.mkdir(parents=True)
+    launch_cwd = tmp_path / "project"
+    launch_cwd.mkdir()
+    monkeypatch.setattr(cli_main.Path, "home", lambda: home)
+
+    with patch("hermes_cli.main._desktop_apply_custom_icon") as mock_icon, \
+         patch("hermes_cli.main.shutil.which", return_value=None):
+        command_path, app_path = cli_main._desktop_install_macos_launchers(
+            packaged_exe,
+            launch_cwd,
+            name="Hermes Desktop",
+        )
+
+    assert command_path == desktop / "Hermes Desktop.command"
+    assert app_path == home / "Applications" / "Hermes Desktop.app"
+    assert command_path.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
+    assert (app_path / "Contents" / "MacOS" / "Hermes Desktop").exists()
+    assert (app_path / "Contents" / "Resources" / "icon.icns").read_bytes() == b"icns"
+    with (app_path / "Contents" / "Info.plist").open("rb") as handle:
+        plist = plistlib.load(handle)
+    assert plist["CFBundleDisplayName"] == "Hermes Desktop"
+    assert plist["CFBundlePackageType"] == "APPL"
+    mock_icon.assert_called_once_with(command_path, icon)
+
+
+def test_gui_install_launcher_builds_and_exits_without_launch(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    launch_cwd = tmp_path / "project"
+    launch_cwd.mkdir()
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_install_macos_launchers", return_value=(Path("/d/Hermes.command"), Path("/a/Hermes.app"))) as mock_install, \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run:
+        cli_main.cmd_gui(_ns(
+            cwd=str(launch_cwd),
+            install_launcher=True,
+            launcher_name="Hermes Desktop",
+        ))
+
+    mock_install.assert_called_once_with(packaged_exe, launch_cwd, name="Hermes Desktop")
+    # Build only; no final packaged executable launch.
+    assert mock_run.call_args.args[0] == ["/usr/bin/npm", "run", "pack"]
 
 
 def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):

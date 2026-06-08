@@ -255,9 +255,11 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import plistlib
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -7567,6 +7569,200 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
 
+def _desktop_macos_app_bundle_for_executable(packaged_executable: Path) -> Path | None:
+    """Return the containing macOS ``.app`` bundle for an Electron executable."""
+    if sys.platform != "darwin":
+        return None
+
+    for parent in packaged_executable.parents:
+        if parent.name.endswith(".app") and parent.is_dir():
+            return parent
+
+    return None
+
+
+def _desktop_running_pids(packaged_executable: Path) -> list[int]:
+    """Return running Hermes Desktop PIDs for this packaged executable path."""
+    executable = str(packaged_executable)
+    self_pid = os.getpid()
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            ["ps", "-axo", "pid=,command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        stdout, _ = proc.communicate(timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        if proc is not None:
+            proc.kill()
+        return []
+
+    if proc.returncode != 0:
+        return []
+
+    pids: list[int] = []
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        pid_text, _, command = stripped.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid == self_pid:
+            continue
+        if executable in command:
+            pids.append(pid)
+
+    return pids
+
+
+def _desktop_focus_running_macos_app(packaged_executable: Path) -> bool:
+    """Focus an already-running macOS Hermes Desktop app bundle."""
+    app_bundle = _desktop_macos_app_bundle_for_executable(packaged_executable)
+    if app_bundle is None:
+        return False
+
+    try:
+        result = subprocess.run(["open", str(app_bundle)], check=False)
+    except (FileNotFoundError, OSError):
+        return False
+
+    return result.returncode == 0
+
+
+def _desktop_shell_single_quoted(value: str) -> str:
+    """Return a POSIX single-quoted shell literal."""
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _desktop_launcher_script(launch_cwd: Path, *, background: bool) -> str:
+    """Return the shell script used by macOS Hermes Desktop launchers."""
+    default_cwd = _desktop_shell_single_quoted(str(launch_cwd))
+    launch_line = (
+        'nohup hermes desktop --skip-build --cwd "$LAUNCH_CWD" '
+        '>/tmp/hermes-desktop-launcher.log 2>&1 &\nexit 0'
+        if background
+        else 'exec hermes desktop --skip-build --cwd "$LAUNCH_CWD"'
+    )
+
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+DEFAULT_LAUNCH_CWD={default_cwd}
+LAUNCH_CWD="${{HERMES_DESKTOP_CWD:-$DEFAULT_LAUNCH_CWD}}"
+HERMES_AGENT_DIR="${{HERMES_AGENT_DIR:-$HOME/.hermes/hermes-agent}}"
+
+APP_BUNDLE=""
+for candidate in "$HERMES_AGENT_DIR"/apps/desktop/release/mac-*/Hermes.app; do
+  if [[ -d "$candidate" ]]; then
+    APP_BUNDLE="$candidate"
+    break
+  fi
+done
+
+if [[ -n "$APP_BUNDLE" ]]; then
+  APP_EXECUTABLE="$APP_BUNDLE/Contents/MacOS/Hermes"
+  if pgrep -f "$APP_EXECUTABLE" >/dev/null 2>&1; then
+    echo "Hermes Desktop is already running; not launching another instance."
+    exit 0
+  fi
+fi
+
+{launch_line}
+"""
+
+
+def _desktop_apply_custom_icon(target: Path, icon_path: Path) -> None:
+    """Attach a Finder custom icon to a launcher file when macOS tools exist."""
+    rez = shutil.which("Rez")
+    setfile = shutil.which("SetFile")
+    if sys.platform != "darwin" or not rez or not setfile or not icon_path.is_file():
+        return
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-desktop-icon-") as tmp:
+            tmp_dir = Path(tmp)
+            tmp_icon = tmp_dir / "icon.icns"
+            tmp_resource = tmp_dir / "icon.r"
+            shutil.copy2(icon_path, tmp_icon)
+            tmp_resource.write_text("read 'icns' (-16455) \"icon.icns\";\n", encoding="utf-8")
+            subprocess.run([rez, "-append", str(tmp_resource), "-o", str(target)], cwd=tmp_dir, check=False)
+            subprocess.run([setfile, "-a", "C", str(target)], check=False)
+            target.touch()
+    except OSError as exc:
+        print(f"  (warning: could not apply launcher icon: {exc})")
+
+
+def _desktop_install_macos_launchers(
+    packaged_executable: Path,
+    launch_cwd: Path,
+    *,
+    name: str = "Hermes Desktop",
+) -> tuple[Path, Path]:
+    """Install macOS Desktop and Spotlight launchers for Hermes Desktop."""
+    if sys.platform != "darwin":
+        raise RuntimeError("Desktop launchers are currently macOS-only.")
+
+    app_bundle = _desktop_macos_app_bundle_for_executable(packaged_executable)
+    if app_bundle is None:
+        raise RuntimeError(f"Could not resolve .app bundle for {packaged_executable}")
+
+    desktop_dir = Path.home() / "Desktop"
+    if not desktop_dir.is_dir():
+        raise RuntimeError(f"Desktop folder not found: {desktop_dir}")
+
+    user_app_dir = Path.home() / "Applications"
+    user_app_dir.mkdir(parents=True, exist_ok=True)
+
+    command_path = desktop_dir / f"{name}.command"
+    spotlight_app = user_app_dir / f"{name}.app"
+    executable_name = name
+    app_executable = spotlight_app / "Contents" / "MacOS" / executable_name
+    resources_dir = spotlight_app / "Contents" / "Resources"
+    icon_path = app_bundle / "Contents" / "Resources" / "icon.icns"
+
+    command_path.write_text(_desktop_launcher_script(launch_cwd, background=False), encoding="utf-8")
+    command_path.chmod(0o755)
+
+    if spotlight_app.exists():
+        shutil.rmtree(spotlight_app)
+    app_executable.parent.mkdir(parents=True, exist_ok=True)
+    resources_dir.mkdir(parents=True, exist_ok=True)
+
+    if icon_path.is_file():
+        shutil.copy2(icon_path, resources_dir / "icon.icns")
+
+    plist = {
+        "CFBundleDisplayName": name,
+        "CFBundleExecutable": executable_name,
+        "CFBundleIconFile": "icon",
+        "CFBundleIdentifier": "com.nousresearch.hermes.desktop.launcher",
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "CFBundleName": name,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0.0",
+        "CFBundleVersion": "1.0.0",
+    }
+    with (spotlight_app / "Contents" / "Info.plist").open("wb") as handle:
+        plistlib.dump(plist, handle)
+    (spotlight_app / "Contents" / "PkgInfo").write_text("APPL????", encoding="ascii")
+    app_executable.write_text(_desktop_launcher_script(launch_cwd, background=True), encoding="utf-8")
+    app_executable.chmod(0o755)
+
+    _desktop_apply_custom_icon(command_path, icon_path)
+    mdimport = shutil.which("mdimport")
+    if mdimport:
+        subprocess.run([mdimport, str(spotlight_app)], check=False)
+
+    return command_path, spotlight_app
+
+
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
     if sys.platform != "linux":
@@ -7721,6 +7917,35 @@ def cmd_gui(args: argparse.Namespace):
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
 
+    if getattr(args, "install_launcher", False):
+        if sys.platform != "darwin":
+            print("✗ --install-launcher is currently macOS-only.")
+            sys.exit(1)
+        if source_mode:
+            print("✗ --install-launcher requires the packaged desktop app, not --source.")
+            sys.exit(1)
+        if packaged_executable is None:
+            print(f"✗ No launchable packaged desktop app was found at: {desktop_dir / 'release'}")
+            sys.exit(1)
+
+        launch_cwd = Path(getattr(args, "cwd", None) or Path.cwd()).expanduser().resolve()
+        launcher_name = getattr(args, "launcher_name", None) or "Hermes Desktop"
+        try:
+            command_path, app_path = _desktop_install_macos_launchers(
+                packaged_executable,
+                launch_cwd,
+                name=launcher_name,
+            )
+        except RuntimeError as exc:
+            print(f"✗ {exc}")
+            sys.exit(1)
+
+        print("✓ Installed Hermes Desktop launchers:")
+        print(f"  {command_path}")
+        print(f"  {app_path}")
+        print(f"  Launch folder: {launch_cwd}")
+        return
+
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and then launches the desktop
     # itself (detached, after the old exe has exited), so the launch must NOT
@@ -7753,6 +7978,12 @@ def cmd_gui(args: argparse.Namespace):
 
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         sys.exit(1)
+
+    if sys.platform == "darwin":
+        running_pids = _desktop_running_pids(packaged_executable)
+        if running_pids:
+            print(f"→ Hermes Desktop is already running (pid {running_pids[0]}); not launching another instance.")
+            sys.exit(0)
 
     print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
     launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)

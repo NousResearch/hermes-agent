@@ -175,6 +175,12 @@ def _looks_like_credential(name: str) -> bool:
 _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_YOLO_MODE",
     "HERMES_INTERACTIVE",
+    # A dispatched worker / cron-launched dev shell can export this. If it
+    # leaks into a test it forces approval into the cron branch (cron is never
+    # a gateway-approval context), bypassing the gateway timeout/deny path the
+    # TestApprovalTimeoutIsNotConsent suite pins (#24912). Tests that exercise
+    # cron approval set it explicitly via monkeypatch.setenv.
+    "HERMES_CRON_SESSION",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
     "HERMES_TOOL_PROGRESS_MODE",

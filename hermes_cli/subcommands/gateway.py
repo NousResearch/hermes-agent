@@ -61,6 +61,16 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         help="Replace any existing gateway instance (useful for systemd)",
     )
     gateway_run.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Start a foreground gateway even when a systemd/launchd/s6 service "
+            "already supervises this profile. Without --force, the command "
+            "refuses because a second dispatcher escapes the service and can "
+            "corrupt shared gateway state."
+        ),
+    )
+    gateway_run.add_argument(
         "--no-supervise",
         action="store_true",
         help=(

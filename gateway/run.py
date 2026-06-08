@@ -898,11 +898,10 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     if not config_path.exists():
         return
     try:
-        import yaml as _yaml
-        with open(config_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        from hermes_cli.config import _expand_env_vars
-        cfg = _expand_env_vars(cfg)
+        from hermes_cli.config import _expand_env_vars, resolve_inherited_raw_config
+        # Resolve profile inheritance so an inherit:true profile picks up
+        # agent.max_turns from the default profile's config.
+        cfg = _expand_env_vars(resolve_inherited_raw_config(config_path))
     except Exception:
         return
 
@@ -919,12 +918,11 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
+        # Resolve profile inheritance so an inherit:true profile bridges the
+        # default profile's terminal/timezone/etc. settings into the env, not
+        # just the skeleton's overrides.
+        from hermes_cli.config import _expand_env_vars, resolve_inherited_raw_config
+        _cfg = _expand_env_vars(resolve_inherited_raw_config(_config_path))
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:

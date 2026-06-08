@@ -222,7 +222,10 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # save_config() + migrate_config() write via atomic_yaml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Tuple shape: (mtime_ns, size, parent_mtime_ns, parent_size, value). The two
+# parent fields are (0, 0) for non-inheriting profiles; for inheriting profiles
+# they carry the default config's stat so editing the default busts this cache.
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any]]] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -588,8 +591,13 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home, get_default_config_path  # noqa: F811,E402
 from utils import atomic_replace
+
+# Sentinel for load_config: auto-detect inheritance from the profile's config
+# content (presence of an ``inherit: true`` key). Distinct from ``None``, which
+# means "explicitly no inheritance".
+_AUTO_INHERIT = object()
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -5109,6 +5117,151 @@ def read_raw_config() -> Dict[str, Any]:
         return data
 
 
+def _is_override(key: str, profile_raw: dict, parent_raw: dict) -> bool:
+    """Return True if ``key`` in the profile config is an explicit override.
+
+    A key is an override when it is present in the profile config and either
+    absent from the parent or differs in value. Python dict equality handles
+    deep comparison of nested structures, so nested dicts are compared by
+    value rather than reference.
+    """
+    if key not in profile_raw:
+        return False
+    if key not in parent_raw:
+        return True  # new key, not inherited
+    return profile_raw[key] != parent_raw[key]
+
+
+def _should_inherit(config_path: Path) -> Optional[Path]:
+    """Return the parent config path to inherit from, or ``None``.
+
+    Detection logic (intentionally conservative for backward compatibility):
+
+    1. Profile config has ``inherit: true``  -> inherit from the default
+       profile's ``config.yaml`` (``get_default_config_path()``).
+    2. Profile config has ``inherit: false`` -> no inheritance (standalone).
+    3. No ``inherit`` key (existing full configs) -> no inheritance.
+
+    Never inherits from itself: when the active profile *is* the default
+    profile, ``config_path`` and the default path are the same file, so we
+    return ``None`` to avoid a degenerate self-merge.
+
+    Returns ``None`` if the parent config doesn't exist (graceful degradation).
+    """
+    config_path = Path(config_path)
+    default_path = get_default_config_path()
+
+    if not config_path.exists():
+        # No profile config at all -> only inherit if a default exists and the
+        # missing file isn't the default itself.
+        try:
+            if default_path.exists() and default_path.resolve() != config_path.resolve():
+                return default_path
+        except OSError:
+            pass
+        return None
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except Exception:
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+
+    if raw.get("inherit") is not True:
+        return None
+
+    # Don't inherit from ourselves (active profile == default profile).
+    try:
+        if not default_path.exists() or default_path.resolve() == config_path.resolve():
+            return None
+    except OSError:
+        return None
+
+    return default_path
+
+
+def resolve_inherited_raw_config(config_path: Path) -> Dict[str, Any]:
+    """Return the profile's raw YAML config with inheritance already applied.
+
+    This is the single source of truth for profile config inheritance. Every
+    config loader (``load_config``, the CLI's ``load_cli_config``, and the
+    gateway's raw reads) MUST resolve a profile's on-disk config through this
+    helper so an ``inherit: true`` profile sees the same merged values in all
+    three code paths -- not just under ``hermes config show``.
+
+    Resolution:
+    1. If the profile opts into inheritance, deep-merge the profile config on
+       top of the default profile's config (profile values win).
+    2. Otherwise return the profile's raw config unchanged.
+
+    The ``inherit`` key itself is dropped from the result -- it's a directive,
+    not a config value. Returns ``{}`` if nothing can be read.
+    """
+    config_path = Path(config_path)
+    try:
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                profile_raw = yaml.safe_load(f) or {}
+        else:
+            profile_raw = {}
+    except Exception:
+        profile_raw = {}
+    if not isinstance(profile_raw, dict):
+        profile_raw = {}
+
+    return _apply_inheritance(profile_raw, config_path)
+
+
+def _apply_inheritance(profile_raw: dict, config_path: Path) -> Dict[str, Any]:
+    """Deep-merge an already-parsed profile config over its inherited parent.
+
+    Split out from ``resolve_inherited_raw_config`` so ``load_config`` can do
+    its own parse-and-warn-on-corruption read and then reuse the exact same
+    inheritance logic on the parsed dict (avoids swallowing parse errors that
+    the corrupt-config backup/warn path relies on).
+    """
+    if not isinstance(profile_raw, dict):
+        profile_raw = {}
+
+    inherit_from = _should_inherit(Path(config_path))
+    if inherit_from is None:
+        profile_raw.pop("inherit", None)
+        return profile_raw
+
+    try:
+        with open(inherit_from, encoding="utf-8") as f:
+            parent_raw = yaml.safe_load(f) or {}
+    except Exception:
+        parent_raw = {}
+    if not isinstance(parent_raw, dict):
+        parent_raw = {}
+
+    merged = _deep_merge(copy.deepcopy(parent_raw), profile_raw)
+    merged.pop("inherit", None)
+    return merged
+
+
+def _inherit_cache_extra(config_path: Path) -> Tuple[int, int]:
+    """Return the parent config's (mtime_ns, size) for cache-key folding.
+
+    When a profile inherits, ``load_config``'s result depends on the parent
+    config too. Folding the parent's stat into the cache key ensures editing
+    the default profile's config.yaml invalidates inheriting profiles' caches.
+    Returns ``(0, 0)`` when there's no inheritance or the parent is unreadable.
+    """
+    inherit_from = _should_inherit(config_path)
+    if inherit_from is None:
+        return (0, 0)
+    try:
+        pst = inherit_from.stat()
+        return (pst.st_mtime_ns, pst.st_size)
+    except OSError:
+        return (0, 0)
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml.
 
@@ -5157,13 +5310,16 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         try:
             st = config_path.stat()
-            cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+            _parent_extra = _inherit_cache_extra(config_path)
+            cache_key: Optional[Tuple[int, int, int, int]] = (
+                st.st_mtime_ns, st.st_size, _parent_extra[0], _parent_extra[1],
+            )
         except FileNotFoundError:
             cache_key = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_key is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
+        if cached is not None and cache_key is not None and cached[:4] == cache_key:
+            return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -5171,6 +5327,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
+
+                # Apply profile inheritance (deep-merge default config under the
+                # profile's overrides) on the parsed dict. For non-inheriting
+                # profiles this returns user_config unchanged, so behavior is
+                # identical to the old raw read. Parse errors above still hit
+                # _warn_config_parse_failure (corrupt-config backup path).
+                user_config = _apply_inheritance(user_config, config_path)
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -5192,7 +5355,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
             # callers all see the same stable cached object.
             cached_copy = copy.deepcopy(expanded)
-            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+            _LOAD_CONFIG_CACHE[path_key] = (*cache_key, cached_copy)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.
@@ -5283,8 +5446,34 @@ _COMMENTED_SECTIONS = """
 """
 
 
+def _compute_overrides_only(merged: dict, parent: dict) -> dict:
+    """Return only the keys in ``merged`` that differ from ``parent``.
+
+    Used when saving an inheriting profile so its on-disk config.yaml stays
+    minimal (overrides only). Recurses into nested dicts so a single changed
+    subkey doesn't force the whole section to be written out.
+    """
+    overrides: Dict[str, Any] = {}
+    for key, value in merged.items():
+        if key not in parent:
+            overrides[key] = copy.deepcopy(value)
+        elif isinstance(value, dict) and isinstance(parent.get(key), dict):
+            diff = _compute_overrides_only(value, parent[key])
+            if diff:
+                overrides[key] = diff
+        elif value != parent[key]:
+            overrides[key] = copy.deepcopy(value)
+    return overrides
+
+
 def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+    """Save configuration to ~/.hermes/config.yaml.
+
+    For profiles that inherit from the default (``inherit: true``), only the
+    keys that differ from the parent are written to disk, preserving the
+    inheritance pattern. The ``inherit: true`` directive is always retained so
+    the profile stays in inherit mode across saves.
+    """
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
@@ -5302,6 +5491,31 @@ def save_config(config: Dict[str, Any]):
                 raw_existing,
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
             )
+
+        # Inheriting profile: persist overrides-only so config.yaml stays a
+        # minimal diff against the default profile. We compare against the
+        # default profile's FULLY-RESOLVED config (DEFAULT_CONFIG + the default
+        # profile's config.yaml), since that's what load_config() merges in for
+        # the parent. Comparing against the parent's raw file alone would treat
+        # every unset DEFAULT_CONFIG key as an override and dump the full config.
+        inherit_path = _should_inherit(config_path)
+        if inherit_path is not None:
+            try:
+                with open(inherit_path, encoding="utf-8") as f:
+                    parent_raw = yaml.safe_load(f) or {}
+                if isinstance(parent_raw, dict):
+                    parent_full = copy.deepcopy(DEFAULT_CONFIG)
+                    parent_full = _deep_merge(parent_full, parent_raw)
+                    parent_normalized = _normalize_root_model_keys(
+                        _normalize_max_turns_config(parent_full)
+                    )
+                    parent_expanded = _expand_env_vars(parent_normalized)
+                    overrides = _compute_overrides_only(normalized, parent_expanded)
+                    # Always keep the inherit directive (it's never in parent).
+                    overrides["inherit"] = True
+                    normalized = overrides
+            except Exception:
+                pass  # Fall back to saving the full config.
 
         # Build optional commented-out sections for features that are off by
         # default or only relevant when explicitly configured.
@@ -5772,7 +5986,19 @@ def show_config():
     print(f"  Config:       {get_config_path()}")
     print(f"  Secrets:      {get_env_path()}")
     print(f"  Install:      {get_project_root()}")
-    
+
+    # Profile / inheritance
+    # Deferred import — profiles.py imports from config.py (circular dep).
+    from hermes_cli.profiles import get_active_profile
+    inherit_path = _should_inherit(get_config_path())
+    print()
+    print(color("◆ Profile", Colors.CYAN, Colors.BOLD))
+    print(f"  Active:       {get_active_profile()}")
+    if inherit_path is not None:
+        print(f"  Inherits:     {inherit_path}")
+    else:
+        print(f"  Inherits:     {color('(standalone)', Colors.DIM)}")
+
     # API Keys
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))

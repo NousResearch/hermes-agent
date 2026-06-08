@@ -501,10 +501,19 @@ def load_cli_config() -> Dict[str, Any]:
     # Load from file if exists
     if config_path.exists():
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                from hermes_cli.config import _normalize_root_model_keys
+            # Resolve profile inheritance (inherit: true → deep-merge over the
+            # default profile's config) via the shared resolver so CLI sessions
+            # see the same merged values as `hermes config show` and the
+            # gateway. For non-inheriting profiles / the project cli-config.yaml
+            # fallback this returns the file's own config unchanged.
+            from hermes_cli.config import (
+                _normalize_root_model_keys,
+                resolve_inherited_raw_config,
+            )
 
-                file_config = _normalize_root_model_keys(yaml.safe_load(f) or {})
+            file_config = _normalize_root_model_keys(
+                resolve_inherited_raw_config(config_path)
+            )
             
             _file_has_terminal_config = "terminal" in file_config
 

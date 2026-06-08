@@ -11799,6 +11799,7 @@ def cmd_profile(args):
         clone_all = getattr(args, "clone_all", False)
         no_alias = getattr(args, "no_alias", False)
         no_skills = getattr(args, "no_skills", False)
+        inherits = getattr(args, "inherits", True)
 
         try:
             clone_from = getattr(args, "clone_from", None)
@@ -11811,6 +11812,7 @@ def cmd_profile(args):
                 no_alias=no_alias,
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
+                inherits=inherits,
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
@@ -15599,6 +15601,13 @@ Examples:
         "--no-skills",
         action="store_true",
         help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
+    )
+    profile_create.add_argument(
+        "--no-inherit",
+        dest="inherits",
+        action="store_false",
+        default=True,
+        help="Create a standalone profile (default: inherit config from the default profile)",
     )
     profile_create.add_argument(
         "--description",

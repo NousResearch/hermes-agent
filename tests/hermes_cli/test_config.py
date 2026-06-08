@@ -1056,3 +1056,148 @@ class TestEnvWriteDenylist:
         # But the write path still refuses to update it
         with pytest.raises(ValueError, match="denylist"):
             save_env_value("LD_PRELOAD", "/tmp/evil.so")
+
+
+class TestConfigInheritance:
+    """Profile config inheritance from the default profile (Issue #20270).
+
+    These exercise the real public surface (no monkeypatched private params):
+    an isolated HERMES_HOME with a default profile + an `inherit: true`
+    profile, asserting that load_config / resolve_inherited_raw_config /
+    save_config behave consistently and that the parent-stat cache fold works.
+    """
+
+    def _setup(self, tmp_path):
+        default_home = tmp_path / ".hermes"
+        (default_home / "profiles").mkdir(parents=True)
+        (default_home / "config.yaml").write_text(
+            "model:\n  default: anthropic/claude-opus-4\n  provider: openrouter\n"
+            "agent:\n  max_turns: 77\nterminal:\n  timeout: 123\n"
+        )
+        return default_home
+
+    def test_deep_merge_nested_override(self):
+        from hermes_cli.config import _deep_merge
+        base = {"model": "a", "agent": {"max_turns": 90, "verbose": False}}
+        override = {"agent": {"max_turns": 150}}
+        result = _deep_merge(base, override)
+        assert result["model"] == "a"
+        assert result["agent"]["max_turns"] == 150
+        assert result["agent"]["verbose"] is False
+
+    def test_should_inherit_true(self, tmp_path):
+        from hermes_cli.config import _should_inherit
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "work"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("inherit: true\nmodel: x/y\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            assert _should_inherit(prof / "config.yaml") == default_home / "config.yaml"
+
+    def test_should_inherit_false_is_standalone(self, tmp_path):
+        from hermes_cli.config import _should_inherit
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "solo"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("inherit: false\nmodel: x/y\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            assert _should_inherit(prof / "config.yaml") is None
+
+    def test_should_inherit_missing_key_is_standalone(self, tmp_path):
+        from hermes_cli.config import _should_inherit
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "legacy"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("model: x/y\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            assert _should_inherit(prof / "config.yaml") is None
+
+    def test_should_not_inherit_from_self_on_default(self, tmp_path):
+        from hermes_cli.config import _should_inherit
+        default_home = self._setup(tmp_path)
+        # Default profile's own config.yaml shouldn't inherit from itself even
+        # if someone hand-edits inherit: true into it.
+        (default_home / "config.yaml").write_text("inherit: true\nmodel: x/y\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
+            assert _should_inherit(default_home / "config.yaml") is None
+
+    def test_resolve_inherited_merges_and_drops_inherit_key(self, tmp_path):
+        from hermes_cli.config import resolve_inherited_raw_config
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "work"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("inherit: true\nagent:\n  max_turns: 150\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            merged = resolve_inherited_raw_config(prof / "config.yaml")
+        assert merged["model"]["default"] == "anthropic/claude-opus-4"  # inherited
+        assert merged["agent"]["max_turns"] == 150  # override
+        assert "inherit" not in merged  # directive dropped
+
+    def test_load_config_resolves_inherited_values(self, tmp_path):
+        from hermes_cli.config import load_config, _LOAD_CONFIG_CACHE
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "work"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("inherit: true\nagent:\n  max_turns: 150\n")
+        _LOAD_CONFIG_CACHE.clear()
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            cfg = load_config()
+        assert cfg["model"]["default"] == "anthropic/claude-opus-4"
+        assert cfg["agent"]["max_turns"] == 150  # profile override wins
+        assert cfg["terminal"]["timeout"] == 123  # inherited nested value
+
+    def test_load_config_standalone_ignores_parent(self, tmp_path):
+        from hermes_cli.config import load_config, _LOAD_CONFIG_CACHE, DEFAULT_CONFIG
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "solo"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("inherit: false\nmodel:\n  default: zhipu/glm-4\n")
+        _LOAD_CONFIG_CACHE.clear()
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            cfg = load_config()
+        assert cfg["model"]["default"] == "zhipu/glm-4"
+        # Did NOT set max_turns -> falls to DEFAULT_CONFIG, not parent's 77.
+        assert cfg["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+
+    def test_load_config_cache_busts_on_parent_edit(self, tmp_path):
+        import time
+        from hermes_cli.config import load_config, _LOAD_CONFIG_CACHE
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "work"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("inherit: true\n")
+        _LOAD_CONFIG_CACHE.clear()
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            first = load_config()
+            assert first["agent"]["max_turns"] == 77
+            time.sleep(0.02)
+            # Edit the DEFAULT config; inheriting profile must see the change
+            # WITHOUT a manual cache clear (parent stat folded into cache key).
+            (default_home / "config.yaml").write_text("agent:\n  max_turns: 200\n")
+            second = load_config()
+        assert second["agent"]["max_turns"] == 200
+
+    def test_save_config_writes_overrides_only(self, tmp_path):
+        from hermes_cli.config import load_config, save_config, _LOAD_CONFIG_CACHE
+        default_home = self._setup(tmp_path)
+        prof = default_home / "profiles" / "work"
+        prof.mkdir()
+        (prof / "config.yaml").write_text("inherit: true\n")
+        _LOAD_CONFIG_CACHE.clear()
+        with patch.dict(os.environ, {"HERMES_HOME": str(prof)}):
+            cfg = load_config()
+            cfg["agent"]["max_turns"] = 150
+            save_config(cfg)
+            disk = (prof / "config.yaml").read_text()
+            noncomment = [
+                l for l in disk.splitlines() if l.strip() and not l.strip().startswith("#")
+            ]
+            # Minimal diff: inherit directive + the single override section.
+            assert "inherit: true" in disk
+            assert "150" in disk
+            assert len(noncomment) < 10, f"expected overrides-only, got: {noncomment}"
+            # Reload: inherited values still resolve, override persists.
+            _LOAD_CONFIG_CACHE.clear()
+            after = load_config()
+            assert after["model"]["default"] == "anthropic/claude-opus-4"
+            assert after["agent"]["max_turns"] == 150

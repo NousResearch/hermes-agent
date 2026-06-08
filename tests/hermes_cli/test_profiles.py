@@ -1345,3 +1345,26 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+class TestCreateProfileInheritanceSkeleton:
+    """Skeleton config.yaml seeding for fresh profiles (Issue #20270)."""
+
+    def test_fresh_profile_inherits_by_default(self, profile_env):
+        from hermes_cli.profiles import create_profile
+        profile_dir = create_profile("coder", no_alias=True)
+        cfg = (profile_dir / "config.yaml").read_text()
+        assert "inherit: true" in cfg
+
+    def test_no_inherit_writes_standalone_skeleton(self, profile_env):
+        from hermes_cli.profiles import create_profile
+        profile_dir = create_profile("sandbox", no_alias=True, inherits=False)
+        cfg = (profile_dir / "config.yaml").read_text()
+        assert "inherit: false" in cfg
+
+    def test_clone_does_not_seed_skeleton(self, profile_env):
+        # Cloning copies (or skips) source config; it must not fabricate a
+        # skeleton. With an empty source the cloned profile has no config.yaml.
+        from hermes_cli.profiles import create_profile
+        profile_dir = create_profile("fromclone", clone_config=True, no_alias=True)
+        assert not (profile_dir / "config.yaml").exists()

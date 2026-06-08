@@ -20,8 +20,19 @@ interface ErrorBoundaryState {
   error: Error | null
 }
 
+const RECOVERABLE_ERROR_PATTERNS = [
+  /tapClientLookup: Index \d+\s+out of bounds \(length:\s*\d+\)/i,
+  /Cannot read properties of undefined \(reading 'type'\)/i,
+  /Tried to unmount a fiber that is already unmounted/i
+]
+
+function isRecoverableDesktopRenderError(error: Error): boolean {
+  return RECOVERABLE_ERROR_PATTERNS.some(pattern => pattern.test(error.message))
+}
+
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null }
+  private recoverTimer: null | ReturnType<typeof globalThis.setTimeout> = null
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { error }
@@ -31,10 +42,35 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     const tag = this.props.label ? `[error-boundary:${this.props.label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
     this.props.onError?.(error, info)
+
+    if (this.props.label === 'root' && isRecoverableDesktopRenderError(error)) {
+      console.warn(`${tag} auto-recovering from transient render error`, error.message)
+      this.scheduleRecover()
+    }
+  }
+
+  componentWillUnmount() {
+    this.clearRecoverTimer()
   }
 
   reset = () => {
+    this.clearRecoverTimer()
     this.setState({ error: null })
+  }
+
+  private clearRecoverTimer() {
+    if (this.recoverTimer !== null) {
+      window.clearTimeout(this.recoverTimer)
+      this.recoverTimer = null
+    }
+  }
+
+  private scheduleRecover() {
+    this.clearRecoverTimer()
+    this.recoverTimer = globalThis.setTimeout(() => {
+      this.recoverTimer = null
+      this.reset()
+    }, 0)
   }
 
   render() {

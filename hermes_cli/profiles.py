@@ -316,6 +316,23 @@ def profile_exists(name: str) -> bool:
 # Alias / wrapper script management
 # ---------------------------------------------------------------------------
 
+_MAX_WRAPPER_SCRIPT_BYTES = 4096
+
+
+def _read_wrapper_script(path: Path) -> Optional[str]:
+    """Return a small Hermes wrapper script's text, or None for anything else."""
+    try:
+        if path.is_symlink():
+            return None
+        if not path.is_file():
+            return None
+        if path.stat().st_size > _MAX_WRAPPER_SCRIPT_BYTES:
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def check_alias_collision(name: str) -> Optional[str]:
     """Return a human-readable collision message, or None if the name is safe.
 
@@ -340,12 +357,9 @@ def check_alias_collision(name: str) -> Optional[str]:
             # Allow overwriting our own wrappers
             expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
             if existing_path == str(expected):
-                try:
-                    content = expected.read_text()
-                    if "hermes -p" in content:
-                        return None  # it's our wrapper, safe to overwrite
-                except Exception:
-                    pass
+                content = _read_wrapper_script(expected)
+                if content and "hermes -p" in content:
+                    return None  # it's our wrapper, safe to overwrite
             return f"'{canon}' conflicts with an existing command ({existing_path})"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
@@ -411,14 +425,14 @@ def remove_wrapper_script(name: str) -> bool:
 
     for wrapper_path in candidates:
         if wrapper_path.exists():
-            try:
-                # Verify it's our wrapper before removing
-                content = wrapper_path.read_text()
-                if "hermes -p" in content:
+            # Verify it's our wrapper before removing
+            content = _read_wrapper_script(wrapper_path)
+            if content and "hermes -p" in content:
+                try:
                     wrapper_path.unlink()
                     return True
-            except Exception:
-                pass
+                except OSError:
+                    pass
     return False
 
 
@@ -445,16 +459,13 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     custom: Optional[str] = None
     profile_named: Optional[str] = None
     for entry in sorted(wrapper_dir.iterdir()):
-        if not entry.is_file():
-            continue
         # Only our own wrappers are named with the alias and (on Windows) .bat.
         if is_windows and entry.suffix != ".bat":
             continue
         if not is_windows and entry.suffix:
             continue
-        try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
+        content = _read_wrapper_script(entry)
+        if content is None:
             continue
         if needle not in content:
             continue

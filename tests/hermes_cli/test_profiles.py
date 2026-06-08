@@ -744,6 +744,30 @@ class TestFindAliasForProfile:
         (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
         assert find_alias_for_profile("steve") is None
 
+    def test_large_unrelated_commands_do_not_block_alias_lookup(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import (
+            _get_wrapper_dir,
+            create_wrapper_script,
+            find_alias_for_profile,
+        )
+
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        large_tool = wrapper_dir / "large-tool"
+        large_tool.write_bytes(b"\0" * 8192)
+        create_wrapper_script("qiaobusi", target="steve")
+
+        original_read_text = Path.read_text
+
+        def fail_if_large_tool_read(path, *args, **kwargs):
+            if path == large_tool:
+                raise AssertionError("large unrelated command should not be read")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fail_if_large_tool_read)
+        assert find_alias_for_profile("steve") == "qiaobusi"
+
     def test_custom_alias_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
         from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile

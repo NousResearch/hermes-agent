@@ -269,6 +269,46 @@ class TestRunStatus:
             resp = await cli.get("/v1/runs/run_any")
         assert resp.status == 401
 
+    @pytest.mark.asyncio
+    async def test_status_denies_different_session_key(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "alpha",
+                    },
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                agent_ready.wait(timeout=3.0)
+
+                wrong = await cli.get(
+                    f"/v1/runs/{run_id}",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "beta",
+                    },
+                )
+                assert wrong.status == 404
+
+                right = await cli.get(
+                    f"/v1/runs/{run_id}",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "alpha",
+                    },
+                )
+                assert right.status == 200
+
+                interrupted.set()
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id}/events — SSE event stream
@@ -356,6 +396,28 @@ class TestRunEvents:
         )
 
     @pytest.mark.asyncio
+    async def test_approval_denies_different_session_key(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        run_id = "run_approval_owner"
+        auth_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        auth_adapter._run_approval_sessions[run_id] = "approval-session"
+        auth_adapter._run_session_keys[run_id] = "alpha"
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once"},
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "beta",
+                    },
+                )
+
+        assert resp.status == 404
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -368,6 +430,24 @@ class TestRunEvents:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/v1/runs/run_any/events")
         assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_events_denies_different_session_key(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        run_id = "run_events_owner"
+        auth_adapter._run_streams[run_id] = asyncio.Queue()
+        auth_adapter._run_streams_created[run_id] = 0.0
+        auth_adapter._run_session_keys[run_id] = "alpha"
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={
+                    "Authorization": "Bearer sk-secret",
+                    "X-Hermes-Session-Key": "beta",
+                },
+            )
+        assert resp.status == 404
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +511,38 @@ class TestStopRun:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_any/stop")
         assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_stop_denies_different_session_key(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "alpha",
+                    },
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                agent_ready.wait(timeout=3.0)
+
+                wrong = await cli.post(
+                    f"/v1/runs/{run_id}/stop",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "beta",
+                    },
+                )
+                assert wrong.status == 404
+                mock_agent.interrupt.assert_not_called()
+
+                interrupted.set()
 
     @pytest.mark.asyncio
     async def test_stop_already_completed_run_returns_404(self, adapter):

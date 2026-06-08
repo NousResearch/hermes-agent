@@ -412,12 +412,13 @@ export function Pane({
         ref={paneRef}
         style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
       >
-        {/* Invisible edge hot-zone — a settled hover (hoverIntent) floats the panel in. */}
+        {/* Invisible edge hot-zone — a settled hover (hoverIntent) floats the panel in.
+            No pointer cursor: it's invisible, so it must not betray itself before reveal. */}
         <button
           aria-expanded={revealed}
           aria-label={`Reveal ${id}`}
           className={cn(
-            'pointer-events-auto absolute inset-y-0 z-30 w-3 cursor-pointer [-webkit-app-region:no-drag]',
+            'pointer-events-auto absolute inset-y-0 z-30 w-3 cursor-default [-webkit-app-region:no-drag]',
             left ? 'left-0' : 'right-0'
           )}
           onFocus={() => setHoverRevealed(true)}
@@ -429,10 +430,12 @@ export function Pane({
         />
 
         {/* Floating panel — full-height, anchored to the edge, slid off until revealed.
-            Contents stay inert until the slide-in finishes so you can't misclick a row mid-animation. */}
+            Wholly inert (no hit-testing, no cursor) until the slide-in settles, so the
+            cursor never flips or lands on a row before the panel is fully in view. */}
         <div
           className={cn(
-            'pointer-events-auto absolute inset-y-0 z-30 overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)]',
+            'absolute inset-y-0 z-30 overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)]',
+            revealed && settled ? 'pointer-events-auto' : 'pointer-events-none',
             revealed ? 'translate-x-0' : left ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
           )}
           onPointerEnter={() => setHoverRevealed(true)}
@@ -448,9 +451,7 @@ export function Pane({
           }}
           style={{ [left ? 'left' : 'right']: 0, width: overlayWidth }}
         >
-          <div className={cn('flex h-full w-full flex-col', !(revealed && settled) && 'pointer-events-none')}>
-            {children}
-          </div>
+          <div className="flex h-full w-full flex-col">{children}</div>
         </div>
       </div>
     )

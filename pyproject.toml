@@ -104,7 +104,7 @@ dependencies = [
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
-anthropic = ["anthropic==0.86.0"]
+anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]

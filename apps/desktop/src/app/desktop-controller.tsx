@@ -11,6 +11,7 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
@@ -264,6 +265,31 @@ export function DesktopController() {
       unsubscribe?.()
       stopUpdatePoller()
     }
+  }, [])
+
+  // hermes:// deep links (e.g. a docs "Send to App" button for a cron recipe).
+  // Build the equivalent /cron-recipe slash command from the payload and drop
+  // it into the composer — the user reviews/edits, then sends; the agent (or
+  // the shared command handler) creates the job. Signal readiness so a link
+  // that arrived during boot is flushed exactly once.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onDeepLink?.((payload) => {
+      if (!payload || payload.kind !== 'cron-recipe' || !payload.name) {
+        return
+      }
+      const slots = Object.entries(payload.params || {})
+        .map(([k, v]) => {
+          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+          return `${k}=${sval}`
+        })
+        .join(' ')
+      const command = `/cron-recipe ${payload.name}${slots ? ' ' + slots : ''}`
+      requestComposerInsert(command, { mode: 'block', target: 'main' })
+      requestComposerFocus('main')
+    })
+    // Tell the main process the renderer is ready to receive deep links.
+    void window.hermesDesktop?.signalDeepLinkReady?.()
+    return () => unsubscribe?.()
   }, [])
 
   useEffect(() => {

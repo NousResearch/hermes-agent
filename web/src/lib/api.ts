@@ -497,6 +497,19 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
+  // Cron Recipes — parameterized automation templates
+  getCronRecipes: () =>
+    fetchJSON<{ recipes: CronRecipe[] }>("/api/cron/recipes"),
+  instantiateCronRecipe: (
+    body: { recipe: string; values: Record<string, string> },
+    profile = "default",
+  ) =>
+    fetchJSON<CronJob>(`/api/cron/recipes/instantiate?profile=${encodeURIComponent(profile)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -1823,6 +1836,27 @@ export interface CronDeliveryTarget {
   name: string;
   home_target_set: boolean;
   home_env_var: string | null;
+}
+
+export interface CronRecipeField {
+  name: string;
+  type: "time" | "enum" | "text" | "weekdays";
+  label: string;
+  default: string | null;
+  options: string[];
+  optional: boolean;
+  help: string;
+}
+
+export interface CronRecipe {
+  key: string;
+  title: string;
+  description: string;
+  category: string;
+  tags: string[];
+  fields: CronRecipeField[];
+  command: string;
+  appUrl: string;
 }
 
 export interface SkillInfo {

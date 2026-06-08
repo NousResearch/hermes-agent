@@ -2360,6 +2360,42 @@ class TestNewEndpoints:
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
 
+    # --- Cron Recipes ---
+
+    def test_cron_recipes_list(self):
+        resp = self.client.get("/api/cron/recipes")
+        assert resp.status_code == 200
+        recipes = resp.json()["recipes"]
+        assert len(recipes) >= 1
+        first = recipes[0]
+        assert "fields" in first
+        assert first["command"].startswith("/cron-recipe")
+        assert first["appUrl"].startswith("hermes://")
+
+    def test_cron_recipe_instantiate_creates_job(self):
+        resp = self.client.post(
+            "/api/cron/recipes/instantiate",
+            json={"recipe": "morning-brief", "values": {"time": "07:30", "deliver": "local"}},
+        )
+        assert resp.status_code == 200
+        job = resp.json()
+        assert (job.get("schedule_display") or "").strip() == "30 7 * * *" or \
+            (job.get("schedule", {}) or {}).get("expr") == "30 7 * * *"
+
+    def test_cron_recipe_instantiate_unknown_404(self):
+        resp = self.client.post(
+            "/api/cron/recipes/instantiate",
+            json={"recipe": "does-not-exist", "values": {}},
+        )
+        assert resp.status_code == 404
+
+    def test_cron_recipe_instantiate_bad_value_422(self):
+        resp = self.client.post(
+            "/api/cron/recipes/instantiate",
+            json={"recipe": "morning-brief", "values": {"time": "99:99"}},
+        )
+        assert resp.status_code == 422
+
     # --- Profiles ---
 
     def test_profiles_list_includes_default(self):

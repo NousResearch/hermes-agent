@@ -1,0 +1,34 @@
+---
+sidebar_position: 7
+title: "Cron Recipes Catalog"
+description: "Ready-to-run automation templates — set one up from the dashboard, CLI, TUI, any messenger, or the desktop app."
+---
+
+import CronRecipesCatalog from '@site/src/components/CronRecipesCatalog';
+
+# Cron Recipes
+
+Cron Recipes are ready-to-run automation templates. Pick one, fill in a couple
+of fields, and Hermes schedules it as a cron job — no cron syntax required.
+
+Every recipe works from **every surface**:
+
+- **Dashboard / desktop app** — open the Cron page, switch to the **Recipes**
+  tab, fill the form, and click *Schedule it*.
+- **CLI, TUI, and messengers** — copy a recipe's `/cron-recipe` command below,
+  edit the values, and send it. Hermes fills in anything you leave out and
+  asks if something's ambiguous.
+- **Desktop app** — click **Send to App** on any recipe and it opens with the
+  command pre-loaded in your composer.
+
+Recipes never schedule anything silently — you always confirm before the job
+is created. Manage created jobs anytime with `/cron`.
+
+<CronRecipesCatalog />
+
+## Writing your own
+
+A recipe is just a skill with a `metadata.hermes.recipe` block in its
+`SKILL.md` frontmatter. See
+[Creating Skills → Cron Recipes](../developer-guide/creating-skills.md) for the
+slot schema and how to publish one.

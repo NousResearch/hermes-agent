@@ -58,6 +58,106 @@ function Harness({ onPayload }: { onPayload: (hasPayload: boolean) => void }) {
   )
 }
 
+function SubmitHarness({ onSubmit }: { onSubmit: (text: string) => void }) {
+  const editorRef = useRef<HTMLDivElement>(null)
+  const composingRef = useRef(false)
+  const compositionJustEndedRef = useRef(false)
+  const submitAfterCompositionRef = useRef(false)
+  const compositionSubmitTimerRef = useRef<number | null>(null)
+  const draftRef = useRef('')
+
+  const flushEditorToDraft = (editor: HTMLDivElement) => {
+    draftRef.current = editor.textContent ?? ''
+
+    return draftRef.current
+  }
+
+  const submitDraft = () => {
+    const editor = editorRef.current
+
+    if (editor) {
+      flushEditorToDraft(editor)
+    }
+
+    if (draftRef.current.trim()) {
+      onSubmit(draftRef.current)
+    }
+  }
+
+  const scheduleSubmitAfterComposition = () => {
+    if (compositionSubmitTimerRef.current !== null) {
+      window.clearTimeout(compositionSubmitTimerRef.current)
+    }
+
+    compositionSubmitTimerRef.current = window.setTimeout(() => {
+      compositionSubmitTimerRef.current = null
+      compositionJustEndedRef.current = false
+      submitAfterCompositionRef.current = false
+      submitDraft()
+    }, 0)
+  }
+
+  return (
+    <div
+      contentEditable
+      data-testid="submit-editor"
+      onCompositionEnd={event => {
+        composingRef.current = false
+        compositionJustEndedRef.current = true
+        flushEditorToDraft(event.currentTarget)
+
+        if (submitAfterCompositionRef.current) {
+          scheduleSubmitAfterComposition()
+        } else {
+          window.setTimeout(() => {
+            compositionJustEndedRef.current = false
+          }, 0)
+        }
+      }}
+      onCompositionStart={() => {
+        composingRef.current = true
+        compositionJustEndedRef.current = false
+        submitAfterCompositionRef.current = false
+      }}
+      onInput={event => {
+        if (composingRef.current) {
+          return
+        }
+
+        flushEditorToDraft(event.currentTarget)
+      }}
+      onKeyDown={event => {
+        const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent & { keyCode?: number }
+        const plainEnter =
+          event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+
+        if (composingRef.current || event.nativeEvent.isComposing || nativeEvent.keyCode === 229) {
+          if (plainEnter) {
+            submitAfterCompositionRef.current = true
+          }
+
+          return
+        }
+
+        if (plainEnter && compositionJustEndedRef.current) {
+          event.preventDefault()
+          submitAfterCompositionRef.current = true
+          scheduleSubmitAfterComposition()
+
+          return
+        }
+
+        if (plainEnter) {
+          event.preventDefault()
+          submitDraft()
+        }
+      }}
+      ref={editorRef}
+      suppressContentEditableWarning
+    />
+  )
+}
+
 describe('composer IME composition — send button visibility (#39614)', () => {
   it('shows the send button after committing CJK text without a trailing edit', async () => {
     let hasPayload = false
@@ -104,5 +204,49 @@ describe('composer IME composition — send button visibility (#39614)', () => {
       })
       expect(hasPayload).toBe(false)
     }
+  })
+})
+
+
+describe('composer IME composition — Enter submit preserves Korean text', () => {
+  it('submits the committed Korean syllable after Enter finalizes active composition', async () => {
+    const submitted: string[] = []
+    const { getByTestId } = render(<SubmitHarness onSubmit={text => submitted.push(text)} />)
+    const editor = getByTestId('submit-editor')
+
+    await act(async () => {
+      editor.textContent = '안'
+      fireEvent.input(editor)
+      fireEvent.compositionStart(editor)
+      editor.textContent = '안녀'
+      fireEvent.input(editor)
+      fireEvent.keyDown(editor, { key: 'Enter', keyCode: 229 })
+      editor.textContent = '안녕'
+      fireEvent.compositionEnd(editor)
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+    })
+
+    expect(submitted).toEqual(['안녕'])
+  })
+
+  it('waits one tick when compositionend precedes the Enter keydown but the final DOM commit trails it', async () => {
+    const submitted: string[] = []
+    const { getByTestId } = render(<SubmitHarness onSubmit={text => submitted.push(text)} />)
+    const editor = getByTestId('submit-editor')
+
+    await act(async () => {
+      editor.textContent = '안'
+      fireEvent.input(editor)
+      fireEvent.compositionStart(editor)
+      editor.textContent = '안녀'
+      fireEvent.input(editor)
+      editor.textContent = '안'
+      fireEvent.compositionEnd(editor)
+      fireEvent.keyDown(editor, { key: 'Enter', keyCode: 13 })
+      editor.textContent = '안녕'
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+    })
+
+    expect(submitted).toEqual(['안녕'])
   })
 })

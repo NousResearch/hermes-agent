@@ -958,6 +958,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
   // `trigger`, which keyup sees as already-null after Escape).
   const triggerKeyConsumedRef = useRef(false)
+  const composingRef = useRef(false)
+  const compositionJustEndedRef = useRef(false)
+  const submitAfterCompositionRef = useRef(false)
+  const compositionSubmitTimerRef = useRef<number | null>(null)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -1062,6 +1066,24 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     },
     [aui]
   )
+
+  const scheduleSubmitAfterComposition = () => {
+    if (compositionSubmitTimerRef.current !== null) {
+      window.clearTimeout(compositionSubmitTimerRef.current)
+    }
+
+    compositionSubmitTimerRef.current = window.setTimeout(() => {
+      compositionSubmitTimerRef.current = null
+      compositionJustEndedRef.current = false
+      submitAfterCompositionRef.current = false
+
+      const editor = editorRef.current
+
+      if (editor) {
+        submitEdit(editor)
+      }
+    }, 0)
+  }
 
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current
@@ -1261,6 +1283,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   }
 
   const handleInput = (event: FormEvent<HTMLDivElement>) => {
+    if (composingRef.current) {
+      return
+    }
+
     const editor = event.currentTarget
 
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
@@ -1320,6 +1346,25 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent & { keyCode?: number }
+    const plainEnter = event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+
+    if (composingRef.current || event.nativeEvent.isComposing || nativeEvent.keyCode === 229) {
+      if (plainEnter) {
+        submitAfterCompositionRef.current = true
+      }
+
+      return
+    }
+
+    if (plainEnter && compositionJustEndedRef.current) {
+      event.preventDefault()
+      submitAfterCompositionRef.current = true
+      scheduleSubmitAfterComposition()
+
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -1434,6 +1479,29 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
+              onCompositionEnd={event => {
+                composingRef.current = false
+                compositionJustEndedRef.current = true
+                syncDraftFromEditor(event.currentTarget)
+
+                if (submitAfterCompositionRef.current) {
+                  scheduleSubmitAfterComposition()
+                } else {
+                  window.setTimeout(() => {
+                    compositionJustEndedRef.current = false
+                  }, 0)
+                }
+              }}
+              onCompositionStart={() => {
+                composingRef.current = true
+                compositionJustEndedRef.current = false
+                submitAfterCompositionRef.current = false
+
+                if (compositionSubmitTimerRef.current !== null) {
+                  window.clearTimeout(compositionSubmitTimerRef.current)
+                  compositionSubmitTimerRef.current = null
+                }
+              }}
               onFocus={() => markActiveComposer('edit')}
               onInput={handleInput}
               onKeyDown={handleKeyDown}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
@@ -17,35 +18,98 @@ interface ModeOption {
   needsAgent: boolean
 }
 
-const OPTIONS: ModeOption[] = [
-  {
-    mode: 'gui',
-    title: 'Uninstall Chat GUI only',
-    description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
-    consequence: 'the desktop Chat GUI (this app and its data)',
-    needsAgent: false
+const OPTIONS_BY_LOCALE: Record<'en' | 'ko', ModeOption[]> = {
+  en: [
+    {
+      mode: 'gui',
+      title: 'Uninstall Chat GUI only',
+      description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+      consequence: 'the desktop Chat GUI (this app and its data)',
+      needsAgent: false
+    },
+    {
+      mode: 'lite',
+      title: 'Uninstall GUI + agent, keep my data',
+      description: 'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+      consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)',
+      needsAgent: true
+    },
+    {
+      mode: 'full',
+      title: 'Uninstall everything',
+      description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+      consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs',
+      // full removes the agent (and user data), so it's an agent-removing option:
+      // hide it on a lite client with no local agent, same as lite. A lite client
+      // connecting to a remote backend has no local agent OR local user data the
+      // GUI installed, so gui-only is the correct (and only) option there.
+      needsAgent: true
+    }
+  ],
+  ko: [
+    {
+      mode: 'gui',
+      title: '채팅 GUI만 제거',
+      description: '이 데스크톱 앱만 제거합니다. Hermes 에이전트, 설정, 채팅은 유지됩니다.',
+      consequence: '데스크톱 채팅 GUI(이 앱과 앱 데이터)',
+      needsAgent: false
+    },
+    {
+      mode: 'lite',
+      title: 'GUI와 에이전트 제거, 내 데이터 유지',
+      description: '앱과 Hermes 에이전트를 제거하지만, 나중에 다시 설치할 수 있도록 설정, 채팅, 비밀 정보는 유지합니다.',
+      consequence: '채팅 GUI와 Hermes 에이전트(설정, 채팅, 비밀 정보는 유지됨)',
+      needsAgent: true
+    },
+    {
+      mode: 'full',
+      title: '모두 제거',
+      description: '앱, 에이전트, 모든 사용자 데이터(설정, 채팅, 예약 작업, 비밀 정보, 로그)를 제거합니다.',
+      consequence: '모든 항목(채팅 GUI, Hermes 에이전트, 설정, 채팅, 비밀 정보, 로그 전체)',
+      needsAgent: true
+    }
+  ]
+}
+
+const UNINSTALL_COPY = {
+  en: {
+    appLabel: 'App',
+    cancel: 'Cancel',
+    checking: "Checking what's installed…",
+    confirm: 'Confirm uninstall',
+    confirmBody: (consequence: string) => `This removes ${consequence}. This can't be undone.`,
+    couldNotStart: 'Uninstall could not start.',
+    dangerZone: 'Danger zone',
+    intro:
+      'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+    title: 'Uninstall Hermes',
+    uninstall: 'Yes, uninstall',
+    uninstalling: 'Uninstalling…'
   },
-  {
-    mode: 'lite',
-    title: 'Uninstall GUI + agent, keep my data',
-    description: 'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
-    consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)',
-    needsAgent: true
-  },
-  {
-    mode: 'full',
-    title: 'Uninstall everything',
-    description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
-    consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs',
-    // full removes the agent (and user data), so it's an agent-removing option:
-    // hide it on a lite client with no local agent, same as lite. A lite client
-    // connecting to a remote backend has no local agent OR local user data the
-    // GUI installed, so gui-only is the correct (and only) option there.
-    needsAgent: true
+  ko: {
+    appLabel: '앱',
+    cancel: '취소',
+    checking: '설치된 항목 확인 중…',
+    confirm: '제거 확인',
+    confirmBody: (consequence: string) => `${consequence}이(가) 제거됩니다. 이 작업은 되돌릴 수 없습니다.`,
+    couldNotStart: '제거를 시작할 수 없습니다.',
+    dangerZone: '위험 구역',
+    intro: '제거할 범위를 선택하세요. 작업을 마치기 위해 앱이 닫힙니다. 나중에 다시 설치하려면 언제든 설치 프로그램을 열 수 있습니다.',
+    title: 'Hermes 제거',
+    uninstall: '네, 제거합니다',
+    uninstalling: '제거 중…'
   }
-]
+}
+
+function uninstallLocale(locale: string) {
+  return locale === 'ko' ? 'ko' : 'en'
+}
 
 export function UninstallSection() {
+  const { locale } = useI18n()
+  const copyLocale = uninstallLocale(locale)
+  const copy = UNINSTALL_COPY[copyLocale]
+  const options = OPTIONS_BY_LOCALE[copyLocale]
   const [summary, setSummary] = useState<DesktopUninstallSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState<DesktopUninstallMode | null>(null)
@@ -87,7 +151,7 @@ export function UninstallSection() {
   // Gate the agent-removing options on whether an agent is actually present.
   // A future lite client that ships without the bundled agent shows GUI-only.
   const agentInstalled = summary?.agent_installed ?? false
-  const visibleOptions = OPTIONS.filter(opt => agentInstalled || !opt.needsAgent)
+  const visibleOptions = options.filter(opt => agentInstalled || !opt.needsAgent)
 
   const handleConfirm = async () => {
     if (!pending) {
@@ -98,7 +162,7 @@ export function UninstallSection() {
     try {
       const result = await bridge.run(pending)
       if (!result.ok) {
-        setError(result.message || result.error || 'Uninstall could not start.')
+        setError(result.message || result.error || copy.couldNotStart)
         setRunning(false)
         setPending(null)
       }
@@ -110,27 +174,27 @@ export function UninstallSection() {
     }
   }
 
-  const pendingOption = OPTIONS.find(opt => opt.mode === pending) ?? null
+  const pendingOption = options.find(opt => opt.mode === pending) ?? null
 
   return (
     <div className="mx-auto mt-8 w-full max-w-2xl">
-      <SectionHeading icon={AlertTriangle} title="Danger zone" />
+      <SectionHeading icon={AlertTriangle} title={copy.dangerZone} />
 
       <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
         {loading ? (
           <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" />
-            Checking what&apos;s installed…
+            {copy.checking}
           </div>
         ) : pendingOption ? (
           <div>
-            <p className="text-sm font-medium text-destructive">Confirm uninstall</p>
+            <p className="text-sm font-medium text-destructive">{copy.confirm}</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              This removes {pendingOption.consequence}. This can&apos;t be undone.
+              {copy.confirmBody(pendingOption.consequence)}
             </p>
             {summary?.running_app_path && (
               <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">
-                App: {summary.running_app_path}
+                {copy.appLabel}: {summary.running_app_path}
               </p>
             )}
             {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
@@ -142,18 +206,18 @@ export function UninstallSection() {
                 variant="destructive"
               >
                 {running && <Loader2 className="size-3 animate-spin" />}
-                {running ? 'Uninstalling…' : 'Yes, uninstall'}
+                {running ? copy.uninstalling : copy.uninstall}
               </Button>
               <Button disabled={running} onClick={() => setPending(null)} size="sm" variant="text">
-                Cancel
+                {copy.cancel}
               </Button>
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Uninstall Hermes</p>
+            <p className="text-sm font-medium">{copy.title}</p>
             <p className="text-xs text-muted-foreground">
-              Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.
+              {copy.intro}
             </p>
             <div className="mt-1 flex flex-col gap-2">
               {visibleOptions.map(opt => (

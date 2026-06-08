@@ -2020,6 +2020,19 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # Hide providers intentionally kept out of picker surfaces.  The runtime
+    # can still resolve them explicitly, but the model list should only show
+    # the preferred successor (e.g. alibaba-coding-plan instead of alibaba).
+    try:
+        from hermes_cli.models import HIDDEN_MODEL_PICKER_PROVIDERS as _hidden_picker
+    except Exception:
+        _hidden_picker = set()
+    if _hidden_picker:
+        results = [
+            r for r in results
+            if str(r.get("slug", "")).strip().lower() not in _hidden_picker
+        ]
+
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 

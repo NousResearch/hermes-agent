@@ -301,11 +301,13 @@ ALIASES: Dict[str, str] = {
     # deepseek
     "deep-seek": "deepseek",
 
-    # alibaba
-    "dashscope": "alibaba",
-    "aliyun": "alibaba",
-    "qwen": "alibaba",
-    "alibaba-cloud": "alibaba",
+    # alibaba — route legacy names to the Coding Plan endpoint in picker/runtime
+    # selection flows.  The bare "alibaba" provider remains resolvable for
+    # backward compatibility, but is hidden from model picker surfaces.
+    "dashscope": "alibaba-coding-plan",
+    "aliyun": "alibaba-coding-plan",
+    "qwen": "alibaba-coding-plan",
+    "alibaba-cloud": "alibaba-coding-plan",
     "alibaba_coding": "alibaba-coding-plan",
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",

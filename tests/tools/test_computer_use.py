@@ -1457,7 +1457,7 @@ class TestCuaEnvironmentScrubbing:
 
     def test_cua_session_sanitizes_provider_env_vars(self):
         """_CuaDriverSession._aenter() must sanitize sensitive env vars.
-        
+
         The cua-driver MCP subprocess should not inherit Hermes-managed credentials
         or other sensitive environment variables — only runtime-required vars.
         This is a regression test for issue #37878.
@@ -1475,6 +1475,7 @@ class TestCuaEnvironmentScrubbing:
             # Set up test environment with both safe and blocked vars
             test_env = {
                 "OPENAI_API_KEY": "sk-secret",  # blocked
+                "ANTHROPIC_API_KEY": "sk-ant-secret",  # blocked
                 "PATH": "/usr/bin:/bin",  # safe
                 "HOME": "/home/user",  # safe
                 "SAFE_VAR": "allowed",  # safe
@@ -1496,20 +1497,20 @@ class TestCuaEnvironmentScrubbing:
                          patch("mcp.client.stdio.stdio_client") as mock_stdio, \
                          patch("mcp.ClientSession") as mock_session_class, \
                          patch("contextlib.AsyncExitStack"):
-                        
+
                         # Setup mocks for stdio_client and ClientSession
                         mock_read = MagicMock()
                         mock_write = MagicMock()
                         mock_stdio.return_value.__aenter__ = AsyncMock(
                             return_value=(mock_read, mock_write))
                         mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
-                        
+
                         mock_session = MagicMock()
                         mock_session.initialize = AsyncMock()
                         mock_session_class.return_value.__aenter__ = AsyncMock(
                             return_value=mock_session)
                         mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
-                        
+
                         try:
                             await session._aenter()
                         except Exception:
@@ -1520,7 +1521,9 @@ class TestCuaEnvironmentScrubbing:
         # Verify blocked credentials are not in the passed env
         assert "OPENAI_API_KEY" not in captured_env, \
             "OPENAI_API_KEY should be stripped from cua-driver subprocess"
-        
+        assert "ANTHROPIC_API_KEY" not in captured_env, \
+            "ANTHROPIC_API_KEY should be stripped from cua-driver subprocess"
+
         # Verify PATH is preserved (safe var)
         assert "PATH" in captured_env or "SAFE_VAR" in captured_env, \
             "At least one safe environment variable should be preserved"

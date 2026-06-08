@@ -20,6 +20,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { shouldBlockPlainTextPaste } from '@/lib/clipboard-paste'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -493,6 +494,14 @@ export function ChatBar({
 
     if (!pastedText) {
       event.preventDefault()
+      void onPasteClipboardImage?.()
+
+      return
+    }
+
+    if (shouldBlockPlainTextPaste(pastedText)) {
+      event.preventDefault()
+      void onPasteClipboardImage?.()
 
       return
     }

@@ -76,6 +76,7 @@ import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import { shouldBlockPlainTextPaste } from '@/lib/clipboard-paste'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
@@ -1279,7 +1280,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const pastedText = event.clipboardData.getData('text')
 
-    if (!pastedText || DATA_IMAGE_URL_RE.test(pastedText.trim())) {
+    if (!pastedText || DATA_IMAGE_URL_RE.test(pastedText.trim()) || shouldBlockPlainTextPaste(pastedText)) {
       event.preventDefault()
 
       return

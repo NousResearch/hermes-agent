@@ -729,63 +729,77 @@ def _plugin_exists(name: str) -> bool:
 
 
 def _discover_all_plugins() -> list:
-    """Return a list of (name, version, description, source, dir_path) for
-    every plugin the loader can see — user + bundled + project.
+    """Return a list of ``(key, legacy_name, version, description, source, dir_path)`` for
+    every plugin the loader can see.
 
     Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project; user overrides bundled on
-    name collision.
+    bundled first, then user, then project, then entry points; later sources
+    override earlier ones on registry-key collision.
     """
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
+    from hermes_cli.plugins import (
+        PluginManager,
+        get_bundled_plugins_dir,
+    )
 
-    seen: dict = {}  # name -> (name, version, description, source, path)
+    manager = PluginManager()
+    seen: dict[str, tuple[str, str, str, str, str, Path | None]] = {}
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
-    for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
-        if not base.is_dir():
-            continue
-        for d in sorted(base.iterdir()):
-            if not d.is_dir():
-                continue
-            if source == "bundled" and d.name in {"memory", "context_engine"}:
-                continue
-            manifest_file = d / "plugin.yaml"
-            if not manifest_file.exists():
-                manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
-                continue
-            name = d.name
-            version = ""
-            description = ""
-            if yaml:
-                try:
-                    with open(manifest_file, encoding="utf-8") as f:
-                        manifest = yaml.safe_load(f) or {}
-                    name = manifest.get("name", d.name)
-                    version = manifest.get("version", "")
-                    description = manifest.get("description", "")
-                except Exception:
-                    pass
-            # User plugins override bundled on name collision.
-            if name in seen and source == "bundled":
-                continue
-            src_label = source
-            if source == "user" and (d / ".git").exists():
-                src_label = "git"
-            seen[name] = (name, version, description, src_label, d)
+    manifests = manager._scan_directory(  # noqa: SLF001 - keep list discovery aligned with runtime scanning
+        repo_plugins,
+        source="bundled",
+        skip_names={"memory", "context_engine", "platforms", "model-providers"},
+    )
+    manifests.extend(
+        manager._scan_directory(  # noqa: SLF001 - keep list discovery aligned with runtime scanning
+            repo_plugins / "platforms",
+            source="bundled",
+        )
+    )
+    manifests.extend(
+        manager._scan_directory(  # noqa: SLF001 - keep list discovery aligned with runtime scanning
+            _plugins_dir(),
+            source="user",
+        )
+    )
+    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        manifests.extend(
+            manager._scan_directory(  # noqa: SLF001 - keep list discovery aligned with runtime scanning
+                Path.cwd() / ".hermes" / "plugins",
+                source="project",
+            )
+        )
+    manifests.extend(manager._scan_entry_points())  # noqa: SLF001 - keep list discovery aligned with runtime scanning
+
+    for manifest in manifests:
+        key = manifest.key or manifest.name
+        src_label = manifest.source
+        manifest_path = Path(manifest.path) if manifest.path else None
+        if manifest.source == "user" and manifest_path is not None and (manifest_path / ".git").exists():
+            src_label = "git"
+        seen[key] = (
+            key,
+            manifest.name,
+            manifest.version,
+            manifest.description,
+            src_label,
+            manifest_path,
+        )
     return list(seen.values())
 
 
-def _plugin_status(name: str, enabled: set, disabled: set) -> str:
-    """Return the user-facing activation state for a plugin name."""
-    if name in disabled:
+def _plugin_status(name: str, enabled: set, disabled: set, legacy_name: str | None = None) -> str:
+    """Return the user-facing activation state for a plugin name.
+
+    Mirrors runtime loader back-compat: both the path-derived key and the
+    legacy bare manifest name count for explicit enable/disable state.
+    """
+    aliases = {name}
+    if legacy_name:
+        aliases.add(legacy_name)
+    if aliases & disabled:
         return "disabled"
-    if name in enabled:
+    if aliases & enabled:
         return "enabled"
     return "not enabled"
 
@@ -794,11 +808,11 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     """Apply ``hermes plugins list`` CLI filters."""
     filtered = entries
     if getattr(args, "no_bundled", False) or getattr(args, "user", False):
-        filtered = [entry for entry in filtered if entry[3] != "bundled"]
+        filtered = [entry for entry in filtered if entry[4] != "bundled"]
     if getattr(args, "enabled", False):
         filtered = [
             entry for entry in filtered
-            if _plugin_status(entry[0], enabled, disabled) == "enabled"
+            if _plugin_status(entry[0], enabled, disabled, entry[1]) == "enabled"
         ]
     return filtered
 
@@ -823,19 +837,19 @@ def cmd_list(args: Any | None = None) -> None:
         payload = [
             {
                 "name": name,
-                "status": _plugin_status(name, enabled, disabled),
+                "status": _plugin_status(name, enabled, disabled, legacy_name),
                 "version": str(version),
                 "description": description,
                 "source": source,
             }
-            for name, version, description, source, _dir in entries
+            for name, legacy_name, version, description, source, _dir in entries
         ]
         print(json.dumps(payload, indent=2))
         return
 
     if getattr(args, "plain", False):
-        for name, version, _description, source, _dir in entries:
-            status = _plugin_status(name, enabled, disabled)
+        for name, legacy_name, version, _description, source, _dir in entries:
+            status = _plugin_status(name, enabled, disabled, legacy_name)
             print(f"{status:12} {source:8} {str(version):8} {name}")
         return
 
@@ -850,8 +864,8 @@ def cmd_list(args: Any | None = None) -> None:
     table.add_column("Description")
     table.add_column("Source", style="dim")
 
-    for name, version, description, source, _dir in entries:
-        status_name = _plugin_status(name, enabled, disabled)
+    for name, legacy_name, version, description, source, _dir in entries:
+        status_name = _plugin_status(name, enabled, disabled, legacy_name)
         if status_name == "disabled":
             status = "[red]disabled[/red]"
         elif status_name == "enabled":

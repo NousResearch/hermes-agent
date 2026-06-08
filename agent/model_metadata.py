@@ -123,6 +123,18 @@ _server_type_cache: Dict[str, Optional[str]] = {}
 _server_type_cache_time: Dict[str, float] = {}
 _SERVER_TYPE_CACHE_TTL = 300  # 5 minutes
 
+
+def _clear_local_caches() -> None:
+    """Clear in-memory caches for local context length and server type probes.
+
+    Used by tests to prevent cross-test cache contamination.  Not intended
+    for production use — the TTL-based expiry handles freshness there.
+    """
+    _local_ctx_cache.clear()
+    _local_ctx_cache_time.clear()
+    _server_type_cache.clear()
+    _server_type_cache_time.clear()
+
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
 # step down on context-length errors until one works.  Tier[0] is also the

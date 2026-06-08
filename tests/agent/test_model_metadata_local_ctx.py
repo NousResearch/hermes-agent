@@ -11,6 +11,12 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
+def setup_function():
+    """Clear local caches before each test to prevent cross-test contamination."""
+    from agent.model_metadata import _clear_local_caches
+    _clear_local_caches()
+
+
 
 # ---------------------------------------------------------------------------
 # _query_local_context_length — unit tests with mocked httpx

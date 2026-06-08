@@ -15211,7 +15211,9 @@ class HermesCLI:
                             try:
                                 from tools.process_registry import process_registry
                                 for _evt, _synth in process_registry.drain_notifications():
-                                    self._pending_input.put(_synth)
+                                    # Display notification in the terminal instead of
+                                    # injecting as user input to the agent.
+                                    self._console_print(f"[dim]{_synth}[/dim]")
                             except Exception:
                                 pass
                         continue
@@ -15339,7 +15341,9 @@ class HermesCLI:
                         try:
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
-                                self._pending_input.put(_synth)
+                                # Display notification in the terminal instead of
+                                # injecting as user input to the agent.
+                                self._console_print(f"[dim]{_synth}[/dim]")
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

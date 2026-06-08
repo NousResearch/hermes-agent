@@ -125,8 +125,37 @@ def test_r4_e2e_real_sandbox_done_with_mock_codex(kanban_home, tmp_path):
         assert (ws / deliverable).exists()  # 부모가 제안서 조립
 
 
+def test_extract_codex_verdict_accepts_json_fence():
+    out = m2_supervisor._extract_codex_verdict(
+        'review complete\n```json\n{"verdict":"PASS","high":0,"note":"ok"}\n```'
+    )
+    assert out == {"verdict": "PASS", "high": 0, "note": "ok"}
+
+
+def test_real_codex_review_env_gated_and_parses_fake_cli(tmp_path, monkeypatch):
+    staged = tmp_path / "gen.py"
+    staged.write_text("print('synthetic')\n", encoding="utf-8")
+    assert m2_supervisor._real_codex_review([str(staged)])["verdict"] == "BLOCKED"
+
+    monkeypatch.setenv("HERMES_M2_CODEX_REVIEW", "1")
+
+    class Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        out_path.write_text('{"verdict":"PASS","high":0,"note":"synthetic safe"}', encoding="utf-8")
+        return Proc()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    out = m2_supervisor._real_codex_review([str(staged)])
+    assert out == {"verdict": "PASS", "high": 0, "note": "synthetic safe"}
+
+
 def test_r4_e2e_real_codex_blocks_at_gate(kanban_home, tmp_path):
-    # R4 기본 경로: 실 _real_codex_review=BLOCKED → codex_review_passed 게이트 차단(done 불가).
+    # R4 기본 경로: env 미설정이면 _real_codex_review=BLOCKED → codex_review_passed 게이트 차단(done 불가).
     ws = tmp_path / "ws"; ws.mkdir()
     deliverable = "proposal/MERGE_PROPOSAL.json"
     with kb.connect() as conn:

@@ -35,6 +35,121 @@ def noop_backend():
 
 
 # ---------------------------------------------------------------------------
+# Backend caching / lifecycle (regression: broken-session never recovers)
+# ---------------------------------------------------------------------------
+
+class TestBackendCaching:
+    """Regression coverage for `_get_backend()` caching a never-started backend.
+
+    Bug: if `backend.start()` raised (e.g. cua-driver MCP session failed to
+    come up), `_backend` was left assigned but unstarted. Every later call
+    short-circuited on `_backend is not None`, skipped `start()`, and failed
+    forever with "cua-driver session not started" until the process restarted.
+    """
+
+    def test_start_failure_is_not_cached(self):
+        """A backend whose start() raises must not be cached for reuse."""
+        import tools.computer_use.tool as cu_tool
+
+        cu_tool.reset_backend_for_tests()
+
+        class _FailingBackend:
+            def __init__(self):
+                self.stopped = False
+
+            def start(self):
+                raise RuntimeError("session failed to start")
+
+            def stop(self):
+                self.stopped = True
+
+        created = []
+
+        def _factory():
+            b = _FailingBackend()
+            created.append(b)
+            return b
+
+        with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "cua"}, clear=False), \
+                patch("tools.computer_use.cua_backend.CuaDriverBackend", _factory):
+            with pytest.raises(RuntimeError, match="session failed to start"):
+                cu_tool._get_backend()
+            # First instance was torn down, not cached.
+            assert cu_tool._backend is None
+            assert created[0].stopped is True
+
+            # A second call retries cleanly with a fresh instance.
+            with pytest.raises(RuntimeError, match="session failed to start"):
+                cu_tool._get_backend()
+            assert len(created) == 2
+
+        cu_tool.reset_backend_for_tests()
+
+    def test_unstarted_cached_backend_is_recreated(self):
+        """A cached backend whose session is not started gets rebuilt on next call."""
+        import tools.computer_use.tool as cu_tool
+
+        cu_tool.reset_backend_for_tests()
+
+        class _Session:
+            def __init__(self, started):
+                self._started = started
+
+        class _Backend:
+            def __init__(self, started):
+                self._session = _Session(started)
+                self.stopped = False
+                self.start_calls = 0
+
+            def start(self):
+                self.start_calls += 1
+                self._session._started = True
+
+            def stop(self):
+                self.stopped = True
+
+        # Seed a stale backend whose session never started.
+        stale = _Backend(started=False)
+        cu_tool._backend = stale
+
+        fresh = _Backend(started=False)
+        with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "cua"}, clear=False), \
+                patch("tools.computer_use.cua_backend.CuaDriverBackend", lambda: fresh):
+            result = cu_tool._get_backend()
+
+        assert stale.stopped is True
+        assert result is fresh
+        assert fresh.start_calls == 1
+        assert fresh._session._started is True
+
+        cu_tool.reset_backend_for_tests()
+
+    def test_started_cached_backend_is_reused(self):
+        """A healthy started backend must be reused without rebuilding."""
+        import tools.computer_use.tool as cu_tool
+
+        cu_tool.reset_backend_for_tests()
+
+        class _Session:
+            _started = True
+
+        class _Backend:
+            _session = _Session()
+
+        cached = _Backend()
+        cu_tool._backend = cached
+
+        # Factory must NOT be called — if it is, this returns the wrong object.
+        with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "cua"}, clear=False), \
+                patch("tools.computer_use.cua_backend.CuaDriverBackend",
+                      lambda: pytest.fail("should not rebuild a healthy backend")):
+            result = cu_tool._get_backend()
+
+        assert result is cached
+        cu_tool.reset_backend_for_tests()
+
+
+# ---------------------------------------------------------------------------
 # Schema & registration
 # ---------------------------------------------------------------------------
 

@@ -129,6 +129,17 @@ _always_allow: set = set()  # action names the user unlocked for the session
 def _get_backend() -> ComputerUseBackend:
     global _backend
     with _backend_lock:
+        # If a backend exists but its session was never started (e.g. start()
+        # failed in a previous turn), tear it down and recreate it so the
+        # next call gets a fresh attempt rather than a permanent broken state.
+        if _backend is not None:
+            session = getattr(_backend, "_session", None)
+            if session is not None and not getattr(session, "_started", True):
+                try:
+                    _backend.stop()
+                except Exception:
+                    pass
+                _backend = None
         if _backend is None:
             backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
             if backend_name in {"cua", "cua-driver", ""}:
@@ -138,7 +149,19 @@ def _get_backend() -> ComputerUseBackend:
                 _backend = _NoopBackend()
             else:
                 raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            _backend.start()
+            try:
+                _backend.start()
+            except Exception:
+                # Don't cache a backend whose session never came up — otherwise
+                # every subsequent call short-circuits on `_backend is not None`
+                # and fails with "session not started" forever. Drop it so the
+                # next call retries cleanly.
+                try:
+                    _backend.stop()
+                except Exception:
+                    pass
+                _backend = None
+                raise
         return _backend
 
 

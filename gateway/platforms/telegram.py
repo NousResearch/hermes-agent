@@ -2188,14 +2188,11 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
         try:
-            if not finalize:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
-                return SendResult(success=True, message_id=message_id)
-
+            # Always apply MarkdownV2 formatting on edit, even for
+            # intermediate (finalize=False) updates.  Without this, a
+            # progress edit that follows an initial formatted send()
+            # replaces the MarkdownV2-rendered message with raw plain
+            # text — breaking code blocks, bold, headers, etc.
             formatted = self.format_message(content)
             try:
                 await self._bot.edit_message_text(
@@ -2209,6 +2206,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
+                logger.warning(
+                    "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
+                    self.name, fmt_err,
+                )
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
@@ -4369,7 +4370,8 @@ class TelegramAdapter(BasePlatformAdapter):
         text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
-        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
+        #    Per MarkdownV2 spec, these characters must be escaped inside
+        #    pre/code blocks too: \ ` * _ { } [ ] ( ) # + - . ! >
         def _protect_fenced(m):
             raw = m.group(0)
             # Split off opening ``` (with optional language) and closing ```
@@ -4377,7 +4379,7 @@ class TelegramAdapter(BasePlatformAdapter):
             opening = raw[:open_end]
             body_and_close = raw[open_end:]
             body = body_and_close[:-3]
-            body = body.replace('\\', '\\\\').replace('`', '\\`')
+            body = _escape_mdv2(body)
             return _ph(opening + body + '```')
 
         text = re.sub(
@@ -4387,10 +4389,15 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
+        #    Per MarkdownV2 spec, all special chars must be escaped inside code.
+        def _protect_inline(m):
+            inner = m.group(0)[1:-1]  # strip outer backticks
+            escaped = _escape_mdv2(inner)
+            return _ph(f'`{escaped}`')
+
         text = re.sub(
             r'(`[^`]+`)',
-            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
+            _protect_inline,
             text,
         )
 

@@ -12990,7 +12990,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and isinstance(args.get("command"), str)
                 and args["command"].strip()
             ):
-                _bash_block = f"```bash\n{args['command'].rstrip()}\n```"
+                # Escape triple-backticks inside the command so they don't
+                # break the fenced code-block boundary that wraps them.
+                _cmd = args['command'].rstrip().replace('```', '\\`\\`\\`')
+                _bash_block = f"```bash\n{_cmd}\n```"
             
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":

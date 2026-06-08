@@ -318,6 +318,44 @@ def _require_tty(command_name: str) -> None:
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.auth import build_auth_parser
+from hermes_cli.subcommands.backup import build_backup_parser
+from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_cli.subcommands.dashboard import build_dashboard_parser
+from hermes_cli.subcommands.debug import build_debug_parser
+from hermes_cli.subcommands.doctor import build_doctor_parser
+from hermes_cli.subcommands.dump import build_dump_parser
+from hermes_cli.subcommands.gateway import build_gateway_parser
+from hermes_cli.subcommands.gui import build_gui_parser
+from hermes_cli.subcommands.hooks import build_hooks_parser
+from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
+from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.login import build_login_parser
+from hermes_cli.subcommands.logout import build_logout_parser
+from hermes_cli.subcommands.logs import build_logs_parser
+from hermes_cli.subcommands.mcp import build_mcp_parser
+from hermes_cli.subcommands.memory import build_memory_parser
+from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.pairing import build_pairing_parser
+from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_cli.subcommands.postinstall import build_postinstall_parser
+from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.security import build_security_parser
+from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.slack import build_slack_parser
+from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.tools import build_tools_parser
+from hermes_cli.subcommands.uninstall import build_uninstall_parser
+from hermes_cli.subcommands.update import build_update_parser
+from hermes_cli.subcommands.version import build_version_parser
+from hermes_cli.subcommands.webhook import build_webhook_parser
+from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
+
 
 # ---------------------------------------------------------------------------
 # Profile override — MUST happen before any hermes module import.

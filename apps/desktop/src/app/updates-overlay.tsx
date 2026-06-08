@@ -92,7 +92,7 @@ export function UpdatesOverlay() {
         className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
         showCloseButton={phase !== 'applying'}
       >
-        {phase === 'applying' && <ApplyingView apply={apply} />}
+        {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
 
         {phase === 'manual' && (
           <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
@@ -309,10 +309,11 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
   )
 }
 
-function ApplyingView({ apply }: { apply: UpdateApplyState }) {
+function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
+  const body = isBackend ? u.applyingBodyBackend : u.applyingBody
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -326,7 +327,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          {u.applyingBody}
+          {body}
         </DialogDescription>
       </div>
 

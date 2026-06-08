@@ -1360,6 +1360,7 @@ export const zhHant = defineLocale({
     copied: '已複製',
     done: '完成',
     applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後重新開啟 Hermes。',
+    applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
     applyingClose: 'Hermes 將關閉以套用更新。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',

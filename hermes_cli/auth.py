@@ -595,6 +595,22 @@ def _resolve_api_key_provider_secret(
                 key = str(key).strip()
                 if has_usable_secret(key):
                     return key, f"credential_pool:{provider_id}"
+            else:
+                # All pool entries are in exhaustion cooldown (peek() returned
+                # None).  Return an exhausted entry's key anyway so the
+                # upstream API returns the real error (429/402 with quota
+                # message) instead of a misleading 401 Unauthorized caused by
+                # sending an empty api_key.  See issue #40960.
+                for _entry in pool._entries:
+                    _key = getattr(_entry, "access_token", "") or getattr(_entry, "runtime_api_key", "")
+                    _key = str(_key).strip()
+                    if has_usable_secret(_key):
+                        logger.warning(
+                            "credential pool: all %s entries exhausted; "
+                            "using %s anyway for clearer upstream error",
+                            provider_id, _entry.label or _entry.id[:8],
+                        )
+                        return _key, f"credential_pool:{provider_id}"
     except Exception:
         pass
 

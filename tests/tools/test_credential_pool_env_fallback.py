@@ -180,7 +180,7 @@ class TestAuthCredentialPoolFallback:
 
     def test_dotenv_takes_priority_over_pool(self, isolated_hermes_home):
         """Key in .env beats credential pool — pool only fires when both env sources are empty."""
-        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dotenv-priority-xyz")
+        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dot...-xyz")
         assert "DEEPSEEK_API_KEY" not in os.environ
 
         mock_pool = MagicMock()
@@ -192,6 +192,72 @@ class TestAuthCredentialPoolFallback:
                 provider_id="deepseek",
                 pconfig=_make_pconfig(),
             )
-        assert key == "sk-dotenv-priority-xyz"
+        assert key == "sk-dot...-xyz"
         assert source == "DEEPSEEK_API_KEY"
         mp.assert_not_called()
+
+
+class TestCredentialPoolExhaustionFallback:
+    """Regression: when all pool entries are exhausted (peek() returns None),
+    the function should still return an exhausted entry's key so the upstream
+    API returns the real error (429/402) instead of a misleading 401.
+
+    See issue #40960.
+    """
+
+    def test_exhausted_pool_returns_key_instead_of_empty(self, isolated_hermes_home):
+        """All entries exhausted → peek() returns None → should still return
+        a key from the pool's entries, not empty string."""
+        mock_entry = MagicMock()
+        mock_entry.access_token = "sk-exhausted-key-123"
+        mock_entry.runtime_api_key = ""
+        mock_entry.label = "test-key"
+        mock_entry.id = "abc123"
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        mock_pool.peek.return_value = None  # all entries in cooldown
+        mock_pool._entries = [mock_entry]
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="deepseek",
+                pconfig=_make_pconfig(),
+            )
+        assert key != "", "Should return exhausted key, not empty string"
+        assert "credential_pool" in source
+
+    def test_exhausted_pool_prefers_runtime_api_key(self, isolated_hermes_home):
+        """When runtime_api_key is set, it should be preferred over access_token."""
+        mock_entry = MagicMock()
+        mock_entry.access_token = ""
+        mock_entry.runtime_api_key = "sk-runtime-key-456"
+        mock_entry.label = "runtime-key"
+        mock_entry.id = "def456"
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        mock_pool.peek.return_value = None
+        mock_pool._entries = [mock_entry]
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="deepseek",
+                pconfig=_make_pconfig(),
+            )
+        assert "sk-runtime-key-456" in key
+
+    def test_truly_empty_pool_returns_empty(self, isolated_hermes_home):
+        """Pool with no entries at all → should still return empty string."""
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = False
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="deepseek",
+                pconfig=_make_pconfig(),
+            )
+        assert key == ""

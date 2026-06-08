@@ -12493,25 +12493,67 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
             self._release_running_agent_state(session_key)
 
     def _evict_cached_agent(self, session_key: str) -> None:
-        """Remove a cached agent for a session (called on /new, /model, etc)."""
+        """Remove a cached agent for a session (called on /new, /model, etc).
+
+        Pops the entry AND soft-releases the evicted agent's LLM client
+        pool so the httpx connection (sockets + held buffers) is freed
+        promptly rather than waiting on CPython GC — AIAgent holds
+        reference cycles (callbacks, tool state) that delay refcount
+        collection, so a manual release is required to keep gateway RSS
+        flat across many /new, /model, undo and reset operations (#29298,
+        same leak class as #25315).
+
+        The release is soft (``release_clients()``): it frees the client
+        pool and per-turn child subagents but PRESERVES the session's
+        terminal sandbox, browser daemon, and tracked bg processes (keyed
+        on task_id), because the session may resume with a freshly-built
+        agent.  Call sites that want a hard teardown (true conversation
+        boundaries like /new) already call ``_cleanup_agent_resources``
+        before evicting; ``release_clients`` is idempotent and safe to
+        run again after that (the client is already None).
+
+        Cleanup runs on a daemon thread so we never block holding
+        ``_agent_cache_lock`` on slow socket teardown — mirrors the
+        cap-enforcer and idle-sweeper paths.
+        """
         _lock = getattr(self, "_agent_cache_lock", None)
+        evicted = None
         if _lock:
             with _lock:
-                entry = self._agent_cache.pop(session_key, None)
-            # Release clients on a daemon thread, same as _enforce_agent_cache_cap.
-            # Without this, every /new, /model, /reasoning, codex-runtime change,
-            # and /undo leaked a full agent: OpenAI client, httpx transport, SSL
-            # context, and conversation history. Only the /new path cleaned up
-            # first; the rest popped the entry and dropped it on the floor.
-            if entry is not None:
-                agent = entry[0] if isinstance(entry, tuple) and entry else None
-                if agent is not None:
-                    threading.Thread(
-                        target=self._release_evicted_agent_soft,
-                        args=(agent,),
-                        daemon=True,
-                        name=f"agent-cache-cmd-evict-{session_key[:24]}",
-                    ).start()
+                evicted = self._agent_cache.pop(session_key, None)
+        else:
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache is not None:
+                evicted = _cache.pop(session_key, None)
+
+        agent = evicted[0] if isinstance(evicted, tuple) and evicted else evicted
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            return
+
+        # Don't tear down an agent that's actively mid-turn — its client,
+        # sandbox and child subagents are in use by the running request.
+        running_ids = {
+            id(a)
+            for a in getattr(self, "_running_agents", {}).values()
+            if a is not None and a is not _AGENT_PENDING_SENTINEL
+        }
+        if id(agent) in running_ids:
+            return
+
+        try:
+            threading.Thread(
+                target=self._release_evicted_agent_soft,
+                args=(agent,),
+                daemon=True,
+                name=f"agent-evict-{str(session_key)[:24]}",
+            ).start()
+        except Exception:
+            # If we can't spawn a thread (interpreter shutdown), release
+            # inline as a best-effort fallback.
+            try:
+                self._release_evicted_agent_soft(agent)
+            except Exception:
+                pass
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:

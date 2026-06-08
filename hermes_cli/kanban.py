@@ -859,6 +859,31 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    # --- resolve-fanin ---
+    p_rf = sub.add_parser(
+        "resolve-fanin",
+        help=(
+            "Classify a final review task and, in --apply mode, create a "
+            "deduped fix + fix-review remediation pair for BLOCK/NEED_MORE."
+        ),
+    )
+    p_rf.add_argument("final_task_id")
+    mode = p_rf.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", dest="rf_dry_run", action="store_true",
+                      help="Classification only — never write (default)")
+    mode.add_argument("--apply", dest="rf_apply", action="store_true",
+                      help="Create deduped fix + fix-review cards when REQUIRED")
+    p_rf.add_argument("--fix-assignee", default=None,
+                      help="Profile assigned to the auto-created fix card")
+    p_rf.add_argument("--review-assignee", default=None,
+                      help="Profile assigned to the auto-created fix-review card")
+    p_rf.add_argument("--reporter-assignee", default=None,
+                      help="Optional fan-in reporter profile gated behind the fix-review")
+    p_rf.add_argument("--max-fan-in-threshold", type=int, default=32,
+                      help="Maximum transitive graph size eligible for --apply auto-remediation (default: 32; raise explicitly for larger fan-ins)")
+    p_rf.add_argument("--json", action="store_true",
+                      help="Emit the machine-readable ledger JSON (always JSON-shaped output)")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -974,6 +999,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "resolve-fanin": _cmd_resolve_fanin,
         }
         handler = handlers.get(action)
         if not handler:
@@ -2737,6 +2763,37 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     )
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+    return 0
+
+
+def _cmd_resolve_fanin(args: argparse.Namespace) -> int:
+    """Classify a final review task and optionally create deduped
+    remediation cards. See ``hermes_cli.kanban_resolver`` for the
+    classification logic and safety boundaries.
+
+    Always emits a JSON ledger so downstream tooling (and the test
+    suite) can parse the outcome regardless of ``--json``.
+    """
+    from hermes_cli import kanban_resolver as kr
+
+    apply = bool(getattr(args, "rf_apply", False))
+    # dry-run is the safe default whenever --apply isn't set, even
+    # without the explicit --dry-run flag.
+    with kb.connect() as conn:
+        try:
+            ledger = kr.resolve_fanin(
+                conn,
+                args.final_task_id,
+                apply=apply,
+                fix_assignee=getattr(args, "fix_assignee", None),
+                review_assignee=getattr(args, "review_assignee", None),
+                reporter_assignee=getattr(args, "reporter_assignee", None),
+                max_fan_in_threshold=getattr(args, "max_fan_in_threshold", None),
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}, indent=2))
+            return 1
+    print(json.dumps(ledger, indent=2, ensure_ascii=False))
     return 0
 
 

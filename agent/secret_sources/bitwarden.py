@@ -274,6 +274,7 @@ def _platform_asset_name() -> str:
                 capture_output=True,
                 text=True,
                 timeout=2,
+                stdin=subprocess.DEVNULL,
             )
             if "musl" in (res.stdout + res.stderr).lower():
                 libc = "musl"
@@ -525,6 +526,7 @@ def _run_bws_list(
             capture_output=True,
             text=True,
             timeout=_BWS_RUN_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

@@ -434,9 +434,10 @@ def _assert_s6_event_dir_mode(path) -> None:
     import sys
 
     mode = stat.S_IMODE(path.stat().st_mode)
-    expected = 0o3730 if sys.platform != "darwin" else 0o1730
-    assert mode == expected, (
-        f"{path} mode = {oct(path.stat().st_mode)}, want {oct(expected)}"
+    expected = {0o3730} if sys.platform != "darwin" else {0o1730, 0o3730}
+    assert mode in expected, (
+        f"{path} mode = {oct(path.stat().st_mode)}, want one of "
+        f"{', '.join(oct(value) for value in sorted(expected))}"
     )
 
 

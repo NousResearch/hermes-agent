@@ -3585,6 +3585,11 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+_PROFILES_SESSIONS_CACHE_TTL_SECONDS = 10.0
+_PROFILES_SESSIONS_CACHE_LOCK = threading.RLock()
+_PROFILES_SESSIONS_CACHE: Dict[Tuple[int, int, int, str, str, str, str, str], Tuple[float, Dict[str, Any]]] = {}
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -3643,6 +3648,7 @@ async def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                include_system_prompt=False,
             )
             total = db.session_count(
                 source=source or None,
@@ -3664,7 +3670,7 @@ async def get_sessions(
                     s["is_default_profile"] = profile_name == "default"
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            return {"sessions": _trim_session_list_payload(sessions), "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
     except HTTPException:
@@ -3698,6 +3704,26 @@ def get_profiles_sessions(
         raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
     if order not in ("created", "recent"):
         raise HTTPException(status_code=400, detail="order must be one of: created, recent")
+
+    cache_key = None
+    if profile == "all":
+        cache_key = (
+            limit,
+            offset,
+            min_messages,
+            archived,
+            order,
+            profile,
+            source or "",
+            exclude_sources or "",
+        )
+        cached = _PROFILES_SESSIONS_CACHE.get(cache_key)
+        if cached and (time.time() - cached[0]) < _PROFILES_SESSIONS_CACHE_TTL_SECONDS:
+            return cached[1]
+        with _PROFILES_SESSIONS_CACHE_LOCK:
+            cached = _PROFILES_SESSIONS_CACHE.get(cache_key)
+            if cached and (time.time() - cached[0]) < _PROFILES_SESSIONS_CACHE_TTL_SECONDS:
+                return cached[1]
 
     from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
@@ -3755,6 +3781,7 @@ def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                include_system_prompt=False,
             )
             profile_total = db.session_count(
                 source=source_filter,
@@ -3782,8 +3809,8 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = merged[offset:offset + limit]
-    return {
+    window = _trim_session_list_payload(merged[offset:offset + limit])
+    result = {
         "sessions": window,
         "total": total,
         "profile_totals": profile_totals,
@@ -3791,6 +3818,29 @@ def get_profiles_sessions(
         "offset": offset,
         "errors": errors,
     }
+    if cache_key is not None:
+        with _PROFILES_SESSIONS_CACHE_LOCK:
+            _PROFILES_SESSIONS_CACHE[cache_key] = (time.time(), result)
+    return result
+
+
+def _trim_session_list_payload(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop heavy fields that session-list UIs never render.
+
+    ``SessionDB.list_sessions_rich()`` can return full ``sessions`` rows,
+    including the assembled ``system_prompt`` snapshot. On large profiles that
+    field can dominate the response body, and session-list clients usually poll
+    these endpoints during startup or sidebar refreshes. Returning it forces
+    multi-megabyte REST round trips before the UI needs full session details.
+
+    Full session detail endpoints can still expose rich fields if they need to;
+    list endpoints should stay lean.
+    """
+    heavy_fields = {"system_prompt"}
+    return [
+        {key: value for key, value in session.items() if key not in heavy_fields}
+        for session in sessions
+    ]
 
 
 @app.get("/api/sessions/search")
@@ -8037,14 +8087,29 @@ async def get_session_stats(profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile)
     try:
         total = db.session_count(include_archived=True)
-        active_store = db.session_count(include_archived=False)
         archived = db.session_count(archived_only=True)
         messages = db.message_count()
+        # "Active in store" means sessions whose lifecycle was never closed,
+        # not merely "non-archived".  The old implementation used
+        # session_count(include_archived=False), which returned nearly every
+        # session on installs that have not archived anything yet and made the
+        # dashboard look like it had ~10k live conversations.
+        conn = db._conn
+        if conn is None:
+            raise RuntimeError("SessionDB connection unavailable")
+        active_store = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE end_reason IS NULL"
+        ).fetchone()[0]
         by_source: Dict[str, int] = {}
         try:
-            for s in db.list_sessions_rich(limit=10000, include_archived=True):
-                src = str(s.get("source") or "cli")
-                by_source[src] = by_source.get(src, 0) + 1
+            # Avoid materialising thousands of rich session rows just to build
+            # source badges.  The stats card only needs raw grouped counts.
+            for row in conn.execute(
+                "SELECT COALESCE(source, 'cli') AS source, COUNT(*) AS count "
+                "FROM sessions GROUP BY COALESCE(source, 'cli') "
+                "ORDER BY count DESC LIMIT 100"
+            ):
+                by_source[str(row["source"])] = int(row["count"])
         except Exception:
             pass
         return {

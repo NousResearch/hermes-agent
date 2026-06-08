@@ -130,6 +130,34 @@ def _install_example_plugin(_isolate_hermes_home):
 
 
 # ---------------------------------------------------------------------------
+# Session-list payload tests
+# ---------------------------------------------------------------------------
+
+
+def test_trim_session_list_payload_drops_system_prompt_only():
+    from hermes_cli import web_server
+
+    original = [
+        {
+            "id": "s1",
+            "title": "Visible",
+            "system_prompt": "x" * 100_000,
+            "preview": "hello",
+            "model_config": {"temperature": 0},
+        }
+    ]
+
+    trimmed = web_server._trim_session_list_payload(original)
+
+    assert "system_prompt" not in trimmed[0]
+    assert trimmed[0]["id"] == "s1"
+    assert trimmed[0]["title"] == "Visible"
+    assert trimmed[0]["preview"] == "hello"
+    assert trimmed[0]["model_config"] == {"temperature": 0}
+    assert "system_prompt" in original[0]
+
+
+# ---------------------------------------------------------------------------
 # reload_env tests
 # ---------------------------------------------------------------------------
 
@@ -765,7 +793,9 @@ class TestWebServerEndpoints:
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""
         from hermes_state import SessionDB
+        from hermes_cli import web_server
 
+        web_server._PROFILES_SESSIONS_CACHE.clear()
         db = SessionDB()
         try:
             db.create_session(session_id="agg-me", source="cli")
@@ -780,6 +810,48 @@ class TestWebServerEndpoints:
         assert row["profile"] == "default"
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
+
+    def test_session_list_endpoints_omit_system_prompt_payload(self):
+        """List APIs should stay lean; full prompts belong to detail endpoints."""
+        from hermes_state import SessionDB
+        from hermes_cli import web_server
+
+        web_server._PROFILES_SESSIONS_CACHE.clear()
+        db = SessionDB()
+        try:
+            db.create_session(session_id="prompt-heavy", source="cli", system_prompt="x" * 100_000)
+            db.append_message(session_id="prompt-heavy", role="user", content="hi")
+        finally:
+            db.close()
+
+        for path in ("/api/sessions?limit=20", "/api/profiles/sessions?limit=20"):
+            resp = self.client.get(path)
+            assert resp.status_code == 200
+            row = next(s for s in resp.json()["sessions"] if s["id"] == "prompt-heavy")
+            assert "system_prompt" not in row
+
+    def test_profiles_sessions_cache_keeps_source_filters_separate(self):
+        """The profile=all micro-cache must not mix recents and cron lists."""
+        from hermes_state import SessionDB
+        from hermes_cli import web_server
+
+        web_server._PROFILES_SESSIONS_CACHE.clear()
+        db = SessionDB()
+        try:
+            db.create_session(session_id="cli-session", source="cli")
+            db.append_message(session_id="cli-session", role="user", content="hi")
+            db.create_session(session_id="cron-session", source="cron")
+            db.append_message(session_id="cron-session", role="user", content="tick")
+        finally:
+            db.close()
+
+        cli_resp = self.client.get("/api/profiles/sessions?limit=20&source=cli")
+        assert cli_resp.status_code == 200
+        assert [s["id"] for s in cli_resp.json()["sessions"]] == ["cli-session"]
+
+        cron_resp = self.client.get("/api/profiles/sessions?limit=20&source=cron")
+        assert cron_resp.status_code == 200
+        assert [s["id"] for s in cron_resp.json()["sessions"]] == ["cron-session"]
 
     def test_profiles_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/profiles/sessions?archived=bogus")

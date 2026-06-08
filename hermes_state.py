@@ -787,6 +787,44 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
 
+_SESSION_LIST_COLUMNS_NO_SYSTEM_PROMPT = ", ".join(
+    f"s.{column}"
+    for column in (
+        "id",
+        "source",
+        "user_id",
+        "model",
+        "model_config",
+        "parent_session_id",
+        "started_at",
+        "ended_at",
+        "end_reason",
+        "message_count",
+        "tool_call_count",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "cwd",
+        "billing_provider",
+        "billing_base_url",
+        "billing_mode",
+        "estimated_cost_usd",
+        "actual_cost_usd",
+        "cost_status",
+        "cost_source",
+        "pricing_version",
+        "title",
+        "api_call_count",
+        "handoff_state",
+        "handoff_platform",
+        "handoff_error",
+        "rewind_count",
+        "archived",
+    )
+)
+
 # Indexes that reference columns added in later schema versions must be
 # created AFTER _reconcile_columns() has had a chance to ADD them on
 # existing databases. SCHEMA_SQL above is run by sqlite executescript
@@ -2896,6 +2934,7 @@ class SessionDB:
         archived_only: bool = False,
         id_query: str = None,
         search_query: str = None,
+        include_system_prompt: bool = True,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3046,6 +3085,7 @@ class SessionDB:
                 outer_where = (
                     f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
+            session_select = "s.*" if include_system_prompt else _SESSION_LIST_COLUMNS_NO_SYSTEM_PROMPT
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -3069,7 +3109,7 @@ class SessionDB:
                     FROM chain
                     GROUP BY root_id
                 )
-                SELECT s.*,
+                SELECT {session_select},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3092,8 +3132,9 @@ class SessionDB:
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
+            session_select = "s.*" if include_system_prompt else _SESSION_LIST_COLUMNS_NO_SYSTEM_PROMPT
             query = f"""
-                SELECT s.*,
+                SELECT {session_select},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3144,7 +3185,10 @@ class SessionDB:
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
-                tip_row = self._get_session_rich_row(tip_id)
+                tip_row = self._get_session_rich_row(
+                    tip_id,
+                    include_system_prompt=include_system_prompt,
+                )
                 if not tip_row:
                     projected.append(s)
                     continue
@@ -3230,13 +3274,19 @@ class SessionDB:
             runs.append(s)
         return runs
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(
+        self,
+        session_id: str,
+        *,
+        include_system_prompt: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
         """
-        query = """
-            SELECT s.*,
+        session_select = "s.*" if include_system_prompt else _SESSION_LIST_COLUMNS_NO_SYSTEM_PROMPT
+        query = f"""
+            SELECT {session_select},
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m

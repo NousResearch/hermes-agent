@@ -7,7 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { osLabel, resolveDeviceNickname } from '@/lib/device-nickname'
+import { resolveDeviceNickname } from '@/lib/device-nickname'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
@@ -187,19 +187,17 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
+            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+          </span>
           )}
-          <div className="min-w-0 flex-1">
-            <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
-            {showSourceBadge && (
-              <SessionSourceLine
-                deviceNickname={deviceNickname}
-                profile={session.profile ?? null}
-                source={session.source}
-              />
+          <span className="min-w-0 flex-1 flex items-center gap-1.5 text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+            <span className="truncate">{title}</span>
+            {showSourceBadge && deviceNickname && (
+              <span className="shrink-0 rounded-[3px] bg-(--ui-text-quaternary)/10 px-1 py-px text-[0.5625rem] leading-none font-medium uppercase tracking-wide text-(--ui-text-tertiary)" title={`Device: ${deviceNickname}`}>
+                {deviceNickname}
+              </span>
             )}
-          </div>
+          </span>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
           {!isWorking && (
@@ -271,47 +269,5 @@ function SidebarRowDot({
       )}
       role={isWorking ? 'status' : undefined}
     />
-  )
-}
-
-/**
- * Line 2 metadata row: device nickname + OS + source/client.
- * Renders below the session title with subtle tertiary styling.
- */
-function SessionSourceLine({
-  deviceNickname,
-  profile,
-  source
-}: {
-  deviceNickname: string | null
-  profile: string | null
-  source: string | null
-}) {
-  const parts: string[] = []
-
-  // Device nickname from presence record (remote session)
-  if (deviceNickname) {
-    parts.push(deviceNickname)
-  }
-
-  // Profile as fallback for local sessions in multi-profile mode
-  if (!deviceNickname && profile && profile !== 'default') {
-    parts.push(profile)
-  }
-
-  // Source/client type (tui, api_server, etc.)
-  if (source && source !== 'unknown') {
-    const src = source === 'tui' ? 'Terminal' : source === 'api_server' ? 'API' : source === 'cron' ? 'Cron' : source
-    parts.push(src)
-  }
-
-  if (parts.length === 0) {
-    return null
-  }
-
-  return (
-    <span className="block truncate pt-0.5 text-[0.625rem] leading-3 text-(--ui-text-tertiary)">
-      {parts.join(' · ')}
-    </span>
   )
 }

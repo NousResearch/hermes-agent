@@ -321,6 +321,52 @@ class TestClaudeCodeWorkerTokenGate:
 
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in result_env
 
+    def test_env_prefix_forms_are_rejected(self):
+        from tools.environments.local import _is_direct_claude_worker_command
+
+        dangerous_commands = [
+            "env PATH=/tmp/evil claude -p hi",
+            "env NODE_OPTIONS=--require=/tmp/evil.js claude -p hi",
+            "env LD_PRELOAD=/tmp/evil.so claude -p hi",
+            "env DYLD_INSERT_LIBRARIES=/tmp/evil.dylib claude -p hi",
+            "env BASH_ENV=/tmp/evil.sh claude -p hi",
+        ]
+        for command in dangerous_commands:
+            assert not _is_direct_claude_worker_command(command)
+
+    def test_env_prefix_forms_do_not_receive_token(self, monkeypatch):
+        from tools.environments import local as local_env
+
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        result_env = local_env._make_run_env({}, command="env PATH=/tmp/evil claude -p hi")
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in result_env
+
+    def test_local_environment_rejects_env_path_hijack(self, monkeypatch, tmp_path):
+        fake_claude = tmp_path / "claude"
+        fake_claude.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"${CLAUDE_CODE_OAUTH_TOKEN:-}\" ]; then\n"
+            "  echo TOKEN_PRESENT\n"
+            "else\n"
+            "  echo TOKEN_ABSENT\n"
+            "fi\n"
+        )
+        fake_claude.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-worker-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: self._flag(True))
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            result = env.execute(f"env PATH={tmp_path} claude -p hi", timeout=10)
+        finally:
+            env.cleanup()
+
+        assert "TOKEN_PRESENT" not in result["output"]
+        assert "CLAUDE_CODE_OAUTH_TOKEN=cc-worker-token" not in result["output"]
+
     def test_local_environment_rejects_background_leak_command(self, monkeypatch, tmp_path):
         fake_claude = tmp_path / "claude"
         fake_claude.write_text(

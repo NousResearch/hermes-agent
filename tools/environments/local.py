@@ -234,10 +234,6 @@ def _is_claude_executable(token: str) -> bool:
     return basename in {"claude", "claude.exe"}
 
 
-def _looks_like_env_assignment(token: str) -> bool:
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token or ""))
-
-
 def _has_shell_active_chars(command: str) -> bool:
     # The token is injected into a bash wrapper env. Any shell control,
     # expansion, substitution, or redirection syntax can run collateral code
@@ -246,25 +242,26 @@ def _has_shell_active_chars(command: str) -> bool:
 
 
 def _tokens_are_direct_claude_print_command(tokens: list[str]) -> bool:
-    """Conservative detector for `claude -p` / `env FOO=bar claude -p`."""
+    """Conservative detector for a bare `claude -p` / `claude --print` command.
+
+    Do not accept `env FOO=bar claude -p ...` forms. Even apparently simple
+    assignments can alter PATH, loader hooks, startup files, or Node/Python
+    behavior before Claude starts, causing the narrowly-scoped OAuth token to be
+    exposed to collateral code.
+    """
     if not tokens:
         return False
 
     if any(token in {";", "&&", "||", "|"} or any(op in token for op in (";", "&&", "||", "|")) for token in tokens):
         return False
 
-    index = 0
-    if os.path.basename(tokens[index]) in {"env", "env.exe"}:
-        index += 1
-        while index < len(tokens) and _looks_like_env_assignment(tokens[index]):
-            index += 1
-        if index >= len(tokens):
-            return False
-
-    if not _is_claude_executable(tokens[index]):
+    if os.path.basename(tokens[0]) in {"env", "env.exe"}:
         return False
 
-    return any(token in {"-p", "--print"} for token in tokens[index + 1:])
+    if not _is_claude_executable(tokens[0]):
+        return False
+
+    return any(token in {"-p", "--print"} for token in tokens[1:])
 
 
 def _shlex_split(command: str) -> list[str]:

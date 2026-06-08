@@ -97,7 +97,11 @@ def test_request_device_code(monkeypatch: pytest.MonkeyPatch) -> None:
     assert code.user_code == "ABCD-1234"
     assert code.expires_in == 600
     assert "/api/auth/device/code" in captured["url"]
-    assert captured["body"]["client_id"] == "hermes-agent"
+    # Hosted Photon allowlists registered device clients — an unregistered
+    # client_id is rejected with 400 invalid_client. We use Photon's published
+    # CLI device client and send the standard scope.
+    assert captured["body"]["client_id"] == "photon-cli"
+    assert captured["body"]["scope"] == "openid profile email"
 
 
 def test_poll_for_token_via_header(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -281,3 +285,108 @@ def test_print_credential_summary_emits_only_display_strings(
     assert "proj-uuid" in blob   # project id is intentionally surfaced
     # Header is always emitted
     assert any("Photon iMessage status" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# Device-token candidate extraction + dashboard validation.
+
+def test_device_response_candidates_covers_known_shapes() -> None:
+    candidates = photon_auth._device_response_token_candidates(
+        {
+            "access_token": "tok-snake",
+            "accessToken": "tok-camel",
+            "data": {"access_token": "tok-data"},
+        },
+        headers={"set-auth-token": "Bearer tok-header"},
+    )
+    by_source = {c.source: c.token for c in candidates}
+    assert by_source["access_token"] == "tok-snake"
+    assert by_source["accessToken"] == "tok-camel"
+    assert by_source["data.access_token"] == "tok-data"
+    # "Bearer " prefix is stripped from the header value.
+    assert by_source["set-auth-token"] == "tok-header"
+
+
+def test_device_response_candidates_dedupes() -> None:
+    candidates = photon_auth._device_response_token_candidates(
+        {"access_token": "same", "accessToken": "same"},
+    )
+    assert [c.token for c in candidates] == ["same"]
+
+
+def test_validate_photon_token_rejects_unrecognized_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        if url.endswith("/api/auth/get-session"):
+            return _FakeResponse(json_body={})  # no "user" key
+        return _FakeResponse(json_body=[])
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    with pytest.raises(photon_auth.PhotonDashboardAuthError):
+        photon_auth.validate_photon_token("some-token")
+
+
+def test_validate_photon_token_rejects_project_api_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        if url.endswith("/api/auth/get-session"):
+            return _FakeResponse(json_body={"user": {"id": "u1"}})
+        return _FakeResponse(status=403)  # project API rejects
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    with pytest.raises(photon_auth.PhotonDashboardAuthError):
+        photon_auth.validate_photon_token("some-token")
+
+
+def test_login_device_flow_validates_before_persisting(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_post(url: str, *, json: Dict[str, Any], timeout: float) -> _FakeResponse:
+        if url.endswith("/api/auth/device/code"):
+            return _FakeResponse(json_body={
+                "device_code": "dev", "user_code": "AAAA",
+                "verification_uri": "https://app.photon.codes/device",
+                "verification_uri_complete": None,
+                "expires_in": 600, "interval": 0,
+            })
+        # device/token approval
+        return _FakeResponse(json_body={"access_token": "good-token"})
+
+    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        if url.endswith("/api/auth/get-session"):
+            return _FakeResponse(json_body={"user": {"id": "u1"}})
+        return _FakeResponse(json_body=[])  # projects OK
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    token = photon_auth.login_device_flow(open_browser=False)
+    assert token == "good-token"
+    assert photon_auth.load_photon_token() == "good-token"
+
+
+def test_login_device_flow_raises_when_token_invalid(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_post(url: str, *, json: Dict[str, Any], timeout: float) -> _FakeResponse:
+        if url.endswith("/api/auth/device/code"):
+            return _FakeResponse(json_body={
+                "device_code": "dev", "user_code": "AAAA",
+                "verification_uri": "https://app.photon.codes/device",
+                "verification_uri_complete": None,
+                "expires_in": 600, "interval": 0,
+            })
+        return _FakeResponse(json_body={"access_token": "bad-token"})
+
+    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        return _FakeResponse(status=401)  # session lookup rejects
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    with pytest.raises(photon_auth.PhotonDashboardAuthError):
+        photon_auth.login_device_flow(open_browser=False)
+    # A token that failed validation must never be persisted.
+    assert photon_auth.load_photon_token() is None

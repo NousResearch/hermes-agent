@@ -41,15 +41,19 @@ except ImportError:  # pragma: no cover - httpx is a hermes dependency
 
 logger = logging.getLogger(__name__)
 
+
+class PhotonDashboardAuthError(RuntimeError):
+    """Raised when Photon rejects a device-flow token for the dashboard API."""
+
 # ---------------------------------------------------------------------------
 # Constants
 
-# Photon's published OAuth device-client identifier for first-party CLIs.
-# We use a fixed "hermes-agent" client_id string — Photon's device endpoint
-# accepts any opaque client_id and ties the bearer token to the approving
-# user, not to the client.  If Photon later requires registered clients,
-# this is the one knob to update.
-DEFAULT_CLIENT_ID = "hermes-agent"
+# Hosted Photon allowlists registered device clients on the device-code
+# endpoint — an unregistered client_id is rejected with
+# `400 {"error":"invalid_client"}`.  Use Photon's published CLI device
+# client until the dashboard API registers Hermes as its own client_id.
+DEFAULT_CLIENT_ID = "photon-cli"
+DEFAULT_SCOPE = "openid profile email"
 
 DEFAULT_DASHBOARD_HOST = "https://app.photon.codes"
 DEFAULT_SPECTRUM_HOST = "https://spectrum.photon.codes"
@@ -166,6 +170,13 @@ class DeviceCode:
     interval: int
 
 
+@dataclass(frozen=True)
+class _DeviceTokenCandidate:
+    """A token-like value extracted from the device-token response."""
+    source: str
+    token: str
+
+
 def _dashboard_host() -> str:
     return (os.getenv("PHOTON_DASHBOARD_HOST") or DEFAULT_DASHBOARD_HOST).rstrip("/")
 
@@ -175,7 +186,7 @@ def _spectrum_host() -> str:
 
 
 def request_device_code(
-    *, client_id: str = DEFAULT_CLIENT_ID, scope: Optional[str] = None,
+    *, client_id: str = DEFAULT_CLIENT_ID, scope: Optional[str] = DEFAULT_SCOPE,
 ) -> DeviceCode:
     """POST ``/api/auth/device/code`` and return the device + user codes."""
     if httpx is None:
@@ -232,16 +243,22 @@ def poll_for_token(
             time.sleep(sleep)
             continue
         if resp.status_code == 200:
-            token = resp.headers.get("set-auth-token")
-            if not token:
-                body = resp.json() or {}
-                session = body.get("session") or {}
-                token = session.get("access_token") or body.get("access_token")
-            if not token:
+            body: Dict[str, Any] = {}
+            try:
+                decoded = resp.json() or {}
+                body = decoded if isinstance(decoded, dict) else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                body = {}
+            candidates = _device_response_token_candidates(
+                body, headers=getattr(resp, "headers", {}),
+            )
+            if not candidates:
                 raise RuntimeError(
-                    "Photon returned 200 but no token in headers or body"
+                    "Photon returned 200 but no token candidate in the "
+                    "device-token response (expected access_token, "
+                    "data.access_token, accessToken, or set-auth-token)."
                 )
-            return token
+            return candidates[0].token
         if resp.status_code == 400:
             # RFC 8628 §3.5 — error codes are returned with 400.
             body: Dict[str, Any] = {}
@@ -273,6 +290,142 @@ def poll_for_token(
     raise TimeoutError("Photon device login timed out")
 
 
+def _device_response_token_candidates(
+    body: Dict[str, Any],
+    *,
+    headers: Optional[Any] = None,
+) -> list:
+    """Extract de-duplicated token candidates from a device-token response.
+
+    Photon's device-token endpoint has returned tokens under several keys
+    across versions (``access_token``, ``accessToken``, ``data.*``) and the
+    documented ``set-auth-token`` response header.  We collect every shape so
+    the caller can validate each against the dashboard API before trusting it.
+    """
+    candidates: list = []
+    seen: set = set()
+
+    def add(source: str, value: Any) -> None:
+        token = _clean_bearer_token(value)
+        if not token or token in seen:
+            return
+        seen.add(token)
+        candidates.append(_DeviceTokenCandidate(source=source, token=token))
+
+    add("access_token", body.get("access_token"))
+    add("accessToken", body.get("accessToken"))
+    session = body.get("session")
+    if isinstance(session, dict):
+        add("session.access_token", session.get("access_token"))
+    data = body.get("data")
+    if isinstance(data, dict):
+        add("data.access_token", data.get("access_token"))
+        add("data.accessToken", data.get("accessToken"))
+    add("set-auth-token", _header_value(headers, "set-auth-token"))
+    return candidates
+
+
+def _clean_bearer_token(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    token = value.strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token or None
+
+
+def _header_value(headers: Optional[Any], name: str) -> Optional[str]:
+    if not headers:
+        return None
+    try:
+        value = headers.get(name)
+        if value:
+            return str(value)
+    except AttributeError:
+        pass
+    try:
+        for key, value in dict(headers).items():
+            if str(key).lower() == name.lower() and value:
+                return str(value)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _dashboard_get(path: str, token: str) -> Any:
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon device login")
+    url = f"{_dashboard_host()}{path}"
+    return httpx.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+
+
+def validate_photon_token(token: str) -> Dict[str, Any]:
+    """Verify a device-flow token is usable for dashboard project APIs.
+
+    The device flow can return a token that authenticates the Better Auth
+    session lookup but is rejected by the project APIs.  Validate against
+    ``/api/auth/get-session`` and ``/api/projects/`` so we fail loudly at
+    login instead of saving a token that 404s/401s downstream.
+    """
+    resp = _dashboard_get("/api/auth/get-session", token)
+    if resp.status_code in (401, 403):
+        raise PhotonDashboardAuthError(
+            "Photon issued a device token, but the dashboard session lookup "
+            "rejected it."
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    user = data.get("user") if isinstance(data, dict) else None
+    if not isinstance(user, dict) or not user:
+        raise PhotonDashboardAuthError(
+            "Photon issued a device token, but the dashboard session lookup "
+            "did not recognize it."
+        )
+    projects_resp = _dashboard_get("/api/projects/", token)
+    if projects_resp.status_code in (401, 403):
+        raise PhotonDashboardAuthError(
+            "Photon device token was accepted for the session lookup but "
+            "rejected by the project API."
+        )
+    projects_resp.raise_for_status()
+    return user
+
+
+def _validated_dashboard_token(candidates: list) -> str:
+    """Return the first candidate token that passes dashboard validation."""
+    if not candidates:
+        raise RuntimeError(
+            "Photon returned 200 but no token candidate in the device-token "
+            "response."
+        )
+    dashboard_error: Optional[PhotonDashboardAuthError] = None
+    last_error: Optional[BaseException] = None
+    for candidate in candidates:
+        try:
+            validate_photon_token(candidate.token)
+            return candidate.token
+        except PhotonDashboardAuthError as exc:
+            dashboard_error = exc
+            last_error = exc
+            continue
+        except Exception as exc:
+            last_error = exc
+            continue
+    if dashboard_error is not None:
+        sources = ", ".join(c.source for c in candidates) or "none"
+        raise PhotonDashboardAuthError(
+            f"{dashboard_error} Device login returned no project-valid "
+            f"dashboard token (tried: {sources})."
+        ) from dashboard_error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Photon did not return a usable dashboard token")
+
+
 def login_device_flow(
     *,
     client_id: str = DEFAULT_CLIENT_ID,
@@ -297,7 +450,13 @@ def login_device_flow(
             webbrowser.open(target, new=2)
         except Exception:
             pass
-    token = poll_for_token(code, client_id=client_id)
+    # Poll once for the approved token, then collect every candidate shape so
+    # we can validate against the dashboard API before persisting (avoids
+    # saving a token that authenticates the session lookup but 404s on the
+    # project APIs).
+    first_token = poll_for_token(code, client_id=client_id)
+    candidates = [_DeviceTokenCandidate(source="poll", token=first_token)]
+    token = _validated_dashboard_token(candidates)
     store_photon_token(token)
     return token
 

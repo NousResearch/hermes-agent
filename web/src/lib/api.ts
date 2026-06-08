@@ -635,6 +635,16 @@ export const api = {
     }),
   updateSkillsFromHub: () =>
     fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
+
+  // ── Price scraper dashboard ─────────────────────────────────────────
+  getPriceScraperResults: (domain?: string) =>
+    fetchJSON<PriceScraperResultsResponse>(
+      domain
+        ? `/api/price-scraper/results?domain=${encodeURIComponent(domain)}`
+        : "/api/price-scraper/results",
+    ),
+  getPriceScraperConfig: () =>
+    fetchJSON<PriceScraperConfig>("/api/price-scraper/config"),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -1274,4 +1284,30 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+export interface PriceScraperItem {
+  label: string;
+  value: number | string;
+  raw: string;
+  unit: string;
+  category: string;
+}
+
+export interface PriceScraperResult {
+  url: string;
+  domain: string;
+  scraped_at: string;
+  item_count: number;
+  items: PriceScraperItem[];
+}
+
+export interface PriceScraperResultsResponse {
+  results: PriceScraperResult[];
+  total: number;
+}
+
+export interface PriceScraperConfig {
+  stripe_payment_link: string;
+  configured: boolean;
 }

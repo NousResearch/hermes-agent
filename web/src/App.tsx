@@ -44,6 +44,7 @@ import {
   Sparkles,
   Star,
   Terminal,
+  TrendingUp,
   Users,
   Webhook,
   Wrench,
@@ -79,6 +80,7 @@ import McpPage from "@/pages/McpPage";
 import PairingPage from "@/pages/PairingPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
+import PriceDashboardPage from "@/pages/PriceDashboardPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -136,6 +138,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/price-dashboard": PriceDashboardPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -147,6 +150,7 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  { path: "/price-dashboard", label: "Price Data", icon: TrendingUp },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -200,6 +204,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Globe,
   Database,
   Shield,
+  TrendingUp,
   Users,
   Wrench,
   Zap,

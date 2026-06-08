@@ -883,3 +883,145 @@ def test_reset_cache_for_tests_deletes_disk_file(tmp_path):
     assert not cache_path.exists()
     # Idempotent
     bw._reset_cache_for_tests(home)
+
+
+# ---------------------------------------------------------------------------
+# Stale disk cache fallback when live bws fetch fails
+# ---------------------------------------------------------------------------
+
+
+def _seed_stale_disk_cache(home, *, secrets, age_seconds, project_id="proj-1",
+                           access_token="0.t", server_url=""):
+    """Populate the disk cache as if a successful fetch happened `age_seconds` ago."""
+    cache_key = (
+        bw._token_fingerprint(access_token), project_id, server_url,
+    )
+    entry = bw._CachedFetch(secrets=secrets, fetched_at=time.time() - age_seconds)
+    bw._write_disk_cache(cache_key, entry, home)
+
+
+def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
+    """When bws fails and the disk cache is stale, return the stale secrets
+    with a warning rather than raising."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    # Seed a stale (older than TTL) disk cache from a previous successful fetch
+    _seed_stale_disk_cache(home, secrets={"OPENAI_API_KEY": "sk-old"},
+                           age_seconds=3600)
+
+    # Now simulate a BWS network failure
+    def fail_run(*a, **kw):
+        return mock.Mock(returncode=1, stdout="",
+                         stderr="Error: dns resolution failed")
+    monkeypatch.setattr(bw.subprocess, "run", fail_run)
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert secrets == {"OPENAI_API_KEY": "sk-old"}
+    assert len(warnings) == 1
+    assert "stale disk cache" in warnings[0]
+    assert "dns resolution failed" in warnings[0]
+
+
+def test_stale_fallback_warning_includes_cache_age(monkeypatch, tmp_path):
+    """Operator-facing warning should report how old the cached secrets are."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=7200)
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr="boom"),
+    )
+
+    _, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    # 7200s == 2h; we don't pin exact integer seconds because time.time()
+    # drifts a bit between seed and call, but it must be within a small band.
+    assert "7200s old" in warnings[0] or "7199s old" in warnings[0]
+
+
+def test_no_stale_fallback_when_disk_cache_missing(monkeypatch, tmp_path):
+    """If bws fails and there's no disk cache at all, re-raise — no silent
+    success with empty secrets."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="",
+                                   stderr="Error: unreachable"),
+    )
+
+    with pytest.raises(RuntimeError, match="unreachable"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=300, home_path=home,
+        )
+
+
+def test_stale_fallback_skipped_when_use_cache_false(monkeypatch, tmp_path):
+    """`use_cache=False` is an explicit opt-out from any cached value,
+    including the stale fallback path — must still raise on bws failure."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    # A stale cache exists — but use_cache=False should ignore it
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr="boom"),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=300, home_path=home, use_cache=False,
+        )
+
+
+def test_stale_fallback_does_not_overwrite_disk_cache(monkeypatch, tmp_path):
+    """Stale fallback must not bump the disk cache `fetched_at` — that would
+    falsely make future processes think the cache is fresh."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
+    cache_path = bw._disk_cache_path(home)
+    original_fetched_at = json.loads(cache_path.read_text())["fetched_at"]
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr="boom"),
+    )
+
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+
+    # Disk cache should still carry the old fetched_at — the live fetch
+    # failed and produced no new secrets to persist.
+    assert json.loads(cache_path.read_text())["fetched_at"] == original_fetched_at

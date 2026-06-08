@@ -173,15 +173,17 @@ class TestPoolRotationCycle:
 
         return agent, pool, entries
 
-    def test_first_429_sets_retry_flag_no_rotation(self):
-        """First 429 should just set has_retried_429=True, no rotation."""
-        agent, pool, _ = self._make_agent_with_pool(3)
+    def test_first_429_rotates_immediately(self):
+        """First 429 should mark exhausted and rotate immediately (not retry same key)."""
+        agent, pool, entries = self._make_agent_with_pool(3)
+        pool.mark_exhausted_and_rotate.return_value = entries[1]
         recovered, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
         )
-        assert recovered is False
-        assert has_retried is True
-        pool.mark_exhausted_and_rotate.assert_not_called()
+        assert recovered is True
+        assert has_retried is False  # reset after rotation
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
+        agent._swap_credential.assert_called_once_with(entries[1])
 
     def test_second_429_rotates_to_next(self):
         """Second consecutive 429 should rotate to next credential."""

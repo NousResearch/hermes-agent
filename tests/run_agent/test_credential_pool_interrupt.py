@@ -38,7 +38,9 @@ def test_rotate_immediately_when_credential_already_exhausted():
     pool.mark_exhausted_and_rotate.return_value = entries[1]
 
     from run_agent import AIAgent
-    with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
+    with patch("run_agent.get_tool_definitions", return_value=[]), \
+         patch("run_agent.check_toolset_requirements", return_value={}), \
+         patch("run_agent.OpenAI"):
         agent = MagicMock(spec=AIAgent)
         agent._credential_pool = pool
         agent._swap_credential = MagicMock()
@@ -55,15 +57,24 @@ def test_rotate_immediately_when_credential_already_exhausted():
     agent._swap_credential.assert_called_once_with(entries[1])
 
 
-def test_normal_retry_when_credential_not_exhausted():
-    """When credential is active, first 429 should still retry (existing behavior)."""
+def test_first_429_rotates_immediately_when_not_exhausted():
+    """When credential is active, first 429 should rotate immediately.
+
+    The old 'retry once' guard (has_retried_429) was a local var that reset
+    per-prompt, so single-429 prompts never triggered rotation — the same
+    exhausted key was retried forever. Now we always rotate on first 429.
+    """
     entries = [_make_entry(0, last_status=None), _make_entry(1)]
     pool = _make_pool(entries)
+    pool.mark_exhausted_and_rotate.return_value = entries[1]
 
     from run_agent import AIAgent
-    with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
+    with patch("run_agent.get_tool_definitions", return_value=[]), \
+         patch("run_agent.check_toolset_requirements", return_value={}), \
+         patch("run_agent.OpenAI"):
         agent = MagicMock(spec=AIAgent)
         agent._credential_pool = pool
+        agent._swap_credential = MagicMock()
         recovered, retried = AIAgent._recover_with_credential_pool(
             agent,
             status_code=429,
@@ -71,9 +82,10 @@ def test_normal_retry_when_credential_not_exhausted():
             classified_reason=FailoverReason.rate_limit,
         )
 
-    assert recovered is False
-    assert retried is True
-    pool.mark_exhausted_and_rotate.assert_not_called()
+    assert recovered is True
+    assert retried is False  # reset after rotation
+    pool.mark_exhausted_and_rotate.assert_called_once()
+    agent._swap_credential.assert_called_once_with(entries[1])
 
 
 def test_rotate_on_second_429_when_not_exhausted():
@@ -83,7 +95,9 @@ def test_rotate_on_second_429_when_not_exhausted():
     pool.mark_exhausted_and_rotate.return_value = entries[1]
 
     from run_agent import AIAgent
-    with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
+    with patch("run_agent.get_tool_definitions", return_value=[]), \
+         patch("run_agent.check_toolset_requirements", return_value={}), \
+         patch("run_agent.OpenAI"):
         agent = MagicMock(spec=AIAgent)
         agent._credential_pool = pool
         agent._swap_credential = MagicMock()

@@ -918,7 +918,12 @@ class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
 
-    def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
+    def test_migrate_does_not_freeze_channel_prompts_default(self, tmp_path):
+        # No migration block writes ``discord.channel_prompts`` — it is a pure
+        # DEFAULT_CONFIG value supplied at read time by ``load_config()``'s
+        # deep-merge. Migrating an upgrading user must not freeze that default
+        # into their raw config.yaml; their file should keep only the keys they
+        # actually set (plus the bumped version).
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump({"_config_version": 17, "discord": {"auto_thread": True}}),
@@ -928,11 +933,57 @@ class TestDiscordChannelPromptsConfig:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            # The default is still available to the running agent via deep-merge.
+            assert load_config()["discord"]["channel_prompts"] == {}
 
         from hermes_cli.config import DEFAULT_CONFIG
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["discord"]["auto_thread"] is True
-        assert raw["discord"]["channel_prompts"] == {}
+        assert "channel_prompts" not in raw["discord"]
+
+
+class TestMigrationDoesNotFreezeDefaults:
+    """A config-version bump must preserve the user's minimal config.yaml
+    instead of rewriting the full DEFAULT_CONFIG tree into it.
+
+    Regression: the version-bump path used ``load_config()`` (defaults merged)
+    and handed the result straight to ``save_config()`` (which persists exactly
+    what it's given), freezing every default into the user's file on every
+    upgrade — so later DEFAULT_CONFIG changes silently stopped reaching them.
+    """
+
+    def test_version_bump_keeps_config_minimal(self, tmp_path):
+        latest = DEFAULT_CONFIG["_config_version"]
+        # ``latest - 1`` triggers no version-specific migration block, so only
+        # the generic version-bump path runs — isolating the behavior under test.
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": latest - 1,
+                    "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        # Version bumped and the user's own keys are preserved.
+        assert raw["_config_version"] == latest
+        assert raw["model"] == {"default": "openai/gpt-5.4", "provider": "openrouter"}
+
+        # The full DEFAULT_CONFIG tree must NOT be frozen into the file. Only
+        # the keys the user set survive (``agent.max_turns`` is a benign save
+        # normalization). Representative default-only sections the user never
+        # touched stay out of config.yaml so future default changes reach them.
+        for section in ("compression", "terminal", "display", "discord", "toolsets"):
+            assert section not in raw, (
+                f"default-only section {section!r} was frozen into config.yaml"
+            )
+        assert set(raw.keys()) <= {"_config_version", "model", "agent"}
 
 
 class TestUserMessagePreviewConfig:

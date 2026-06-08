@@ -4289,7 +4289,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
-        config = load_config()
+        # Read the user's raw config, not the defaults-merged view: save_config()
+        # persists exactly what it's given, so starting from load_config() would
+        # freeze the entire DEFAULT_CONFIG tree into the user's config.yaml.
+        config = read_raw_config()
         display = config.get("display", {})
         if not isinstance(display, dict):
             display = {}
@@ -4312,7 +4315,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
-        config = load_config()
+        config = read_raw_config()
         if "timezone" not in config:
             old_tz = os.getenv("HERMES_TIMEZONE", "")
             if old_tz and old_tz.strip():
@@ -4340,7 +4343,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     if current_ver < 12:
-        config = load_config()
+        config = read_raw_config()
         custom_list = config.get("custom_providers")
         if isinstance(custom_list, list) and custom_list:
             providers_dict = config.get("providers", {})
@@ -4808,8 +4811,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         config["_config_version"] = latest_ver
         save_config(config)
     elif current_ver < latest_ver:
-        # Just update version
-        config = load_config()
+        # Just update version. Read the raw on-disk config rather than the
+        # defaults-merged view so we don't rewrite the user's minimal
+        # config.yaml into the full DEFAULT_CONFIG tree — this branch fires on
+        # every version bump, so load_config() here would freeze defaults for
+        # everyone who upgrades and stop future default changes from reaching them.
+        config = read_raw_config()
         config["_config_version"] = latest_ver
         save_config(config)
 

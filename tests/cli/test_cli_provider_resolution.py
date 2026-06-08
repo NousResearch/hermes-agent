@@ -344,7 +344,7 @@ def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatc
         "hermes_cli.auth.resolve_nous_runtime_credentials",
         lambda *args, **kwargs: {
             "base_url": "https://inference.example.com/v1",
-            "api_key": "***",
+            "api_key": "KEY1",
         },
     )
     monkeypatch.setattr(
@@ -711,11 +711,89 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
         "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
     )
     saved = {}
+
     def _save(cfg):
         saved.update(cfg)
+
     monkeypatch.setattr("hermes_cli.config.save_config", _save)
 
     _save_custom_provider("http://localhost:11434/v1", name="Ollama")
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_save_custom_provider_updates_matching_base_url_and_api_key(monkeypatch):
+    """Reusing the same endpoint+key updates that entry instead of duplicating."""
+    from hermes_cli.main import _save_custom_provider
+
+    cfg = {
+        "custom_providers": [
+            {
+                "name": "Ollama",
+                "base_url": "https://api.example.com/v1",
+                "api_key": "KEY1",
+                "model": "old-model",
+            }
+        ]
+    }
+    saved = {}
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+    def _save(new_cfg):
+        saved.update(new_cfg)
+
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider(
+        "https://api.example.com/v1",
+        api_key="KEY1",
+        model="new-model",
+        context_length=8192,
+    )
+
+    entries = saved["custom_providers"]
+    assert len(entries) == 1
+    assert entries[0]["name"] == "Ollama"
+    assert entries[0]["model"] == "new-model"
+    assert entries[0]["models"]["new-model"]["context_length"] == 8192
+
+
+def test_save_custom_provider_allows_multiple_keys_for_same_base_url(monkeypatch):
+    """Each distinct API key should get its own custom provider entry."""
+    from hermes_cli.main import _save_custom_provider
+
+    cfg = {
+        "custom_providers": [
+            {
+                "name": "Ollama",
+                "base_url": "https://api.example.com/v1",
+                "api_key": "KEY1",
+                "model": "old-model",
+            }
+        ]
+    }
+    saved = {}
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+    def _save(new_cfg):
+        saved.update(new_cfg)
+
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider(
+        "https://api.example.com/v1",
+        api_key="KEY2",
+        model="new-model",
+    )
+
+    entries = saved["custom_providers"]
+    assert len(entries) == 2
+    keys = {entry.get("api_key") for entry in entries}
+    assert keys == {"KEY1", "KEY2"}
+    assert any(
+        entry["api_key"] == "KEY2" and entry["model"] == "new-model"
+        for entry in entries
+    )

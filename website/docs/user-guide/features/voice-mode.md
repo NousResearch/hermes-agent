@@ -407,7 +407,7 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
-    base_url: "https://api.openai.com/v1"  # optional: override for self-hosted or OpenAI-compatible endpoints
+    base_url: "https://api.openai.com/v1"  # custom endpoints require VOICE_TOOLS_OPENAI_CUSTOM_KEY
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -432,6 +432,7 @@ STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
 # Text-to-Speech providers (Edge TTS and NeuTTS need no key)
 ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
 # VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
+VOICE_TOOLS_OPENAI_CUSTOM_KEY=***  # Required when overriding tts.openai.base_url with a non-OpenAI endpoint
 
 # Discord voice channel
 DISCORD_BOT_TOKEN=...

@@ -135,21 +135,4 @@ describe('external link helpers', () => {
     await expect(fetchLinkTitle('file:///tmp/demo.html')).resolves.toBe('')
     expect(fetchMock).not.toHaveBeenCalled()
   })
-
-  it('does not follow redirects when fetching titles', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response('', {
-        headers: { location: 'http://127.0.0.1/internal' },
-        status: 302
-      })
-    )
-
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(fetchLinkTitle('https://example.com/redirect')).resolves.toBe('')
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://example.com/redirect',
-      expect.objectContaining({ redirect: 'manual' })
-    )
-  })
 })

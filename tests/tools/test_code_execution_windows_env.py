@@ -266,8 +266,8 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
     """
     _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                           "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                          "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-    _SAFE_EXACT_ENV_VARS = frozenset({"HERMES_HOME"})
+                          "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                          "HERMES_")
     _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                           "PASSWD", "AUTH")
     out = {}
@@ -276,9 +276,6 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
             out[k] = v
             continue
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
-            continue
-        if k in _SAFE_EXACT_ENV_VARS:
-            out[k] = v
             continue
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             out[k] = v

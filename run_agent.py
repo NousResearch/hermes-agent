@@ -68,7 +68,6 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from datetime import datetime
 from pathlib import Path
 
-from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 
 
@@ -1249,8 +1248,8 @@ class AIAgent:
         # not mid-conversation.  Also validates the api_mode is registered.
         try:
             self._get_transport()
-        except Exception as e:
-            logger.debug("Could not warm transport cache (Non-fatal): %s", e)
+        except Exception:
+            pass  # Non-fatal — transport may not exist for all modes yet
 
         try:
             from hermes_cli.model_normalize import (
@@ -2470,8 +2469,7 @@ class AIAgent:
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform
-                    or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
@@ -3945,7 +3943,7 @@ class AIAgent:
         return None
 
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM, browser, and file-state resources for a given task.
+        """Clean up VM and browser resources for a given task.
 
         Skips ``cleanup_vm`` when the active terminal environment is marked
         persistent (``persistent_filesystem=True``) so that long-lived sandbox
@@ -3972,12 +3970,6 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
-        try:
-            from tools import file_state
-            file_state.cleanup_task(task_id)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to cleanup file state for task {task_id}: {e}")
 
     # ------------------------------------------------------------------
     # Background memory/skill review
@@ -4373,24 +4365,6 @@ class AIAgent:
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
 
-    @staticmethod
-    def _memory_tool_write_succeeded(function_result: str) -> bool:
-        """Return True only when the builtin memory tool accepted a new write.
-
-        Returns False for both hard failures (success=false) and no-op responses
-        such as duplicate-entry rejections (success=true, message contains
-        "already exists"), which must not be mirrored to external providers.
-        """
-        try:
-            result = json.loads(function_result)
-        except (TypeError, json.JSONDecodeError):
-            return False
-        if not (isinstance(result, dict) and result.get("success") is True):
-            return False
-        # Exclude no-op responses where the entry was already present
-        message = result.get("message", "")
-        return "already exists" not in message.lower()
-
     def _build_memory_write_metadata(
         self,
         *,
@@ -4408,8 +4382,7 @@ class AIAgent:
             ),
             "session_id": self.session_id or "",
             "parent_session_id": self._parent_session_id or "",
-            "platform": self.platform
-                            or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            "platform": self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
             "tool_name": "memory",
         }
         if task_id:
@@ -6026,12 +5999,6 @@ class AIAgent:
                     role,
                 )
                 continue
-            if any(str(key).startswith("_hermes_") for key in msg):
-                msg = {
-                    key: value
-                    for key, value in msg.items()
-                    if not str(key).startswith("_hermes_")
-                }
             filtered.append(msg)
         messages = filtered
 
@@ -7569,7 +7536,7 @@ class AIAgent:
         if cb is None or not isinstance(assistant_msg, dict):
             return
         content = assistant_msg.get("content")
-        visible = sanitize_context(self._strip_think_blocks(content or "")).strip()
+        visible = self._strip_think_blocks(content or "").strip()
         if not visible or visible == "(empty)":
             return
         already_streamed = self._interim_content_was_streamed(visible)
@@ -9818,17 +9785,19 @@ class AIAgent:
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
 
-        # Strip inline reasoning tags (<think>…</think> etc.) and internal
-        # memory-context wrappers from stored assistant content.  The final
-        # user-visible response is scrubbed separately, but this storage-boundary
-        # scrub is required so a model/provider echo of ephemeral recalled memory
-        # cannot become durable session history or Responses API replay state.
+        # Strip inline reasoning tags (<think>…</think> etc.) from the stored
+        # assistant content.  Reasoning was already captured into
+        # ``reasoning_text`` above (either from structured fields or the
+        # inline-block fallback), so the raw tags in content are redundant.
+        # Leaving them in place caused reasoning to leak to messaging
+        # platforms (#8878, #9568), inflate context on subsequent turns
+        # (#9306 observed 16% content-size reduction on a real MiniMax
+        # session), and pollute generated session titles.  One strip at the
+        # storage boundary cleans content for every downstream consumer:
+        # API replay, session transcript, gateway delivery, CLI display,
+        # compression, title generation.
         if isinstance(_san_content, str) and _san_content:
-            _stripped_content = self._strip_think_blocks(_san_content)
-            if isinstance(_stripped_content, str):
-                _san_content = sanitize_context(_stripped_content).strip()
-            else:
-                _san_content = sanitize_context(_san_content).strip()
+            _san_content = self._strip_think_blocks(_san_content).strip()
 
         msg = {
             "role": "assistant",
@@ -9871,19 +9840,16 @@ class AIAgent:
         #
         # Promote the already-sanitized streamed ``reasoning_text`` to
         # ``reasoning_content`` at write time, but ONLY when no prior branch
-        # already set it, we actually captured reasoning text, and this is not
-        # a tool-call turn.  Tool-call turns without provider-native
-        # ``reasoning_content`` must keep the legacy shape so DeepSeek/Kimi
-        # replay can pad instead of forwarding another provider's private
-        # chain-of-thought (#15748). This preserves every existing behavior:
+        # already set it AND we actually captured reasoning text. This
+        # preserves every existing behavior:
         #   - SDK-exposed ``reasoning_content`` (OpenAI/Moonshot/DeepSeek SDK)
         #     still wins.
-        #   - DeepSeek/Kimi tool-call pad (#15250, #17400) still fires.
+        #   - DeepSeek tool-call ""-pad (#15250) still fires.
         #   - Non-thinking turns with no reasoning leave the field absent,
         #     so ``_copy_reasoning_content_for_api``'s cross-provider leak
         #     guard (#15748) and ``reasoning``→``reasoning_content``
         #     promotion tiers still apply at replay time.
-        if "reasoning_content" not in msg and reasoning_text and not assistant_tool_calls:
+        if "reasoning_content" not in msg and reasoning_text:
             msg["reasoning_content"] = reasoning_text
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
@@ -10275,14 +10241,8 @@ class AIAgent:
             # and get recovered by retrying on main?  Surface that so users
             # know their auxiliary.compression.model setting is broken even
             # though compression succeeded.
-            _aux_fail_model = redact_sensitive_text(
-                getattr(self.context_compressor, "_last_aux_model_failure_model", None),
-                force=True,
-            )
-            _aux_fail_err = redact_sensitive_text(
-                getattr(self.context_compressor, "_last_aux_model_failure_error", None),
-                force=True,
-            )
+            _aux_fail_model = getattr(self.context_compressor, "_last_aux_model_failure_model", None)
+            _aux_fail_err = getattr(self.context_compressor, "_last_aux_model_failure_error", None)
             if _aux_fail_model:
                 # Dedup on (model, error) so we don't spam on every compaction
                 _aux_key = (_aux_fail_model, _aux_fail_err)
@@ -10544,7 +10504,6 @@ class AIAgent:
                 limit=function_args.get("limit", 3),
                 db=session_db,
                 current_session_id=self.session_id,
-                current_source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
@@ -10556,12 +10515,8 @@ class AIAgent:
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
-            # Bridge only after the built-in memory store accepted the write.
-            if (
-                self._memory_manager
-                and function_args.get("action") in {"add", "replace"}
-                and self._memory_tool_write_succeeded(result)
-            ):
+            # Bridge: notify external memory provider of built-in memory writes
+            if self._memory_manager and function_args.get("action") in {"add", "replace"}:
                 try:
                     self._memory_manager.on_memory_write(
                         function_args.get("action", ""),
@@ -11176,7 +11131,6 @@ class AIAgent:
                         limit=function_args.get("limit", 3),
                         db=session_db,
                         current_session_id=self.session_id,
-                        current_source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
@@ -11191,12 +11145,8 @@ class AIAgent:
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
                 )
-                # Bridge only after the built-in memory store accepted the write.
-                if (
-                    self._memory_manager
-                    and function_args.get("action") in {"add", "replace"}
-                    and self._memory_tool_write_succeeded(function_result)
-                ):
+                # Bridge: notify external memory provider of built-in memory writes
+                if self._memory_manager and function_args.get("action") in {"add", "replace"}:
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),
@@ -14944,9 +14894,7 @@ class AIAgent:
                             # old code injected "Calling the X tools..." which
                             # poisoned the conversation history.  Just use the
                             # fallback text as the final response and break.
-                            final_response = sanitize_context(
-                                self._strip_think_blocks(fallback)
-                            ).strip()
+                            final_response = self._strip_think_blocks(fallback).strip()
                             self._response_was_previewed = True
                             break
 
@@ -15193,9 +15141,7 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    final_response = sanitize_context(
-                        self._strip_think_blocks(final_response)
-                    ).strip()
+                    final_response = self._strip_think_blocks(final_response).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
@@ -15442,9 +15388,6 @@ class AIAgent:
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
-
-        if isinstance(final_response, str):
-            final_response = sanitize_context(final_response).strip()
 
         # Build result with interrupt info if applicable
         result = {

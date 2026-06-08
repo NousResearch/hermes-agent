@@ -33,6 +33,7 @@ from hermes_cli.clipboard import (
     _wayland_has_image,
     _windows_save,
     _windows_has_image,
+    _find_powershell,
     _convert_to_png,
 )
 from cli import _should_auto_attach_clipboard_image_on_paste
@@ -548,6 +549,36 @@ class TestLinuxSave:
 
 
 # ── Native Windows (PowerShell) ─────────────────────────────────────────
+
+
+class TestFindPowerShell:
+    def test_uses_trusted_absolute_windows_powershell_path(self):
+        trusted_ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+        with patch.dict(
+            "hermes_cli.clipboard.os.environ", {"SystemRoot": r"C:\Windows"}, clear=True
+        ):
+            with patch(
+                "hermes_cli.clipboard.os.path.isfile",
+                side_effect=lambda path: path == trusted_ps,
+            ):
+                with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(stdout="ok\n", returncode=0)
+
+                    assert _find_powershell() == trusted_ps
+
+        invoked_exe = mock_run.call_args.args[0][0]
+        assert invoked_exe == trusted_ps
+        assert invoked_exe not in {"powershell", "pwsh"}
+
+    def test_does_not_probe_bare_powershell_names(self):
+        with patch.dict("hermes_cli.clipboard.os.environ", {}, clear=True):
+            with patch("hermes_cli.clipboard.os.path.isfile", return_value=False):
+                with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                    assert _find_powershell() is None
+
+        mock_run.assert_not_called()
+
 
 class TestWindowsHasImage:
     def setup_method(self):

@@ -872,7 +872,10 @@ Available on **Windows 11 22H2+**, mirrored mode makes `localhost` work bidirect
    ```
 
 :::note Hyper-V Firewall
-On some Windows 11 builds, the Hyper-V firewall can block mirrored connections. **Do not set a global default inbound allow policy.** Prefer a narrow allow rule only for your model server port and trusted scope (WSL/localhost/private profile).
+On some Windows 11 builds, the Hyper-V firewall blocks mirrored connections by default. If `localhost` still doesn't work after enabling mirrored mode, run this in an **Admin PowerShell**:
+```powershell
+Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow
+```
 :::
 
 #### Option 2: Use the Windows Host IP (Windows 10 / older builds)
@@ -911,21 +914,19 @@ curl http://$(hostname).local:11434/v1/models
 
 #### Server Bind Address (Required for NAT Mode)
 
-If you're using **Option 2** (NAT mode with the host IP), the model server on Windows must accept connections from the WSL2 virtual subnet (not just `127.0.0.1`). In mirrored mode, `localhost` maps directly so the default `127.0.0.1` binding usually works.
+If you're using **Option 2** (NAT mode with the host IP), the model server on Windows must accept connections from outside `127.0.0.1`. By default, most servers only listen on localhost — WSL2 connections in NAT mode come from a different virtual subnet and will be refused. In mirrored mode, `localhost` maps directly so the default `127.0.0.1` binding works fine.
 
-Prefer binding to a **specific host/adapter** used by WSL2 instead of `0.0.0.0` (all interfaces). If your server supports auth, enable it; otherwise keep firewall scope tight (next section).
+| Server | Default bind | How to fix |
+|--------|-------------|------------|
+| **Ollama** | `127.0.0.1` | Set `OLLAMA_HOST=0.0.0.0` environment variable before starting Ollama (System Settings → Environment Variables on Windows, or edit the Ollama service) |
+| **LM Studio** | `127.0.0.1` | Enable **"Serve on Network"** in the Developer tab → Server settings |
+| **llama-server** | `127.0.0.1` | Add `--host 0.0.0.0` to the startup command |
+| **vLLM** | `0.0.0.0` | Already binds to all interfaces by default |
+| **SGLang** | `127.0.0.1` | Add `--host 0.0.0.0` to the startup command |
 
-| Server | Default bind | Safer NAT-mode fix |
-|--------|-------------|---------------------|
-| **Ollama** | `127.0.0.1` | Set `OLLAMA_HOST=<Windows-host-IP>:11434` (or WSL-only interface IP), not `0.0.0.0` |
-| **LM Studio** | `127.0.0.1` | If you must enable **"Serve on Network"**, pair it with a restricted firewall rule (WSL subnet/private profile only) |
-| **llama-server** | `127.0.0.1` | Use `--host <Windows-host-IP>` (or WSL-only interface IP), not `0.0.0.0` |
-| **vLLM** | often `0.0.0.0` | Override host to a specific interface/IP when possible; otherwise restrict firewall scope |
-| **SGLang** | `127.0.0.1` | Use `--host <Windows-host-IP>` (or WSL-only interface IP), not `0.0.0.0` |
-
-**Ollama on Windows (detailed):** Ollama runs as a Windows service. To set a scoped listen address:
+**Ollama on Windows (detailed):** Ollama runs as a Windows service. To set `OLLAMA_HOST`:
 1. Open **System Properties** → **Environment Variables**
-2. Add a new **System variable**: `OLLAMA_HOST` = `<Windows-host-IP>:11434` (avoid `0.0.0.0`)
+2. Add a new **System variable**: `OLLAMA_HOST` = `0.0.0.0`
 3. Restart the Ollama service (or reboot)
 
 #### Windows Firewall
@@ -934,7 +935,7 @@ Windows Firewall treats WSL2 as a separate network (in both NAT and mirrored mod
 
 ```powershell
 # Run in Admin PowerShell — replace PORT with your server's port
-New-NetFirewallRule -DisplayName "Allow WSL2 to Model Server" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 11434 -Profile Private -RemoteAddress 172.16.0.0/12
+New-NetFirewallRule -DisplayName "Allow WSL2 to Model Server" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 11434
 ```
 
 Common ports: Ollama `11434`, vLLM `8000`, SGLang `30000`, llama-server `8080`, LM Studio `1234`.

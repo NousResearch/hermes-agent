@@ -63,19 +63,6 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
-def _constant_time_equal(left: Optional[str], right: Optional[str]) -> bool:
-    """Compare text secrets without rejecting non-ASCII values.
-
-    ``hmac.compare_digest`` raises ``TypeError`` when either side contains
-    non-ASCII characters; encode both as UTF-8 first so unicode API keys
-    are compared safely in constant time. A ``None`` on either side returns
-    ``False`` so callers that pass an unconfigured key don't crash.
-    """
-    if left is None or right is None:
-        return False
-    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
-
-
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
     try:
@@ -232,13 +219,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
                         "unsupported_content_type:Only image data URLs are supported. "
                         "Non-image data payloads are not supported."
                     )
-            elif lowered.startswith("http://") or lowered.startswith("https://"):
-                from tools.url_safety import is_safe_url
-                if not is_safe_url(url_value):
-                    raise ValueError(
-                        "invalid_image_url:Image URLs must not target private or internal network addresses."
-                    )
-            else:
+            elif not (lowered.startswith("http://") or lowered.startswith("https://")):
                 raise ValueError(
                     "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
                 )
@@ -576,11 +557,6 @@ def _derive_chat_session_id(
     return f"api-{digest}"
 
 
-def _new_chat_session_id() -> str:
-    """Return a fresh, random API session identifier in the api-<hex16> format."""
-    return f"api-{uuid.uuid4().hex[:16]}"
-
-
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
@@ -726,20 +702,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
-        try:
-            from hermes_cli.auth import has_usable_secret
-            if not has_usable_secret(self._api_key, min_length=4):
-                return web.json_response(
-                    {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
-                    status=401,
-                )
-        except ImportError:
-            pass
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if _constant_time_equal(token, self._api_key):
+            if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
         return web.json_response(
@@ -1100,29 +1067,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = body.get("stream", False)
 
+        proxy_scope = body.get("hermes_proxy_scope")
         origin_platform = None
         enabled_toolsets_override = None
-        if "hermes_proxy_scope" in body:
-            from gateway.proxy_scope_auth import (
-                PROXY_SCOPE_SIGNATURE_HEADER,
-                PROXY_SCOPE_TIMESTAMP_HEADER,
-                get_proxy_scope_key,
-                verify_proxy_scope_signature,
-            )
-
-            proxy_scope = body["hermes_proxy_scope"]
+        if proxy_scope is not None:
             if not isinstance(proxy_scope, dict):
                 return web.json_response(_openai_error("Invalid hermes_proxy_scope"), status=400)
-            if not verify_proxy_scope_signature(
-                proxy_scope,
-                get_proxy_scope_key(),
-                request.headers.get(PROXY_SCOPE_TIMESTAMP_HEADER),
-                request.headers.get(PROXY_SCOPE_SIGNATURE_HEADER),
-            ):
-                return web.json_response(
-                    _openai_error("hermes_proxy_scope requires trusted gateway proxy authentication"),
-                    status=403,
-                )
             raw_platform = proxy_scope.get("origin_platform")
             if raw_platform is not None:
                 origin_platform = str(raw_platform).strip()
@@ -1188,7 +1138,16 @@ class APIServerAdapter(BasePlatformAdapter):
             if session_err is not None:
                 return session_err
         else:
-            session_id = _new_chat_session_id()
+            # Derive a stable session ID from the conversation fingerprint so
+            # that consecutive messages from the same Open WebUI (or similar)
+            # conversation map to the same Hermes session.  The first user
+            # message + system prompt are constant across all turns.
+            first_user = ""
+            for cm in conversation_messages:
+                if cm.get("role") == "user":
+                    first_user = cm.get("content", "")
+                    break
+            session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -1899,27 +1858,18 @@ class APIServerAdapter(BasePlatformAdapter):
             _batch_buf: List[str] = []
             _batch_timer: Optional[asyncio.Task] = None
             _batch_lock = asyncio.Lock()
-            _batch_error: Optional[BaseException] = None
-            _batch_error_sentinel = object()
 
             async def _batch_flush_after(delay: float) -> None:
                 """Wait delay seconds, then flush accumulated text deltas."""
-                nonlocal _batch_error, _batch_timer
                 try:
                     await asyncio.sleep(delay)
-                    # Clear timer reference BEFORE flush so new deltas
-                    # can start a fresh timer while we emit
-                    _batch_timer = None
-                    await _flush_batch()
                 except asyncio.CancelledError:
                     return
-                except Exception as exc:
-                    # Surface a flush failure (typically a client disconnect)
-                    # to the main loop so it can interrupt the agent instead
-                    # of waiting forever on the queue.
-                    _batch_timer = None
-                    _batch_error = exc
-                    stream_q.put(_batch_error_sentinel)
+                # Clear timer reference BEFORE flush so new deltas
+                # can start a fresh timer while we emit
+                nonlocal _batch_buf, _batch_timer
+                _batch_timer = None
+                await _flush_batch()
 
             async def _flush_batch() -> None:
                 """Emit a single SSE delta for all accumulated text."""
@@ -1940,10 +1890,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         while True:
                             try:
                                 item = stream_q.get_nowait()
-                                if item is _batch_error_sentinel:
-                                    if _batch_error is not None:
-                                        raise _batch_error
-                                    break
                                 if item is None:
                                     break
                                 await _dispatch(item)
@@ -1955,11 +1901,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         await response.write(b": keepalive\n\n")
                         last_activity = time.monotonic()
                     continue
-
-                if item is _batch_error_sentinel:
-                    if _batch_error is not None:
-                        raise _batch_error
-                    break
 
                 if item is None:  # EOS sentinel
                     # Cancel pending timer and flush remaining batched text
@@ -2876,7 +2817,6 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
-    _RUN_STREAM_MAX_EVENTS = 512  # Bounded per-run SSE buffer (drop-oldest policy)
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
@@ -2907,7 +2847,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if q is None:
                 return
             try:
-                loop.call_soon_threadsafe(self._enqueue_run_stream_event, run_id, event)
+                loop.call_soon_threadsafe(q.put_nowait, event)
             except Exception:
                 pass
 
@@ -2941,25 +2881,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
-    def _enqueue_run_stream_event(self, run_id: str, event: Optional[Dict[str, Any]]) -> None:
-        """Queue a run SSE event with bounded buffering (drop oldest on overflow)."""
-        q = self._run_streams.get(run_id)
-        if q is None:
-            return
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            try:
-                q.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
-        except Exception:
-            pass
-
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         auth_err = self._check_auth(request)
@@ -2972,7 +2893,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return key_err
 
         # Enforce concurrency limit
-        if len(self._active_run_tasks) >= self._MAX_CONCURRENT_RUNS:
+        if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
             return web.json_response(
                 _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
                 status=429,
@@ -3043,7 +2964,7 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = f"api_run:{run_id}"
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue(maxsize=self._RUN_STREAM_MAX_EVENTS)
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
@@ -3056,7 +2977,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(self._enqueue_run_stream_event, run_id, {
+                loop.call_soon_threadsafe(q.put_nowait, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -3166,7 +3087,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3180,7 +3101,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3201,7 +3122,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3218,7 +3139,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3240,7 +3161,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 # Sentinel: signal SSE stream to close
                 try:
-                    self._enqueue_run_stream_event(run_id, None)
+                    q.put_nowait(None)
                 except Exception:
                     pass
                 self._active_run_agents.pop(run_id, None)
@@ -3324,13 +3245,8 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
-            task = self._active_run_tasks.get(run_id)
-            status = self._run_statuses.get(run_id) or {}
-            # A stream can briefly exist before its background task is registered,
-            # so only clean up once the run is terminal and the task is gone/done.
-            if (task is None or task.done()) and status.get("status") in {"completed", "failed", "cancelled"}:
-                self._run_streams.pop(run_id, None)
-                self._run_streams_created.pop(run_id, None)
+            self._run_streams.pop(run_id, None)
+            self._run_streams_created.pop(run_id, None)
 
         return response
 
@@ -3471,9 +3387,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 if now - created_at > self._RUN_STREAM_TTL
             ]
             for run_id in stale:
-                task = self._active_run_tasks.get(run_id)
-                if task is not None and not task.done():
-                    continue
                 logger.debug("[api_server] sweeping orphaned run %s", run_id)
                 try:
                     from tools.approval import unregister_gateway_notify

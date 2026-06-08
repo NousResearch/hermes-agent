@@ -20,35 +20,6 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
-# Extensions whose contents are source code, not data/config credential files.
-# Keep data formats such as .env, .json, .yaml, .toml, .ini, and .cfg out of
-# this set so ENV/JSON secret redaction remains active for credential files.
-_SOURCE_CODE_EXTENSIONS = frozenset({
-    ".bash", ".c", ".cc", ".clj", ".cljs", ".cmake", ".cpp", ".cs",
-    ".css", ".dart", ".ex", ".exs", ".fish", ".fs", ".fsx", ".go",
-    ".graphql", ".gql", ".h", ".hpp", ".hrl", ".htm", ".html", ".java",
-    ".jl", ".js", ".jsx", ".kt", ".kts", ".less", ".lua", ".mjs",
-    ".mm", ".php", ".pl", ".pm", ".proto", ".ps1", ".psm1", ".py",
-    ".pyi", ".r", ".rb", ".rs", ".sass", ".scala", ".scss", ".sh",
-    ".sql", ".svelte", ".swift", ".tsx", ".ts", ".vue", ".zsh",
-})
-_SOURCE_CODE_FILENAMES = frozenset({
-    "Brewfile", "CMakeLists.txt", "Dockerfile", "Gemfile", "Jenkinsfile",
-    "Justfile", "Makefile", "Rakefile", "Taskfile", "Vagrantfile",
-})
-
-
-def _is_source_code_path(path: str | os.PathLike[str]) -> bool:
-    """Return True when path is a known source-code file type."""
-    try:
-        file_path = Path(path)
-    except TypeError:
-        return False
-    return (
-        file_path.name in _SOURCE_CODE_FILENAMES
-        or file_path.suffix.lower() in _SOURCE_CODE_EXTENSIONS
-    )
-
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
@@ -149,9 +120,9 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
     p = Path(filepath).expanduser()
     if not p.is_absolute():
-        base = _get_live_tracking_cwd(task_id) or os.environ.get(
-            "TERMINAL_CWD", os.getcwd()
-        )
+        from gateway.session_context import get_terminal_cwd
+
+        base = _get_live_tracking_cwd(task_id) or get_terminal_cwd(os.getcwd())
         p = Path(base) / p
     return p.resolve()
 
@@ -599,9 +570,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(
-                result.content, code_file=_is_source_code_path(_resolved)
-            )
+            result.content = redact_sensitive_text(result.content, code_file=True)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -1024,12 +993,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(
-                        m.content,
-                        code_file=_is_source_code_path(
-                            os.path.realpath(getattr(m, "path", ""))
-                        ),
-                    )
+                    m.content = redact_sensitive_text(m.content, code_file=True)
         result_dict = result.to_dict()
 
         if count >= 3:

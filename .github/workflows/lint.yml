@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           fetch-depth: 0 # need full history for merge-base + worktree
 
@@ -46,7 +46,7 @@ jobs:
 
       - name: Install ruff + ty
         run: |
-          uv tool install ruff==0.15.10
+          uv tool install ruff
           uv tool install ty
 
       - name: Determine base ref
@@ -124,7 +124,7 @@ jobs:
       - name: Post / update PR comment
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        uses: actions/github-script@d746ffe35508b1917358783b479e04febd2b8f71 # v9
         with:
           script: |
             const fs = require('fs');
@@ -167,13 +167,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8
 
       - name: Install ruff
-        run: uv tool install ruff==0.15.10
+        run: uv tool install ruff
 
       - name: ruff check .
         # No --exit-zero, no || true. Exit code propagates to the job,
@@ -191,7 +191,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6

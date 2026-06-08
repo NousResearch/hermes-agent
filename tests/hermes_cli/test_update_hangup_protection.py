@@ -175,7 +175,7 @@ class TestInstallHangupProtection:
             assert state["log_file"] is None
             assert state["installed"] is False
             if hasattr(signal, "SIGHUP"):
-                assert signal.getsignal(signal.SIGHUP) == prev_sighup  # windows-footgun: ok — guarded by hasattr above
+                assert signal.getsignal(signal.SIGHUP) == prev_sighup
         finally:
             _finalize_update_output(state)
 
@@ -190,15 +190,15 @@ class TestInstallHangupProtection:
         if hasattr(_cfg, "_HERMES_HOME_CACHE"):
             _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
 
-        original_handler = signal.getsignal(signal.SIGHUP)  # windows-footgun: ok — test is skipif(not hasattr(signal, "SIGHUP"))
+        original_handler = signal.getsignal(signal.SIGHUP)
         state = _install_hangup_protection(gateway_mode=False)
 
         try:
-            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN  # windows-footgun: ok — test is skipif(not hasattr(signal, "SIGHUP"))
+            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
         finally:
             _finalize_update_output(state)
             # Restore whatever was there before so we don't leak to other tests.
-            signal.signal(signal.SIGHUP, original_handler)  # windows-footgun: ok — test is skipif(not hasattr(signal, "SIGHUP"))
+            signal.signal(signal.SIGHUP, original_handler)
 
     def test_wraps_stdout_and_stderr_with_mirror(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -207,25 +207,14 @@ class TestInstallHangupProtection:
         if hasattr(_cfg, "_HERMES_HOME_CACHE"):
             _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
 
-        # Re-import all three symbols fresh: test_env_loader.py removes
-        # hermes_cli.main from sys.modules and re-imports it, creating a NEW
-        # module object with a NEW __dict__.  Module-level imports in this file
-        # still bind to the OLD module's __dict__, so _install_hangup_protection
-        # would create instances of the OLD _UpdateOutputStream while _UOS would
-        # be the NEW class, causing isinstance() to return False.
-        import hermes_cli.main as _hm
-        _UOS = _hm._UpdateOutputStream
-        _install_hp = _hm._install_hangup_protection
-        _finalize_hp = _hm._finalize_update_output
-
         prev_out, prev_err = sys.stdout, sys.stderr
-        state = _install_hp(gateway_mode=False)
+        state = _install_hangup_protection(gateway_mode=False)
 
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UOS)
-            assert isinstance(sys.stderr, _UOS)
+            assert isinstance(sys.stdout, _UpdateOutputStream)
+            assert isinstance(sys.stderr, _UpdateOutputStream)
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")
@@ -237,7 +226,7 @@ class TestInstallHangupProtection:
             assert "checking mirror" in contents
             assert "hermes update started" in contents
         finally:
-            _finalize_hp(state)
+            _finalize_update_output(state)
             # Sanity-check restoration
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err
@@ -282,11 +271,11 @@ class TestInstallHangupProtection:
             assert state["installed"] is False
             # SIGHUP must still be installed even when log setup fails.
             if hasattr(signal, "SIGHUP"):
-                assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN  # windows-footgun: ok — guarded by hasattr above
+                assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
         finally:
             _finalize_update_output(state)
             if hasattr(signal, "SIGHUP") and original_handler is not None:
-                signal.signal(signal.SIGHUP, original_handler)  # windows-footgun: ok — guarded by hasattr above
+                signal.signal(signal.SIGHUP, original_handler)
 
 
 # -----------------------------------------------------------------------------

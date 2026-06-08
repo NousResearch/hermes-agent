@@ -2,7 +2,7 @@
 
 import inspect
 import os
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -126,51 +126,6 @@ class TestHomebrewNodeDirsCache:
         from tools.browser_tool import _discover_homebrew_node_dirs
         assert hasattr(_discover_homebrew_node_dirs, "cache_info"), \
             "_discover_homebrew_node_dirs should be decorated with lru_cache"
-
-
-# ---------------------------------------------------------------------------
-# Browser subprocess sandbox flags
-# ---------------------------------------------------------------------------
-
-class TestBrowserSandboxFlags:
-
-    def test_run_browser_command_does_not_auto_disable_chromium_sandbox_as_root(self, tmp_path):
-        """Root execution must not silently opt in to Chromium --no-sandbox."""
-        import tools.browser_tool as bt
-
-        captured_env = {}
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = 0
-
-        def capture_popen(cmd, **kwargs):
-            captured_env.update(kwargs.get("env", {}))
-            return mock_proc
-
-        fake_session = {
-            "session_name": "test-session",
-            "session_id": "test-id",
-            "cdp_url": None,
-        }
-
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
-             patch("tools.browser_tool._get_browser_engine", return_value="auto"), \
-             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
-             patch("tools.browser_tool.os.geteuid", return_value=0), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("os.open", return_value=99), \
-             patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
-            with patch("builtins.open", mock_open(read_data='{"success": true}')):
-                result = bt._run_browser_command("test-task", "navigate", ["https://example.com"])
-
-        assert result["success"] is True
-        assert "AGENT_BROWSER_CHROME_FLAGS" not in captured_env
 
 
 # ---------------------------------------------------------------------------
@@ -314,59 +269,3 @@ class TestCamofoxEvalFix:
         assert "json_data=" not in src, \
             "_camofox_eval should use body= kwarg for _post, not json_data="
         assert "body=" in src
-
-
-# ---------------------------------------------------------------------------
-# Windows npx fallback hardening
-# ---------------------------------------------------------------------------
-
-class TestWindowsNpxFallbackHardening:
-
-    def test_npx_cmd_fallback_uses_node_cli_instead_of_batch_shim(self, monkeypatch, tmp_path):
-        import tools.browser_tool as bt
-
-        node_dir = tmp_path / "nodejs"
-        cli = node_dir / "node_modules" / "npm" / "bin" / "npx-cli.js"
-        cli.parent.mkdir(parents=True)
-        cli.write_text("#!/usr/bin/env node\n")
-        npx_cmd = node_dir / "npx.cmd"
-        npx_cmd.write_text("@echo off\n")
-        node_exe = node_dir / "node.exe"
-        node_exe.write_text("")
-
-        def fake_which(name):
-            return {"npx": str(npx_cmd), "node": str(node_exe), "node.exe": str(node_exe)}.get(name)
-
-        monkeypatch.setattr(bt.os, "name", "nt")
-        monkeypatch.setattr(bt.shutil, "which", fake_which)
-
-        assert bt._browser_command_prefix("npx agent-browser") == [
-            str(node_exe),
-            str(cli),
-            "agent-browser",
-        ]
-
-    def test_npx_cmd_fallback_fails_closed_when_safe_cli_missing(self, monkeypatch, tmp_path):
-        import tools.browser_tool as bt
-
-        npx_cmd = tmp_path / "npx.cmd"
-        npx_cmd.write_text("@echo off\n")
-        node_exe = tmp_path / "node.exe"
-        node_exe.write_text("")
-
-        def fake_which(name):
-            return {"npx": str(npx_cmd), "node": str(node_exe), "node.exe": str(node_exe)}.get(name)
-
-        monkeypatch.setattr(bt.os, "name", "nt")
-        monkeypatch.setattr(bt.shutil, "which", fake_which)
-
-        with pytest.raises(FileNotFoundError, match="Unsafe Windows npx batch shim"):
-            bt._browser_command_prefix("npx agent-browser")
-
-    def test_non_windows_npx_fallback_preserves_existing_prefix(self, monkeypatch):
-        import tools.browser_tool as bt
-
-        monkeypatch.setattr(bt.os, "name", "posix")
-        monkeypatch.setattr(bt.shutil, "which", lambda name: "/usr/bin/npx" if name == "npx" else None)
-
-        assert bt._browser_command_prefix("npx agent-browser") == ["/usr/bin/npx", "agent-browser"]

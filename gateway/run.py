@@ -63,6 +63,14 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_GIT_URL_USERINFO_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://)([^/@\s]+@)")
+_GIT_SCP_SECRET_USERINFO_RE = re.compile(r"(?<!\S)([^@:/\s]+:[^@\s]+@)([^:\s]+:[^\s]+)")
+
+
+def _redact_update_output_secrets(text: str) -> str:
+    """Redact credential userinfo from update output before chat delivery."""
+    text = _GIT_URL_USERINFO_RE.sub(r"\1[REDACTED]@", text)
+    return _GIT_SCP_SECRET_USERINFO_RE.sub(r"[REDACTED]@\2", text)
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -3164,36 +3172,6 @@ class GatewayRunner:
                 continue
 
             source = entry.origin
-            event = MessageEvent(
-                text="",
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=False,
-            )
-            event = self._apply_pre_gateway_dispatch_hooks(event)
-            if event is None:
-                logger.info(
-                    "Skipping auto-resume for %s: pre_gateway_dispatch hook declined it",
-                    entry.session_key,
-                )
-                continue
-
-            source = event.source
-            if source.user_id is None:
-                logger.debug(
-                    "Skipping auto-resume for %s: origin has no user_id",
-                    entry.session_key,
-                )
-                continue
-            if not self._is_user_authorized(source):
-                logger.warning(
-                    "Skipping auto-resume for %s: origin user %s is no longer authorized on %s",
-                    entry.session_key,
-                    source.user_id,
-                    source.platform.value if source.platform else "unknown",
-                )
-                continue
-
             adapter = self.adapters.get(source.platform)
             if adapter is None:
                 logger.debug(
@@ -3205,10 +3183,13 @@ class GatewayRunner:
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.  Authorization and gateway
-            # dispatch hooks were re-checked above before restoring the
-            # internal flag used for synthetic continuations.
-            event = dataclasses.replace(event, internal=True)
+            # system note before the turn runs.
+            event = MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
             task = asyncio.create_task(adapter.handle_message(event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
@@ -5226,9 +5207,7 @@ class GatewayRunner:
             if not check_signal_requirements():
                 logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
                 return None
-            adapter = SignalAdapter(config)
-            adapter.gateway_runner = self
-            return adapter
+            return SignalAdapter(config)
 
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
@@ -5373,13 +5352,6 @@ class GatewayRunner:
         user_id = source.user_id
         if not user_id:
             return False
-        team_id = str(source.guild_id or "").strip() if source.platform == Platform.SLACK else ""
-
-        # Optional Slack-style team scoping.  When source carries a team_id
-        # (e.g. Slack), the pairing/allowlist checks below augment the bare
-        # auth id with a "{team_id}:{auth_user_id}" key.  Other platforms
-        # don't populate team_id, so default to "" and skip those checks.
-        team_id = getattr(source, "team_id", None) or ""
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
@@ -5427,9 +5399,8 @@ class GatewayRunner:
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
-        # Only platforms with explicit gateway-level bot bypass semantics
-        # should be listed here.
         platform_allow_bots_map = {
+            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
         }
 
@@ -5470,15 +5441,7 @@ class GatewayRunner:
 
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
-        team_id = source.guild_id or ""
-        auth_user_id = user_id
-        if source.platform == Platform.WECOM_CALLBACK and source.chat_id:
-            auth_user_id = source.chat_id
-        team_id = ""
-        pairing_check_ids = [auth_user_id]
-        if team_id:
-            pairing_check_ids.insert(0, f"{team_id}:{auth_user_id}")
-        if any(self.pairing_store.is_approved(platform_name, uid) for uid in pairing_check_ids):
+        if self.pairing_store.is_approved(platform_name, user_id):
             return True
 
         # Check platform-specific and global allowlists
@@ -5551,11 +5514,9 @@ class GatewayRunner:
         if "*" in allowed_ids:
             return True
 
-        check_ids = {auth_user_id}
-        if team_id:
-            check_ids.add(f"{team_id}:{auth_user_id}")
-        if "@" in auth_user_id:
-            check_ids.add(auth_user_id.split("@")[0])
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
@@ -5671,47 +5632,6 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
-    def _apply_pre_gateway_dispatch_hooks(
-        self, event: MessageEvent
-    ) -> Optional[MessageEvent]:
-        """Apply gateway pre-dispatch hooks and return the event to continue."""
-        source = event.source
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-
-        try:
-            hook_results = _invoke_hook(
-                "pre_gateway_dispatch",
-                event=event,
-                gateway=self,
-                session_store=self.session_store,
-            )
-        except Exception as hook_exc:
-            logger.warning("pre_gateway_dispatch invocation failed: %s", hook_exc)
-            return event
-
-        for result in hook_results:
-            if not isinstance(result, dict):
-                continue
-            action = result.get("action")
-            if action == "skip":
-                logger.info(
-                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                    result.get("reason"),
-                    source.platform.value if source.platform else "unknown",
-                    source.chat_id or "unknown",
-                )
-                return None
-            if action == "rewrite":
-                new_text = result.get("text")
-                if isinstance(new_text, str):
-                    event = dataclasses.replace(event, text=new_text)
-                    source = event.source
-                break
-            if action == "allow":
-                break
-
-        return event
-
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5739,10 +5659,38 @@ class GatewayRunner:
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
-            event = self._apply_pre_gateway_dispatch_hooks(event)
-            if event is None:
-                return None
-            source = event.source
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _hook_results = _invoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=self.session_store,
+                )
+            except Exception as _hook_exc:
+                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
+                _hook_results = []
+
+            for _result in _hook_results:
+                if not isinstance(_result, dict):
+                    continue
+                _action = _result.get("action")
+                if _action == "skip":
+                    logger.info(
+                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        source.platform.value if source.platform else "unknown",
+                        source.chat_id or "unknown",
+                    )
+                    return None
+                if _action == "rewrite":
+                    _new_text = _result.get("text")
+                    if isinstance(_new_text, str):
+                        event = dataclasses.replace(event, text=_new_text)
+                        source = event.source
+                    break
+                if _action == "allow":
+                    break
 
         if is_internal:
             pass
@@ -6724,26 +6672,6 @@ class GatewayRunner:
                 if hasattr(self, "_busy_ack_ts"):
                     self._busy_ack_ts.pop(_quick_key, None)
 
-    @staticmethod
-    def _allowed_context_reference_kinds(enabled_toolsets: set[str] | None) -> set[str]:
-        """Map enabled gateway toolsets to safe inline @ reference types.
-
-        A reference kind is only expandable when the toolset that would back
-        it is enabled for the platform. This prevents @file:/@folder: (and
-        git/url) expansion -- and the local file reads they perform -- from
-        leaking content into sessions whose toolset never granted access.
-        """
-        allowed: set[str] = set()
-        if not enabled_toolsets:
-            return allowed
-        if "file" in enabled_toolsets:
-            allowed.update({"file", "folder"})
-        if "terminal" in enabled_toolsets:
-            allowed.update({"diff", "staged", "git"})
-        if "web" in enabled_toolsets:
-            allowed.add("url")
-        return allowed
-
     async def _prepare_inbound_message_text(
         self,
         *,
@@ -6928,20 +6856,11 @@ class GatewayRunner:
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
                 )
-                from hermes_cli.tools_config import _get_platform_tools
-
-                _msg_platform_key = _platform_config_key(source.platform)
-                _msg_enabled_toolsets = _get_platform_tools(
-                    _load_gateway_config(), _msg_platform_key
-                )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
                     cwd=_msg_cwd,
                     context_length=_msg_ctx_len,
                     allowed_root=_msg_cwd,
-                    allowed_kinds=self._allowed_context_reference_kinds(
-                        _msg_enabled_toolsets
-                    ),
                 )
                 if _ctx_result.blocked:
                     _adapter = self.adapters.get(source.platform)
@@ -8231,11 +8150,8 @@ class GatewayRunner:
                 try:
                     self._session_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
-                except ValueError:
-                    _title_note = t(
-                        "gateway.reset.title_error_untitled",
-                        error=t("gateway.reset.title_unavailable"),
-                    )
+                except ValueError as e:
+                    _title_note = t("gateway.reset.title_error_untitled", error=str(e))
                 except Exception:
                     pass
             elif not _title_note:
@@ -8385,71 +8301,6 @@ class GatewayRunner:
         )
 
 
-    @staticmethod
-    def _gateway_kanban_parse_args(tokens: List[str]):
-        """Parse Kanban argv with the same argparse semantics as /kanban."""
-        if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
-            return None
-
-        import argparse
-        import contextlib
-        import io
-        from hermes_cli.kanban import build_parser
-
-        wrapper = argparse.ArgumentParser(prog="/kanban-wrap", add_help=False)
-        wrapper.exit_on_error = False  # type: ignore[attr-defined]
-        top_subparsers = wrapper.add_subparsers(dest="_top")
-        kanban_parser = build_parser(top_subparsers)
-        kanban_parser.prog = "/kanban"
-        kanban_parser.exit_on_error = False  # type: ignore[attr-defined]
-        for action in kanban_parser._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                for name, choice in action.choices.items():
-                    choice.prog = f"/kanban {name}"
-                    choice.exit_on_error = False  # type: ignore[attr-defined]
-
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                with contextlib.redirect_stderr(io.StringIO()):
-                    return kanban_parser.parse_args(tokens)
-        except (argparse.ArgumentError, SystemExit):
-            return None
-
-    @staticmethod
-    def _gateway_kanban_is_unassign(profile: str | None) -> bool:
-        """Return whether a profile argument means "remove assignee"."""
-        return (profile or "").lower() in {"", "none", "-", "null"}
-
-    @classmethod
-    def _gateway_kanban_spawn_denial(cls, args) -> Optional[str]:
-        """Deny gateway Kanban requests that can launch or relaunch profiles."""
-        action = getattr(args, "kanban_action", None) if args else None
-        if not action:
-            return None
-
-        if action in {"dispatch", "unblock"}:
-            return (
-                "kanban: this subcommand can start work under another Hermes "
-                "profile and is only available from the local CLI"
-            )
-
-        if action in {"assign", "reassign"}:
-            if not cls._gateway_kanban_is_unassign(getattr(args, "profile", None)):
-                return (
-                    "kanban: assigning tasks from the gateway is disabled; "
-                    "assign worker profiles from the local CLI"
-                )
-            return None
-
-        if action == "create" and (getattr(args, "assignee", None) or "").strip():
-            return (
-                "kanban: creating assigned tasks from the gateway is disabled; "
-                "create the task unassigned and assign it from the local CLI"
-            )
-
-        return None
-
-
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
 
@@ -8476,45 +8327,26 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        try:
-            tokens = shlex.split(text) if text else []
-        except ValueError as exc:
-            return f"kanban: invalid arguments: {exc}"
-
-        parsed_args = self._gateway_kanban_parse_args(tokens)
-        requested_board = getattr(parsed_args, "board", None) if parsed_args else None
-
-        denial = self._gateway_kanban_spawn_denial(parsed_args)
-        if denial:
-            return denial
-
-        is_create = (getattr(parsed_args, "kanban_action", None) == "create") if parsed_args else False
-        if getattr(parsed_args, "kanban_action", None) == "notify-subscribe":
-            # Gateway-originated subscriptions must always be bound to the
-            # currently running profile, never caller-supplied text.
-            safe_tokens: list[str] = []
-            i = 0
-            while i < len(tokens):
-                tok = tokens[i]
-                if tok == "--notifier-profile":
-                    i += 1
-                    # Only consume the next token if it's actually a value (not another flag)
-                    if i < len(tokens) and not tokens[i].startswith("-"):
-                        i += 1
-                    continue
-                if tok.startswith("--notifier-profile="):
-                    i += 1
-                    continue
-                safe_tokens.append(tok)
+        tokens = shlex.split(text) if text else []
+        requested_board = None
+        action = None
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "--board":
+                if i + 1 >= len(tokens):
+                    break
+                requested_board = tokens[i + 1]
+                i += 2
+                continue
+            if tok.startswith("--board="):
+                requested_board = tok.split("=", 1)[1]
                 i += 1
-            safe_tokens.extend(
-                [
-                    "--notifier-profile",
-                    getattr(self, "_kanban_notifier_profile", None)
-                    or self._active_profile_name(),
-                ]
-            )
-            text = shlex.join(safe_tokens)
+                continue
+            action = tok
+            break
+
+        is_create = action == "create"
 
         try:
             output = await asyncio.to_thread(run_slash, text)
@@ -10716,7 +10548,7 @@ class GatewayRunner:
 
         # Read current effective mode for this platform via the resolver
         from gateway.display_config import resolve_display_setting
-        current = resolve_display_setting(user_config, platform_key, "tool_progress", None)
+        current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
         if current not in cycle:
             current = "all"
         idx = (cycle.index(current) + 1) % len(cycle)
@@ -11474,8 +11306,8 @@ class GatewayRunner:
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
-            except ValueError:
-                return t("gateway.title.warn_prefix", error=t("gateway.title.unavailable"))
+            except ValueError as e:
+                return t("gateway.shared.warn_passthrough", error=e)
         else:
             # Show the current title and session ID
             title = self._session_db.get_session_title(session_id)
@@ -11497,9 +11329,12 @@ class GatewayRunner:
         if not name:
             # List recent titled sessions for this user/platform
             try:
+                owner_user_id = source.user_id
+                if not owner_user_id:
+                    return t("gateway.resume.no_named_sessions")
                 user_source = source.platform.value if source.platform else None
                 sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
+                    source=user_source, user_id=owner_user_id, limit=10
                 )
                 titled = [s for s in sessions if s.get("title")]
                 if not titled:
@@ -11516,8 +11351,14 @@ class GatewayRunner:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
 
-        # Resolve the name to a session ID.
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve the name to a session ID owned by this gateway user.
+        owner_user_id = source.user_id
+        if not owner_user_id:
+            return t("gateway.resume.not_found", name=name)
+        user_source = source.platform.value if source.platform else None
+        target_id = self._session_db.resolve_session_by_title(
+            name, source=user_source, user_id=owner_user_id
+        )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
@@ -11608,6 +11449,7 @@ class GatewayRunner:
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 parent_session_id=parent_session_id,
+                user_id=source.user_id,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
@@ -11990,7 +11832,7 @@ class GatewayRunner:
         """
         loop = asyncio.get_running_loop()
         try:
-            from agent.skill_commands import reload_skills, sanitize_reload_description
+            from agent.skill_commands import reload_skills
 
             result = await loop.run_in_executor(None, reload_skills)
             added = result.get("added", [])      # [{"name", "description"}, ...]
@@ -12027,7 +11869,7 @@ class GatewayRunner:
 
             def _fmt_line(item: dict) -> str:
                 nm = item.get("name", "")
-                desc = sanitize_reload_description(item.get("description", ""))
+                desc = item.get("description", "")
                 if desc:
                     return t("gateway.reload_skills.item_with_desc", name=nm, desc=desc)
                 return t("gateway.reload_skills.item_no_desc", name=nm)
@@ -12864,7 +12706,8 @@ class GatewayRunner:
             if adapter and chat_id:
                 metadata = {"thread_id": thread_id} if thread_id else None
                 # Strip ANSI escape codes for clean display
-                output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
+                output = re.sub(r'\x1b\[[0-9;]*m', '', output)
+                output = _redact_update_output_secrets(output).strip()
                 if output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
@@ -14018,6 +13861,11 @@ class GatewayRunner:
 
         proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
                 return True
@@ -14058,6 +13906,10 @@ class GatewayRunner:
             "model": "hermes-agent",
             "messages": api_messages,
             "stream": True,
+            "hermes_proxy_scope": {
+                "origin_platform": platform_key,
+                "enabled_toolsets": enabled_toolsets,
+            },
         }
 
         # Set up platform streaming if available -------------------------
@@ -14067,8 +13919,6 @@ class GatewayRunner:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
 
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
@@ -16340,11 +16190,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 "Replacing existing gateway instance (PID %d) with --replace.",
                 existing_pid,
             )
+            # Record a takeover marker so the target's shutdown handler
+            # recognises its SIGTERM as a planned takeover and exits 0
+            # (rather than exit 1, which would trigger systemd's
+            # Restart=on-failure and start a flap loop against us).
+            # Best-effort — proceed even if the write fails.
             try:
-                if hasattr(signal, "SIGUSR1"):
-                    os.kill(existing_pid, signal.SIGUSR1)  # windows-footgun: POSIX signal, guarded by hasattr
-                else:
-                    terminate_pid(existing_pid, force=False)
+                from gateway.status import write_takeover_marker
+                write_takeover_marker(existing_pid)
+            except Exception as e:
+                logger.debug("Could not write takeover marker: %s", e)
+            try:
+                terminate_pid(existing_pid, force=False)
             except ProcessLookupError:
                 pass  # Already gone
             except (PermissionError, OSError):
@@ -16352,6 +16209,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     "Permission denied killing PID %d. Cannot replace.",
                     existing_pid,
                 )
+                # Marker is scoped to a specific target; clean it up on
+                # give-up so it doesn't grief an unrelated future shutdown.
+                try:
+                    from gateway.status import clear_takeover_marker
+                    clear_takeover_marker()
+                except Exception:
+                    pass
                 return False
             # Wait up to 10 seconds for the old process to exit.
             # ``os.kill(pid, 0)`` on Windows is NOT a no-op — use the
@@ -16377,6 +16241,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # Force-unlink to cover the old-process-crashed case.
             try:
                 (get_hermes_home() / "gateway.pid").unlink(missing_ok=True)
+            except Exception:
+                pass
+            # Clean up any takeover marker the old process didn't consume
+            # (e.g. SIGKILL'd before its shutdown handler could read it).
+            try:
+                from gateway.status import clear_takeover_marker
+                clear_takeover_marker()
             except Exception:
                 pass
             # Also release all scoped locks left by the old process.
@@ -16448,6 +16319,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set up signal handlers
     def shutdown_signal_handler(received_signal=None):
         nonlocal _signal_initiated_shutdown
+        # Planned --replace takeover check: when a sibling gateway is
+        # taking over via --replace, it wrote a marker naming this PID
+        # before sending SIGTERM. If present, treat the signal as a
+        # planned shutdown and exit 0 so systemd's Restart=on-failure
+        # doesn't revive us (which would flap-fight the replacer when
+        # both services are enabled, e.g. hermes.service + hermes-
+        # gateway.service from pre-rename installs).
+        planned_takeover = False
+        try:
+            from gateway.status import consume_takeover_marker_for_self
+            planned_takeover = consume_takeover_marker_for_self()
+        except Exception as e:
+            logger.debug("Takeover marker check failed: %s", e)
+
         # Planned stop check: service managers and `hermes gateway stop`
         # also send SIGTERM, which is indistinguishable from an unexpected
         # external kill unless the CLI marks it first. SIGINT comes from an
@@ -16455,7 +16340,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         planned_stop = False
         if received_signal == signal.SIGINT:
             planned_stop = True
-        else:
+        elif not planned_takeover:
             try:
                 from gateway.status import consume_planned_stop_marker_for_self
                 planned_stop = consume_planned_stop_marker_for_self()
@@ -16479,7 +16364,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _shutdown_ctx = None
             logger.debug("snapshot_shutdown_context failed: %s", _e)
 
-        if planned_stop:
+        if planned_takeover:
+            logger.info(
+                "Received %s as a planned --replace takeover — exiting cleanly",
+                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
+            )
+        elif planned_stop:
             logger.info(
                 "Received %s as a planned gateway stop — exiting cleanly",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",

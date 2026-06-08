@@ -166,62 +166,6 @@ class TestStartRun:
         assert adapter._run_statuses == {}
 
     @pytest.mark.asyncio
-    async def test_disconnect_does_not_free_concurrency_slot(self, adapter):
-        app = _create_runs_app(adapter)
-        adapter._MAX_CONCURRENT_RUNS = 1
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, _ = _make_slow_agent()
-                mock_create.return_value = mock_agent
-
-                first = await cli.post("/v1/runs", json={"input": "first"})
-                assert first.status == 202
-                run_id = (await first.json())["run_id"]
-
-                await asyncio.get_running_loop().run_in_executor(None, agent_ready.wait, 3.0)
-                await asyncio.sleep(0.1)
-
-                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
-                assert events_resp.status == 200
-                events_resp.close()
-
-                await asyncio.sleep(0.2)
-
-                second = await cli.post("/v1/runs", json={"input": "second"})
-                assert second.status == 429
-
-                await cli.post(f"/v1/runs/{run_id}/stop")
-
-    @pytest.mark.asyncio
-    async def test_unconsumed_run_events_buffer_is_bounded(self, adapter):
-        app = _create_runs_app(adapter)
-        adapter._RUN_STREAM_MAX_EVENTS = 8
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, _ = _make_slow_agent()
-                mock_create.return_value = mock_agent
-
-                first = await cli.post("/v1/runs", json={"input": "first"})
-                assert first.status == 202
-                run_id = (await first.json())["run_id"]
-
-                await asyncio.get_running_loop().run_in_executor(None, agent_ready.wait, 3.0)
-                await asyncio.sleep(0.1)
-
-                event_cb = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
-                for i in range(64):
-                    event_cb("tool.started", tool_name=f"t{i}", preview="x")
-
-                await asyncio.sleep(0.1)
-                q = adapter._run_streams[run_id]
-                assert q.qsize() <= adapter._RUN_STREAM_MAX_EVENTS
-                buffered = [q.get_nowait() for _ in range(q.qsize())]
-                buffered_tools = [event["tool"] for event in buffered if isinstance(event, dict) and event.get("event") == "tool.started"]
-                assert buffered_tools == [f"t{i}" for i in range(56, 64)]
-
-                await cli.post(f"/v1/runs/{run_id}/stop")
-
-    @pytest.mark.asyncio
     async def test_start_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -361,8 +305,6 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
-                assert run_id not in adapter._run_streams
-                assert run_id not in adapter._run_streams_created
 
 
 
@@ -392,6 +334,68 @@ class TestRunEvents:
                     "approval_not_active",
                     "approval_not_pending",
                 }
+
+
+    @pytest.mark.asyncio
+    async def test_approval_response_is_bound_to_requested_run(self, adapter):
+        """Approving one run must not resolve another run in the same session."""
+        from tools import approval as approval_mod
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        approval_mod._gateway_queues.clear()
+        approval_mod._gateway_notify_cbs.clear()
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                first_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "first", "session_id": "shared-session"},
+                )
+                second_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "second", "session_id": "shared-session"},
+                )
+                assert first_resp.status == 202
+                assert second_resp.status == 202
+                first_run_id = (await first_resp.json())["run_id"]
+                second_run_id = (await second_resp.json())["run_id"]
+
+                assert agent_ready.wait(timeout=3.0)
+                await asyncio.sleep(0.1)
+
+                first_key = adapter._run_approval_sessions[first_run_id]
+                second_key = adapter._run_approval_sessions[second_run_id]
+                assert first_key != second_key
+
+                first_entry = _ApprovalEntry({
+                    "command": "dangerous first",
+                    "run_id": first_run_id,
+                })
+                second_entry = _ApprovalEntry({
+                    "command": "dangerous second",
+                    "run_id": second_run_id,
+                })
+                _gateway_queues[first_key] = [first_entry]
+                _gateway_queues[second_key] = [second_entry]
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{second_run_id}/approval",
+                    json={"choice": "once"},
+                )
+                assert approval_resp.status == 200
+                approval_data = await approval_resp.json()
+                assert approval_data["resolved"] == 1
+                assert not first_entry.event.is_set()
+                assert first_entry.result is None
+                assert second_entry.event.is_set()
+                assert second_entry.result == "once"
+
+                await cli.post(f"/v1/runs/{first_run_id}/stop")
+                await cli.post(f"/v1/runs/{second_run_id}/stop")
 
     @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):

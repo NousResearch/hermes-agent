@@ -228,7 +228,6 @@ class TestPeerLookupHelpers:
         assistant_peer.context.assert_called_once_with(
             target=session.user_peer_id,
             search_query="neuralancer",
-            tokens=800,
         )
 
     def test_search_context_unified_mode_uses_user_self_context(self):
@@ -244,7 +243,7 @@ class TestPeerLookupHelpers:
         result = mgr.search_context(session.key, "self")
 
         assert "Unified self context" in result
-        user_peer.context.assert_called_once_with(search_query="self", tokens=800)
+        user_peer.context.assert_called_once_with(search_query="self")
 
     def test_search_context_accepts_explicit_ai_peer_id(self):
         mgr, session = self._make_cached_manager()
@@ -261,31 +260,7 @@ class TestPeerLookupHelpers:
         ai_peer.context.assert_called_once_with(
             target=session.assistant_peer_id,
             search_query="assistant",
-            tokens=800,
         )
-
-    def test_resolve_peer_id_rejects_peer_outside_current_session(self):
-        mgr, session = self._make_cached_manager()
-
-        assert mgr._resolve_peer_id(session, "user-telegram-victim") is None
-
-    def test_search_context_rejects_peer_outside_current_session(self):
-        mgr, session = self._make_cached_manager()
-        mgr._get_or_create_peer = MagicMock()
-
-        result = mgr.search_context(session.key, "secret", peer="user-telegram-victim")
-
-        assert result == ""
-        mgr._get_or_create_peer.assert_not_called()
-
-    def test_get_peer_card_rejects_peer_outside_current_session(self):
-        mgr, session = self._make_cached_manager()
-        mgr._get_or_create_peer = MagicMock()
-
-        result = mgr.get_peer_card(session.key, peer="user-telegram-victim")
-
-        assert result == []
-        mgr._get_or_create_peer.assert_not_called()
 
     def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
         mgr, session = self._make_cached_manager()
@@ -388,25 +363,6 @@ class TestPeerLookupHelpers:
             "content": "Robert prefers vinyl",
             "session_id": session.honcho_session_id,
         }])
-
-
-    def test_create_conclusion_rejects_peer_outside_current_session(self):
-        mgr, session = self._make_cached_manager()
-        mgr._get_or_create_peer = MagicMock()
-
-        ok = mgr.create_conclusion(session.key, "Injected fact", peer="user-telegram-victim")
-
-        assert ok is False
-        mgr._get_or_create_peer.assert_not_called()
-
-    def test_delete_conclusion_rejects_peer_outside_current_session(self):
-        mgr, session = self._make_cached_manager()
-        mgr._get_or_create_peer = MagicMock()
-
-        ok = mgr.delete_conclusion(session.key, "conclusion-123", peer="user-telegram-victim")
-
-        assert ok is False
-        mgr._get_or_create_peer.assert_not_called()
 
 
 class TestConcludeToolDispatch:

@@ -29,7 +29,6 @@ import uuid
 from typing import Any, Dict
 
 from hermes_constants import get_hermes_home
-from hermes_logging import _ensure_private_dir
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ class DebugSession:
         self._start_time = datetime.datetime.now().isoformat() if self.enabled else ""
 
         if self.enabled:
-            _ensure_private_dir(self.log_dir)
+            self.log_dir.mkdir(parents=True, exist_ok=True)
             logger.debug("%s debug mode enabled - Session ID: %s",
                          tool_name, self.session_id)
 
@@ -85,17 +84,6 @@ class DebugSession:
             }
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
-            try:
-                fd = os.open(filepath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with open(fd, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, indent=2, ensure_ascii=False)
-            except OSError:
-                with open(filepath, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, indent=2, ensure_ascii=False)
-                try:
-                    os.chmod(filepath, 0o600)
-                except OSError:
-                    pass
             logger.debug("%s debug log saved: %s", self.tool_name, filepath)
         except Exception as e:
             logger.error("Error saving %s debug log: %s", self.tool_name, e)

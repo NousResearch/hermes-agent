@@ -74,18 +74,12 @@ MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
 # Environment variable scrubbing rules (shared between the local + remote
-# backends). Passthrough names are allowed first, then secret-like names are
-# blocked, then remaining names must match a safe exact name, safe prefix, or
-# Windows OS-essential name.
+# backends).  Secret-substring block is applied first; anything left must
+# match either a safe prefix or, on Windows, an OS-essential name.
 _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                       "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-_SAFE_EXACT_ENV_VARS = frozenset({
-    # Needed by Hermes helpers imported inside execute_code subprocesses.
-    # Keep this list exact: broad HERMES_* passthrough can expose secrets
-    # loaded from profile .env files to LLM-generated code.
-    "HERMES_HOME",
-})
+                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                      "HERMES_")
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                       "PASSWD", "AUTH")
 
@@ -127,9 +121,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     Rules (order matters):
       1. Passthrough vars (skill- or config-declared) always pass.
       2. Secret-substring names (KEY/TOKEN/etc.) are blocked.
-      3. Exact non-sensitive Hermes names pass.
-      4. Names matching a safe prefix pass.
-      5. On Windows, a small OS-essential allowlist passes by exact name
+      3. Names matching a safe prefix pass.
+      4. On Windows, a small OS-essential allowlist passes by exact name
          — without these the child can't even create a socket or spawn a
          subprocess.
 
@@ -151,9 +144,6 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             scrubbed[k] = v
             continue
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
-            continue
-        if k in _SAFE_EXACT_ENV_VARS:
-            scrubbed[k] = v
             continue
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             scrubbed[k] = v
@@ -1638,7 +1628,9 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
     """
     if mode != "project":
         return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    from gateway.session_context import get_terminal_cwd
+
+    raw = (get_terminal_cwd("") or "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):

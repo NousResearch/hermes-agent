@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ 新しいセッションを開始しました: {title}"
     title_rejected:        "\n⚠️ タイトルが拒否されました: {error}"
     title_error_untitled:  "\n⚠️ {error} — タイトルなしでセッションを開始しました。"
-    title_unavailable:     "タイトルを適用できませんでした。"
     title_empty_untitled:  "\n⚠️ クリーンアップ後にタイトルが空になりました — タイトルなしでセッションを開始しました。"
     tip:                   "\n✦ ヒント: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "セッションデータベースは利用できません。"
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ クリーンアップ後にタイトルが空になりました。印字可能な文字を使用してください。"
-    unavailable:           "タイトルを適用できませんでした。"
     set_to:                "✏️ セッションタイトルを設定しました: **{title}**"
     not_found:             "データベースにセッションが見つかりません。"
     current_with_title:    "📌 セッション: `{session_id}`\nタイトル: **{title}**"

@@ -17,7 +17,7 @@ import subprocess
 import sys
 import uuid
 from abc import ABC, abstractmethod
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
 
@@ -531,109 +531,6 @@ async def _ssrf_redirect_guard(response):
             raise ValueError(
                 f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
             )
-
-
-MAX_GATEWAY_MEDIA_DOWNLOAD_BYTES = 20 * 1024 * 1024
-
-
-class PublicUrlDownloadHTTPError(RuntimeError):
-    """HTTP status error raised by download_public_url_bytes_aiohttp."""
-
-    def __init__(self, status: int, url: str):
-        self.status = status
-        self.url = url
-        super().__init__(
-            f"HTTP {status} while downloading {safe_url_for_log(url)}"
-        )
-
-
-async def download_public_url_bytes_aiohttp(
-    session,
-    url: str,
-    *,
-    timeout,
-    request_kwargs: dict | None = None,
-    max_bytes: int = MAX_GATEWAY_MEDIA_DOWNLOAD_BYTES,
-    max_redirects: int = 5,
-) -> tuple[bytes, str, str]:
-    """Download a public URL with SSRF-safe redirects and a hard size cap."""
-    from tools.url_safety import is_safe_url
-
-    current_url = url
-    request_kwargs = request_kwargs or {}
-    for _redirect_count in range(max_redirects + 1):
-        if not is_safe_url(current_url):
-            raise ValueError(
-                f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(current_url)}"
-            )
-
-        async with session.get(
-            current_url,
-            timeout=timeout,
-            allow_redirects=False,
-            **request_kwargs,
-        ) as resp:
-            if 300 <= resp.status < 400:
-                location = (
-                    resp.headers.get("Location") if hasattr(resp, "headers") else None
-                )
-                if not location:
-                    raise ValueError(
-                        "Redirect without Location header: "
-                        f"{safe_url_for_log(current_url)}"
-                    )
-                current_url = urljoin(current_url, location)
-                continue
-
-            if resp.status >= 400:
-                raise PublicUrlDownloadHTTPError(resp.status, current_url)
-
-            length = (
-                resp.headers.get("Content-Length")
-                if hasattr(resp, "headers")
-                else None
-            )
-            if inspect.isawaitable(length):
-                length = await length
-            if length is not None:
-                try:
-                    length_int = int(length)
-                except (TypeError, ValueError):
-                    length_int = None
-                if length_int is not None and length_int > max_bytes:
-                    raise ValueError(f"Download exceeds {max_bytes} byte limit")
-
-            chunks: list[bytes] = []
-            total = 0
-            content = getattr(resp, "content", None)
-            iter_chunked = getattr(content, "iter_chunked", None) if content is not None else None
-            if callable(iter_chunked):
-                chunk_iter = iter_chunked(64 * 1024)
-                if inspect.isawaitable(chunk_iter):
-                    chunk_iter = await chunk_iter
-                if hasattr(chunk_iter, "__aiter__"):
-                    async for chunk in chunk_iter:
-                        total += len(chunk)
-                        if total > max_bytes:
-                            raise ValueError(f"Download exceeds {max_bytes} byte limit")
-                        chunks.append(chunk)
-                    data = b"".join(chunks)
-                else:
-                    data = await resp.read()
-                    if len(data) > max_bytes:
-                        raise ValueError(f"Download exceeds {max_bytes} byte limit")
-            else:
-                data = await resp.read()
-                if len(data) > max_bytes:
-                    raise ValueError(f"Download exceeds {max_bytes} byte limit")
-
-            return (
-                data,
-                getattr(resp, "content_type", None) or "application/octet-stream",
-                current_url,
-            )
-
-    raise ValueError(f"Too many redirects while downloading {safe_url_for_log(url)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1083,23 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _same_message_sender(first: MessageEvent, second: MessageEvent) -> bool:
+    """Return True when two message events came from the same platform sender."""
+    first_source = getattr(first, "source", None)
+    second_source = getattr(second, "source", None)
+    first_identity = (
+        getattr(first_source, "platform", None),
+        getattr(first_source, "user_id_alt", None),
+        getattr(first_source, "user_id", None),
+    )
+    second_identity = (
+        getattr(second_source, "platform", None),
+        getattr(second_source, "user_id_alt", None),
+        getattr(second_source, "user_id", None),
+    )
+    return first_identity == second_identity
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -1206,6 +1120,10 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        if not _same_message_sender(existing, event):
+            pending_messages[session_key] = event
+            return
+
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)

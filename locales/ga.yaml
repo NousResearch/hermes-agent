@@ -213,7 +213,6 @@ gateway:
     header_titled:         "✨ Seisiún nua tosaithe: {title}"
     title_rejected:        "\n⚠️ Teideal diúltaithe: {error}"
     title_error_untitled:  "\n⚠️ {error} — seisiún tosaithe gan teideal."
-    title_unavailable:     "Níorbh fhéidir an teideal a chur i bhfeidhm."
     title_empty_untitled:  "\n⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal."
     tip:                   "\n✦ Leid: {tip}"
 
@@ -272,7 +271,6 @@ gateway:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ Tá an teideal folamh tar éis glanta. Bain úsáid as carachtair inphriontáilte le do thoil."
-    unavailable:           "Níorbh fhéidir an teideal a chur i bhfeidhm."
     set_to:                "✏️ Teideal seisiúin socraithe: **{title}**"
     not_found:             "Seisiún gan a aimsiú sa bhunachar sonraí."
     current_with_title:    "📌 Seisiún: `{session_id}`\nTeideal: **{title}**"

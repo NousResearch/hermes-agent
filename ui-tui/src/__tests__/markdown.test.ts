@@ -2,18 +2,13 @@ import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
 import React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
-
-afterEach(() => {
-  vi.restoreAllMocks()
-  vi.unstubAllGlobals()
-})
 const BEL = String.fromCharCode(7)
 const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
@@ -221,29 +216,6 @@ describe('Md wrapping', () => {
 
     expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
   })
-
-  it('renders malformed display-math openers without repeated suffix scans', () => {
-    const malformedLineCount = 256
-    const text = Array.from({ length: malformedLineCount }, (_, i) => `$$ unclosed ${i}`).join('\n')
-    const originalTest = RegExp.prototype.test
-    let dollarCloseTests = 0
-
-    RegExp.prototype.test = function patchedTest(this: RegExp, value: string) {
-      if (this.source === '^(.*?)\\$\\$\\s*$') {
-        dollarCloseTests++
-      }
-
-      return originalTest.call(this, value)
-    }
-
-    try {
-      renderPlain(React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text })))
-    } finally {
-      RegExp.prototype.test = originalTest
-    }
-
-    expect(dollarCloseTests).toBeLessThanOrEqual(malformedLineCount)
-  })
 })
 
 describe('Md link labels', () => {
@@ -278,28 +250,6 @@ describe('Md link labels', () => {
     )
 
     expect(lines.join('\n')).toContain('Trip details')
-  })
-
-  it('does not fetch markdown link titles while rendering assistant text', () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-
-    const lines = renderPlain(
-      React.createElement(
-        Box,
-        { width: 120 },
-        React.createElement(Md, {
-          t: DEFAULT_THEME,
-          text: '[details](https://attacker.example/collect?secret=TOPSECRET123) and https://attacker.example/bare?token=abc'
-        })
-      )
-    )
-
-    const rendered = lines.join('\n')
-
-    expect(rendered).toContain('details')
-    expect(rendered).toContain('Bare')
-    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

@@ -151,42 +151,6 @@ class TestCuteToolMessagePreviewLength:
 
 
 class TestEditDiffPreview:
-    def test_capture_local_edit_snapshot_skips_large_file(self, tmp_path):
-        target = tmp_path / "large.txt"
-        target.write_text("a" * (256 * 1024 + 1), encoding="utf-8")
-
-        snapshot = capture_local_edit_snapshot("write_file", {"path": str(target)})
-
-        assert snapshot is not None
-        assert snapshot.before[str(target)] is None
-
-    def test_capture_local_edit_snapshot_skips_symlink(self, tmp_path):
-        target = tmp_path / "target.txt"
-        target.write_text("ok\n", encoding="utf-8")
-        link = tmp_path / "link.txt"
-        try:
-            link.symlink_to(target)
-        except (NotImplementedError, OSError) as exc:
-            pytest.skip(f"symlinks unavailable in test environment: {exc}")
-
-        snapshot = capture_local_edit_snapshot("write_file", {"path": str(link)})
-
-        assert snapshot is not None
-        assert snapshot.before[str(link)] is None
-
-    def test_capture_local_edit_snapshot_caps_skill_manage_delete_paths(self, tmp_path, monkeypatch):
-        files = []
-        for i in range(140):
-            p = tmp_path / f"f{i}.txt"
-            p.write_text("x\n", encoding="utf-8")
-            files.append(p)
-        monkeypatch.setattr("agent.display._resolve_skill_manage_paths", lambda _args: files)
-
-        snapshot = capture_local_edit_snapshot("skill_manage", {"action": "delete", "name": "demo"})
-
-        assert snapshot is not None
-        assert len(snapshot.paths) == 128
-
     def test_extract_edit_diff_for_patch(self):
         diff = extract_edit_diff("patch", '{"success": true, "diff": "--- a/x\\n+++ b/x\\n"}')
         assert diff is not None

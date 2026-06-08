@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 from collections import deque
+from hashlib import sha1
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 try:
@@ -71,11 +72,6 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._accepted_count = 0
         self._duplicate_count = 0
 
-    @property
-    def client_state_configured(self) -> bool:
-        """Return whether webhook notifications require a clientState secret."""
-        return self._client_state is not None
-
     @staticmethod
     def _string_or_none(value: Any) -> Optional[str]:
         if value is None:
@@ -137,6 +133,15 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._notification_scheduler = scheduler
 
     async def connect(self) -> bool:
+        if self._client_state is None:
+            message = (
+                "msgraph_webhook requires a non-empty client_state secret; "
+                "set MSGRAPH_WEBHOOK_CLIENT_STATE or platforms.msgraph_webhook.extra.client_state"
+            )
+            logger.error("[msgraph_webhook] %s", message)
+            self._set_fatal_error("missing_client_state", message, retryable=False)
+            return False
+
         app = web.Application()
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
@@ -314,7 +319,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         """
         expected = self._client_state
         if expected is None:
-            return True
+            return False
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False
@@ -335,7 +340,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         notification: Dict[str, Any],
         receipt_key: Optional[str],
     ) -> MessageEvent:
-        message_id = receipt_key or ""
+        message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
         source = self.build_source(
             chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}",
             chat_name="msgraph/webhook",

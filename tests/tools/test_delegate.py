@@ -890,7 +890,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_uses_openai_env_key_when_api_key_not_configured(self):
+    def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
+        # When base_url is set without api_key, api_key should be None so
+        # _build_child_agent inherits the parent's key (effective_api_key = override or parent).
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
@@ -898,10 +900,11 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         }
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
             creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_key"], "env-openai-key")
+        self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
-    def test_direct_endpoint_requires_explicit_or_openai_api_key(self):
+    def test_direct_endpoint_no_raise_when_only_provider_env_key_present(self):
+        # Even if OPENAI_API_KEY is absent, no ValueError — _build_child_agent uses parent key.
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
@@ -915,10 +918,9 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             },
             clear=False,
         ):
-            with self.assertRaises(ValueError) as ctx:
-                _resolve_delegation_credentials(cfg, parent)
-        self.assertIn("delegation.base_url", str(ctx.exception))
-        self.assertIn("delegation.api_key", str(ctx.exception))
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["api_key"])
+        self.assertEqual(creds["provider"], "custom")
 
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
@@ -958,36 +960,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
-
-
-    @patch("tools.delegate_tool._load_config")
-    def test_custom_base_url_without_api_key_does_not_inherit_parent_secret(self, mock_cfg):
-        mock_cfg.return_value = {"max_iterations": 45}
-        parent = _make_mock_parent(depth=0)
-        parent.api_key = "parent-provider-secret"
-
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            MockAgent.return_value = mock_child
-
-            _build_child_agent(
-                task_index=0,
-                goal="test",
-                context="",
-                toolsets=None,
-                model=None,
-                parent_agent=parent,
-                max_iterations=45,
-                task_count=1,
-                override_provider="custom",
-                override_base_url="http://localhost:1234/v1",
-                override_api_key=None,
-                override_api_mode="chat_completions",
-            )
-
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
-            self.assertIsNone(kwargs["api_key"])
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -1759,12 +1731,12 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 # =========================================================================
 
 class TestDispatchDelegateTask(unittest.TestCase):
-    """Tests for the _dispatch_delegate_task helper and full param forwarding."""
+    """Tests for the _dispatch_delegate_task helper and guarded param forwarding."""
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_acp_args_forwarded(self, mock_creds, mock_cfg):
-        """Both acp_command and acp_args reach delegate_task via the helper."""
+    def test_caller_supplied_acp_args_ignored(self, mock_creds, mock_cfg):
+        """Tool-call ACP command/args must not reach child agent construction."""
         mock_creds.return_value = {
             "provider": None, "base_url": None,
             "api_key": None, "api_mode": None, "model": None,
@@ -1785,13 +1757,47 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
             delegate_task(
                 goal="test",
-                acp_command="claude",
-                acp_args=["--acp", "--stdio"],
+                acp_command="/bin/sh",
+                acp_args=["-c", "echo unsafe"],
                 parent_agent=parent,
             )
             _, kwargs = mock_build.call_args
-            self.assertEqual(kwargs["override_acp_command"], "claude")
-            self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+            self.assertIsNone(kwargs["override_acp_command"])
+            self.assertIsNone(kwargs["override_acp_args"])
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_acp_args_ignored(self, mock_creds, mock_cfg):
+        """Batch task ACP transports are not forwarded to child agents."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                tasks=[{
+                    "goal": "test",
+                    "acp_command": "/bin/sh",
+                    "acp_args": ["-c", "echo unsafe"],
+                }],
+                parent_agent=parent,
+            )
+            _, kwargs = mock_build.call_args
+            self.assertIsNone(kwargs["override_acp_command"])
+            self.assertIsNone(kwargs["override_acp_args"])
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
@@ -2060,31 +2066,16 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
 
-    def test_acp_command_description_has_do_not_set_guidance(self):
-        # acp_command/acp_args descriptions must NOT bias the model toward
-        # assuming an ACP CLI (Claude, Copilot, etc.) is installed. They must
-        # carry explicit "do not set unless told" guidance so the model doesn't
-        # hallucinate ACP availability (#22013).
+    def test_acp_transport_overrides_not_exposed_to_model(self):
+        """ACP command selection is local execution and must stay operator-configured."""
         from tools.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-
-        top_acp_desc = props["acp_command"]["description"]
-        self.assertIn("Do NOT set", top_acp_desc)
-        self.assertIn("explicitly told you", top_acp_desc)
+        self.assertNotIn("acp_command", props)
+        self.assertNotIn("acp_args", props)
 
         task_props = props["tasks"]["items"]["properties"]
-        per_task_acp_desc = task_props["acp_command"]["description"]
-        self.assertIn("Do NOT set", per_task_acp_desc)
-
-    def test_acp_command_description_has_no_claude_as_example(self):
-        # Descriptions must not list 'claude' as a canonical example value —
-        # that directly primes the model to attempt Claude ACP even when it is
-        # not installed (#22013).
-        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
-        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        top_acp_desc = props["acp_command"]["description"].lower()
-        self.assertNotIn("e.g. 'claude'", top_acp_desc)
-        self.assertNotIn("e.g. \"claude\"", top_acp_desc)
+        self.assertNotIn("acp_command", task_props)
+        self.assertNotIn("acp_args", task_props)
 
 
 # Sentinel used to distinguish "role kwarg omitted" from "role=None".

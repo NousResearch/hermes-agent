@@ -10,6 +10,7 @@ import pytest
 from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
+    HermesIndexSource,
     LobeHubSource,
     SkillsShSource,
     UrlSource,
@@ -27,6 +28,98 @@ from tools.skills_hub import (
     _skill_meta_to_dict,
     quarantine_bundle,
 )
+
+
+class FakeGitHubSource:
+    def __init__(self):
+        self.requested = []
+
+    def fetch(self, identifier):
+        self.requested.append(identifier)
+        return SkillBundle(
+            name=identifier.rstrip("/").split("/")[-1],
+            files={"SKILL.md": "# Test\n"},
+            source="github",
+            identifier=identifier,
+            trust_level=(
+                "trusted"
+                if identifier.startswith(("openai/skills/", "anthropics/skills/"))
+                else "community"
+            ),
+        )
+
+
+class TestHermesIndexSourceSecurity:
+    def _source_with_index(self, skills):
+        source = HermesIndexSource(auth=GitHubAuth())
+        source._index = {"skills": skills}
+        source._loaded = True
+        source._github = FakeGitHubSource()
+        return source
+
+    def test_fetch_keeps_actual_github_identity_for_install_policy(self):
+        source = self._source_with_index([
+            {
+                "name": "evil-index-skill",
+                "description": "spoofed official metadata",
+                "source": "official",
+                "identifier": "official/autonomous-ai-agents/evil-index-skill",
+                "trust_level": "builtin",
+                "resolved_github_id": "attacker/repo/skills/evil-index-skill",
+            }
+        ])
+
+        bundle = source.fetch("official/autonomous-ai-agents/evil-index-skill")
+
+        assert bundle is not None
+        assert source._github.requested == ["attacker/repo/skills/evil-index-skill"]
+        assert bundle.source == "github"
+        assert bundle.identifier == "attacker/repo/skills/evil-index-skill"
+        assert bundle.trust_level == "community"
+        assert (
+            bundle.metadata["hermes_index_identifier"]
+            == "official/autonomous-ai-agents/evil-index-skill"
+        )
+
+    def test_index_metadata_cannot_spoof_official_or_builtin_trust(self):
+        source = self._source_with_index([
+            {
+                "name": "evil-index-skill",
+                "description": "spoofed official metadata",
+                "source": "official",
+                "identifier": "official/autonomous-ai-agents/evil-index-skill",
+                "trust_level": "builtin",
+                "resolved_github_id": "attacker/repo/skills/evil-index-skill",
+            }
+        ])
+
+        meta = source.inspect("official/autonomous-ai-agents/evil-index-skill")
+
+        assert meta is not None
+        assert meta.source == "github"
+        assert meta.trust_level == "community"
+        assert meta.extra["hermes_index_source"] == "official"
+
+    def test_resolved_github_id_must_match_advertised_repo(self):
+        source = self._source_with_index([
+            {
+                "name": "safe-skill",
+                "description": "repo mismatch",
+                "source": "github",
+                "identifier": "openai/skills/safe-skill",
+                "trust_level": "trusted",
+                "repo": "openai/skills",
+                "path": "skills/safe-skill",
+                "resolved_github_id": "attacker/repo/skills/evil-index-skill",
+            }
+        ])
+
+        bundle = source.fetch("openai/skills/safe-skill")
+
+        assert bundle is not None
+        assert source._github.requested == ["openai/skills/skills/safe-skill"]
+        assert bundle.identifier == "openai/skills/skills/safe-skill"
+        assert bundle.trust_level == "trusted"
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +272,10 @@ class TestSkillsShSource:
         assert bundle is not None
         assert bundle.source == "skills.sh"
         assert bundle.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        assert (
+            bundle.metadata["resolved_github_identifier"]
+            == "vercel-labs/agent-skills/vercel-react-best-practices"
+        )
         mock_fetch.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
 
     @patch.object(GitHubSource, "fetch")
@@ -197,6 +294,7 @@ class TestSkillsShSource:
         assert bundle is not None
         assert bundle.source == "skills.sh"
         assert bundle.identifier == "skills-sh/anthropics/skills/frontend-design"
+        assert bundle.metadata["resolved_github_identifier"] == expected_identifier
         assert mock_fetch.call_args_list[0] == ((expected_identifier,), {})
 
     @patch("tools.skills_hub._write_index_cache")
@@ -344,6 +442,10 @@ class TestSkillsShSource:
 
         assert bundle is not None
         assert bundle.identifier == "skills-sh/vercel-labs/json-render/json-render-react"
+        assert (
+            bundle.metadata["resolved_github_identifier"]
+            == "vercel-labs/json-render/skills/react"
+        )
         assert bundle.files["SKILL.md"] == "# react"
         assert mock_get.called
 
@@ -376,6 +478,7 @@ class TestSkillsShSource:
 
         assert bundle is not None
         assert bundle.identifier == "skills-sh/owner/repo/product-designer"
+        assert bundle.metadata["resolved_github_identifier"] == resolved_identifier
         # All candidate identifiers are tried before falling back to discovery
         assert mock_fetch.call_args_list[-1] == ((resolved_identifier,), {})
         assert mock_fetch.call_args_list[0] == (("owner/repo/product-designer",), {})

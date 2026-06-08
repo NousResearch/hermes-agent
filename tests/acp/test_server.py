@@ -1036,6 +1036,14 @@ class TestSlashCommands:
 # ---------------------------------------------------------------------------
 
 
+class TestAcpConfig:
+    def test_client_stdio_mcp_servers_disabled_by_default(self):
+        """Client-provided stdio MCP commands require explicit operator opt-in."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["acp"]["allow_client_stdio_mcp_servers"] is False
+
+
 class TestRegisterSessionMcpServers:
     """Tests for ACP MCP server registration in session lifecycle."""
 
@@ -1048,8 +1056,28 @@ class TestRegisterSessionMcpServers:
         await agent._register_session_mcp_servers(state, [])
 
     @pytest.mark.asyncio
-    async def test_registers_stdio_servers(self, agent, mock_manager):
-        """McpServerStdio servers are converted and passed to register_mcp_servers."""
+    async def test_skips_stdio_servers_by_default(self, agent, mock_manager):
+        """ACP-provided stdio MCP servers are not executed unless config opts in."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        server = McpServerStdio(
+            name="test-server",
+            command="/usr/bin/test",
+            args=["--flag"],
+            env=[],
+        )
+
+        with patch("tools.mcp_tool.register_mcp_servers") as mock_register, \
+             patch("model_tools.get_tool_definitions") as mock_defs:
+            await agent._register_session_mcp_servers(state, [server])
+
+        mock_register.assert_not_called()
+        mock_defs.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_registers_stdio_servers_when_operator_enabled(self, agent, mock_manager):
+        """McpServerStdio servers are registered only after explicit operator opt-in."""
         from acp.schema import McpServerStdio, EnvVariable
 
         state = mock_manager.create_session(cwd="/tmp")
@@ -1071,7 +1099,8 @@ class TestRegisterSessionMcpServers:
             registered_config.update(config_map)
             return ["mcp_test_server_tool1"]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
+        with patch("hermes_cli.config.load_config", return_value={"acp": {"allow_client_stdio_mcp_servers": True}}), \
+             patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
              patch("model_tools.get_tool_definitions", return_value=[]):
             await agent._register_session_mcp_servers(state, [server])
 
@@ -1115,7 +1144,7 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_refreshes_agent_tool_surface(self, agent, mock_manager):
         """After MCP registration, agent.tools and valid_tool_names are refreshed."""
-        from acp.schema import McpServerStdio
+        from acp.schema import McpServerHttp
 
         state = mock_manager.create_session(cwd="/tmp")
         state.agent.enabled_toolsets = ["hermes-acp"]
@@ -1124,11 +1153,10 @@ class TestRegisterSessionMcpServers:
         state.agent.valid_tool_names = set()
         state.agent._cached_system_prompt = "old prompt"
 
-        server = McpServerStdio(
+        server = McpServerHttp(
             name="srv",
-            command="/bin/test",
-            args=[],
-            env=[],
+            url="https://api.example.com/mcp",
+            headers=[],
         )
 
         fake_tools = [
@@ -1154,14 +1182,13 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_register_failure_logs_warning(self, agent, mock_manager):
         """If register_mcp_servers raises, warning is logged but no crash."""
-        from acp.schema import McpServerStdio
+        from acp.schema import McpServerHttp
 
         state = mock_manager.create_session(cwd="/tmp")
-        server = McpServerStdio(
+        server = McpServerHttp(
             name="bad",
-            command="/nonexistent",
-            args=[],
-            env=[],
+            url="https://api.example.com/mcp",
+            headers=[],
         )
 
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):

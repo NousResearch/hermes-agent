@@ -11,10 +11,10 @@
 # and read by hermes at startup — no container recreation needed for env changes.
 #
 # Tool resolution: the hermes wrapper uses --suffix PATH for nix store tools,
-# so apt-installed versions take priority. The container entrypoint provisions
-# extensible tools on first boot: nodejs/npm via apt and a Python 3.12 venv at
-# ~/.venv with pip seeded by the Nix-built uv. Agents get writable tool prefixes
-# for npm i -g, pip install, uv tool install, etc.
+# so apt/uv-installed versions take priority. The container entrypoint provisions
+# extensible tools on first boot: nodejs/npm via apt, uv via curl, and a Python
+# 3.11 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
+# writable tool prefixes for npm i -g, pip install, uv tool install, etc.
 #
 # Usage:
 #   services.hermes-agent = {
@@ -123,7 +123,7 @@
       # script sets for group access by hostUsers.  Only touch files with
       # wrong ownership so correctly-owned dirs keep their permission bits.
       if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
-        find "$HERMES_HOME" \( \! -user "$HERMES_UID" -o \! -group "$HERMES_GID" \) -exec chown -h "$HERMES_UID:$HERMES_GID" -- {} +
+        find "$HERMES_HOME" \! -user "$HERMES_UID" -exec chown "$HERMES_UID:$HERMES_GID" {} +
       fi
 
       # ── Provision apt packages (first boot only, cached in writable layer) ──
@@ -151,13 +151,20 @@
         chmod 0440 /etc/sudoers.d/hermes
       fi
 
+      # uv (Python manager) — not in Ubuntu repos, retry-safe outside the sentinel
+      if ! command -v uv >/dev/null 2>&1 && [ ! -x "$TARGET_HOME/.local/bin/uv" ] && command -v curl >/dev/null 2>&1; then
+        su -s /bin/sh "$TARGET_USER" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
+      fi
+
       # Python 3.12 venv — gives the agent a writable Python with pip.
-      # Use the Nix-built uv and Python store paths instead of fetching a runtime
-      # installer script in the privileged container entrypoint.
-      _UV_BIN="${pkgs.uv}/bin/uv"
-      _PYTHON_BIN="${pkgs.python312}/bin/python3"
-      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ] && [ -x "$_PYTHON_BIN" ]; then
-        su -s /bin/sh "$TARGET_USER" -c "$_UV_BIN venv --python $_PYTHON_BIN --seed $TARGET_HOME/.venv" || true
+      # --seed includes pip/setuptools so bare `pip install` works.
+      _UV_BIN="$TARGET_HOME/.local/bin/uv"
+      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
+        su -s /bin/sh "$TARGET_USER" -c "
+          export PATH=\"\$HOME/.local/bin:\$PATH\"
+          uv python install 3.12
+          uv venv --python 3.12 --seed \"\$HOME/.venv\"
+        " || true
       fi
 
       # Put the agent venv first on PATH so python/pip resolve to writable copies
@@ -186,6 +193,7 @@
     });
 
     identityFile = "${cfg.stateDir}/.container-identity";
+    containerModeFile = "/etc/hermes-agent/container-mode";
 
     # Default: /var/lib/hermes/workspace → /data/workspace.
     # Custom paths outside stateDir pass through unchanged (user must add extraVolumes).
@@ -490,7 +498,7 @@
         type = types.listOf types.package;
         default = [ ];
         description = ''
-          Python packages to expose to Hermes for entry-point plugin discovery without adding them to startup PYTHONPATH.
+          Python packages to add to PYTHONPATH for entry-point plugin discovery.
           These are pip-packaged plugins that register via the
           hermes_agent.plugins entry-point group. Each package must be built
           with the same Python interpreter as hermes (python312).
@@ -750,19 +758,24 @@
           chmod 0644 ${cfg.stateDir}/.hermes/.managed
 
           # Container mode metadata — tells the host CLI to exec into the
-          # container instead of running locally. Removed when container mode
-          # is disabled so the host CLI falls back to native execution.
+          # container instead of running locally. Keep it root-owned outside
+          # HERMES_HOME so the containerized agent cannot alter host routing.
           ${if cfg.container.enable then ''
-            cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
+            install -d -o root -g root -m 0755 /etc/hermes-agent
+            cat > ${containerModeFile} <<'HERMES_CONTAINER_MODE_EOF'
     # Written by NixOS activation script. Do not edit manually.
     backend=${cfg.container.backend}
+    runtime_path=${containerBin}
     container_name=${containerName}
     exec_user=${cfg.user}
     hermes_bin=${containerDataDir}/current-package/bin/hermes
     HERMES_CONTAINER_MODE_EOF
-            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
-            chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
+            chown root:root ${containerModeFile}
+            chmod 0644 ${containerModeFile}
+            rm -f ${cfg.stateDir}/.hermes/.container-mode
           '' else ''
+            rm -f ${containerModeFile}
+            rmdir /etc/hermes-agent 2>/dev/null || true
             rm -f ${cfg.stateDir}/.hermes/.container-mode
 
             # Remove symlink bridge for hostUsers

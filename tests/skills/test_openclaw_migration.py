@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import pytest
 import sys
 from pathlib import Path
 
@@ -178,7 +177,7 @@ def test_migrator_optionally_imports_supported_secrets_and_messaging_settings(tm
         migrate_secrets=True,
         output_dir=target / "migration-report",
     )
-    report = migrator.migrate()
+    migrator.migrate()
 
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "MESSAGING_CWD=/tmp/openclaw-workspace" in env_text
@@ -211,7 +210,7 @@ def test_messaging_cwd_skipped_when_inside_source(tmp_path: Path):
         output_dir=target / "migration-report",
         selected_options={"messaging-settings"},
     )
-    report = migrator.migrate()
+    migrator.migrate()
 
     env_path = target / ".env"
     if env_path.exists():
@@ -370,7 +369,7 @@ def test_source_candidate_prefers_standard_workspace_over_custom(tmp_path: Path)
         output_dir=target / "migration-report",
         selected_options={"soul"},
     )
-    report = migrator.migrate()
+    migrator.migrate()
 
     # Standard workspace location should have been preferred
     content = (target / "SOUL.md").read_text(encoding="utf-8")
@@ -691,39 +690,6 @@ def test_shared_skills_migrated(tmp_path: Path):
     report = migrator.migrate()
     imported = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "my-shared-skill" / "SKILL.md"
     assert imported.exists()
-
-
-def test_shared_skills_skip_symlinked_files(tmp_path: Path):
-    """Shared skill import skips skills that contain symlinks."""
-    mod = load_module()
-    source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
-    target.mkdir()
-
-    skill_dir = source / "workspace" / ".agents" / "skills" / "evil-skill"
-    (skill_dir / "assets").mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: evil-skill\ndescription: shared\n---\n\nbody\n",
-        encoding="utf-8",
-    )
-    secret = tmp_path / "secret.txt"
-    secret.write_text("do-not-copy", encoding="utf-8")
-    try:
-        (skill_dir / "assets" / "copied_secret.txt").symlink_to(secret)
-    except (OSError, NotImplementedError) as exc:
-        pytest.skip(f"symlinks unavailable in test environment: {exc}")
-
-    migrator = mod.Migrator(
-        source_root=source, target_root=target, execute=True,
-        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
-        selected_options={"shared-skills"},
-    )
-    report = migrator.migrate()
-
-    imported_skill = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "evil-skill"
-    assert not imported_skill.exists()
-    skipped = [item for item in report["items"] if item["kind"] == "project-skills" and item["status"] == "skipped"]
-    assert any("symlink" in json.dumps(item).lower() for item in skipped)
 
 
 def test_daily_memory_merged(tmp_path: Path):

@@ -6,7 +6,9 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
 import re
+import stat
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -327,6 +329,10 @@ class TestPostSetup:
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
+        if os.name != "nt":
+            assert stat.S_IMODE((user_home / ".hindsight").stat().st_mode) == 0o700
+            assert stat.S_IMODE(profile_env.parent.stat().st_mode) == 0o700
+            assert stat.S_IMODE(profile_env.stat().st_mode) == 0o600
         assert profile_env.read_text() == (
             "HINDSIGHT_API_LLM_PROVIDER=openai\n"
             "HINDSIGHT_API_LLM_API_KEY=sk-local-test\n"
@@ -381,6 +387,7 @@ class TestPostSetup:
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
+        assert profile_env.stat().st_mode & 0o777 == 0o600
         assert "HINDSIGHT_API_LLM_API_KEY=existing-key\n" in profile_env.read_text()
 
 

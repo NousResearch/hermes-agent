@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ Nova sessão iniciada: {title}"
     title_rejected:        "\n⚠️ Título rejeitado: {error}"
     title_error_untitled:  "\n⚠️ {error} — sessão iniciada sem título."
-    title_unavailable:     "Não foi possível aplicar o título."
     title_empty_untitled:  "\n⚠️ O título fica vazio após a limpeza — sessão iniciada sem título."
     tip:                   "\n✦ Dica: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "Base de dados de sessões indisponível."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ O título está vazio após a limpeza. Usa caracteres imprimíveis."
-    unavailable:           "Não foi possível aplicar o título."
     set_to:                "✏️ Título da sessão definido: **{title}**"
     not_found:             "Sessão não encontrada na base de dados."
     current_with_title:    "📌 Sessão: `{session_id}`\nTítulo: **{title}**"

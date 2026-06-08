@@ -39,6 +39,8 @@ from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+MATRIX_LOCAL_FILE_MAX_BYTES = 50 * 1024 * 1024
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -100,9 +102,8 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    download_public_url_bytes_aiohttp,
-    proxy_kwargs_for_aiohttp,
     resolve_proxy_url,
+    proxy_kwargs_for_aiohttp,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -419,6 +420,49 @@ class MatrixAdapter(BasePlatformAdapter):
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
+
+    async def _is_approval_reaction_user_authorized(self, sender: str, room_id: str) -> bool:
+        """Return whether a Matrix reaction sender may resolve an approval prompt."""
+        sender = str(sender or "").strip()
+        room_id = str(room_id or "").strip()
+        if not sender or not room_id:
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                chat_type = "dm" if await self._is_dm_room(room_id) else "group"
+                source = self.build_source(
+                    chat_id=room_id,
+                    chat_type=chat_type,
+                    user_id=sender,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "Matrix: falling back to env-only approval reaction auth for %s",
+                    sender,
+                    exc_info=True,
+                )
+
+        if os.getenv("MATRIX_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+
+        allowed_ids = set(self._allowed_user_ids)
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
+        if not allowed_ids:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {sender}
+        if "@" in sender:
+            check_ids.add(sender.split("@")[0])
+        return bool(check_ids & allowed_ids)
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -1070,19 +1114,33 @@ class MatrixAdapter(BasePlatformAdapter):
             )
 
         try:
-            import aiohttp as _aiohttp
-
-            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
-            async with _aiohttp.ClientSession(**_sess_kw) as http:
-                data, ct, final_url = await download_public_url_bytes_aiohttp(
-                    http,
-                    image_url,
-                    timeout=_aiohttp.ClientTimeout(total=30),
-                    request_kwargs=_req_kw,
-                )
-                if ct == "application/octet-stream":
-                    ct = "image/png"
-                fname = final_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
+            # Try aiohttp first (always available), fall back to httpx
+            try:
+                import aiohttp as _aiohttp
+                _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
+                async with _aiohttp.ClientSession(**_sess_kw) as http:
+                    async with http.get(
+                        image_url,
+                        timeout=_aiohttp.ClientTimeout(total=30),
+                        **_req_kw,
+                    ) as resp:
+                        resp.raise_for_status()
+                        data = await resp.read()
+                        ct = resp.content_type or "image/png"
+                        fname = (
+                            image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
+                        )
+            except ImportError:
+                import httpx
+                _httpx_kw: dict = {}
+                if self._proxy_url:
+                    _httpx_kw["proxy"] = self._proxy_url
+                async with httpx.AsyncClient(**_httpx_kw) as http:
+                    resp = await http.get(image_url, follow_redirects=True, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.content
+                    ct = resp.headers.get("content-type", "image/png")
+                    fname = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
         except Exception as exc:
             logger.warning("Matrix: failed to download image %s: %s", image_url, exc)
             return await self.send(
@@ -1313,6 +1371,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self.send(
                 room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
             )
+        if not p.is_file():
+            return SendResult(success=False, error="Matrix media path must be a regular file")
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            return SendResult(success=False, error=f"Matrix media file is not accessible: {exc}")
+        if size > MATRIX_LOCAL_FILE_MAX_BYTES:
+            return SendResult(success=False, error="Matrix media file exceeds the 50 MiB upload limit")
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
@@ -1700,12 +1766,6 @@ class MatrixAdapter(BasePlatformAdapter):
         else:
             await self.handle_message(msg_event)
 
-    def _get_gateway_authorizer(self) -> Any:
-        """Return the gateway authorization callback when this adapter is wired to one."""
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        return auth_fn if callable(auth_fn) else None
-
     async def _handle_media_message(
         self,
         room_id: str,
@@ -1718,7 +1778,6 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         """Process a media message event (image, audio, video, file)."""
         body = source_content.get("body", "") or ""
-        original_body = body
         url = source_content.get("url", "")
 
         # Convert mxc:// to HTTP URL for downstream processing.
@@ -1762,36 +1821,6 @@ class MatrixAdapter(BasePlatformAdapter):
             media_type = event_mimetype or "video/mp4"
         elif event_mimetype:
             media_type = event_mimetype
-
-        ctx = await self._resolve_message_context(
-            room_id,
-            sender,
-            event_id,
-            body,
-            source_content,
-            relates_to,
-        )
-        if ctx is None:
-            return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
-
-        # Avoid downloading and caching attacker-controlled media for users
-        # that the gateway allowlist will reject.  Still pass a media-less
-        # event through so the normal unauthorized-DM pairing flow can run.
-        auth_fn = self._get_gateway_authorizer()
-        if auth_fn is not None and not auth_fn(source):
-            display_body = body
-            if msgtype == "m.image" and _looks_like_matrix_image_filename(display_body):
-                display_body = ""
-            msg_event = MessageEvent(
-                text=display_body,
-                message_type=msg_type,
-                source=source,
-                raw_message=source_content,
-                message_id=event_id,
-            )
-            await self.handle_message(msg_event)
-            return
 
         # Cache media locally when downstream tools need a real file path.
         cached_path = None
@@ -1861,7 +1890,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
                             ext = (
                                 Path(
-                                    original_body
+                                    body
                                     or (
                                         "voice.ogg" if is_voice_message else "audio.ogg"
                                     )
@@ -1870,7 +1899,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
                             cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
                         else:
-                            filename = original_body or (
+                            filename = body or (
                                 "video.mp4"
                                 if msg_type == MessageType.VIDEO
                                 else "document"
@@ -1880,6 +1909,18 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
+
+        ctx = await self._resolve_message_context(
+            room_id,
+            sender,
+            event_id,
+            body,
+            source_content,
+            relates_to,
+        )
+        if ctx is None:
+            return
+        body, is_dm, chat_type, thread_id, display_name, source = ctx
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
@@ -2093,7 +2134,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
                     return
-                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                if not await self._is_approval_reaction_user_authorized(sender, room_id):
                     logger.info(
                         "Matrix: ignoring approval reaction from unauthorized user %s on %s",
                         sender, reacts_to,
@@ -2577,19 +2618,32 @@ class MatrixAdapter(BasePlatformAdapter):
         return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
 
     def _markdown_to_html(self, text: str) -> str:
-        """Convert Markdown to hardened HTML (org.matrix.custom.html).
+        """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
-        Always uses the sanitized regex-based converter to prevent
-        inline HTML and unsafe URI schemes (javascript:, data:, vbscript:)
-        from reaching Matrix clients. Handles fenced code blocks, inline
-        code, headers, bold, italic, strikethrough, links, blockquotes,
-        lists, and horizontal rules — everything the Matrix HTML spec allows.
-
-        Note: Python-Markdown support was intentionally removed to prevent
-        sanitization bypass vulnerabilities (raw inline HTML and unsafe
-        link schemes can slip through when the ``matrix`` extra installs
-        ``Markdown>=3.6``).
+        Uses the ``markdown`` library when available (installed with the
+        ``matrix`` extra).  Falls back to a comprehensive regex converter
+        that handles fenced code blocks, inline code, headers, bold,
+        italic, strikethrough, links, blockquotes, lists, and horizontal
+        rules — everything the Matrix HTML spec allows.
         """
+        try:
+            import markdown as _md
+
+            md = _md.Markdown(
+                extensions=["fenced_code", "tables", "nl2br", "sane_lists"],
+            )
+            if "html_block" in md.preprocessors:
+                md.preprocessors.deregister("html_block")
+
+            html = md.convert(text)
+            md.reset()
+
+            if html.count("<p>") == 1:
+                html = html.replace("<p>", "").replace("</p>", "")
+            return html
+        except ImportError:
+            pass
+
         return self._markdown_to_html_fallback(text)
 
     # ------------------------------------------------------------------

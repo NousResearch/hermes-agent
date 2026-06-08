@@ -24,10 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import stat
-import tempfile
 import threading
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 # Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts``)
@@ -84,52 +81,6 @@ _VOICE_RESERVED_CTRL_CHARS = frozenset({"c", "d", "l"})
 _VOICE_RESERVED_ALT_CHARS_MAC = frozenset({"c", "d", "l"})
 
 _DEFAULT_PT_KEY = "c-b"
-
-
-def _secure_voice_tts_dir() -> Path:
-    """Return a private directory for transient voice TTS audio files."""
-    from hermes_constants import get_hermes_home
-
-    # Reject symlinks on the parent cache directory to prevent redirection
-    # through an attacker-controlled symlink before voice_tts is created.
-    cache_dir = get_hermes_home() / "cache"
-    if cache_dir.is_symlink():
-        raise RuntimeError(
-            f"refusing symlinked voice TTS parent directory: {cache_dir}"
-        )
-
-    tts_dir = cache_dir / "voice_tts"
-    if tts_dir.is_symlink():
-        raise RuntimeError(f"refusing symlinked voice TTS directory: {tts_dir}")
-
-    tts_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-    if tts_dir.is_symlink():
-        raise RuntimeError(f"refusing symlinked voice TTS directory: {tts_dir}")
-
-    if os.name == "posix":
-        st = tts_dir.stat()
-        if st.st_uid != os.getuid():  # windows-footgun: ok
-            raise RuntimeError(
-                "voice TTS directory is not owned by the current user: "
-                f"{tts_dir}"
-            )
-        mode = stat.S_IMODE(st.st_mode)
-        if mode != 0o700:
-            tts_dir.chmod(0o700)
-
-    return tts_dir
-
-
-def _reserve_voice_tts_mp3_path() -> str:
-    """Reserve a random 0600 MP3 path for one TUI/CLI voice TTS playback."""
-    fd, path = tempfile.mkstemp(
-        prefix="tts_", suffix=".mp3", dir=_secure_voice_tts_dir()
-    )
-    if hasattr(os, "fchmod"):
-        os.fchmod(fd, 0o600)
-    os.close(fd)
-    return path
 
 
 def voice_record_key_from_config(cfg: Any) -> Any:
@@ -804,6 +755,7 @@ def speak_text(text: str) -> None:
         return
 
     import re
+    import tempfile
     import time
 
     # Cancel any live capture before we open the speakers — otherwise the
@@ -844,32 +796,31 @@ def speak_text(text: str) -> None:
         if not tts_text:
             return
 
-        # Reserve a random, user-private MP3 output path so local users cannot
-        # predict or read transient agent responses while playback is in flight.
-        # We still pre-select MP3 so we can play it directly even when
-        # text_to_speech_tool auto-converts to OGG for messaging platforms.
-        mp3_path = _reserve_voice_tts_mp3_path()
+        # MP3 output path, pre-chosen so we can play the MP3 directly even
+        # when text_to_speech_tool auto-converts to OGG for messaging
+        # platforms.  afplay's OGG support is flaky, MP3 always works.
+        os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
+        mp3_path = os.path.join(
+            tempfile.gettempdir(),
+            "hermes_voice",
+            f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
+        )
 
         _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
         text_to_speech_tool(text=tts_text, output_path=mp3_path)
 
-        try:
-            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-                _debug(
-                    f"speak_text: playing {mp3_path} "
-                    f"({os.path.getsize(mp3_path)} bytes)"
-                )
-                play_audio_file(mp3_path)
-            else:
-                _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
-        finally:
-            ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-            for path in (mp3_path, ogg_path):
-                try:
-                    if os.path.isfile(path):
-                        os.unlink(path)
-                except OSError:
-                    pass
+        if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+            _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
+            play_audio_file(mp3_path)
+            try:
+                os.unlink(mp3_path)
+                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+                if os.path.isfile(ogg_path):
+                    os.unlink(ogg_path)
+            except OSError:
+                pass
+        else:
+            _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)
         _debug(f"speak_text raised {type(e).__name__}: {e}")

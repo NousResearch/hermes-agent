@@ -299,7 +299,7 @@ class TestReasoningCommand:
         assert _CapturingAgent.last_init is not None
         assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
-    def test_run_agent_excludes_unnamed_mcp_servers_from_explicit_gateway_toolsets(self, tmp_path, monkeypatch):
+    def test_run_agent_honors_explicit_gateway_toolset_mcp_restrictions(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(

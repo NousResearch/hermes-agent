@@ -1,7 +1,10 @@
 import { isIP } from 'node:net'
 
+import { useEffect, useMemo, useState } from 'react'
+
 const titleCache = new Map<string, string>()
 const titleInflight = new Map<string, Promise<string>>()
+const titleSubs = new Map<string, Set<(value: string) => void>>()
 
 const TITLE_CACHE_LIMIT = 500
 const TITLE_MAX_LENGTH = 240
@@ -178,12 +181,7 @@ function isPrivateIpv6(value: string): boolean {
     return true
   }
 
-  if (
-    normalized.startsWith('fe8') ||
-    normalized.startsWith('fe9') ||
-    normalized.startsWith('fea') ||
-    normalized.startsWith('feb')
-  ) {
+  if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) {
     return true
   }
 
@@ -334,7 +332,7 @@ async function fetchHtmlTitle(normalizedUrl: string): Promise<string> {
         'Accept-Language': 'en-US,en;q=0.7',
         'User-Agent': TITLE_USER_AGENT
       },
-      redirect: 'manual',
+      redirect: 'follow',
       signal: controller.signal
     })
 
@@ -381,6 +379,8 @@ export function fetchLinkTitle(url: string): Promise<string> {
     .catch(() => '')
     .then(clean => {
       cacheTitle(key, clean)
+      titleSubs.get(key)?.forEach(sub => sub(clean))
+
       return clean
     })
     .finally(() => {
@@ -392,7 +392,38 @@ export function fetchLinkTitle(url: string): Promise<string> {
   return promise
 }
 
+export function useLinkTitle(url?: null | string): string {
+  const normalizedUrl = useMemo(() => (url ? normalizeExternalUrl(url) : ''), [url])
+  const key = useMemo(() => (normalizedUrl ? titleCacheKey(normalizedUrl) : ''), [normalizedUrl])
+  const [title, setTitle] = useState(() => (key ? (titleCache.get(key) ?? '') : ''))
+
+  useEffect(() => {
+    setTitle(key ? (titleCache.get(key) ?? '') : '')
+
+    if (!key || !isTitleFetchable(normalizedUrl)) {
+      return
+    }
+
+    const subs = titleSubs.get(key) ?? new Set<(value: string) => void>()
+
+    subs.add(setTitle)
+    titleSubs.set(key, subs)
+    void fetchLinkTitle(normalizedUrl)
+
+    return () => {
+      subs.delete(setTitle)
+
+      if (!subs.size) {
+        titleSubs.delete(key)
+      }
+    }
+  }, [key, normalizedUrl])
+
+  return title
+}
+
 export function __resetLinkTitleCache(): void {
   titleCache.clear()
   titleInflight.clear()
+  titleSubs.clear()
 }

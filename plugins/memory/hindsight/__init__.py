@@ -442,15 +442,67 @@ def _embedded_profile_env_path(config: dict[str, Any]):
     return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
+def _ensure_owner_only_directory(path) -> None:
+    """Create a directory that only the current user can traverse."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def _harden_embedded_profile_env_path(profile_env) -> None:
+    """Restrict Hindsight profile env access to the current user."""
+    for directory in (profile_env.parent.parent, profile_env.parent):
+        if directory.exists():
+            try:
+                os.chmod(directory, 0o700)
+            except (OSError, NotImplementedError):
+                pass
+    try:
+        if profile_env.exists():
+            os.chmod(profile_env, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def _write_owner_only_text(path, text: str) -> None:
+    """Atomically write text to an owner-readable file."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_fd = os.open(tmp_path, flags, 0o600)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _write_embedded_profile_env(profile_env, content: str) -> None:
+    """Atomically write a profile env file without exposing secrets via umask."""
+    _ensure_owner_only_directory(profile_env.parent.parent)
+    _ensure_owner_only_directory(profile_env.parent)
+    _write_owner_only_text(profile_env, content)
+    _harden_embedded_profile_env_path(profile_env)
+
+
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
-    profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    profile_env.write_text(
-        "".join(f"{key}={value}\n" for key, value in env_values.items()),
-        encoding="utf-8",
-    )
+    content = "".join(f"{key}={value}\n" for key, value in env_values.items())
+    _write_embedded_profile_env(profile_env, content)
     return profile_env
 
 def _sanitize_bank_segment(value: str) -> str:

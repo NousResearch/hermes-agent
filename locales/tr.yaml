@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ Yeni oturum başlatıldı: {title}"
     title_rejected:        "\n⚠️ Başlık reddedildi: {error}"
     title_error_untitled:  "\n⚠️ {error} — oturum başlıksız başlatıldı."
-    title_unavailable:     "Başlık uygulanamadı."
     title_empty_untitled:  "\n⚠️ Temizlik sonrası başlık boş — oturum başlıksız başlatıldı."
     tip:                   "\n✦ İpucu: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ Temizlemeden sonra başlık boş. Lütfen yazdırılabilir karakterler kullanın."
-    unavailable:           "Başlık uygulanamadı."
     set_to:                "✏️ Oturum başlığı ayarlandı: **{title}**"
     not_found:             "Oturum veritabanında bulunamadı."
     current_with_title:    "📌 Oturum: `{session_id}`\nBaşlık: **{title}**"

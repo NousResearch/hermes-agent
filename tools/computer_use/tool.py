@@ -91,7 +91,7 @@ _KEY_ALIASES = {"command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cm
 
 
 def _canon_key_combo(keys: str) -> frozenset:
-    parts = [p.strip().lower() for p in re.split(r"\s*\+\s*", keys) if p.strip()]
+    parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
 
@@ -193,6 +193,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("key", {"keys": keys}))
         return ActionResult(ok=True, action="key")
 
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        self.calls.append(("set_value", {"value": value, "element": element}))
+        return ActionResult(ok=True, action="set_value")
+
     def list_apps(self) -> List[Dict[str, Any]]:
         self.calls.append(("list_apps", {}))
         return []
@@ -217,13 +221,14 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": "missing `action`"})
 
     # Safety: validate actions before approval prompt.
-    if action == "type":
-        text = args.get("text", "")
+    if action in {"type", "set_value"}:
+        field = "text" if action == "type" else "value"
+        text = str(args.get(field, ""))
         pat = _is_blocked_type(text)
         if pat:
             return json.dumps({
-                "error": f"blocked pattern in type text: {pat!r}",
-                "hint": "Dangerous shell patterns cannot be typed via computer_use.",
+                "error": f"blocked pattern in {field}: {pat!r}",
+                "hint": "Dangerous shell patterns cannot be entered via computer_use.",
             })
 
     if action == "key":
@@ -261,6 +266,9 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """Return None if approved, or a JSON error string if denied."""
     global _session_auto_approve, _always_allow
+    # Honor already-granted session approvals before checking for a callback,
+    # so that actions approved via approve_session / always_approve continue
+    # to work even if the callback is later cleared or never re-registered.
     if _session_auto_approve:
         return None
     if action in _always_allow:
@@ -270,7 +278,13 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
         return json.dumps({
             "error": "approval required but no approval callback is registered",
             "action": action,
+            "hint": (
+                "Destructive computer_use actions require an interactive approval "
+                "callback. Use the interactive CLI or configure an approval-capable "
+                "runtime before retrying."
+            ),
         })
+
     summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)
@@ -306,6 +320,14 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
     if action == "key":
         return f"key {args.get('keys', '')!r}"
+    if action == "set_value":
+        value = str(args.get("value", ""))
+        element = args.get("element")
+        if element is not None:
+            summary = f"set_value element #{element} to {value[:60]!r}"
+        else:
+            summary = f"set_value to {value[:60]!r}"
+        return summary + ("..." if len(value) > 60 else "")
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")
     return action

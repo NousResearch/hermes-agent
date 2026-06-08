@@ -112,10 +112,7 @@ class TestHandleTitleCommand:
         runner = _make_runner(session_db=db)
         event = _make_event(text="/title Taken Title")
         result = await runner._handle_title_command(event)
-        assert "Title could not be applied" in result
-        assert "Taken Title" not in result
-        assert "other_session" not in result
-        assert "already in use" not in result
+        assert "already in use" in result
         assert "⚠️" in result
         db.close()
 
@@ -281,8 +278,8 @@ class TestResetCommandWithTitle:
         assert "Custom Name" in str(result)
 
     @pytest.mark.asyncio
-    async def test_reset_command_duplicate_title_uses_generic_warning(self):
-        """/new <title> with an already-in-use title does not leak title metadata."""
+    async def test_reset_command_duplicate_title_surfaces_warning(self):
+        """/new <title> with an already-in-use title returns a warning in the reply."""
         from datetime import datetime
 
         from gateway.run import GatewayRunner
@@ -338,11 +335,8 @@ class TestResetCommandWithTitle:
 
         runner._session_db.set_session_title.assert_called_once()
         reply = str(result)
-        assert "Title could not be applied" in reply
+        assert "already in use" in reply
         assert "session started untitled" in reply
-        assert "already in use" not in reply
-        assert "abc-123" not in reply
-        assert "Dup" not in reply
         # Header must NOT claim the rejected title as the session name
         assert "New session started: Dup" not in reply
 

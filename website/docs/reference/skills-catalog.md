@@ -92,7 +92,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`automated-pr-reviewer`](/docs/user-guide/skills/bundled/github/github-automated-pr-reviewer) | Automated PR reviewer: scans for authorized '@jules code review' PR comments and triggers static code reviews. | `github/automated-pr-reviewer` |
 | [`codebase-inspection`](/docs/user-guide/skills/bundled/github/github-codebase-inspection) | Inspect codebases w/ pygount: LOC, languages, ratios. | `github/codebase-inspection` |
 | [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth) | GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login. | `github/github-auth` |
 | [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) | Review PRs: diffs, inline comments via gh or REST. | `github/github-code-review` |

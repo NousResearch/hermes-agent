@@ -26,7 +26,9 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
+            os.path.join(home, ".hermes", ".env"),
             str(hermes_home / ".env"),
+            str(hermes_home / "config.yaml"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),
@@ -72,55 +74,20 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
-    home = os.path.realpath(os.path.expanduser("~"))
+def is_write_denied(path: str, home: str | None = None) -> bool:
+    """Return True if path is blocked by the write denylist or safe root.
+
+    Args:
+        path: Candidate write path.
+        home: Optional target-environment home directory. When file tools run
+            over SSH or another remote backend, this must be the remote home
+            rather than the local Hermes process home.
+    """
+    home = os.path.realpath(os.path.expanduser(home or "~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     if resolved in build_write_denied_paths(home):
         return True
-
-
-def is_write_denied(
-    path: str,
-    home: str | None = None,
-    base_dir: str | None = None,
-) -> bool:
-    """Return True if path is blocked by denylist or root constraints.
-
-    Enforcement order is additive (most restrictive wins):
-    1) static denylist/prefixes
-    2) optional call-site ``base_dir`` sandbox
-    3) optional ``HERMES_WRITE_SAFE_ROOT`` sandbox
-
-    ``home`` selects which user-home denylist paths are evaluated.
-    """
-    home = os.path.realpath(os.path.expanduser(home or "~"))
-
-    def _expand_target_user_home(value: str) -> str:
-        """Expand ~ using the provided home, not local process home."""
-        if value == "~":
-            return home
-        if value.startswith("~/"):
-            return os.path.join(home, value[2:])
-        return os.path.expanduser(value)
-
-    base_root = (
-        os.path.realpath(_expand_target_user_home(str(base_dir)))
-        if base_dir
-        else None
-    )
-    path_str = _expand_target_user_home(str(path))
-    if os.path.isabs(path_str):
-        resolved = os.path.realpath(path_str)
-    elif base_root:
-        resolved = os.path.realpath(os.path.join(base_root, path_str))
-        if _is_outside_root(resolved, base_root):
-            logger.debug(
-                "Denied write path outside base_dir: path=%r base_dir=%r",
-                path,
-                base_dir,
-            )
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
             return True

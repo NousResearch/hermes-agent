@@ -85,7 +85,8 @@ class TestMcpRegistrationE2E:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
+        with patch("hermes_cli.config.load_config", return_value={"acp": {"allow_client_stdio_mcp_servers": True}}), \
+             patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
              patch("model_tools.get_tool_definitions", return_value=fake_tools):
             resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
 
@@ -297,7 +298,7 @@ class TestSessionLifecycleMcpE2E:
         sid = create_resp.session_id
 
         servers = [
-            McpServerStdio(name="srv", command="/bin/test", args=[], env=[]),
+            McpServerHttp(name="srv", url="https://api.test/mcp", headers=[]),
         ]
 
         registered = {}
@@ -324,7 +325,7 @@ class TestSessionLifecycleMcpE2E:
         sid = create_resp.session_id
 
         servers = [
-            McpServerStdio(name="srv2", command="/bin/test2", args=[], env=[]),
+            McpServerHttp(name="srv2", url="https://api2.test/mcp", headers=[]),
         ]
 
         registered = {}

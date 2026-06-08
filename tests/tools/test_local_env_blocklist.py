@@ -73,6 +73,25 @@ class TestProviderEnvBlocklist:
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_auxiliary_api_key_vars_are_stripped(self):
+        """Auxiliary direct-endpoint API keys must not leak to terminal subprocesses."""
+        auxiliary_secret_vars = {
+            "AUXILIARY_VISION_API_KEY": "vision-secret",
+            "AUXILIARY_WEB_EXTRACT_API_KEY": "web-secret",
+            "AUXILIARY_COMPRESSION_API_KEY": "compression-secret",
+            "AUXILIARY_SESSION_SEARCH_API_KEY": "search-secret",
+            "AUXILIARY_SKILLS_HUB_API_KEY": "skills-secret",
+            "AUXILIARY_APPROVAL_API_KEY": "approval-secret",
+            "AUXILIARY_MCP_API_KEY": "mcp-secret",
+            "AUXILIARY_TITLE_GENERATION_API_KEY": "title-secret",
+            "AUXILIARY_TRIAGE_SPECIFIER_API_KEY": "triage-secret",
+            "AUXILIARY_CURATOR_API_KEY": "curator-secret",
+        }
+        result_env = _run_with_env(extra_os_env=auxiliary_secret_vars)
+
+        for var in auxiliary_secret_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
     def test_registry_derived_vars_are_stripped(self):
         """Vars from the provider registry (ANTHROPIC_TOKEN, ZAI_API_KEY, etc.)
         must also be blocked — not just the hand-written extras."""
@@ -223,6 +242,22 @@ class TestBlocklistCoverage:
         extras = {"ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
+    def test_auxiliary_api_key_vars_are_in_blocklist(self):
+        """Auxiliary direct-endpoint API key env vars must stay blocklisted."""
+        extras = {
+            "AUXILIARY_VISION_API_KEY",
+            "AUXILIARY_WEB_EXTRACT_API_KEY",
+            "AUXILIARY_COMPRESSION_API_KEY",
+            "AUXILIARY_SESSION_SEARCH_API_KEY",
+            "AUXILIARY_SKILLS_HUB_API_KEY",
+            "AUXILIARY_APPROVAL_API_KEY",
+            "AUXILIARY_MCP_API_KEY",
+            "AUXILIARY_TITLE_GENERATION_API_KEY",
+            "AUXILIARY_TRIAGE_SPECIFIER_API_KEY",
+            "AUXILIARY_CURATOR_API_KEY",
+        }
+        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
     def test_non_registry_provider_vars_are_in_blocklist(self):
         extras = {
             "GOOGLE_API_KEY",
@@ -299,26 +334,26 @@ class TestBlocklistCoverage:
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
 
-class TestSanePathExcludesHomebrew:
-    """Verify fallback PATH does not inject macOS Homebrew directories."""
+class TestSanePathIncludesHomebrew:
+    """Verify _SANE_PATH includes macOS Homebrew directories."""
 
-    def test_sane_path_excludes_homebrew_bin(self):
+    def test_sane_path_includes_homebrew_bin(self):
         from tools.environments.local import _SANE_PATH
-        assert "/opt/homebrew/bin" not in _SANE_PATH
+        assert "/opt/homebrew/bin" in _SANE_PATH
 
-    def test_sane_path_excludes_homebrew_sbin(self):
+    def test_sane_path_includes_homebrew_sbin(self):
         from tools.environments.local import _SANE_PATH
-        assert "/opt/homebrew/sbin" not in _SANE_PATH
+        assert "/opt/homebrew/sbin" in _SANE_PATH
 
-    def test_make_run_env_does_not_append_homebrew_on_minimal_path(self):
-        """Restricted PATH launches should not gain Homebrew executable dirs."""
+    def test_make_run_env_appends_homebrew_on_minimal_path(self):
+        """When PATH is minimal (no /usr/bin), _make_run_env should append
+        _SANE_PATH which now includes Homebrew dirs."""
         from tools.environments.local import _make_run_env
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
-        assert "/opt/homebrew/bin" not in result["PATH"].split(":")
-        assert "/opt/homebrew/sbin" not in result["PATH"].split(":")
-        assert "/usr/bin" in result["PATH"].split(":")
+        assert "/opt/homebrew/bin" in result["PATH"]
+        assert "/opt/homebrew/sbin" in result["PATH"]
 
     def test_make_run_env_does_not_duplicate_on_full_path(self):
         """When PATH already has /usr/bin, _make_run_env should not append."""

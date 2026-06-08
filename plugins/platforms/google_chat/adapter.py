@@ -3081,7 +3081,6 @@ def interactive_setup() -> None:
         save_env_value("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", sa_path.strip())
 
     if prompt_yes_no("Restrict access to specific users? (recommended)", True):
-        save_env_value("GOOGLE_CHAT_ALLOW_ALL_USERS", "false")
         allowed = prompt(
             "Allowed user emails (comma-separated)",
             default=get_env_value("GOOGLE_CHAT_ALLOWED_USERS") or "",

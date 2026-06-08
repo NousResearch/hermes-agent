@@ -71,7 +71,6 @@ new locking.
 from __future__ import annotations
 
 import contextlib
-import errno
 import json
 import os
 import re
@@ -79,7 +78,6 @@ import secrets
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1400,10 +1398,10 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                     ),
                 )
-                if parents:
-                    conn.executemany(
+                for pid in parents:
+                    conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-                        [(pid, task_id) for pid in parents],
+                        (pid, task_id),
                     )
                 _append_event(
                     conn,
@@ -2932,24 +2930,6 @@ class DispatchResult:
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
-# Child PIDs spawned by this process that we may need to reap explicitly.
-# This in-memory set is intentionally broader than the set of workers whose
-# PIDs were durably persisted to the database: callers may register a child
-# here before the corresponding DB write/commit succeeds so we do not lose
-# track of a local subprocess that still needs reaping.
-_known_worker_child_pids: "set[int]" = set()
-_known_worker_child_pids_lock = threading.Lock()
-
-
-def _track_worker_child(pid: Optional[int]) -> None:
-    """Remember a kanban worker PID spawned by this process for reaping.
-
-    This tracks locally spawned children even if the later database write
-    that associates the PID with a task fails or is rolled back.
-    """
-    if pid and int(pid) > 0:
-        with _known_worker_child_pids_lock:
-            _known_worker_child_pids.add(int(pid))
 
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
@@ -3627,7 +3607,6 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 (int(pid), run_id),
             )
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
-    _track_worker_child(pid)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -3684,39 +3663,6 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     return False
 
 
-def _reap_known_worker_children() -> None:
-    """Reap only kanban worker children, never arbitrary subprocesses.
-
-    The gateway process owns many non-kanban children whose callers rely on
-    their own ``Popen.wait()`` / ``subprocess.run()`` exit status. Therefore
-    this must never use ``waitpid(-1)``. It waits only on PIDs recorded when
-    this process persisted a spawned kanban worker with ``_set_worker_pid``.
-    """
-    if os.name == "nt" or not hasattr(os, "WNOHANG"):
-        return
-
-    with _known_worker_child_pids_lock:
-        pids = sorted(_known_worker_child_pids)
-
-    for pid in pids:
-        try:
-            reaped_pid, status = os.waitpid(int(pid), os.WNOHANG)
-        except ChildProcessError:
-            with _known_worker_child_pids_lock:
-                _known_worker_child_pids.discard(int(pid))
-            continue
-        except OSError as exc:
-            if exc.errno in (errno.ECHILD, errno.ESRCH):
-                with _known_worker_child_pids_lock:
-                    _known_worker_child_pids.discard(int(pid))
-            continue
-        if reaped_pid == 0:
-            continue
-        with _known_worker_child_pids_lock:
-            _known_worker_child_pids.discard(int(reaped_pid))
-        _record_worker_exit(int(reaped_pid), int(status))
-
-
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -3754,13 +3700,38 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
-    # Reap zombie children only for PIDs we know are kanban workers, never
-    # via waitpid(-1). The gateway process owns many non-kanban children
-    # (npm, agent-browser, etc.) whose callers rely on their own
-    # Popen.wait() / subprocess.run() exit status — a global reap would
-    # steal that status. Windows has no zombies / no os.WNOHANG so the
-    # helper is a no-op there.
-    _reap_known_worker_children()
+    # Reap zombie children from previously spawned workers.
+    # The gateway-embedded dispatcher is the parent of every worker spawned
+    # via _default_spawn (start_new_session=True only detaches the
+    # controlling tty, not the parent). Without an explicit waitpid, each
+    # completed worker becomes a <defunct> entry that lingers until gateway
+    # exit. WNOHANG keeps this non-blocking; ChildProcessError means no
+    # children to reap. Bounded: at most one tick's worth of completions
+    # can be in <defunct> at once.
+    #
+    # We also record the exit status keyed by pid, so
+    # ``detect_crashed_workers`` can distinguish a worker that exited
+    # cleanly without calling ``kanban_complete`` / ``kanban_block``
+    # (protocol violation — auto-block) from a real crash (OOM killer,
+    # SIGKILL, non-zero exit — existing counter behavior).
+    #
+    # Windows has no zombies / no os.WNOHANG — subprocess.Popen handles
+    # are freed when the Python object is garbage-collected or .wait() is
+    # called explicitly.  The kanban dispatcher discards the Popen handle
+    # after spawn (``_default_spawn`` → abandon), so on Windows there's
+    # nothing to reap here — skip the whole block.
+    if os.name != "nt":
+        try:
+            while True:
+                try:
+                    _pid, _status = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if _pid == 0:
+                    break
+                _record_worker_exit(_pid, _status)
+        except Exception:
+            pass
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
@@ -3902,50 +3873,33 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
-def _hermes_main_bootstrap() -> str:
-    """Return Python code that runs Hermes without importing from child CWD."""
-    trusted_root = str(Path(__file__).resolve().parent.parent)
-    return "\n".join(
-        [
-            "import os, runpy, sys",
-            f"trusted_root = os.path.realpath({trusted_root!r})",
-            "cwd = os.path.realpath(os.getcwd())",
-            "safe_path = []",
-            "cwd_prefix = cwd + os.path.sep",
-            "for p in sys.path:",
-            "    if not p or not os.path.isabs(p):",
-            "        continue",
-            "    rp = os.path.realpath(p)",
-            "    if rp == trusted_root or rp == cwd or rp.startswith(cwd_prefix):",
-            "        continue",
-            "    safe_path.append(p)",
-            "sys.path = [trusted_root] + safe_path",
-            "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)",
-        ]
-    )
-
-
 def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as trusted argv parts for ``Popen``.
+    """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
 
-    The dispatcher later starts the worker with ``cwd`` set to the task
-    workspace, so every executable/import location in the startup path must be
-    anchored before that directory switch happens.
+    Tries in order:
+
+    1. ``shutil.which("hermes")`` — the console-script shim, the same form
+       that shows up in ``ps`` output and existing logs. Preferred so live
+       systems' diagnostics stay familiar.
+    2. ``sys.executable -m hermes_cli.main`` — fallback for setups where
+       Hermes is launched from a venv and the ``hermes`` shim is not on
+       the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
+       launchd jobs, detached processes, etc.). Goes through the running
+       interpreter so the result is independent of ``$PATH``.
+
+    Mirrors ``gateway.run._resolve_hermes_bin`` for the same reason. Kept
+    local (not imported from gateway) because ``hermes_cli`` sits below
+    ``gateway`` in the dependency order.
     """
     import shutil
 
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
-        hermes_path = hermes_bin if os.path.isabs(hermes_bin) else os.path.abspath(hermes_bin)
-        return [hermes_path]
-    # Fall back through the running interpreter, but do not use ``-m`` from
-    # the task workspace: Python prepends cwd to module search paths. ``-P``
-    # avoids that implicit cwd entry and the bootstrap adds only the trusted
-    # install/source root that loaded this module.
-    python_exe = (
-        sys.executable if os.path.isabs(sys.executable) else os.path.abspath(sys.executable)
-    )
-    return [python_exe, "-P", "-c", _hermes_main_bootstrap()]
+        return [hermes_bin]
+    # Fallback to the module form. ``hermes_cli.main`` is the actual
+    # console-script target declared in pyproject.toml, NOT a top-level
+    # ``hermes`` package — there is no ``hermes`` package to import.
+    return [sys.executable, "-m", "hermes_cli.main"]
 
 
 def _default_spawn(

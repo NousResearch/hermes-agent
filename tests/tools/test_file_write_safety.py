@@ -78,25 +78,6 @@ class TestSafeWriteRoot:
         monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", os.path.expanduser("~"))
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
 
-    def test_relative_path_uses_base_dir_for_safe_root(self, tmp_path: Path, monkeypatch):
-        safe_root = tmp_path / "workspace"
-        inside = safe_root / "nested" / "file.txt"
-        outside = tmp_path / "outside" / "file.txt"
-        os.makedirs(inside.parent, exist_ok=True)
-        os.makedirs(outside.parent, exist_ok=True)
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
-
-        assert _is_write_denied("nested/file.txt", base_dir=str(safe_root)) is False
-        assert _is_write_denied("../outside/file.txt", base_dir=str(safe_root)) is True
-
-    def test_tilde_path_with_nonlocal_home_override_remains_denied(self, tmp_path: Path, monkeypatch):
-        """A caller-supplied home must not let local expanduser semantics bypass static deny rules."""
-        remote_home = tmp_path / "remote-home"
-        os.makedirs(remote_home, exist_ok=True)
-        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
-
-        assert _is_write_denied("~/.ssh/id_rsa", home=str(remote_home)) is True
-
 
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""

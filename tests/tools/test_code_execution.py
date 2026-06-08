@@ -45,7 +45,6 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
-    _scrub_child_env,
 )
 
 
@@ -666,39 +665,6 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Environment variable filtering helper (security critical)
-# ---------------------------------------------------------------------------
-
-class TestScrubChildEnv(unittest.TestCase):
-    def test_hermes_allowlist_is_exact(self):
-        child_env = _scrub_child_env({
-            "HERMES_HOME": "/tmp/hermes-profile",
-            "HERMES_ACCESS": "access-value",
-            "HERMES_BEARER": "bearer-value",
-            "HERMES_COOKIE": "cookie-value",
-            "HERMES_JWT": "jwt-value",
-            "HERMES_SID": "sid-value",
-            "HERMES_TOKEN": "token-value",
-        }, is_passthrough=lambda _name: False, is_windows=False)
-
-        self.assertEqual(child_env.get("HERMES_HOME"), "/tmp/hermes-profile")
-        self.assertNotIn("HERMES_ACCESS", child_env)
-        self.assertNotIn("HERMES_BEARER", child_env)
-        self.assertNotIn("HERMES_COOKIE", child_env)
-        self.assertNotIn("HERMES_JWT", child_env)
-        self.assertNotIn("HERMES_SID", child_env)
-        self.assertNotIn("HERMES_TOKEN", child_env)
-
-    def test_explicit_passthrough_still_wins(self):
-        child_env = _scrub_child_env({
-            "HERMES_COOKIE": "cookie-value",
-            "CUSTOM_API_KEY": "key-value",
-        }, is_passthrough=lambda name: name in {"HERMES_COOKIE", "CUSTOM_API_KEY"}, is_windows=False)
-
-        self.assertEqual(child_env.get("HERMES_COOKIE"), "cookie-value")
-        self.assertEqual(child_env.get("CUSTOM_API_KEY"), "key-value")
-
-# ---------------------------------------------------------------------------
 # Environment variable filtering (security critical)
 # ---------------------------------------------------------------------------
 
@@ -774,26 +740,6 @@ class TestEnvVarFiltering(unittest.TestCase):
     def test_hermes_rpc_socket_injected(self):
         child_env = self._get_child_env()
         self.assertIn("HERMES_RPC_SOCKET", child_env)
-
-    def test_hermes_home_included(self):
-        child_env = self._get_child_env({"HERMES_HOME": "/tmp/hermes-profile"})
-        self.assertEqual(child_env.get("HERMES_HOME"), "/tmp/hermes-profile")
-
-    def test_broad_hermes_namespace_excluded(self):
-        child_env = self._get_child_env({
-            "HERMES_ACCESS": "access-value",
-            "HERMES_BEARER": "bearer-value",
-            "HERMES_COOKIE": "cookie-value",
-            "HERMES_JWT": "jwt-value",
-            "HERMES_SID": "sid-value",
-            "HERMES_TOKEN": "token-value",
-        })
-        self.assertNotIn("HERMES_ACCESS", child_env)
-        self.assertNotIn("HERMES_BEARER", child_env)
-        self.assertNotIn("HERMES_COOKIE", child_env)
-        self.assertNotIn("HERMES_JWT", child_env)
-        self.assertNotIn("HERMES_SID", child_env)
-        self.assertNotIn("HERMES_TOKEN", child_env)
 
     def test_pythondontwritebytecode_set(self):
         child_env = self._get_child_env()

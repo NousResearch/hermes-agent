@@ -273,7 +273,7 @@ Write or delete a persistent conclusion about a peer. Pass `conclusion: "..."` t
 All 5 tools accept an optional `peer` parameter:
 - `peer: "user"` (default) — operates on the user peer
 - `peer: "ai"` — operates on this profile's AI peer
-- `peer: "<explicit-id>"` — only this session's concrete user or AI peer ID
+- `peer: "<explicit-id>"` — any peer ID in the workspace
 
 Examples:
 ```

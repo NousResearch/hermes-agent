@@ -16,7 +16,6 @@
   openssh,
   ffmpeg,
   tirith,
-  uv,
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
   pyproject-nix,
@@ -69,20 +68,18 @@ let
     openssh
     ffmpeg
     tirith
-    uv
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;
 
   sitePackagesPath = python312.sitePackages;
 
-  # Walk propagatedBuildInputs so entry-point plugins can see their transitive
-  # Python dependencies when the plugin manager opts them into sys.path.  Do
-  # not expose these paths through PYTHONPATH: Python processes it during
-  # interpreter startup, before Hermes can enforce plugins.enabled.
+  # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
+  # Without this, a plugin listing e.g. requests as a dep would fail at runtime
+  # if requests isn't already in the sealed uv2nix venv.
   allExtraPythonPackages = python312.pkgs.requiredPythonModules extraPythonPackages;
 
-  pluginPythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
+  pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 
   pyprojectHash = builtins.hashString "sha256" (builtins.readFile ../pyproject.toml);
   uvLockHash =
@@ -160,7 +157,7 @@ stdenv.mkDerivation {
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
           --set HERMES_NODE ${lib.getExe nodejs} \
           ${lib.optionalString (rev != null) ''--set HERMES_REVISION ${rev} \''}
-          ${lib.optionalString (extraPythonPackages != [ ]) ''--set HERMES_PLUGIN_PYTHONPATH "${pluginPythonPath}"''}
+          ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
       '')
       [
         "hermes"

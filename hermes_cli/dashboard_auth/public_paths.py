@@ -46,4 +46,11 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    # Stripe webhook — must be unauthenticated so Stripe can POST to it.
+    "/api/stripe/webhook",
+    # Public subscription plan info and subscriber self-service portal.
+    "/api/subscribe/plans",
+    "/api/subscribe/status",
+    "/api/subscribe/add-url",
+    "/api/subscribe/remove-url",
 })

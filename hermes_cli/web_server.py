@@ -5920,6 +5920,175 @@ async def events_ws(ws: WebSocket) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stripe subscription webhook + subscriber self-service portal
+# ---------------------------------------------------------------------------
+
+# url_limit values >= UNLIMITED_URLS are rendered as "Unlimited" in the UI.
+UNLIMITED_URLS = 1_000_000
+
+STRIPE_PLANS: dict[str, dict] = {
+    "starter": {"name": "Starter", "price_usd": 19, "url_limit": 3, "interval": "month"},
+    "pro":     {"name": "Pro",     "price_usd": 49, "url_limit": UNLIMITED_URLS, "interval": "month"},
+}
+
+
+@app.get("/api/subscribe/plans")
+async def get_subscription_plans():
+    """Public — return available subscription plans and the Stripe payment links."""
+    starter_link = os.environ.get("HERMES_STRIPE_STARTER_LINK", "")
+    pro_link = os.environ.get("HERMES_STRIPE_PRO_LINK", "")
+    # Legacy single-link fallback maps to the Starter checkout.
+    legacy_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
+    if not starter_link and legacy_link:
+        starter_link = legacy_link
+    return {
+        "plans": STRIPE_PLANS,
+        "stripe_starter_link": starter_link,
+        "stripe_pro_link": pro_link,
+        # Back-compat: older clients read stripe_payment_link as the primary CTA.
+        "stripe_payment_link": starter_link,
+        "configured": bool(starter_link or pro_link),
+    }
+
+
+@app.get("/api/subscribe/status")
+async def get_subscriber_status(email: str):
+    """Public — return subscription status for a given email (self-service)."""
+    from hermes_cli.subscriber_store import get_subscriber
+    sub = get_subscriber(email)
+    if sub is None:
+        return {"active": False, "message": "No subscription found for that email."}
+    return {
+        "active": sub["active"],
+        "plan": sub["plan"],
+        "url_limit": sub["url_limit"],
+        "url_count": len(sub.get("urls", [])),
+        "status": sub["status"],
+    }
+
+
+class SubscriberUrlBody(BaseModel):
+    email: str
+    url: str
+
+
+@app.post("/api/subscribe/add-url")
+async def subscriber_add_url(body: SubscriberUrlBody):
+    """Public (subscriber-only by email) — add a URL to their tracked list."""
+    from hermes_cli.subscriber_store import add_url
+    ok, msg = add_url(body.email.strip().lower(), body.url.strip())
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/subscribe/remove-url")
+async def subscriber_remove_url(body: SubscriberUrlBody):
+    """Public (subscriber-only by email) — remove a URL from their tracked list."""
+    from hermes_cli.subscriber_store import remove_url
+    ok, msg = remove_url(body.email.strip().lower(), body.url.strip())
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.get("/api/subscribe/urls")
+async def subscriber_get_urls(email: str):
+    """Public — return the URL list for a subscriber (for portal display)."""
+    from hermes_cli.subscriber_store import get_subscriber
+    sub = get_subscriber(email.strip().lower())
+    if sub is None or not sub.get("active"):
+        raise HTTPException(status_code=404, detail="No active subscription found.")
+    return {"urls": sub.get("urls", []), "url_limit": sub["url_limit"]}
+
+
+@app.get("/api/admin/subscribers")
+async def admin_list_subscribers():
+    """Admin — list all subscribers."""
+    from hermes_cli.subscriber_store import list_subscribers
+    return {"subscribers": list_subscribers()}
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    """Stripe webhook endpoint — must remain unauthenticated."""
+    import hmac as _hmac
+    import hashlib
+
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    # Verify Stripe signature when secret is configured.
+    if webhook_secret:
+        try:
+            # Parse timestamp + signatures from the header.
+            parts = {k: v for k, v in (p.split("=", 1) for p in sig_header.split(",") if "=" in p)}
+            ts = parts.get("t", "")
+            v1_sigs = [v for k, v in parts.items() if k == "v1"]
+            signed_payload = f"{ts}.{payload.decode('utf-8')}".encode()
+            expected = _hmac.new(
+                webhook_secret.encode("utf-8"), signed_payload, hashlib.sha256
+            ).hexdigest()
+            if not any(_hmac.compare_digest(expected, s) for s in v1_sigs):
+                raise HTTPException(status_code=400, detail="Invalid Stripe signature")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _log.warning("Stripe webhook signature check failed: %s", exc)
+            raise HTTPException(status_code=400, detail="Signature verification error")
+
+    try:
+        event = json.loads(payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    event_type = event.get("type", "")
+    obj = event.get("data", {}).get("object", {})
+
+    from hermes_cli.subscriber_store import upsert_subscriber, deactivate_by_subscription_id, set_subscriber_status
+
+    if event_type == "checkout.session.completed":
+        email = (obj.get("customer_email") or obj.get("customer_details", {}).get("email") or "").strip().lower()
+        customer_id = obj.get("customer", "")
+        subscription_id = obj.get("subscription", "")
+        # Infer the plan from the amount paid so Pro ($49) checkouts get the
+        # unlimited tier rather than the Starter URL cap. amount_total is in
+        # cents; fall back to Starter when it's missing or unrecognized.
+        amount_total = obj.get("amount_total") or 0
+        plan = "pro" if amount_total >= STRIPE_PLANS["pro"]["price_usd"] * 100 else "starter"
+        if email:
+            upsert_subscriber(
+                email=email,
+                stripe_customer_id=customer_id,
+                stripe_subscription_id=subscription_id,
+                plan=plan,
+                status="active",
+            )
+            _log.info("New %s subscriber: %s", plan, email)
+
+    elif event_type in ("customer.subscription.deleted",):
+        subscription_id = obj.get("id", "")
+        email = deactivate_by_subscription_id(subscription_id)
+        if email:
+            _log.info("Subscription canceled: %s", email)
+
+    elif event_type == "invoice.payment_failed":
+        subscription_id = obj.get("subscription", "")
+        customer_email = (obj.get("customer_email") or "").strip().lower()
+        if customer_email:
+            set_subscriber_status(customer_email, "past_due")
+        _log.info("Payment failed for subscription: %s", subscription_id)
+
+    elif event_type == "invoice.payment_succeeded":
+        customer_email = (obj.get("customer_email") or "").strip().lower()
+        if customer_email:
+            set_subscriber_status(customer_email, "active")
+
+    return {"received": True}
+
+
+# ---------------------------------------------------------------------------
 # Price Scraper dashboard — /api/price-scraper/*
 # ---------------------------------------------------------------------------
 

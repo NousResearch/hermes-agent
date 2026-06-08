@@ -36,14 +36,21 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
-try:
+if TYPE_CHECKING:
+    # Type checkers see ``httpx`` as the always-imported module, so every use
+    # site type-checks cleanly. The runtime fallback below keeps the optional
+    # dependency truly optional (each use site is guarded by HTTPX_AVAILABLE).
     import httpx
     HTTPX_AVAILABLE = True
-except ImportError:  # pragma: no cover - httpx is already a Hermes dep
-    HTTPX_AVAILABLE = False
-    httpx = None  # type: ignore[assignment]
+else:
+    try:
+        import httpx
+        HTTPX_AVAILABLE = True
+    except ImportError:  # pragma: no cover - httpx is already a Hermes dep
+        HTTPX_AVAILABLE = False
+        httpx = None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -281,7 +288,8 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             return False
 
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = client
 
         # The sidecar holds the gRPC stream for BOTH directions, so it is
         # required now (not just for outbound).
@@ -294,7 +302,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     f"failed to start Photon sidecar: {e}",
                     retryable=True,
                 )
-                await self._http_client.aclose()
+                await client.aclose()
                 self._http_client = None
                 return False
         else:
@@ -903,7 +911,7 @@ def register(ctx) -> None:
 
     ctx.register_platform(
         name="photon",
-        label="Photon iMessage",
+        label="iMessage via Photon",
         adapter_factory=lambda cfg: PhotonAdapter(cfg),
         check_fn=check_requirements,
         validate_config=validate_config,

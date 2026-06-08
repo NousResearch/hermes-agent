@@ -5248,6 +5248,39 @@ def _component_check_auth(
     return False
 
 
+def _component_no_allowlist(
+    allowed_user_ids: Optional[set],
+    allowed_role_ids: Optional[set],
+) -> bool:
+    """Return True when no Discord/gateway user or role allowlist is configured.
+
+    Used to detect the common default-install case where slash commands work
+    (empty-allowlist ⇒ allow on the message surface) but component buttons
+    always fail (empty-allowlist ⇒ deny on the component surface).  The
+    caller can then show an actionable hint instead of a generic denial.
+    """
+    user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
+    global_allowed = {
+        uid.strip()
+        for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",")
+        if uid.strip()
+    }
+    user_set.update(global_allowed)
+    role_set = set(allowed_role_ids or set())
+    allow_all = (
+        os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}
+        or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}
+    )
+    return not user_set and not role_set and not allow_all
+
+
+_NO_ALLOWLIST_HINT = (
+    " — no user allowlist is configured. "
+    "Set `DISCORD_ALLOWED_USERS` (or `DISCORD_ALLOWED_ROLES`, "
+    "or `GATEWAY_ALLOW_ALL_USERS=true`) to use interactive buttons."
+)
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
@@ -5300,9 +5333,10 @@ def _define_discord_view_classes() -> None:
                 return
 
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to approve commands~", ephemeral=True
-                )
+                msg = "You're not authorized to approve commands~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized to approve commands" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             self.resolved = True
@@ -5418,9 +5452,10 @@ def _define_discord_view_classes() -> None:
                 )
                 return
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
-                )
+                msg = "You're not authorized to answer this prompt~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized to answer this prompt" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             self.resolved = True
@@ -5522,9 +5557,10 @@ def _define_discord_view_classes() -> None:
                 )
                 return
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
+                msg = "You're not authorized~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             self.resolved = True
@@ -5694,9 +5730,10 @@ def _define_discord_view_classes() -> None:
 
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
+                msg = "You're not authorized~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             provider_slug = interaction.data["values"][0]
@@ -5728,9 +5765,10 @@ def _define_discord_view_classes() -> None:
                 )
                 return
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
+                msg = "You're not authorized~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             self.resolved = True
@@ -5765,9 +5803,10 @@ def _define_discord_view_classes() -> None:
 
         async def _on_back(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
+                msg = "You're not authorized~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             self._build_provider_select()
@@ -5891,9 +5930,10 @@ def _define_discord_view_classes() -> None:
                 )
                 return
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
-                )
+                msg = "You're not authorized to answer this prompt~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized to answer this prompt" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             self.resolved = True
@@ -5959,9 +5999,10 @@ def _define_discord_view_classes() -> None:
                 )
                 return
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
-                )
+                msg = "You're not authorized to answer this prompt~"
+                if _component_no_allowlist(self.allowed_user_ids, self.allowed_role_ids):
+                    msg = "You're not authorized to answer this prompt" + _NO_ALLOWLIST_HINT
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
             # Don't pop the entry — the gateway's text-intercept needs it

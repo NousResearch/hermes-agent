@@ -25,6 +25,8 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     SlashConfirmView,
     UpdatePromptView,
     _component_check_auth,
+    _component_no_allowlist,
+    _NO_ALLOWLIST_HINT,
 )
 
 
@@ -304,3 +306,60 @@ def test_view_empty_allowlists_allow_with_explicit_allow_all(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     view = ExecApprovalView(session_key="s", allowed_user_ids=set())
     assert view._check_auth(_interaction(99999)) is True
+
+
+# ---------------------------------------------------------------------------
+# Actionable denial message: _component_no_allowlist detects unconfigured
+# default installs so the rejection can include setup guidance.
+# ---------------------------------------------------------------------------
+
+
+def test_no_allowlist_true_when_nothing_configured(monkeypatch):
+    """No Discord user/role list, no gateway list, no allow-all flag."""
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS",
+                 "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    assert _component_no_allowlist(set(), set()) is True
+    assert _component_no_allowlist(None, None) is True
+
+
+def test_no_allowlist_false_when_user_allowlist_set(monkeypatch):
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS",
+                 "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    assert _component_no_allowlist({"12345"}, set()) is False
+
+
+def test_no_allowlist_false_when_role_allowlist_set(monkeypatch):
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS",
+                 "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    assert _component_no_allowlist(set(), {42}) is False
+
+
+def test_no_allowlist_false_when_gateway_users_set(monkeypatch):
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "11111")
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    assert _component_no_allowlist(set(), set()) is False
+
+
+def test_no_allowlist_false_when_allow_all_set(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    for name in ("GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    assert _component_no_allowlist(set(), set()) is False
+
+
+def test_no_allowlist_false_when_gateway_allow_all_set(monkeypatch):
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "yes")
+    for name in ("DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    assert _component_no_allowlist(set(), set()) is False
+
+
+def test_hint_string_mentions_config_vars():
+    """The hint must mention all three configuration mechanisms."""
+    assert "DISCORD_ALLOWED_USERS" in _NO_ALLOWLIST_HINT
+    assert "DISCORD_ALLOWED_ROLES" in _NO_ALLOWLIST_HINT
+    assert "GATEWAY_ALLOW_ALL_USERS" in _NO_ALLOWLIST_HINT

@@ -816,7 +816,20 @@ class S6ServiceManager:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def _run_svc(self, action_flag: str, action_label: str, name: str) -> None:
+    @staticmethod
+    def _log_service_dir(service_dir: Path) -> Path | None:
+        """Return the ``log/`` sub-service dir when the slot has a logger."""
+        log_dir = service_dir / "log"
+        return log_dir if log_dir.is_dir() else None
+
+    def _run_svc(
+        self,
+        action_flag: str,
+        action_label: str,
+        name: str,
+        *,
+        service_dir: Path | None = None,
+    ) -> None:
         """Shared lifecycle dispatch for start / stop / restart.
 
         Translates the two failure modes operators care about into
@@ -835,10 +848,13 @@ class S6ServiceManager:
         ``action_flag`` is the ``s6-svc`` flag (``-u`` / ``-d`` /
         ``-t``); ``action_label`` is the human verb (``start`` /
         ``stop`` / ``restart``) used in error messages.
+
+        ``service_dir`` overrides ``<scandir>/<name>/`` for nested
+        sub-services such as ``gateway-<profile>/log``.
         """
         import subprocess
 
-        service_dir = self.scandir / name
+        service_dir = service_dir or (self.scandir / name)
         if not service_dir.is_dir():
             # Strip the gateway- prefix back off so the message
             # matches what the user typed on the CLI (``-p <profile>``).
@@ -865,12 +881,29 @@ class S6ServiceManager:
     def start(self, name: str) -> None:
         """Bring up a registered service (``s6-svc -u``).
 
+        Also brings up the ``log/`` sub-service when present. s6
+        supervises the producer and its logger independently (issue
+        #34480), so a ``log/down`` marker written at reconcile time
+        does **not** cascade when the user later starts the gateway
+        via ``hermes gateway start`` or the ``gateway run`` supervised
+        redirect. Without explicitly starting the logger, stdout never
+        reaches s6-log → ``docker logs``.
+
         Raises:
             GatewayNotRegisteredError: no service directory for ``name``.
             S6CommandError: s6-svc exited non-zero for any other reason
                 (permission denied on the supervise FIFO, timeout, etc.).
         """
-        self._run_svc("-u", "start", name)
+        service_dir = self.scandir / name
+        self._run_svc("-u", "start", name, service_dir=service_dir)
+        log_dir = self._log_service_dir(service_dir)
+        if log_dir is not None:
+            self._run_svc(
+                "-u",
+                "start",
+                f"{name}/log",
+                service_dir=log_dir,
+            )
         _write_gateway_desired_state(name, "running")
 
     def _supervised_pid(self, name: str) -> int | None:
@@ -910,6 +943,10 @@ class S6ServiceManager:
         The marker write is best-effort — a failure only means the stop
         is treated as signal-initiated, which is the safe fallback.
 
+        Also brings down the ``log/`` sub-service when present so an
+        intentionally-stopped gateway does not leave a pointless s6-log
+        running (issue #34480).
+
         Raises:
             GatewayNotRegisteredError: no service directory for ``name``.
             S6CommandError: s6-svc exited non-zero for any other reason.
@@ -922,7 +959,16 @@ class S6ServiceManager:
                 write_planned_stop_marker(pid)
             except Exception:
                 pass
-        self._run_svc("-d", "stop", name)
+        service_dir = self.scandir / name
+        self._run_svc("-d", "stop", name, service_dir=service_dir)
+        log_dir = self._log_service_dir(service_dir)
+        if log_dir is not None:
+            self._run_svc(
+                "-d",
+                "stop",
+                f"{name}/log",
+                service_dir=log_dir,
+            )
         _write_gateway_desired_state(name, "stopped")
 
     def restart(self, name: str) -> None:

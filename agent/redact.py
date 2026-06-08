@@ -120,6 +120,17 @@ _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
+# Env var names that match _SECRET_ENV_NAMES (via the "AUTH" substring) but
+# are NOT secrets — SSH_AUTH_SOCK holds a filesystem path, not a credential.
+# Redacting it is both pointless and harmful: the 1Password SSH-agent socket
+# path contains a space ("Group Containers"), and the (\S+) value capture
+# above stops at that space, swallowing the opening quote and leaving an
+# unbalanced quote that corrupts shell command quoting downstream. Exempt it
+# by exact name match.
+_ENV_NAME_ALLOWLIST = frozenset({
+    "SSH_AUTH_SOCK",   # unix socket path to the SSH agent (e.g. 1Password)
+})
+
 # Lowercase / dotted / hyphenated config keys from config files
 # (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
 # ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
@@ -551,6 +562,8 @@ def redact_sensitive_text(
         if "=" in text:
             def _redact_env(m):
                 name, quote, value = m.group(1), m.group(2), m.group(3)
+                if name in _ENV_NAME_ALLOWLIST:
+                    return m.group(0)  # known non-secret (path) — leave intact
                 # Programmatic env lookups reference variable *names*, not
                 # secret values — masking them corrupts code snippets in
                 # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.

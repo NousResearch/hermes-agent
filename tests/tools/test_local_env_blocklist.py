@@ -397,11 +397,54 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/bin" in result["PATH"]
         assert "/opt/homebrew/sbin" in result["PATH"]
 
-    def test_make_run_env_does_not_duplicate_on_full_path(self):
-        """When PATH already has /usr/bin, _make_run_env should not append."""
-        from tools.environments.local import _make_run_env
-        full_env = {"PATH": "/usr/bin:/bin"}
-        with patch.dict(os.environ, full_env, clear=True):
+    def test_make_run_env_fills_missing_homebrew_when_usr_bin_present(self):
+        """Regression: a PATH containing /usr/bin must STILL get the missing
+        standard dirs appended (covers the macOS launchd / GUI-launch case).
+
+        When Hermes is launched from a .app bundle the inherited PATH is the
+        bare launchd PATH ("/usr/bin:/bin:/usr/sbin:/sbin" or similar).  The
+        old all-or-nothing guard saw /usr/bin and skipped injection entirely,
+        leaving Homebrew and other standard dirs missing.  Core file tools
+        (read_file -> `sed -n ...`) and any binary living only in /usr/sbin,
+        /sbin, or Homebrew then silently failed with "command not found".
+        """
+        from tools.environments.local import _make_run_env, _SANE_PATH
+        launchd_env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
+        with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
-        # Should keep existing PATH unchanged
-        assert result["PATH"] == "/usr/bin:/bin"
+        path_entries = result["PATH"].split(":")
+        assert "/opt/homebrew/bin" in path_entries
+        assert "/opt/homebrew/sbin" in path_entries
+        # Pre-existing entries must keep their original order at the front.
+        assert path_entries[0] == "/usr/local/bin"
+        assert path_entries[1] == "/usr/bin"
+        assert path_entries[2] == "/bin"
+
+    def test_make_run_env_does_not_duplicate_existing_sane_entries(self):
+        """Already-present sane entries must not be duplicated."""
+        from tools.environments.local import _make_run_env, _SANE_PATH
+        full_path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        with patch.dict(os.environ, {"PATH": full_path}, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert path_entries.count("/opt/homebrew/bin") == 1
+        assert path_entries.count("/usr/local/bin") == 1
+        assert path_entries.count("/usr/bin") == 1
+
+    def test_make_run_env_preserves_user_path_precedence(self):
+        """A user/rc-provided dir must keep priority over injected fallbacks."""
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {"PATH": "/Users/me/.local/bin:/usr/bin:/bin"}, clear=True):
+            result = _make_run_env({})
+        parts = result["PATH"].split(":")
+        assert parts[0] == "/Users/me/.local/bin"
+        assert len(parts) == len(set(parts))
+
+    def test_make_run_env_idempotent(self):
+        """Running the result back through _make_run_env changes nothing."""
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}, clear=True):
+            first = _make_run_env({})["PATH"]
+        with patch.dict(os.environ, {"PATH": first}, clear=True):
+            second = _make_run_env({})["PATH"]
+        assert first == second

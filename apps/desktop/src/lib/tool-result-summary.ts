@@ -286,6 +286,49 @@ function formatRecordSummary(record: Json, depth: number): string {
   return lines.join('\n')
 }
 
+function formatLifecyclePacket(record: Json): string {
+  const packetType = String(record.packet_type ?? '')
+  if (packetType === 'lifecycle_review.packet') {
+    const candidates = Array.isArray(record.candidates) ? record.candidates.filter(isRecord) : []
+    const lines = ['Lifecycle Review', `Candidates: ${candidates.length}`]
+    for (const candidate of candidates.slice(0, 3)) {
+      const title = String(candidate.title ?? candidate.target_ref ?? 'candidate')
+      const action = String(candidate.recommended_action ?? '')
+      const target = String(candidate.target_ref ?? '')
+      lines.push(`- ${clipInline([title, action && `action ${action}`, target].filter(Boolean).join(' · '))}`)
+      const signals = isRecord(candidate.signals) ? candidate.signals : {}
+      const closure = isRecord(signals.closure_signal) ? signals.closure_signal : null
+      if (closure) {
+        const source = String(closure.source ?? '')
+        const polarity = String(closure.polarity ?? '')
+        const confidence = String(closure.confidence ?? '')
+        lines.push(`  Signal: ${[source, polarity, confidence].filter(Boolean).join(' · ')}`)
+      }
+    }
+    return lines.join('\n')
+  }
+  if (packetType === 'lifecycle_proposal_draft.packet') {
+    const proposals = Array.isArray(record.proposals) ? record.proposals.filter(isRecord) : []
+    const count = Number(record.proposal_count ?? proposals.length)
+    const lines = ['Lifecycle Proposal Draft', `Proposals: ${Number.isFinite(count) ? count : proposals.length}`]
+    for (const proposal of proposals.slice(0, 3)) {
+      const target = String(proposal.target_ref ?? '')
+      const action = String(proposal.recommended_action ?? proposal.action ?? '')
+      const summary = String(proposal.summary ?? '')
+      lines.push(`- ${clipInline([target, action, summary].filter(Boolean).join(' · '))}`)
+    }
+    return lines.join('\n')
+  }
+  if (packetType === 'lifecycle_proposal_confirm_receipt' || packetType === 'lifecycle_signal_confirm_receipt') {
+    return [
+      packetType === 'lifecycle_signal_confirm_receipt' ? 'Lifecycle Signal Receipt' : 'Lifecycle Proposal Receipt',
+      `Status: ${String(record.status ?? record.state ?? 'unknown')}`,
+      `Durable KB object changed: ${record.durable_kb_object_changed === true ? 'yes' : 'no'}`
+    ].join('\n')
+  }
+  return ''
+}
+
 function formatSummaryValue(value: unknown, depth: number): string {
   if (depth > 4) {
     return ''
@@ -459,7 +502,14 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
 }
 
 export function formatToolResultSummary(value: unknown): string {
-  return formatSummaryValue(unwrapPayload(value), 0) || formatSummaryValue(value, 0)
+  const payload = unwrapPayload(value)
+  if (isRecord(payload)) {
+    const lifecycleSummary = formatLifecyclePacket(payload)
+    if (lifecycleSummary) {
+      return lifecycleSummary
+    }
+  }
+  return formatSummaryValue(payload, 0) || formatSummaryValue(value, 0)
 }
 
 export function extractToolErrorMessage(value: unknown): string {

@@ -64,6 +64,49 @@ describe('formatToolResultSummary', () => {
     expect(summary).toContain('- Title: Build report')
     expect(summary).toContain('- Completed: true')
   })
+
+  it('summarizes lifecycle review packets with closure signal provenance', () => {
+    const summary = formatToolResultSummary({
+      packet_type: 'lifecycle_review.packet',
+      candidates: [
+        {
+          title: 'Old launch situation',
+          target_ref: 'situations/2026-04-old-launch',
+          recommended_action: 'archive',
+          signals: {
+            closure_signal: {
+              source: 'inbox',
+              polarity: 'complete',
+              confidence: 'high'
+            }
+          }
+        }
+      ]
+    })
+
+    expect(summary).toContain('Lifecycle Review')
+    expect(summary).toContain('Candidates: 1')
+    expect(summary).toContain('Old launch situation · action archive · situations/2026-04-old-launch')
+    expect(summary).toContain('Signal: inbox · complete · high')
+  })
+
+  it('summarizes lifecycle proposal draft packets', () => {
+    const summary = formatToolResultSummary({
+      packet_type: 'lifecycle_proposal_draft.packet',
+      proposal_count: 1,
+      proposals: [
+        {
+          target_ref: 'situations/2026-04-old-launch',
+          recommended_action: 'archive',
+          summary: 'Draft an archive proposal for reviewer approval.'
+        }
+      ]
+    })
+
+    expect(summary).toContain('Lifecycle Proposal Draft')
+    expect(summary).toContain('Proposals: 1')
+    expect(summary).toContain('situations/2026-04-old-launch · archive · Draft an archive proposal')
+  })
 })
 
 describe('extractToolErrorMessage', () => {

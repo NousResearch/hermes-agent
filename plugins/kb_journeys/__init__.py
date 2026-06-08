@@ -416,6 +416,39 @@ def _lifecycle_values(value: Any) -> list[str]:
     return _dedupe_list(values)
 
 
+def _lifecycle_signal_lines(signal: Any) -> list[str]:
+    if not isinstance(signal, dict):
+        return []
+    lines: list[str] = []
+    source = _short(signal.get("source"), "")
+    observed = _short(signal.get("observed_at"), "")
+    if source or observed:
+        parts = []
+        if source:
+            parts.append(f"Source: {source}")
+        if observed:
+            parts.append(f"Observed: {observed}")
+        lines.append("   " + " · ".join(parts))
+    kind = _short(signal.get("kind"), "")
+    polarity = _short(signal.get("polarity"), "")
+    confidence = _short(signal.get("confidence"), "")
+    signal_parts = [part for part in (kind, polarity) if part]
+    if signal_parts or confidence:
+        suffix = f" ({confidence})" if confidence else ""
+        lines.append(f"   Signal: {' / '.join(signal_parts) or 'lifecycle'}{suffix}")
+    evidence_refs = _dedupe_list([
+        _short(signal.get("source_ref"), ""),
+        *_lifecycle_values(signal.get("evidence_refs")),
+    ])
+    if evidence_refs:
+        lines.append(f"   Signal evidence refs: {len(evidence_refs)}")
+        lines.append(_id_line("   Signal evidence", evidence_refs, limit=3))
+    summary = _short(signal.get("summary"), "")
+    if summary:
+        lines.append(f"   Signal summary: {_clip(summary, 220)}")
+    return lines
+
+
 def _is_lifecycle_proposal_descriptor(descriptor: dict[str, Any]) -> bool:
     if not isinstance(descriptor, dict):
         return False
@@ -531,10 +564,13 @@ def _lifecycle_descriptor_action(ctx: Any, target: str, descriptor: dict[str, An
     label = _short(descriptor.get("label") or descriptor.get("action_id") or "Lifecycle proposal", "Lifecycle proposal")
     action_id = _short(descriptor.get("action_id") or label, label)
     preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool") or descriptor.get("method"))
+    confirm_tool = _descriptor_tool_name(target, descriptor.get("confirm_tool"))
+    if not preview_tool or not confirm_tool:
+        return None
     return KbAction(
         label=label,
         action_id=f"{action_id}.preview",
-        handler=lambda callback_ctx, d=dict(descriptor): _render_lifecycle_descriptor_preview(
+        handler=lambda callback_ctx, d=dict(descriptor): _render_generic_descriptor_preview(
             ctx,
             target,
             descriptor=d,
@@ -544,6 +580,7 @@ def _lifecycle_descriptor_action(ctx: Any, target: str, descriptor: dict[str, An
             "target_kind": descriptor.get("target_kind") or "lifecycle_candidate",
             "target_ref": descriptor.get("target_ref"),
             "preview_tool": preview_tool,
+            "confirm_tool": confirm_tool,
             "preview_required": True,
             "durable_write": False,
         },
@@ -596,6 +633,9 @@ def _render_lifecycle_review_packet(
             lines.append(f"   Action: {action}")
         if target_ref:
             lines.append(f"   Target: {target_ref}")
+        signals = candidate.get("signals") if isinstance(candidate.get("signals"), dict) else {}
+        closure_signal = signals.get("closure_signal") if isinstance(signals, dict) else None
+        lines.extend(_lifecycle_signal_lines(closure_signal))
         evidence_refs = _lifecycle_values(candidate.get("evidence_refs"))
         evidence_gaps = _lifecycle_values(candidate.get("evidence_gaps"))
         if evidence_refs:
@@ -5542,7 +5582,7 @@ def _kb_command_help() -> dict[str, Any]:
                 "/kb queue reject 1 - preview a decision",
                 "Confirm queue decisions from the preview button when available",
                 "/kb queue reject 1 confirm - text fallback for a previewed decision",
-                "/kb review lifecycle [target] - read-only lifecycle review",
+                "/kb review lifecycle [target] - lifecycle review with preview/confirm proposal queueing",
                 "/kb publish - preview KB Git publication",
                 "/kb publish confirm - commit and push after preview",
                 "/kb status - lane, Hermes/KB reasoning, readiness, publication",

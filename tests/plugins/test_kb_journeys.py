@@ -860,6 +860,20 @@ def test_kb_review_lifecycle_renders_readonly_packet_and_descriptor_preview(monk
                             "recommended_action": "archive",
                             "evidence_refs": ["source:launch-retro"],
                             "evidence_gaps": ["No active owner found"],
+                            "signals": {
+                                "lifecycle_signal_count": 1,
+                                "closure_signal": {
+                                    "signal_id": "inbox-old-launch-final",
+                                    "source": "inbox",
+                                    "source_ref": "inbox:old-launch-final",
+                                    "observed_at": "2026-06-08T12:00:00Z",
+                                    "kind": "outcome",
+                                    "polarity": "complete",
+                                    "confidence": "high",
+                                    "summary": "Final owner confirmed the launch thread is complete.",
+                                    "evidence_refs": ["inbox:old-launch-final"],
+                                },
+                            },
                             "action_descriptor": descriptor,
                         }
                     ],
@@ -882,6 +896,17 @@ def test_kb_review_lifecycle_renders_readonly_packet_and_descriptor_preview(monk
                     ],
                 }
             },
+            "mcp_kb_engine_prod_lifecycle_proposal_confirmed": {
+                "result": {
+                    "packet_type": "lifecycle_proposal_confirm_receipt",
+                    "status": "proposal_recorded",
+                    "reason": "queued for proposal review",
+                    "proposal_count": 1,
+                    "proposal_ids": ["draft_archive_old_launch"],
+                    "durable_kb_object_changed": False,
+                    "apply_performed": False,
+                }
+            },
         }
     )
     adapter = FakeKbActionsAdapter()
@@ -899,11 +924,16 @@ def test_kb_review_lifecycle_renders_readonly_packet_and_descriptor_preview(monk
     assert "Old launch situation" in text
     assert "Action: archive" in text
     assert "Target: situations/2026-04-old-launch" in text
+    assert "Source: inbox" in text
+    assert "Observed: 2026-06-08T12:00:00Z" in text
+    assert "Signal: outcome / complete (high)" in text
+    assert "Signal evidence refs: 1" in text
+    assert "Signal summary: Final owner confirmed the launch thread is complete." in text
     assert "Evidence: source:launch-retro" in text
     assert "Gaps: No active owner found" in text
     assert [action.label for action in adapter.sent[0]["actions"]] == ["Draft archive proposal"]
     assert adapter.sent[0]["actions"][0].metadata["durable_write"] is False
-    assert "confirm_tool" not in adapter.sent[0]["actions"][0].metadata
+    assert adapter.sent[0]["actions"][0].metadata["confirm_tool"] == "mcp_kb_engine_prod_lifecycle_proposal_confirmed"
 
     preview_card = adapter.sent[0]["actions"][0].handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
     if asyncio.iscoroutine(preview_card):
@@ -913,7 +943,7 @@ def test_kb_review_lifecycle_renders_readonly_packet_and_descriptor_preview(monk
     assert "Proposals: 1" in preview_card["text"]
     assert "draft_archive_old_launch" in preview_card["text"]
     assert "No durable write has been made." in preview_card["text"]
-    assert preview_card["actions"] == []
+    assert [action.label for action in preview_card["actions"]] == ["Confirm Draft archive proposal"]
     assert ctx.calls[-1] == (
         "mcp_kb_engine_prod_lifecycle_proposal_preview",
         {
@@ -922,6 +952,17 @@ def test_kb_review_lifecycle_renders_readonly_packet_and_descriptor_preview(monk
             "recommended_action": "archive",
         },
     )
+
+    confirm_card = preview_card["actions"][0].handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(confirm_card):
+        confirm_card = asyncio.run(confirm_card)
+
+    assert "Status: proposal_recorded" in confirm_card["text"]
+    assert ctx.calls[-1][0] == "mcp_kb_engine_prod_lifecycle_proposal_confirmed"
+    assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
+    assert ctx.calls[-1][1]["user_confirmation"]["preview_required"] is True
+    assert ctx.calls[-1][1]["actor"] == "telegram:user-1"
+    assert ctx.calls[-1][1]["source"] == "Hermes Telegram Action Card"
 
 
 def test_dashboard_proposal_queue_descriptor_uses_generic_preview_confirm_with_lease(monkeypatch):

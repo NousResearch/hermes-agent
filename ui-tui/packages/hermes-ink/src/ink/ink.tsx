@@ -84,6 +84,8 @@ import {
 } from './terminal.js'
 import {
   CURSOR_HOME,
+  CURSOR_RESTORE,
+  CURSOR_SAVE,
   cursorMove,
   cursorPosition,
   DISABLE_KITTY_KEYBOARD,
@@ -2396,8 +2398,14 @@ export default class Ink {
     if (this.options.stdout.isTTY) {
       if (this.altScreenActive) {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
+        // Save cursor position while still in alt screen so we can restore
+        // it on the main screen after exiting — otherwise ?1049l restores
+        // the cursor to wherever it was before alt screen was entered,
+        // which is typically (0,0).
+        writeSync(1, CURSOR_SAVE)
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
         writeSync(1, EXIT_ALT_SCREEN)
+        writeSync(1, CURSOR_RESTORE)
       }
 
       // Disable mouse tracking — unconditional because altScreenActive can be

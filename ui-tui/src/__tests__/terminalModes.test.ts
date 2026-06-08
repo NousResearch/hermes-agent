@@ -36,4 +36,34 @@ describe('terminal mode reset', () => {
     expect(resetTerminalModes({ isTTY: false, write } as unknown as NodeJS.WriteStream)).toBe(false)
     expect(write).not.toHaveBeenCalled()
   })
+
+  it('saves cursor position before exiting alternate screen', () => {
+    const saveIdx = TERMINAL_MODE_RESET.indexOf('\x1b[s')
+    const exitAltIdx = TERMINAL_MODE_RESET.indexOf('\x1b[?1049l')
+
+    expect(saveIdx).toBeGreaterThanOrEqual(0)
+    expect(exitAltIdx).toBeGreaterThanOrEqual(0)
+    expect(saveIdx).toBeLessThan(exitAltIdx)
+  })
+
+  it('restores cursor position after exiting alternate screen', () => {
+    const exitAltIdx = TERMINAL_MODE_RESET.indexOf('\x1b[?1049l')
+    const restoreIdx = TERMINAL_MODE_RESET.indexOf('\x1b[u')
+
+    expect(exitAltIdx).toBeGreaterThanOrEqual(0)
+    expect(restoreIdx).toBeGreaterThanOrEqual(0)
+    expect(restoreIdx).toBeGreaterThan(exitAltIdx)
+  })
+
+  it('brackets alt-screen exit with immediate save/restore (no intervening sequences)', () => {
+    const saveIdx = TERMINAL_MODE_RESET.indexOf('\x1b[s')
+    const exitAltIdx = TERMINAL_MODE_RESET.indexOf('\x1b[?1049l')
+    const restoreIdx = TERMINAL_MODE_RESET.indexOf('\x1b[u')
+    const exitLen = '\x1b[?1049l'.length
+
+    // save is immediately before ?1049l
+    expect(TERMINAL_MODE_RESET.slice(saveIdx + '\x1b[s'.length, exitAltIdx).trim()).toBe('')
+    // restore is immediately after ?1049l
+    expect(TERMINAL_MODE_RESET.slice(exitAltIdx + exitLen, restoreIdx).trim()).toBe('')
+  })
 })

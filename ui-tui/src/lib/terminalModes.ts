@@ -15,7 +15,9 @@ export const TERMINAL_MODE_RESET =
   '\x1b[?9l' + // X10 mouse
   '\x1b[?1004l' + // focus events
   '\x1b[?2004l' + // bracketed paste
+  '\x1b[s' + // save cursor position (restored after alt-screen exit below)
   '\x1b[?1049l' + // alternate screen
+  '\x1b[u' + // restore cursor to pre-alt-screen position
   '\x1b[<u' + // kitty keyboard
   '\x1b[>4m' + // modifyOtherKeys
   '\x1b[0m' + // attributes

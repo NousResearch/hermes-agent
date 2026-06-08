@@ -2007,6 +2007,91 @@ class TestResponsesEndpoint:
             assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_with_compressed_transcript_does_not_duplicate(
+        self, adapter
+    ):
+        """Preflight compression must not double-count history in ``_response_store``.
+
+        Regression for ai-channel-gateway 994 → 1119 → 1358 growth bug:
+        when the AIAgent runs preflight compression mid-turn, the returned
+        ``result["messages"]`` is the *post-compression* full transcript, which
+        no longer starts with the uncompressed ``prior`` prefix that
+        ``_build_response_conversation_history`` uses for prefix matching.
+
+        The previous implementation hit the fallback branch and stored
+        ``prior + current_user + agent_messages``, growing the stored history
+        every chained turn and re-triggering compression on every subsequent
+        request.  After the fix, when ``agent_messages`` already contains the
+        current user turn we trust it as the authoritative full transcript and
+        store exactly that — no duplication.
+        """
+        # First turn: a long-ish conversation accumulates in _response_store.
+        prior_history = []
+        for i in range(20):
+            prior_history.append({"role": "user", "content": f"q{i}"})
+            prior_history.append({"role": "assistant", "content": f"a{i}"})
+
+        adapter._response_store.put(
+            "resp_prev_compressed",
+            {
+                "response": {"id": "resp_prev_compressed", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session-compressed",
+            },
+        )
+
+        # Second turn: agent triggers preflight compression and returns a
+        # shorter, rewritten transcript.  Crucially, it starts with a
+        # synthetic system summary (not present in ``prior_history``) so
+        # the prior+current prefix match fails — exercising the fallback
+        # branch we just hardened.  It still contains the *current* user
+        # turn, which is how the fallback recognises it as a full
+        # transcript rather than a turn-only delta.
+        compressed_messages = [
+            {"role": "system", "content": "Summary of earlier conversation: ..."},
+            {"role": "user", "content": "follow up question"},
+            {"role": "assistant", "content": "follow up answer"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "follow up answer",
+                        "messages": list(compressed_messages),
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up question",
+                        "previous_response_id": "resp_prev_compressed",
+                    },
+                )
+
+            assert resp.status == 200
+            resp_data = await resp.json()
+            stored = adapter._response_store.get(resp_data["id"])
+            stored_history = stored["conversation_history"]
+
+            # FIX assertion: stored history is exactly the compressed
+            # transcript the agent returned — NOT the bloated
+            # prior(40) + current_user(1) + compressed(3) = 44 items the
+            # buggy fallback would have produced.
+            assert stored_history == compressed_messages
+            assert len(stored_history) == 3
+
+            # Defensive: none of the prior items should leak into storage,
+            # otherwise the next chained call would re-feed them to the
+            # agent and re-trigger compression (the original incident).
+            for old_msg in prior_history:
+                assert old_msg not in stored_history
+
+    @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
         """Response output must not replay previous tool artifacts."""
         prior_history = [

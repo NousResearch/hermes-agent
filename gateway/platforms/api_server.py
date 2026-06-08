@@ -4007,6 +4007,17 @@ class APIServerAdapter(BasePlatformAdapter):
             if turn_start:
                 return list(agent_messages)
 
+            # Prefix match failed.  If agent_messages already contains the
+            # current user turn, treat it as a post-compression full
+            # transcript and return as-is — otherwise prepending ``prior``
+            # would double-count history and grow _response_store uncapped
+            # across chained turns (994 → 1119 → 1358 … bug).  Fall through
+            # to the legacy prepend only for true turn-only deltas.
+            if APIServerAdapter._messages_contain_user_turn(
+                agent_messages, current_user
+            ):
+                return list(agent_messages)
+
             full_history = prior
             full_history.append(current_user)
             full_history.extend(agent_messages)
@@ -4016,6 +4027,29 @@ class APIServerAdapter(BasePlatformAdapter):
         full_history.append(current_user)
         full_history.append({"role": "assistant", "content": final_response})
         return full_history
+
+    @staticmethod
+    def _messages_contain_user_turn(
+        messages: List[Dict[str, Any]],
+        user_message: Dict[str, Any],
+    ) -> bool:
+        """Return True if ``messages`` already contains ``user_message``.
+
+        Content-based match (ignores metadata like ``timestamp`` / ``name``)
+        so post-compression transcripts still register as containing the
+        current turn.
+        """
+        if not isinstance(user_message, dict):
+            return False
+        target_content = user_message.get("content")
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "user":
+                continue
+            if msg.get("content") == target_content:
+                return True
+        return False
 
     @staticmethod
     def _response_messages_turn_start_index(

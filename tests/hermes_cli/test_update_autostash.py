@@ -474,6 +474,8 @@ def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
     ff_only_fails=False,
+    local_commit_count="0",
+    rebase_fails=False,
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
@@ -493,6 +495,8 @@ def _make_update_side_effect(
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
+            if "origin/main..HEAD" in joined:
+                return SimpleNamespace(stdout=f"{local_commit_count}\n", stderr="", returncode=0)
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "--ff-only" in joined:
             if ff_only_fails:
@@ -502,6 +506,14 @@ def _make_update_side_effect(
                     returncode=128,
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
+        if "branch" in joined and "backup/update-preserve-main" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd[1:3] == ["rebase", "origin/main"]:
+            if rebase_fails:
+                return SimpleNamespace(stdout="", stderr="CONFLICT (content): file\n", returncode=1)
+            return SimpleNamespace(stdout="Successfully rebased\n", stderr="", returncode=0)
+        if cmd[1:3] == ["rebase", "--abort"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "reset" in joined and "--hard" in joined:
             if reset_fails:
                 return SimpleNamespace(stdout="", stderr="error: unable to write\n", returncode=1)
@@ -512,7 +524,7 @@ def _make_update_side_effect(
 
 
 def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+    """When --ff-only fails without local commits, update resets to origin/{branch}."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -527,6 +539,55 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
+
+
+def test_cmd_update_rebases_local_commits_when_ff_only_fails(monkeypatch, tmp_path, capsys):
+    """When a managed install carries local commits, update preserves them."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_commit_count="2",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    branch_calls = [c for c in recorded if c[1:2] == ["branch"] and c[2].startswith("backup/update-preserve-main-")]
+    rebase_calls = [c for c in recorded if c[1:3] == ["rebase", "origin/main"]]
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert len(branch_calls) == 1
+    assert rebase_calls == [["git", "rebase", "origin/main"]]
+    assert reset_calls == []
+
+    out = capsys.readouterr().out
+    assert "preserving 2 local commit" in out
+    assert "Local commits preserved" in out
+
+
+def test_cmd_update_stops_without_reset_when_local_commit_rebase_fails(monkeypatch, tmp_path, capsys):
+    """A rebase conflict aborts the update instead of discarding local commits."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_commit_count="2",
+        rebase_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert [c for c in recorded if c[1:3] == ["rebase", "--abort"]] == [["git", "rebase", "--abort"]]
+    assert [c for c in recorded if "reset" in c and "--hard" in c] == []
+
+    out = capsys.readouterr().out
+    assert "Could not rebase local commits" in out
+    assert "local commits remain" in out
+    assert "not discarded" in out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):

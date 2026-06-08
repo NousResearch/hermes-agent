@@ -130,6 +130,75 @@ const parseWsId = (id: string) => (id.startsWith(WS_ID_PREFIX) ? id.slice(WS_ID_
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
 
+const SOURCE_LABELS: Record<string, string> = {
+  tui: 'Terminal',
+  api_server: 'API Server',
+  cron: 'Cron',
+  desktop: 'Hermes Desktop',
+  telegram: 'Telegram',
+  discord: 'Discord',
+  slack: 'Slack',
+  bluesky: 'Bluesky',
+  whatsapp: 'WhatsApp',
+  webchat: 'Web Chat',
+  signal: 'Signal',
+  matrix: 'Matrix',
+  email: 'Email',
+  sms: 'SMS',
+  webhook: 'Webhook',
+  unknown: '',
+}
+
+const SOURCE_ICONS: Record<string, string> = {
+  tui: 'terminal',
+  cron: 'watch',
+  desktop: 'vm',
+  api_server: 'server',
+  telegram: 'mention',
+  discord: 'symbol-event',
+  slack: 'comment-discussion',
+  bluesky: 'symbol-color',
+  whatsapp: 'comment',
+  webchat: 'globe',
+  signal: 'key',
+  matrix: 'symbol-misc',
+  email: 'mail',
+  sms: 'device-mobile',
+  webhook: 'link',
+  unknown: 'question',
+}
+
+function sourceGroupsFor(sessions: SessionInfo[], workingSessionIdSet: Set<string>): SidebarSessionGroup[] {
+  const groups = new Map<string, SidebarSessionGroup>()
+
+  for (const session of sessions) {
+    const raw = session.source || 'unknown'
+    const key = raw || 'unknown'
+    const label = SOURCE_LABELS[key] || key
+
+    let group = groups.get(key)
+
+    if (!group) {
+      group = { id: `__src__${key}`, label, path: null, sessions: [], mode: 'source' as const }
+      groups.set(key, group)
+    }
+
+    group.sessions.push(session)
+  }
+
+  // Sort: active/working groups first (based on workingSessionIdSet), then alphabetical.
+  const sorted = [...groups.values()]
+  sorted.sort((a, b) => {
+    const aHasWorking = a.sessions.some(s => workingSessionIdSet.has(s.id))
+    const bHasWorking = b.sessions.some(s => workingSessionIdSet.has(s.id))
+    if (aHasWorking && !bHasWorking) return -1
+    if (!aHasWorking && bHasWorking) return 1
+    return a.label.localeCompare(b.label)
+  })
+
+  return sorted
+}
+
 function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[]): T[] {
   if (!orderIds.length) {
     return items
@@ -394,6 +463,11 @@ export function ChatSidebar({
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
 
+  const pinnedSourceGroups = useMemo(
+    () => (pinnedSessions.length > 0 ? sourceGroupsFor(pinnedSessions, workingSessionIdSet) : undefined),
+    [pinnedSessions, workingSessionIdSet]
+  )
+
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
   // client-side and merged ahead of the server hits.
@@ -460,6 +534,11 @@ export function ChatSidebar({
   const agentGroups = useMemo(
     () => orderByIds(workspaceGroupsFor(agentSessions), g => g.id, workspaceOrderIds),
     [agentSessions, workspaceOrderIds]
+  )
+
+  const agentSourceGroups = useMemo(
+    () => (agentSessions.length > 0 ? sourceGroupsFor(agentSessions, workingSessionIdSet) : undefined),
+    [agentSessions, workingSessionIdSet]
   )
 
   const loadMoreForProfileGroup = useCallback(
@@ -771,39 +850,38 @@ export function ChatSidebar({
             sessions={searchResults}
             workingSessionIdSet={workingSessionIdSet}
             presenceBySession={presenceBySession}
-            showSourceBadge={showAllProfiles || visibleSessionPresence.length > 0}
+            showSourceBadge={true}
           />
         )}
 
         {sidebarOpen && !trimmedQuery && (
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75">
             {/* Pinned sessions */}
-            {pinnedSessions.length > 0 && (
-              <SidebarSessionsSection
-                activeSessionId={activeSidebarSessionId}
-                contentClassName="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
-                emptyState={<SidebarPinnedEmptyState />}
-                footer={null}
-                forceEmptyState={false}
-                label="Pinned"
-                labelMeta={<SidebarCount>{pinnedSessions.length}</SidebarCount>}
-                onArchiveSession={onArchiveSession}
-                onDeleteSession={onDeleteSession}
-                onToggle={() => setSidebarPinsOpen(!pinsOpen)}
-                onTogglePin={pinSession}
-                open={pinsOpen}
-                pinned={true}
-                rootClassName="min-h-0 flex-1 p-0"
-                sessions={pinnedSessions}
-                sortable={pinnedSessions.length > 1}
-                onReorder={handlePinnedDragEnd}
-                onResumeSession={onResumeSession}
-                workingSessionIdSet={workingSessionIdSet}
-                dndSensors={dndSensors}
-                presenceBySession={presenceBySession}
-                showSourceBadge={showAllProfiles || visibleSessionPresence.length > 0}
-              />
-            )}
+            <SidebarSessionsSection
+              activeSessionId={activeSidebarSessionId}
+              contentClassName="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+              emptyState={<SidebarPinnedEmptyState />}
+              footer={null}
+              forceEmptyState={false}
+              groups={pinnedSourceGroups}
+              label="Pinned"
+              labelMeta={<SidebarCount>{pinnedSessions.length}</SidebarCount>}
+              onArchiveSession={onArchiveSession}
+              onDeleteSession={onDeleteSession}
+              onToggle={() => setSidebarPinsOpen(!pinsOpen)}
+              onTogglePin={pinSession}
+              open={pinsOpen}
+              pinned={true}
+              rootClassName="min-h-0 flex-none p-0"
+              sessions={pinnedSessions}
+              sortable={pinnedSessions.length > 1}
+              onReorder={handlePinnedDragEnd}
+              onResumeSession={onResumeSession}
+              workingSessionIdSet={workingSessionIdSet}
+              dndSensors={dndSensors}
+              presenceBySession={presenceBySession}
+              showSourceBadge={true}
+            />
 
             {/* Recents / All sessions */}
             <SidebarSessionsSection
@@ -824,7 +902,7 @@ export function ChatSidebar({
                 ) : null
               }
               forceEmptyState={showSessionSkeletons}
-              groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined}
+              groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : agentSourceGroups}
               headerAction={sessionsHeaderAction}
               label="Sessions"
               labelMeta={recentsMeta}
@@ -842,7 +920,7 @@ export function ChatSidebar({
               sortable={!showAllProfiles && agentSessions.length > 1}
               workingSessionIdSet={workingSessionIdSet}
               presenceBySession={presenceBySession}
-              showSourceBadge={showAllProfiles || visibleSessionPresence.length > 0}
+              showSourceBadge={true}
             />
           </div>
         )}
@@ -973,6 +1051,39 @@ function SidebarPinnedEmptyState() {
   )
 }
 
+function SidebarSourceGroup({
+  group,
+  renderRows,
+}: {
+  group: SidebarSessionGroup
+  renderRows: (sessions: SessionInfo[]) => React.ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  const sourceKey = group.id.replace('__src__', '')
+  const iconName = SOURCE_ICONS[sourceKey] || 'question'
+
+  return (
+    <div className="grid gap-px">
+      <div className="group/source flex min-h-5 items-center gap-1 px-2">
+        <button
+          className="flex min-w-0 items-center gap-1.5 bg-transparent text-left text-[0.6875rem] font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"
+          onClick={() => setOpen(v => !v)}
+          type="button"
+        >
+          <Codicon name={iconName} size="0.75rem" />
+          <span className="truncate">{group.label}</span>
+          <SidebarCount>{group.sessions.length}</SidebarCount>
+          <DisclosureCaret
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/source:opacity-100"
+            open={open}
+          />
+        </button>
+      </div>
+      {open && renderRows(group.sessions)}
+    </div>
+  )
+}
+
 interface SidebarSessionGroup {
   id: string
   label: string
@@ -981,7 +1092,7 @@ interface SidebarSessionGroup {
   // Profile color for the ALL-profiles view; absent for workspace groups.
   color?: null | string
   loadingMore?: boolean
-  mode?: 'profile' | 'workspace'
+  mode?: 'profile' | 'workspace' | 'source'
   onLoadMore?: () => void
   totalCount?: number
 }
@@ -1047,6 +1158,8 @@ function SidebarSessionsSection({
   const dndActive = sortable && !!onReorder
 
   const renderRow = (session: SessionInfo) => {
+    const hasSourceGroups = groups?.length ? groups[0]?.mode === 'source' : false
+    const resolvedShowSourceBadge = showSourceBadge && !hasSourceGroups
     const rowProps = {
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
@@ -1056,7 +1169,7 @@ function SidebarSessionsSection({
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
       session,
-      showSourceBadge,
+      showSourceBadge: resolvedShowSourceBadge,
       presence: presenceBySession?.get(session.id),
     }
 
@@ -1085,8 +1198,15 @@ function SidebarSessionsSection({
   if (showEmptyState) {
     inner = emptyState
   } else if (groups?.length) {
+    const isSourceGroups = groups[0]?.mode === 'source'
     const groupNodes = groups.map(group =>
-      dndActive ? (
+      isSourceGroups ? (
+        <SidebarSourceGroup
+          group={group}
+          key={group.id}
+          renderRows={renderSessionList}
+        />
+      ) : dndActive ? (
         <SortableSidebarWorkspaceGroup
           group={group}
           key={group.id}
@@ -1103,7 +1223,9 @@ function SidebarSessionsSection({
       )
     )
 
-    inner = dndActive ? (
+    inner = isSourceGroups ? (
+      groupNodes
+    ) : dndActive ? (
       <SortableContext items={groups.map(g => wsId(g.id))} strategy={verticalListSortingStrategy}>
         {groupNodes}
       </SortableContext>

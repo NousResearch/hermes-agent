@@ -274,18 +274,19 @@ function SidebarRowDot({
     />
   )
 }
-
 /**
  * Line 2 metadata row: device nickname + OS + source/client.
  * Renders below the session title with subtle tertiary styling.
  *
- * For remote sessions (presence record): shows device nickname from presence.
- * For local sessions (no presence): shows "This Machine" with source (Terminal, API, etc.)
+ * For remote sessions (presence record): shows device nickname from
+ * the presence host, falling back to profile name.
+ * For local sessions (no presence): shows the source/client type.
+ * Always renders — never returns null.
  */
 function SessionSourceLine({
   deviceNickname,
   profile,
-  source
+  source,
 }: {
   deviceNickname: string | null
   profile: string | null
@@ -293,25 +294,37 @@ function SessionSourceLine({
 }) {
   const parts: string[] = []
 
+  const srcMap: Record<string, string> = {
+    tui: 'Terminal',
+    api_server: 'API',
+    cron: 'Cron',
+    desktop: 'Hermes Desktop',
+    telegram: 'Telegram',
+    discord: 'Discord',
+    slack: 'Slack',
+    bluesky: 'Bluesky',
+    whatsapp: 'WhatsApp',
+    webchat: 'Web Chat',
+    signal: 'Signal',
+    matrix: 'Matrix',
+    email: 'Email',
+    sms: 'SMS',
+    webhook: 'Webhook',
+    unknown: '',
+  }
+
   // Remote session: device nickname from presence record
   if (deviceNickname) {
     parts.push(deviceNickname)
-  }
-
-  // Local session: show source/client type if available
-  if (!deviceNickname && source && source !== 'unknown') {
-    const srcMap: Record<string, string> = {
-      tui: 'Terminal',
-      api_server: 'API',
-      cron: 'Cron',
-      desktop: 'Hermes Desktop',
-      telegram: 'Telegram',
-      discord: 'Discord',
-      slack: 'Slack',
-      bluesky: 'Bluesky',
-      whatsapp: 'WhatsApp',
+    // Also show source type if available and not redundant
+    if (source && source !== 'unknown' && srcMap[source]) {
+      parts.push(srcMap[source])
     }
-    parts.push(srcMap[source] ?? source)
+  } else {
+    // Local session: show source/client type
+    if (source && srcMap[source]) {
+      parts.push(srcMap[source])
+    }
   }
 
   // Profile as fallback for multi-profile mode (only if nothing else shown)
@@ -319,8 +332,9 @@ function SessionSourceLine({
     parts.push(profile)
   }
 
+  // Ultimate fallback — always show something
   if (parts.length === 0) {
-    return null
+    parts.push('Hermes')
   }
 
   return (

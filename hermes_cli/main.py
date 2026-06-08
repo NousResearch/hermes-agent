@@ -89,7 +89,13 @@ def _set_process_title() -> None:
         pass
 
     # Strategy 2/3: platform-specific ctypes fallback
-    import ctypes
+    try:
+        import ctypes
+    except ImportError:
+        # _ctypes C extension missing (e.g. pyenv-built Python without
+        # libffi-dev headers at compile time).  This is cosmetic only —
+        # safe to skip.  See NousResearch/hermes-agent#42074.
+        return
     import platform
 
     try:

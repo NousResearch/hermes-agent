@@ -59,6 +59,37 @@ class TestGenerateTitle:
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
+    def test_default_timeout_delegates_to_auxiliary_config(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Configured Timeout"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question", "answer") == "Configured Timeout"
+
+        assert captured_kwargs["task"] == "title_generation"
+        assert captured_kwargs["timeout"] is None
+
+    def test_explicit_timeout_still_overrides_config(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Explicit Timeout"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question", "answer", timeout=123.0) == "Explicit Timeout"
+
+        assert captured_kwargs["timeout"] == 123.0
+
     def test_strips_quotes(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

@@ -731,7 +731,11 @@ class ContextCompressor(ContextEngine):
 
         baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
         if baseline <= 0:
-            return False
+            tolerated_over_threshold = max(8192, int(self.threshold_tokens * 0.10))
+            if rough_tokens > self.threshold_tokens + tolerated_over_threshold:
+                return False
+            self.last_rough_tokens_when_real_prompt_fit = max(self.threshold_tokens, rough_tokens)
+            return True
 
         growth = max(0, rough_tokens - baseline)
         tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))

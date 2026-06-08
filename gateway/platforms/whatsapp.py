@@ -264,7 +264,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_allow_from = self._coerce_allow_list(
+            config.extra.get("group_allow_from")
+            or config.extra.get("groupAllowFrom")
+            or os.getenv("WHATSAPP_GROUP_ALLOWED_USERS")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -399,6 +403,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
+            if "*" in self._group_allow_from:
+                return True
             return chat_id in self._group_allow_from
         # "open" — all groups allowed
         return True

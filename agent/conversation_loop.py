@@ -3199,6 +3199,18 @@ def run_conversation(
                                 _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
                             except (TypeError, ValueError):
                                 pass
+                    # Some proxies omit the Retry-After header and embed the
+                    # delay in the body instead (e.g. "(reset after 2m)"). The
+                    # classifier parses that into retry_after_seconds; honor it
+                    # when no header was found so a soft-throttle 403/429 waits
+                    # the advertised window instead of a too-short backoff.
+                    if _retry_after is None:
+                        _classified_ra = getattr(classified, "retry_after_seconds", None)
+                        if _classified_ra:
+                            try:
+                                _retry_after = min(float(_classified_ra), 120)
+                            except (TypeError, ValueError):
+                                pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
                     agent._buffer_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")

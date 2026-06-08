@@ -2107,8 +2107,12 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                _stripped = deliver_content.strip().upper()
+                if should_deliver and success and SILENT_MARKER in _stripped:
+                    if _stripped == SILENT_MARKER:
+                        logger.info("Job '%s': wakeAgent=false or empty output — skipping delivery", job["id"])
+                    else:
+                        logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
                 delivery_error = None

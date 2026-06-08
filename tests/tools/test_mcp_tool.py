@@ -172,6 +172,56 @@ class TestMCPStatus:
         assert statuses["disabled"]["disabled"] is True
 
 
+class TestLifecycleConfig:
+    def test_get_lifecycle_seconds_accepts_top_level_and_nested_values(self):
+        from tools.mcp_tool import _get_lifecycle_seconds
+
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": "3.5"},
+                "idle_timeout_seconds",
+            )
+            == 3.5
+        )
+        assert _get_lifecycle_seconds(
+            {"lifecycle": {"max_lifetime_seconds": 42}},
+            "max_lifetime_seconds",
+        ) == 42.0
+
+    def test_get_lifecycle_seconds_treats_zero_as_disabled(self):
+        from tools.mcp_tool import _get_lifecycle_seconds
+
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": 0},
+                "idle_timeout_seconds",
+            )
+            is None
+        )
+
+    def test_get_lifecycle_seconds_ignores_invalid_values(self, caplog):
+        from tools.mcp_tool import _get_lifecycle_seconds
+
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": "soon"},
+                "idle_timeout_seconds",
+            )
+            is None
+        )
+        assert (
+            _get_lifecycle_seconds(
+                {"idle_timeout_seconds": -1},
+                "idle_timeout_seconds",
+            )
+            is None
+        )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("must be a number of seconds" in msg for msg in messages)
+        assert any("must be positive" in msg for msg in messages)
+
+
 # ---------------------------------------------------------------------------
 # Schema conversion
 # ---------------------------------------------------------------------------
@@ -568,6 +618,19 @@ class TestCheckFunction:
         finally:
             _servers.pop("test_server", None)
 
+    def test_recycled_stdio_server_remains_available_for_lazy_reconnect(self):
+        from tools.mcp_tool import _make_check_fn, _servers
+
+        server = _make_mock_server("test_server", session=None)
+        server._config = {"command": "npx"}
+        server._recycled_reason = "idle_timeout_seconds"
+        _servers["test_server"] = server
+        try:
+            check = _make_check_fn("test_server")
+            assert check() is True
+        finally:
+            _servers.pop("test_server", None)
+
 
 # ---------------------------------------------------------------------------
 # MCP loop runner
@@ -739,6 +802,36 @@ class TestToolHandler:
             ):
                 result = json.loads(handler({}))
             assert result == {"error": "MCP call interrupted: user sent a new message"}
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("reconnected", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=None)
+        server._config = {"command": "npx"}
+        server._recycled_reason = "idle_timeout_seconds"
+        _servers["test_srv"] = server
+
+        def fake_lazy_reconnect(server_name, srv):
+            assert server_name == "test_srv"
+            assert srv is server
+            srv.session = mock_session
+            srv._recycled_reason = None
+            return True
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with patch("tools.mcp_tool._request_lazy_reconnect", side_effect=fake_lazy_reconnect) as reconnect, \
+                 self._patch_mcp_loop():
+                result = json.loads(handler({"name": "world"}))
+            assert result["result"] == "reconnected"
+            reconnect.assert_called_once()
+            mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
         finally:
             _servers.pop("test_srv", None)
 
@@ -1145,6 +1238,52 @@ class TestMCPServerTask:
 
                 assert server.session is None
                 assert server._task.done()
+
+        asyncio.run(_test())
+
+    def test_wait_for_lifecycle_event_recycles_idle_stdio_server(self):
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"command": "npx"}
+            server.session = MagicMock()
+            server._idle_timeout_seconds = 0.01
+            server._last_tool_call_at = time.monotonic() - 1.0
+
+            reason = await server._wait_for_lifecycle_event()
+
+            assert reason == "recycle"
+            assert server._recycled_reason == "idle_timeout_seconds"
+            assert server.session is None
+
+        asyncio.run(_test())
+
+    def test_stdio_recycle_reason_uses_max_lifetime(self):
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"command": "npx"}
+            server._max_lifetime_seconds = 0.01
+            server._lifecycle_started_at = time.monotonic() - 1.0
+
+            assert server._stdio_recycle_reason() == "max_lifetime_seconds"
+
+        asyncio.run(_test())
+
+    def test_stdio_recycle_deadline_pauses_while_rpc_active(self):
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server._config = {"command": "npx"}
+            server._idle_timeout_seconds = 0.01
+            server._last_tool_call_at = time.monotonic() - 1.0
+
+            async with server._rpc_lock:
+                assert server._stdio_recycle_reason() is None
+                assert server._next_stdio_recycle_deadline() is None
 
         asyncio.run(_test())
 
@@ -1997,6 +2136,48 @@ class TestReconnection:
 
             # Probe skipped because _ready was already set.
             assert probe.await_count == 0
+
+        asyncio.run(_test())
+
+    def test_failed_recycle_reconnect_no_longer_checks_available(self):
+        """A failed lazy reconnect should not leave recycled availability true."""
+        from tools.mcp_tool import (
+            MCPServerTask,
+            _MAX_INITIAL_CONNECT_RETRIES,
+            _make_check_fn,
+            _servers,
+        )
+
+        run_count = 0
+        target_server = None
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            raise ConnectionError("recycle reconnect failed")
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+            server._config = {"command": "test"}
+            server._ready.clear()
+            server._recycled_reason = "idle_timeout_seconds"
+            _servers["test_srv"] = server
+            try:
+                with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                     patch("asyncio.sleep", new_callable=AsyncMock):
+                    await server.run({"command": "test"})
+
+                assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                assert server._recycled_reason is None
+                assert _make_check_fn("test_srv")() is False
+            finally:
+                _servers.pop("test_srv", None)
 
         asyncio.run(_test())
 

@@ -1231,9 +1231,10 @@ function readDesktopUpdateConfig() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    const remote = typeof parsed?.remote === 'string' ? parsed.remote.trim() : ''
+    return { branch: branch || DEFAULT_UPDATE_BRANCH, remote: remote || null }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    return { branch: DEFAULT_UPDATE_BRANCH, remote: null }
   }
 }
 
@@ -1346,16 +1347,32 @@ async function resolveHealedBranch(updateRoot, branch, remote = 'origin') {
   return 'main'
 }
 
-async function resolveUpdateTarget(updateRoot, configuredBranch) {
+async function resolveUpdateTarget(updateRoot, configuredBranch, configuredRemote) {
   const branch = configuredBranch || DEFAULT_UPDATE_BRANCH
   const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
   const currentBranch = firstLine(head.stdout).trim()
   const tracking = await resolveCurrentTrackingRef(updateRoot)
 
+  // Determine which remote to track for updates.
+  let effectiveRemote = configuredRemote || 'origin'
+
+  // If not explicitly configured, auto-detect: if HEAD matches a fork remote
+  // (e.g., 'fork/main') and that fork has the user's unmerged PRs, prefer it.
+  if (!configuredRemote && tracking && tracking.remote !== 'origin') {
+    // Verify the non-origin remote actually tracks the configured branch
+    const probe = await runGit(['ls-remote', '--exit-code', '--heads', tracking.remote, branch], { cwd: updateRoot })
+    if (probe.code === 0) {
+      effectiveRemote = tracking.remote
+    }
+  }
+
   if (
     tracking &&
     (!branch || branch === DEFAULT_UPDATE_BRANCH || currentBranch === branch || tracking.branch === branch)
   ) {
+    // If tracking a non-origin remote, prefer it as the effective remote
+    // for the update target label/ref
+    const targetRemote = (!configuredRemote && tracking.remote !== 'origin') ? tracking.remote : effectiveRemote
     return {
       branch: tracking.branch,
       currentBranch,
@@ -1365,19 +1382,19 @@ async function resolveUpdateTarget(updateRoot, configuredBranch) {
     }
   }
 
-  const healedBranch = await resolveHealedBranch(updateRoot, branch)
+  const healedBranch = await resolveHealedBranch(updateRoot, branch, effectiveRemote)
   return {
     branch: healedBranch,
     currentBranch,
-    label: healedBranch,
-    ref: `origin/${healedBranch}`,
-    remote: 'origin'
+    label: `${effectiveRemote}/${healedBranch}`,
+    ref: `${effectiveRemote}/${healedBranch}`,
+    remote: effectiveRemote
   }
 }
 
 async function checkUpdates() {
   const updateRoot = resolveUpdateRoot()
-  let { branch } = readDesktopUpdateConfig()
+  let { branch, remote } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
   if (!directoryExists(gitDir)) {
     return {
@@ -1389,7 +1406,7 @@ async function checkUpdates() {
     }
   }
 
-  const target = await resolveUpdateTarget(updateRoot, branch)
+  const target = await resolveUpdateTarget(updateRoot, branch, remote)
   branch = target.label
   const fetched = await runGit(['fetch', '--quiet', target.remote, target.branch], { cwd: updateRoot })
   if (fetched.code !== 0) {
@@ -5517,8 +5534,21 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
-  writeDesktopUpdateConfig({ branch })
-  return { branch }
+  const config = readDesktopUpdateConfig()
+  writeDesktopUpdateConfig({ branch, remote: config.remote })
+  return { branch, remote: config.remote }
+})
+
+ipcMain.handle('hermes:updates:remote:get', async () => {
+  const config = readDesktopUpdateConfig()
+  return { remote: config.remote }
+})
+
+ipcMain.handle('hermes:updates:remote:set', async (_event, name) => {
+  const remote = typeof name === 'string' && name.trim() ? name.trim() : null
+  const config = readDesktopUpdateConfig()
+  writeDesktopUpdateConfig({ branch: config.branch, remote })
+  return { branch: config.branch, remote }
 })
 
 // Resolve the canonical Hermes version (the one `release.py` bumps in

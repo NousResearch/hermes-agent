@@ -76,10 +76,10 @@ class TestSchema:
         # Shared
         assert "role_filter" in params
 
-    def test_no_mode_parameter(self):
-        # Mode is inferred from which args are set — no explicit mode param
+    def test_mode_parameter_includes_previous_handoff(self):
         params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
-        assert "mode" not in params
+        assert params["mode"]["enum"] == ["previous", "handoff"]
+        assert params["scope"]["enum"] == ["current", "global"]
 
     def test_sort_enum(self):
         params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
@@ -140,6 +140,161 @@ class TestBrowseShape:
         result = json.loads(session_search(db=db))
         titles = [r.get("title") for r in result["results"]]
         assert any("Modpack" in (t or "") for t in titles)
+
+
+# =========================================================================
+# Scoped gateway recall + previous/handoff mode
+# =========================================================================
+
+class TestScopedGatewayRecall:
+    def _create_scoped_session(
+        self,
+        db,
+        session_id,
+        *,
+        source="qqbot",
+        chat_type="dm",
+        chat_id="user-a",
+        user_id="user-a",
+        session_key=None,
+        started_at=None,
+        ended_at=None,
+        text="新增功能",
+    ):
+        db.create_session(
+            session_id,
+            source=source,
+            user_id=user_id,
+            chat_type=chat_type,
+            chat_id=chat_id,
+            thread_id=None,
+            session_key=session_key or f"agent:main:{source}:{chat_type}:{chat_id}",
+        )
+        if started_at is not None or ended_at is not None:
+            db._conn.execute(
+                "UPDATE sessions SET started_at = COALESCE(?, started_at), ended_at = ? WHERE id = ?",
+                (started_at, ended_at, session_id),
+            )
+            db._conn.commit()
+        db.append_message(session_id, role="user", content=text)
+        db.append_message(session_id, role="assistant", content=f"已记录：{text}")
+
+    def test_default_gateway_search_is_scoped_to_current_chat(self, db):
+        self._create_scoped_session(db, "a_old", chat_id="qq-a", user_id="qq-a", text="新增功能 admissions")
+        self._create_scoped_session(db, "b_old", chat_id="qq-b", user_id="qq-b", text="新增功能 tutoring")
+        db.create_session("a_current", source="qqbot", user_id="qq-a", chat_type="dm", chat_id="qq-a")
+
+        result = json.loads(session_search(
+            query="新增功能",
+            db=db,
+            current_session_id="a_current",
+            current_source="qqbot",
+            current_chat_type="dm",
+            current_chat_id="qq-a",
+            current_user_id="qq-a",
+        ))
+        sids = [r["session_id"] for r in result["results"]]
+        assert "a_old" in sids
+        assert "b_old" not in sids
+
+    def test_handoff_returns_recent_ended_session_not_adjacent_project(self, db):
+        now = time.time()
+        self._create_scoped_session(
+            db,
+            "admissions_done",
+            chat_id="qq-a",
+            user_id="qq-a",
+            started_at=now - 200,
+            ended_at=now - 5,
+            text="Stage 52 admissions-sales-workbench PR #16 已 merge",
+        )
+        self._create_scoped_session(
+            db,
+            "tutoring_neighbor",
+            chat_id="qq-a",
+            user_id="qq-a",
+            started_at=now - 100,
+            ended_at=now - 30,
+            text="/workspace/tutoring-exam-analysis OCR PDF 学生档案",
+        )
+        db.create_session("a_current", source="qqbot", user_id="qq-a", chat_type="dm", chat_id="qq-a")
+
+        result = json.loads(session_search(
+            mode="handoff",
+            db=db,
+            current_session_id="a_current",
+            current_source="qqbot",
+            current_chat_type="dm",
+            current_chat_id="qq-a",
+            current_user_id="qq-a",
+        ))
+        assert result["success"] is True
+        assert result["mode"] == "handoff"
+        assert result["results"][0]["session_id"] == "admissions_done"
+        payload = json.dumps(result, ensure_ascii=False)
+        assert "/workspace/tutoring-exam-analysis" not in payload
+        assert "OCR" not in payload
+        assert "PDF" not in payload
+        assert "学生档案" not in payload
+
+    def test_scoped_no_result_does_not_global_fallback(self, db):
+        self._create_scoped_session(db, "b_old", chat_id="qq-b", user_id="qq-b", text="新增功能 only b")
+        db.create_session("a_current", source="qqbot", user_id="qq-a", chat_type="dm", chat_id="qq-a")
+
+        scoped = json.loads(session_search(
+            query="新增功能",
+            db=db,
+            current_session_id="a_current",
+            current_source="qqbot",
+            current_chat_type="dm",
+            current_chat_id="qq-a",
+            current_user_id="qq-a",
+        ))
+        assert scoped["results"] == []
+
+        global_result = json.loads(session_search(
+            query="新增功能",
+            scope="global",
+            db=db,
+            current_session_id="a_current",
+            current_source="qqbot",
+            current_chat_type="dm",
+            current_chat_id="qq-a",
+            current_user_id="qq-a",
+        ))
+        assert [r["session_id"] for r in global_result["results"]] == ["b_old"]
+
+    def test_handoff_legacy_fallback_is_source_bounded_and_marked(self, db):
+        now = time.time()
+        db.create_session("legacy_qq", source="qqbot", user_id="qq-a")
+        db._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?", (now - 50, now - 10, "legacy_qq"))
+        db.append_message("legacy_qq", role="user", content="legacy admissions handoff")
+        db.create_session("legacy_telegram", source="telegram", user_id="qq-a")
+        db._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?", (now - 40, now - 5, "legacy_telegram"))
+        db.append_message("legacy_telegram", role="user", content="legacy telegram should not leak")
+        db.create_session("a_current", source="qqbot", user_id="qq-a", chat_type="dm", chat_id="qq-a")
+
+        result = json.loads(session_search(
+            mode="previous",
+            db=db,
+            current_session_id="a_current",
+            current_source="qqbot",
+            current_chat_type="dm",
+            current_chat_id="qq-a",
+            current_user_id="qq-a",
+        ))
+        assert result["results"][0]["session_id"] == "legacy_qq"
+        assert result["results"][0].get("legacy_scope_fallback") is True
+        assert "legacy_telegram" not in json.dumps(result, ensure_ascii=False)
+
+    def test_cli_search_remains_broad_by_default(self, db):
+        self._create_scoped_session(db, "qq_old", chat_id="qq-a", user_id="qq-a", text="modpack qq")
+        db.create_session("cli_old", source="cli")
+        db.append_message("cli_old", role="user", content="modpack cli")
+
+        result = json.loads(session_search(query="modpack", db=db, current_source="cli"))
+        sids = {r["session_id"] for r in result["results"]}
+        assert {"qq_old", "cli_old"}.issubset(sids)
 
 
 # =========================================================================

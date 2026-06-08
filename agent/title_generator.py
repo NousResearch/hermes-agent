@@ -29,7 +29,7 @@ _TITLE_PROMPT = (
 def generate_title(
     user_message: str,
     assistant_response: str,
-    timeout: float = 30.0,
+    timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
 ) -> Optional[str]:
@@ -38,6 +38,11 @@ def generate_title(
     Uses the main runtime's model when available, falling back to the
     auxiliary LLM client (cheapest/fastest available model).
     Returns the title string or None on failure.
+
+    ``timeout`` defaults to ``None``, which delegates to
+    ``call_llm``'s config-driven resolution (reads
+    ``auxiliary.title_generation.timeout`` from config.yaml).
+    An explicit value overrides the config.
 
     ``failure_callback`` is invoked with ``(task, exception)`` when the
     auxiliary call raises — the caller typically wires this to

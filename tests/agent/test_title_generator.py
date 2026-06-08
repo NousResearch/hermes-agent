@@ -93,6 +93,44 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
             assert generate_title("q", "a") is None
 
+    def test_default_timeout_delegates_to_config(self):
+        """Regression: timeout=None delegates to call_llm config resolution (#41812).
+
+        Previously generate_title defaulted to timeout=30.0, which caused
+        call_llm to use that hardcoded value instead of reading
+        auxiliary.title_generation.timeout from config.yaml.
+        """
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Config-Aware Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("question", "answer")
+
+        # Default must be None so call_llm reads from config
+        assert captured_kwargs.get("timeout") is None
+
+    def test_explicit_timeout_is_forwarded(self):
+        """When an explicit timeout is passed, it must reach call_llm."""
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Explicit Timeout"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("question", "answer", timeout=120.0)
+
+        assert captured_kwargs.get("timeout") == 120.0
+
     def test_truncates_long_messages(self):
         """Long user/assistant messages should be truncated in the LLM request."""
         captured_kwargs = {}

@@ -486,10 +486,11 @@ class KanbanUltragoalStore:
         if run.state not in {"admitted", "running", "verification_failed", "review_failed", "ci_failed"}:
             raise ValueError(f"worker_done transition is not allowed from {run.state}")
         self._require_parent_child_worker_coverage(run, evidence)
+        recorded_evidence = dict(evidence)
         run.state = "worker_done"
         run.resumable = False
-        self._write_json(self.root(run_id) / "evidence" / "worker.json", evidence)
-        self._append_ledger(run_id, "worker_done", evidence)
+        self._write_json(self.root(run_id) / "evidence" / "worker.json", recorded_evidence)
+        self._append_ledger(run_id, "worker_done", recorded_evidence)
         return self.save_run(run)
 
     def record_verifier_result(self, run_id: str, *, authority: dict[str, Any], result: dict[str, Any]) -> KanbanUltragoalRun:
@@ -597,8 +598,11 @@ class KanbanUltragoalStore:
         if cleanup.get("status") != "passed" or cleanup.get("readOnlyProof") is not True:
             raise ValueError("cleanup proof must be a recorded read-only passing artifact before review_ready")
         worker = json.loads((root / "evidence" / "worker.json").read_text(encoding="utf-8")) if (root / "evidence" / "worker.json").exists() else {}
+        verifier = json.loads((root / "verifier" / "result.json").read_text(encoding="utf-8")) if (root / "verifier" / "result.json").exists() else {}
         reviewer = json.loads((root / "reviews" / "final.json").read_text(encoding="utf-8"))
         self._require_quality_gate(reviewer)
+        ledger = self._done_criteria_ledger(run)
+        self._require_ultragoal_closeout_evidence_contract(run, worker, verifier, ledger)
         parent_child_matrix = self._require_parent_child_closeout_matrix(run, worker, cleanup)
         child_evidence = []
         for child_id in (run.scope or {}).get("childTaskIds", []):
@@ -862,6 +866,138 @@ class KanbanUltragoalStore:
         }
         return kanban_closeout.normalize_done_criteria_ledger(ledger)
 
+    def _goal_contract_identity(self, run: KanbanUltragoalRun) -> dict[str, Any]:
+        return {
+            "run_id": run.run_id,
+            "task_id": run.authority.get("taskId") or run.parent_card,
+            "public_id": run.authority.get("publicId") or run.parent_card,
+            "snapshot_hash": run.authority.get("snapshotHash"),
+            "done_criteria_hash": run.authority.get("doneCriteriaHash"),
+            "target_mode": run.target_mode,
+            "authority_boundary_confirmed": True,
+        }
+
+    def _verifier_criterion_results(self, verifier_raw: dict[str, Any]) -> dict[str, str]:
+        results: dict[str, str] = {}
+
+        def record(raw_id: Any, raw_verdict: Any, *, has_evidence: bool = False) -> None:
+            if not raw_id:
+                return
+            criterion_id = str(raw_id)
+            verdict = str(raw_verdict or ("PASS" if has_evidence else "")).strip().upper()
+
+            def record_one(normalized_id: str) -> None:
+                existing = results.get(normalized_id)
+                if existing is None or existing == verdict:
+                    results[normalized_id] = verdict
+                    return
+                passing = {"PASS", "PASSED", "SUCCESS", "OK"}
+                if existing in passing and verdict in passing:
+                    results[normalized_id] = existing
+                    return
+                results[normalized_id] = "FAIL"
+
+            record_one(criterion_id)
+            if criterion_id.lower().startswith("dc-"):
+                suffix = criterion_id.split("-", 1)[1]
+                if suffix.isdigit():
+                    record_one(f"uc-{int(suffix):02d}")
+
+        evidence_rows = verifier_raw.get("doneCriteriaEvidence") or verifier_raw.get("done_criteria_evidence") or []
+        if isinstance(evidence_rows, list):
+            for row in evidence_rows:
+                if isinstance(row, dict):
+                    has_evidence = bool(str(row.get("evidence") or "").strip() or row.get("evidence_refs"))
+                    record(row.get("criterionId") or row.get("criterion_id") or row.get("id"), row.get("verdict") or row.get("status"), has_evidence=has_evidence)
+        per_criterion = verifier_raw.get("perCriterion") or verifier_raw.get("per_criterion") or {}
+        if isinstance(per_criterion, dict):
+            for raw_id, raw_value in per_criterion.items():
+                value = raw_value if isinstance(raw_value, dict) else {"verdict": raw_value}
+                has_evidence = bool(str(value.get("evidence") or "").strip() or value.get("evidence_refs"))
+                record(raw_id, value.get("verdict") or value.get("status"), has_evidence=has_evidence)
+        return results
+
+    def _ultragoal_closeout_evidence_blockers(
+        self,
+        run: KanbanUltragoalRun,
+        worker_raw: dict[str, Any],
+        verifier_raw: dict[str, Any],
+        ledger: dict[str, Any],
+    ) -> list[str]:
+        blockers: list[str] = []
+        if not worker_raw or not (worker_raw.get("summary") or worker_raw.get("proof") or worker_raw.get("commandsRun") or worker_raw.get("tests_run")):
+            blockers.append("ultragoal_closeout_missing_worker_evidence")
+            if not worker_raw:
+                blockers.append("missing_worker_evidence")
+        if not verifier_raw:
+            blockers.append("ultragoal_closeout_missing_verifier_evidence")
+            blockers.append("missing_verifier_result")
+        expected_snapshot = run.authority.get("snapshotHash")
+        expected_done_hash = run.authority.get("doneCriteriaHash")
+        worker_contract = worker_raw.get("goalContract") if isinstance(worker_raw.get("goalContract"), dict) else {}
+        if worker_raw.get("authority_boundary_confirmed") is not True:
+            blockers.append("authority_boundary_confirmed")
+        verifier_contract = verifier_raw.get("goalContract") if isinstance(verifier_raw.get("goalContract"), dict) else {}
+        worker_snapshot = worker_raw.get("authoritySnapshotHash") or worker_raw.get("snapshotHash") or worker_contract.get("snapshotHash")
+        if worker_snapshot and worker_snapshot != expected_snapshot:
+            blockers.append("ultragoal_closeout_stale_contract")
+            blockers.append("stale_worker_authority_snapshot")
+        worker_done_hash = worker_raw.get("doneCriteriaHash") or worker_raw.get("criteriaHash") or worker_contract.get("doneCriteriaHash")
+        if worker_done_hash and worker_done_hash != expected_done_hash:
+            blockers.append("ultragoal_closeout_stale_contract")
+            blockers.append("stale_worker_done_criteria")
+        verifier_snapshot = verifier_raw.get("authoritySnapshotHash") or verifier_raw.get("snapshotHash") or verifier_contract.get("snapshotHash")
+        if verifier_snapshot and verifier_snapshot != expected_snapshot:
+            blockers.append("ultragoal_closeout_stale_contract")
+            blockers.append("stale_verifier_authority_snapshot")
+        verifier_done_hash = verifier_raw.get("doneCriteriaHash") or verifier_raw.get("criteriaHash") or verifier_contract.get("doneCriteriaHash")
+        if verifier_done_hash and verifier_done_hash != expected_done_hash:
+            blockers.append("ultragoal_closeout_stale_contract")
+            blockers.append("stale_verifier_done_criteria")
+        if worker_raw.get("superseded") is True or worker_raw.get("supersededBy"):
+            blockers.append("ultragoal_closeout_stale_contract")
+            blockers.append("worker_evidence_superseded")
+        if verifier_raw.get("superseded") is True or verifier_raw.get("supersededBy"):
+            blockers.append("ultragoal_closeout_stale_contract")
+            blockers.append("verifier_result_superseded")
+        verifier_passed = verifier_raw.get("passed") is True or str(verifier_raw.get("verdict", "")).upper() == "PASS"
+        if verifier_raw and not verifier_passed:
+            blockers.append("verifier_result_not_pass")
+        criterion_results = self._verifier_criterion_results(verifier_raw)
+        has_per_criterion_evidence = bool(
+            verifier_raw.get("perCriterion")
+            or verifier_raw.get("per_criterion")
+            or verifier_raw.get("doneCriteriaEvidence")
+            or verifier_raw.get("done_criteria_evidence")
+        )
+        if ledger.get("criteria") and not has_per_criterion_evidence:
+            blockers.append("ultragoal_closeout_missing_per_criterion_evidence")
+        if has_per_criterion_evidence and ledger.get("criteria"):
+            missing_criterion = False
+            for criterion in ledger.get("criteria") or []:
+                criterion_id = str(criterion.get("id") or "")
+                if criterion_id and criterion_id not in criterion_results:
+                    missing_criterion = True
+                    blockers.append(f"missing_verifier_per_criterion:{criterion_id}")
+                elif str(criterion_results.get(criterion_id) or "").upper() not in {"PASS", "PASSED", "SUCCESS", "OK"}:
+                    blockers.append(f"verifier_per_criterion_not_pass:{criterion_id}")
+            if missing_criterion:
+                blockers.append("ultragoal_closeout_missing_verifier_evidence")
+                blockers.append("ultragoal_closeout_missing_per_criterion_evidence")
+        return list(dict.fromkeys(blockers))
+
+    def _require_ultragoal_closeout_evidence_contract(
+        self,
+        run: KanbanUltragoalRun,
+        worker_raw: dict[str, Any],
+        verifier_raw: dict[str, Any],
+        ledger: dict[str, Any],
+    ) -> None:
+        blockers = self._ultragoal_closeout_evidence_blockers(run, worker_raw, verifier_raw, ledger)
+        if blockers:
+            raise ValueError("ultragoal closeout evidence blocked: " + ", ".join(blockers))
+
+
     def build_closeout_evidence(self, run_id: str, *, authority: dict[str, Any]) -> dict[str, Any]:
         run = self.load_run(run_id)
         self._require_current_authority(run, authority)
@@ -875,6 +1011,7 @@ class KanbanUltragoalStore:
         quality_gate = self._require_quality_gate(reviewer_raw)
         child_closeout_matrix = self._require_parent_child_closeout_matrix(run, worker_raw, cleanup_raw)
         ledger = self._done_criteria_ledger(run)
+        self._require_ultragoal_closeout_evidence_contract(run, worker_raw, verifier_raw, ledger)
         artifact_refs = [str(root / "ledger.jsonl"), str(root / "run.json"), str(root / "goals.json")]
         tests_run = [str(item) for item in worker_raw.get("tests_run") or worker_raw.get("commandsRun") or []]
         verifier_passed = verifier_raw.get("passed") is True or str(verifier_raw.get("verdict", "")).upper() == "PASS"
@@ -888,8 +1025,10 @@ class KanbanUltragoalStore:
                 "evidence_refs": refs,
                 "notes": worker_raw.get("summary") or worker_raw.get("proof") or "Ultragoal implementation phase recorded evidence.",
             }
+            criterion_results = self._verifier_criterion_results(verifier_raw)
+            criterion_verdict = str(criterion_results.get(criterion_id) or ("PASS" if verifier_passed else "FAIL")).upper()
             per_verifier[criterion_id] = {
-                "verdict": "PASS" if verifier_passed else "FAIL",
+                "verdict": "PASS" if criterion_verdict in {"PASS", "PASSED", "SUCCESS", "OK"} else "FAIL",
                 "evidence_refs": refs,
                 "notes": "Verifier phase checked the Ultragoal evidence against Done Criteria.",
             }
@@ -897,8 +1036,10 @@ class KanbanUltragoalStore:
         pr_state = str(pr_raw.get("state") or "OPEN").upper() if pr_raw else ""
         if pr_raw and not changed_files and pr_state not in {"MERGED", "CLOSED"}:
             changed_files = ["pr-review-package"]
+        goal_contract = self._goal_contract_identity(run)
         worker = {
             "schema": "kanban_worker_evidence.v1",
+            "goal_contract": goal_contract,
             "criteria_hash": ledger["criteria_hash"],
             "summary": worker_raw.get("summary") or worker_raw.get("proof") or "Ultragoal implementation phase completed.",
             "changed_files": [] if pr_state in {"MERGED", "CLOSED"} else changed_files,
@@ -911,6 +1052,7 @@ class KanbanUltragoalStore:
         }
         verifier = {
             "schema": "kanban_verifier_result.v1",
+            "goal_contract": goal_contract,
             "verdict": "PASS" if verifier_passed else "FAIL",
             "criteria_hash": ledger["criteria_hash"],
             "verification_attempt": int(verifier_raw.get("verification_attempt") or 1),
@@ -940,6 +1082,7 @@ class KanbanUltragoalStore:
             "schema": "kanban_closeout_evidence.v1",
             "summary": f"Kanban Ultragoal run {run.run_id} materialized governed closeout evidence.",
             "proof": f"Run root: {root}",
+            "goal_contract": goal_contract,
             "done_criteria_ledger": ledger,
             "worker_evidence": worker,
             "verifier_result": verifier,

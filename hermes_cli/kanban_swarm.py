@@ -277,3 +277,146 @@ def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
     if len(parts) == 3 and parts[2]:
         skills = [s.strip() for s in parts[2].split(",") if s.strip()]
     return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills)
+
+
+def _latest_worker_coverage_metadata(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id = ? AND metadata IS NOT NULL ORDER BY ended_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["metadata"]:
+        return {}
+    try:
+        loaded = json.loads(str(row["metadata"]))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _scope_reduction_approved(scope_reduction_evidence: Any) -> bool:
+    if isinstance(scope_reduction_evidence, dict):
+        approval = scope_reduction_evidence.get("scope_reduction_approval")
+        if isinstance(approval, dict):
+            return bool(str(approval.get("source") or approval.get("text") or "").strip())
+        return bool(str(scope_reduction_evidence.get("approval") or "").strip())
+    return bool(str(scope_reduction_evidence or "").strip())
+
+
+def _summarize_parent_rollup_rows(
+    expected_child_ids: Iterable[str],
+    child_coverage: Iterable[dict[str, Any]] | None,
+    *,
+    scope_reduced_child_ids: Iterable[str] | None = None,
+    scope_reduction_evidence: Any = None,
+) -> dict[str, Any]:
+    child_ids = [str(child_id) for child_id in expected_child_ids if str(child_id)]
+    reduced_ids = [str(child_id) for child_id in (scope_reduced_child_ids or []) if str(child_id)]
+    child_rows: dict[str, dict[str, Any]] = {}
+    malformed: list[dict[str, Any]] = []
+    for row in list(child_coverage or []):
+        if not isinstance(row, dict):
+            malformed.append({})
+            continue
+        child_id = str(row.get("child_id") or "").strip()
+        if not child_id:
+            malformed.append(row)
+            continue
+        child_rows[child_id] = row
+
+    covered: list[str] = []
+    partial: list[str] = []
+    descoped: list[str] = []
+    missing: list[str] = []
+    reduction_unapproved = False
+    for child_id in child_ids:
+        row = child_rows.get(child_id)
+        if row is None:
+            missing.append(child_id)
+            continue
+        status = str(row.get("status") or "").strip().lower()
+        evidence = str(row.get("evidence") or row.get("summary") or row.get("reason") or "").strip()
+        approval = row if status == "descoped" else scope_reduction_evidence
+        if child_id in reduced_ids or status == "descoped":
+            if _scope_reduction_approved(approval):
+                descoped.append(child_id)
+            else:
+                missing.append(child_id)
+                reduction_unapproved = True
+            continue
+        if status == "complete" and evidence:
+            covered.append(child_id)
+        else:
+            partial.append(child_id)
+
+    blockers: list[str] = []
+    if reduction_unapproved or (reduced_ids and not _scope_reduction_approved(scope_reduction_evidence)):
+        blockers.append("parent_rollup_scope_reduction_requires_evidence")
+        status = "needs_user_decision"
+    elif malformed:
+        blockers.append("parent_rollup_malformed_child_coverage")
+        status = "partial"
+    elif missing:
+        blockers.append("parent_rollup_missing_child_coverage")
+        status = "review_blocked" if not partial else "needs_user_decision"
+    elif partial:
+        blockers.append("parent_rollup_partial_child_coverage")
+        status = "partial"
+    else:
+        status = "complete"
+    return {
+        "schema": "kanban_swarm_parent_rollup.v1",
+        "status": status,
+        "child_ids": child_ids,
+        "required_child_ids": child_ids,
+        "covered_child_ids": covered,
+        "partial_child_ids": partial,
+        "descoped_child_ids": descoped,
+        "missing_child_ids": missing,
+        "malformed_child_coverage": malformed,
+        "ready_to_complete": status == "complete",
+        "required_scope_reduction_evidence": missing if "parent_rollup_scope_reduction_requires_evidence" in blockers else [],
+        "blockers": blockers,
+    }
+
+
+def summarize_parent_rollup(
+    conn_or_expected_child_ids: sqlite3.Connection | Iterable[str] | None = None,
+    parent_task_id: str | None = None,
+    *,
+    expected_child_ids: Iterable[str] | None = None,
+    child_coverage: Iterable[dict[str, Any]] | None = None,
+    scope_reduced_child_ids: Iterable[str] | None = None,
+    scope_reduction_evidence: Any = None,
+) -> dict[str, Any]:
+    """Summarize parent swarm child coverage without silently shrinking scope."""
+    if expected_child_ids is not None:
+        return _summarize_parent_rollup_rows(
+            expected_child_ids,
+            child_coverage,
+            scope_reduced_child_ids=scope_reduced_child_ids,
+            scope_reduction_evidence=scope_reduction_evidence,
+        )
+    if not isinstance(conn_or_expected_child_ids, sqlite3.Connection) or parent_task_id is None:
+        raise TypeError("summarize_parent_rollup requires either explicit child inputs or (conn, parent_task_id)")
+    conn = conn_or_expected_child_ids
+    required_child_ids = kb.child_ids(conn, parent_task_id)
+    rows: list[dict[str, Any]] = []
+    for child_id in required_child_ids:
+        task = kb.get_task(conn, child_id)
+        if task is None:
+            continue
+        metadata = _latest_worker_coverage_metadata(conn, child_id)
+        coverage = metadata.get("coverage") if isinstance(metadata.get("coverage"), dict) else None
+        if coverage is None:
+            if task.status == "done":
+                rows.append({"child_id": child_id, "status": "partial", "evidence": task.result or ""})
+            continue
+        rows.append(
+            {
+                "child_id": child_id,
+                "status": str(coverage.get("status") or "").strip().lower(),
+                "evidence": coverage.get("evidence") or coverage.get("summary") or task.result or "",
+                "scope_reduction_approval": coverage.get("scope_reduction_approval"),
+            }
+        )
+    return _summarize_parent_rollup_rows(required_child_ids, rows)

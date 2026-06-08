@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_closeout
+from hermes_cli import kanban_closeout_report
 from hermes_cli import kanban_relation_drift
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
@@ -573,6 +574,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Verify but do not write the Kanban task",
     )
     p_closeout.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_closeout.add_argument("--report", action="store_true", help="Include integrated closeout readiness report")
 
     p_edit = sub.add_parser(
         "edit",
@@ -2091,6 +2093,21 @@ def _cmd_closeout(args: argparse.Namespace) -> int:
                 evidence,
                 repo_path=repo_path,
             )
+        if getattr(args, "report", False):
+            result["closeout_report"] = kanban_closeout_report.build_closeout_report(
+                task_id=task.id,
+                phase=args.phase,
+                evidence=evidence,
+                verification=result.get("evidence", {}).get("verification", result),
+            )
+    if getattr(args, "report", False):
+        result = dict(result)
+        result["closeout_report"] = kanban_closeout_report.build_closeout_report(
+            task_id=task.id,
+            phase=args.phase,
+            evidence=result.get("evidence") or evidence,
+            verification=result.get("evidence", {}).get("verification") or result,
+        )
 
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -2102,10 +2119,23 @@ def _cmd_closeout(args: argparse.Namespace) -> int:
             + ", ".join(result.get("blockers") or []),
             file=sys.stderr,
         )
+        if result.get("closeout_report"):
+            _print_closeout_report(result["closeout_report"])
         return 2
     action = "Verified" if getattr(args, "check_only", False) else "Transitioned"
     print(f"{action} {args.task_id} -> {args.phase}")
+    if result.get("closeout_report"):
+        _print_closeout_report(result["closeout_report"])
     return 0
+
+
+def _print_closeout_report(report: dict[str, Any]) -> None:
+    print("Closeout report:")
+    print(f"  lane: {report.get('lane')}")
+    for key, status in (report.get("dimensions") or {}).items():
+        print(f"  {key}: {status}")
+    blockers = report.get("blocker_keys") or []
+    print("  blockers: " + (", ".join(str(item) for item in blockers) if blockers else "-"))
 
 
 def _cmd_block(args: argparse.Namespace) -> int:
@@ -2441,9 +2471,17 @@ def _print_autopilot_result(payload: dict[str, Any], *, as_json: bool = False) -
     tick = payload.get("tick")
     if tick:
         print(f"  tick:         spawned={tick.get('spawned')} selected={tick.get('selected') or '-'}")
-    report = payload.get("report")
+    report = payload.get("report") or state.get("report")
     if report:
         print(f"  children:     {len(report.get('children') or [])} total; counts={report.get('counts') or {}}")
+        if report.get("parentRollupState"):
+            print(f"  parent_rollup_state: {report.get('parentRollupState')}")
+        if report.get("countsByRollupState"):
+            print(f"  rollup_counts: {report.get('countsByRollupState')}")
+        if report.get("remainingChildren"):
+            print(f"  remaining_children: {', '.join(str(item) for item in report.get('remainingChildren') or [])}")
+        if report.get("nextRequiredChild"):
+            print(f"  next_required_child: {report.get('nextRequiredChild')}")
         if report.get("review_ready"):
             print("  review_ready:")
             for item in report["review_ready"]:

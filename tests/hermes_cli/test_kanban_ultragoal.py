@@ -121,7 +121,7 @@ def test_controller_transitions_block_pr_until_verifier_and_reviewer_pass(tmp_pa
     assert run.state == "verification_failed"
     assert run.current_goal_id is not None
 
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     run = store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -137,7 +137,7 @@ def test_controller_transitions_block_pr_until_verifier_and_reviewer_pass(tmp_pa
     assert run.state == "review_failed"
     assert run.current_goal_id is not None
 
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -163,7 +163,7 @@ def test_pr_ready_requires_complete_artifact_package(tmp_path):
 
     store = KanbanUltragoalStore(tmp_path)
     store.start("BO-203", authority=_authority(), root_objective="Bring one reviewed PR")
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -197,7 +197,7 @@ def test_mark_review_ready_blocks_missing_quality_gate_matrix(tmp_path):
 
     store = KanbanUltragoalStore(tmp_path)
     store.start("BO-203", authority=_authority(), root_objective="Bring one reviewed PR")
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -242,7 +242,7 @@ def test_state_regressions_are_rejected_after_later_phases(tmp_path):
 
     store = KanbanUltragoalStore(tmp_path)
     store.start("BO-203", authority=_authority(), root_objective="Bring one reviewed PR")
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -258,7 +258,7 @@ def test_reviewer_approval_requires_explicit_empty_blocker_lists(tmp_path):
 
     store = KanbanUltragoalStore(tmp_path)
     store.start("BO-203", authority=_authority(), root_objective="Bring one reviewed PR")
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -291,7 +291,7 @@ def test_rejected_reviewer_payload_is_not_persisted(tmp_path):
 
     store = KanbanUltragoalStore(tmp_path)
     store.start("BO-203", authority=_authority(), root_objective="Bring one reviewed PR")
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -333,14 +333,14 @@ def test_ci_success_must_match_pr_head_sha_and_success_clears_repair_goal(tmp_pa
 
     store = KanbanUltragoalStore(tmp_path)
     store.start("BO-203", authority=_authority(), root_objective="Bring one reviewed PR")
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     store.record_verifier_result(
         "BO-203",
         authority=_authority(),
         result={"passed": False, "missing": [{"criterionId": "DC-1", "reason": "first fail"}]},
     )
     assert store.load_run("BO-203").current_goal_id is not None
-    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"], "authority_boundary_confirmed": True})
     run = store.record_verifier_result(
         "BO-203",
         authority=_authority(),
@@ -589,8 +589,8 @@ def test_cli_transition_subcommands_expose_existing_store_state_machine(tmp_path
     authority = run(["authority-snapshot", "BO-217"])
     authority_json = json.dumps(authority)
     run(["start", "t_parent", "--authority-json", authority_json, "--root-objective", "one reviewed PR"])
-    assert run(["record-worker-done", "t_parent", "--authority-json", authority_json, "--evidence-json", '{"commandsRun":["pytest"]}'])["state"] == "worker_done"
-    assert run(["record-verifier-result", "t_parent", "--authority-json", authority_json, "--result-json", '{"passed":true,"doneCriteriaEvidence":[{"criterionId":"DC-1","evidence":"pytest"}]}'])["state"] == "verification_passed"
+    assert run(["record-worker-done", "t_parent", "--authority-json", authority_json, "--evidence-json", '{"commandsRun":["pytest"],"authority_boundary_confirmed":true}'])["state"] == "worker_done"
+    assert run(["record-verifier-result", "t_parent", "--authority-json", authority_json, "--result-json", '{"passed":true,"doneCriteriaEvidence":[{"criterionId":"DC-1","evidence":"pytest"},{"criterionId":"DC-2","evidence":"pytest"},{"criterionId":"DC-3","evidence":"pytest"}]}'])["state"] == "verification_passed"
     assert run(["record-reviewer-result", "t_parent", "--authority-json", authority_json, "--result-json", json.dumps(_reviewer_approve())])["state"] == "review_passed"
     assert run(["record-pr-created", "t_parent", "--authority-json", authority_json, "--pr-json", '{"url":"https://github.com/chriskim12/hermes-agent/pull/92","number":92,"headSha":"abc"}'])["state"] == "pr_created"
     assert run(["record-ci-result", "t_parent", "--authority-json", authority_json, "--ci-json", '{"state":"success","headSha":"abc"}'])["state"] == "ci_passed"

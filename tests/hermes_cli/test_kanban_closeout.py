@@ -665,6 +665,90 @@ def test_closeout_cli_check_only_blocks_without_writing(kanban_home, git_repo):
         assert kb.get_task(conn, task_id).review_phase == "worker_done"
 
 
+def test_closeout_cli_report_json_includes_cross_lane_dimensions(kanban_home, git_repo):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="integrated closeout", workspace_kind="dir", workspace_path=str(git_repo))
+        kb.set_task_authority(conn, task_id, review_phase="worker_done")
+    evidence = _review_ready_evidence(
+        git_repo,
+        lane="ultragoal",
+        goal_contract={"id": "goal-7", "criteria_hash": "crit-7"},
+        done_criteria_ledger=_done_criteria_ledger(task_id=task_id),
+        worker_evidence={
+            "authority_boundary_confirmed": True,
+            "per_criterion": {"DC-001": {"claim": "satisfied"}},
+        },
+        verifier_result={
+            "verdict": "PASS",
+            "per_criterion": {"DC-001": {"verdict": "pass"}},
+        },
+        completion_audit={"status": "PASS", "artifact_refs": ["task-7-green.txt"]},
+        reviewer_readiness={"status": "PASS", "reviewer": "verifier"},
+        parent_child_matrix={
+            "parentRollupState": "complete",
+            "countsByRollupState": {"complete": 1},
+            "remainingChildren": [],
+        },
+    )
+
+    out = run_slash(
+        "closeout "
+        f"{task_id} review_ready --repo {git_repo} --check-only --json --report --evidence "
+        + shlex.quote(json.dumps(evidence))
+    )
+    payload = json.loads(out)
+
+    report = payload["closeout_report"]
+    assert report["lane"] == "ultragoal"
+    assert report["dimensions"] == {
+        "lane_identity": "PASS",
+        "kanban_relation_drift": "PASS",
+        "kanban_ready_contract": "PASS",
+        "lane_owned_evidence": "PASS",
+        "parent_child_coverage": "PASS",
+        "worker_evidence": "PASS",
+        "verifier_result": "BLOCKED",
+        "completion_audit": "PASS",
+        "cleanup": "PASS",
+        "reviewer_readiness": "PASS",
+    }
+    assert "invalid_verifier_result_schema" in report["blocker_keys"]
+    assert report["ready"] is False
+
+
+def test_closeout_cli_report_plain_text_names_autopilot_parent_blocker(kanban_home, git_repo):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="autopilot report", workspace_kind="dir", workspace_path=str(git_repo))
+        kb.set_task_authority(conn, task_id, review_phase="worker_done")
+    evidence = _review_ready_evidence(
+        git_repo,
+        lane="autopilot",
+        parent_child_matrix={
+            "parentRollupState": "review_blocked",
+            "countsByRollupState": {"complete": 1, "review_blocked": 1},
+            "remainingChildren": ["child-2"],
+        },
+        worker_evidence={
+            "authority_boundary_confirmed": True,
+            "per_criterion": {"DC-001": {"claim": "satisfied"}},
+        },
+        verifier_result={"verdict": "PASS"},
+        completion_audit={"status": "PASS", "artifact_refs": ["task-7-green.txt"]},
+        reviewer_readiness={"status": "PASS", "reviewer": "verifier"},
+    )
+
+    out = run_slash(
+        "closeout "
+        f"{task_id} review_ready --repo {git_repo} --check-only --report --evidence "
+        + shlex.quote(json.dumps(evidence))
+    )
+
+    assert "Closeout report:" in out
+    assert "lane: autopilot" in out
+    assert "parent_child_coverage: BLOCKED" in out
+    assert "parent_child_coverage:blocked" in out
+
+
 # ── Slice 4: prose-only cleanup rejection & structured evidence ──
 
 

@@ -375,6 +375,11 @@ class ChatCompletionsTransport(ProviderTransport):
             if _lm_effort is not None:
                 api_kwargs["reasoning_effort"] = _lm_effort
 
+        # Qwen-web relays use top-level metadata for conversation hints.
+        qwen_session_metadata = params.get("qwen_session_metadata")
+        if qwen_session_metadata:
+            api_kwargs["metadata"] = qwen_session_metadata
+
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 

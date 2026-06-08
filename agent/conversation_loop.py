@@ -975,6 +975,16 @@ def run_conversation(
                         agent.thinking_callback("")
 
                 _use_streaming = True
+                # Qwen-web relays return upstream chatId/parentId only on the
+                # non-streaming response body. Use non-streaming so Hermes can
+                # persist those ids and resume the real Qwen chat after relay
+                # restarts.
+                try:
+                    from agent.qwen_session_state import is_qwen_session_provider
+                    if is_qwen_session_provider(agent):
+                        _use_streaming = False
+                except Exception:
+                    pass
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
@@ -1274,6 +1284,12 @@ def run_conversation(
                                 f"{int(sleep_end - time.time())}s remaining"
                             )
                     continue  # Retry the API call
+
+                try:
+                    from agent.qwen_session_state import maybe_update_qwen_session_from_response
+                    maybe_update_qwen_session_from_response(agent, response)
+                except Exception:
+                    pass
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":

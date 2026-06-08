@@ -714,13 +714,23 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         except Exception:
             pass
 
-    # Qwen session metadata
+    # Qwen session metadata.  Native Qwen Portal uses sessionId/promptId;
+    # qwen-local / Qwen-web relays also need a stable conversation_id so the
+    # relay can keep one upstream Qwen chat per Hermes session.
     _qwen_meta = None
     if _is_qwen:
         _qwen_meta = {
             "sessionId": agent.session_id or "hermes",
             "promptId": str(uuid.uuid4()),
         }
+    else:
+        try:
+            from agent.qwen_session_state import build_qwen_session_metadata
+            _qwen_meta = build_qwen_session_metadata(agent)
+            if _qwen_meta is not None:
+                _qwen_meta["promptId"] = str(uuid.uuid4())
+        except Exception:
+            _qwen_meta = None
 
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is

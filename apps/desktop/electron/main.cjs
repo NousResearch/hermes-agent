@@ -4614,7 +4614,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1220,
     height: 800,
-    minWidth: 900,
+    minWidth: 400,
     minHeight: 620,
     title: 'Hermes',
     // Frameless title bar on every platform so the renderer can paint the

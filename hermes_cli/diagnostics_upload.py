@@ -10,8 +10,12 @@ Google-OAuth-gated viewer.
 Flow:
 
     1. POST {NAS_BASE}/api/diagnostics/upload-url  → {uploadUrl, viewUrl, id, ...}
+       (the request body carries ``sizeBytes``; NAS signs it into the presigned
+       URL's ``ContentLength``, so the PUT must send exactly that many bytes)
     2. PUT <uploadUrl>  (the gzipped bundle, Content-Type application/gzip)
-    3. POST {NAS_BASE}/api/diagnostics/confirm  (best-effort; failures swallowed)
+
+NAS is stateless — the object's existence in S3 is the only state, so there is
+no confirm/callback step.
 
 Uses stdlib ``urllib`` only, matching ``debug.py`` style — no third-party deps.
 """
@@ -115,49 +119,20 @@ def put_bundle(
             raise RuntimeError(f"diagnostics bundle PUT failed: HTTP {status}")
 
 
-def confirm_upload(upload_id: str, size_bytes: int) -> None:
-    """Best-effort notify NAS that the upload completed.
-
-    Purely advisory — the object's existence in S3 is the source of truth
-    (NAS is stateless per the design), so any failure here is swallowed and
-    must NOT abort a share that already succeeded.
-    """
-    try:
-        payload = json.dumps(
-            {"id": upload_id, "sizeBytes": int(size_bytes)}
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            f"{NAS_BASE}/api/diagnostics/confirm",
-            data=payload,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": _USER_AGENT,
-            },
-        )
-        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT):
-            pass
-    except Exception:
-        # Confirm is advisory only — never let it surface to the caller.
-        pass
-
-
 def share_to_nous(report_bundle: bytes) -> dict:
     """Orchestrate the full Nous-S3 upload of a gzipped *report_bundle*.
 
-    Returns the dict from :func:`request_upload_url` (which carries
-    ``viewUrl`` / ``id`` / expiry metadata) so the caller can print the
-    viewer link. Raises on any failure of the required steps (mint URL or
-    PUT); the confirm step is best-effort and never raises.
+    Two steps: mint a presigned PUT URL (sending the exact ``sizeBytes`` NAS
+    signs into the URL's ``ContentLength``), then PUT the bundle. NAS is
+    stateless — the object's existence in S3 is the only state, so there is no
+    confirm/callback step. Returns the dict from :func:`request_upload_url`
+    (which carries ``viewUrl`` / ``id`` / expiry metadata) so the caller can
+    print the viewer link. Raises on any failure of either step.
     """
     size_bytes = len(report_bundle)
     info = request_upload_url(
         content_type="application/gzip", size_bytes=size_bytes
     )
     put_bundle(info["uploadUrl"], report_bundle, content_type="application/gzip")
-
-    upload_id = info.get("id")
-    if upload_id:
-        confirm_upload(upload_id, size_bytes)
 
     return info

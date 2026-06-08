@@ -4313,8 +4313,9 @@ def _save_custom_provider(
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
+    Deduplicates by both ``base_url`` and ``api_key`` — if both match, updates
+    the existing entry's model and context settings. This allows multiple
+    keys for the same endpoint.
     Uses *name* when provided, otherwise auto-generates from the URL.
     """
     from hermes_cli.config import load_config, save_config
@@ -4324,33 +4325,48 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
+    normalized_url = base_url.rstrip("/")
+
+    # Check if this exact endpoint credential pair is already saved.
     for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
-            "/"
-        ) == base_url.rstrip("/"):
-            changed = False
-            if model and entry.get("model") != model:
-                entry["model"] = model
-                changed = True
-            if model and context_length:
-                models_cfg = entry.get("models", {})
-                if not isinstance(models_cfg, dict):
-                    models_cfg = {}
+        if not isinstance(entry, dict):
+            continue
+
+        entry_url = entry.get("base_url", "").rstrip("/")
+        entry_api_key = entry.get("api_key", "")
+        if entry_url != normalized_url or entry_api_key != api_key:
+            continue
+
+        changed = False
+        if model and entry.get("model") != model:
+            entry["model"] = model
+            changed = True
+
+        if model and context_length:
+            models_cfg = entry.get("models", {})
+            if not isinstance(models_cfg, dict):
+                models_cfg = {}
+            if models_cfg.get(model, {}).get("context_length") != context_length:
                 models_cfg[model] = {"context_length": context_length}
                 entry["models"] = models_cfg
                 changed = True
-            if api_mode:
-                if entry.get("api_mode") != api_mode:
-                    entry["api_mode"] = api_mode
-                    changed = True
-            elif "api_mode" in entry:
-                entry.pop("api_mode", None)
+
+        if name and entry.get("name") != name:
+            entry["name"] = name
+            changed = True
+
+        if api_mode:
+            if entry.get("api_mode") != api_mode:
+                entry["api_mode"] = api_mode
                 changed = True
-            if changed:
-                cfg["custom_providers"] = providers
-                save_config(cfg)
-            return  # already saved, updated if needed
+        elif "api_mode" in entry:
+            entry.pop("api_mode", None)
+            changed = True
+
+        if changed:
+            cfg["custom_providers"] = providers
+            save_config(cfg)
+        return  # already saved, updated if needed
 
     # Use provided name or auto-generate from URL
     if not name:
@@ -4370,7 +4386,6 @@ def _save_custom_provider(
     cfg["custom_providers"] = providers
     save_config(cfg)
     print(f'  💾 Saved to custom providers as "{name}" (edit in config.yaml)')
-
 
 def _model_flow_azure_foundry(config, current_model=""):
     """Azure Foundry provider: configure endpoint, auth mode, API mode, and model.

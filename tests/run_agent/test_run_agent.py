@@ -2402,15 +2402,20 @@ class TestConcurrentToolExecution:
 
     def test_concurrent_handles_tool_error(self, agent):
         """If one tool raises, others should still complete."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
-        tc2 = _mock_tool_call(name="web_search", arguments='{}', call_id="c2")
+        # Distinguish the two calls by their arguments so the error is tied to
+        # a SPECIFIC tool call rather than invocation order. Concurrent
+        # execution gives no guarantee that c1's handler runs before c2's, so
+        # keying the raise on a call-order counter is racy: under thread-pool
+        # scheduling c2 could be invoked first, take the "first call raises"
+        # branch, and the error would land in messages[1] instead of
+        # messages[0]. Keying on args makes the assertion deterministic.
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "boom"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "ok"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
 
-        call_count = [0]
         def fake_handle(name, args, task_id, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
+            if args.get("q") == "boom":
                 raise RuntimeError("boom")
             return "success"
 
@@ -2418,9 +2423,11 @@ class TestConcurrentToolExecution:
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 2
-        # First tool should have error
+        # Results are ordered by tool_call_id; c1 raised, c2 succeeded.
+        assert messages[0]["tool_call_id"] == "c1"
         assert "Error" in messages[0]["content"] or "boom" in messages[0]["content"]
         # Second tool should succeed
+        assert messages[1]["tool_call_id"] == "c2"
         assert "success" in messages[1]["content"]
 
     def test_concurrent_interrupt_before_start(self, agent):

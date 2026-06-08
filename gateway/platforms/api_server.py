@@ -791,6 +791,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        # Owner session key for each run_id.  API clients can intentionally
+        # share one bearer token while using X-Hermes-Session-Key as the
+        # per-user/channel boundary; run follow-up endpoints must preserve it.
+        self._run_session_keys: Dict[str, Optional[str]] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
@@ -3792,6 +3796,25 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _authorize_run_session_key(
+        self,
+        request: "web.Request",
+        run_id: str,
+    ) -> Optional["web.Response"]:
+        """Return 404 when a keyed caller reaches across a run boundary."""
+        caller_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        if run_id not in self._run_session_keys:
+            return None
+        owner_key = self._run_session_keys.get(run_id)
+        if owner_key == caller_key:
+            return None
+        return web.json_response(
+            _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+            status=404,
+        )
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -3925,6 +3948,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
+        self._run_session_keys[run_id] = gateway_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -4121,6 +4145,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._run_session_keys.pop(run_id, None)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -4153,6 +4178,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
+        key_err = self._authorize_run_session_key(request, run_id)
+        if key_err is not None:
+            return key_err
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
@@ -4170,6 +4198,10 @@ class APIServerAdapter(BasePlatformAdapter):
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+
+        key_err = self._authorize_run_session_key(request, run_id)
+        if key_err is not None:
+            return key_err
 
         q = self._run_streams[run_id]
 
@@ -4218,6 +4250,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
+        key_err = self._authorize_run_session_key(request, run_id)
+        if key_err is not None:
+            return key_err
 
         try:
             body = await request.json()
@@ -4305,6 +4340,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if agent is None and task is None:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+        key_err = self._authorize_run_session_key(request, run_id)
+        if key_err is not None:
+            return key_err
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
 
@@ -4358,6 +4396,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._run_session_keys.pop(run_id, None)
 
             stale_statuses = [
                 run_id
@@ -4367,6 +4406,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
+                self._run_session_keys.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

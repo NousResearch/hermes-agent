@@ -5,8 +5,8 @@ The proactive-monitor pattern: a fetch step (a watcher script, an inbox dump, a
 feed) produces a list of candidate items; this script scores each with a cheap
 LLM and prints ONLY the items at or above a threshold. Below-threshold runs
 print nothing, so a cron job wrapping this stays silent unless something
-actually matters -- mirroring Poke's email monitor (fetch -> classify urgency
--> surface only what's above the bar).
+actually matters -- the classic urgency-monitor pattern (fetch -> classify
+urgency -> surface only what's above the bar).
 
 Design choices:
   * Uses Hermes' auxiliary client with task="monitor", so the classifier model

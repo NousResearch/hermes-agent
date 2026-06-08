@@ -15,9 +15,11 @@ Every recipe works from **every surface**:
 
 - **Dashboard / desktop app** — open the Cron page, switch to the **Recipes**
   tab, fill the form, and click *Schedule it*.
-- **CLI, TUI, and messengers** — copy a recipe's `/cron-recipe` command below,
-  edit the values, and send it. Hermes fills in anything you leave out and
-  asks if something's ambiguous.
+- **CLI, TUI, and messengers** — type `/cron-recipe <name>` (e.g.
+  `/cron-recipe morning-brief`) and Hermes asks you for what it needs, one
+  question at a time, then schedules it. The name match is forgiving — a
+  prefix or near-spelling resolves. Power users can skip the questions by
+  passing values inline: `/cron-recipe morning-brief time=08:00`.
 - **Desktop app** — click **Send to App** on any recipe and it opens with the
   command pre-loaded in your composer.
 

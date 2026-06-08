@@ -7175,7 +7175,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_suggestions_command(event)
 
         if canonical == "cron-recipe":
-            return await self._handle_cron_recipe_command(event)
+            _recipe_result = await self._handle_cron_recipe_command(event)
+            _recipe_seed = getattr(_recipe_result, "agent_seed", None)
+            if _recipe_seed:
+                # Recipe matched — rewrite the turn to the seed and fall
+                # through to _handle_message_with_agent so the agent asks the
+                # user for each slot value conversationally and then calls the
+                # cronjob tool (the /steer fall-through pattern). The seed
+                # enters as a normal user turn, preserving role alternation.
+                try:
+                    event.text = _recipe_seed
+                except Exception:
+                    return getattr(_recipe_result, "text", "") or None
+            else:
+                return getattr(_recipe_result, "text", "") or None
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -9273,12 +9286,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("suggestions command failed: %s", e)
             return f"Suggestions command failed: {e}"
 
-    async def _handle_cron_recipe_command(self, event: MessageEvent) -> str:
+    async def _handle_cron_recipe_command(self, event: MessageEvent):
         """Handle /cron-recipe in the gateway.
 
         Delegates to the shared handler so CLI, TUI, and gateway never drift.
-        Origin is built from the event source so a created recipe job delivers
-        back to this chat/thread.
+        Returns a RecipeCommandResult: ``text`` is shown to the user, and if
+        ``agent_seed`` is set the dispatch site rewrites ``event.text`` to the
+        seed and falls through to the agent (the ``/steer`` pattern) so the
+        agent gathers the slot values conversationally. Origin is built from the
+        event source so a directly created recipe job delivers back to this chat.
         """
         args = (event.get_command_args() or "").strip()
         source = event.source
@@ -9301,7 +9317,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return handle_cron_recipe_command(args, origin=origin)
         except Exception as e:
             logger.debug("cron-recipe command failed: %s", e)
-            return f"Cron recipe command failed: {e}"
+            from hermes_cli.cron_recipe_cmd import RecipeCommandResult
+
+            return RecipeCommandResult(f"Cron recipe command failed: {e}")
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)

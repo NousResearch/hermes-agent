@@ -1468,6 +1468,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # construction costs.
     # ---------------------------------------------------------------
     from run_agent import AIAgent
+    
+    # Ensure plugins are discovered and loaded before AIAgent uses middleware
+    # during its first LLM API call. This is idempotent and safe to call multiple times.
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).

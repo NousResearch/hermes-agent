@@ -3849,6 +3849,13 @@ def _get_connected_server_for_call(server_name: str) -> Optional[MCPServerTask]:
     return server
 
 
+def _mark_server_call_started(server: Any) -> None:
+    """Record a user-visible MCP operation when the server supports it."""
+    mark_tool_call = getattr(server, "mark_tool_call", None)
+    if callable(mark_tool_call):
+        mark_tool_call()
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3925,7 +3932,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 }, ensure_ascii=False)
 
         async def _call():
-            server.mark_tool_call()
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 # Snapshot the agent's context so an elicitation callback
                 # triggered during this call (fired on the MCP recv loop
@@ -4046,7 +4053,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            server.mark_tool_call()
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 result = await server.session.list_resources()
             resources = []
@@ -4110,7 +4117,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return tool_error("Missing required parameter 'uri'")
 
         async def _call():
-            server.mark_tool_call()
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
@@ -4164,7 +4171,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            server.mark_tool_call()
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 result = await server.session.list_prompts()
             prompts = []
@@ -4234,7 +4241,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         arguments = args.get("arguments", {})
 
         async def _call():
-            server.mark_tool_call()
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list

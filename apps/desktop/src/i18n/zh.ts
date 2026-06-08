@@ -1445,7 +1445,15 @@ export const zh: Translations = {
     applyingClose: 'Hermes 将关闭以应用更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
-    notNow: '暂不'
+    notNow: '暂不',
+    applyStatus: {
+      preparing: '正在更新后端…',
+      pulling: '后端更新中…',
+      restarting: '后端正在重启以加载更新…',
+      notAvailable: '此后端无法更新。',
+      failed: '后端更新失败。',
+      noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
+    }
   },
 
   install: {

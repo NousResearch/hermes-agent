@@ -1400,7 +1400,15 @@ export const ja = defineLocale({
     applyingClose: 'Hermes は更新を適用するために閉じます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
-    notNow: '今は後で'
+    notNow: '今は後で',
+    applyStatus: {
+      preparing: 'バックエンドを更新しています…',
+      pulling: 'バックエンドを更新中…',
+      restarting: 'バックエンドが更新を読み込むため再起動しています…',
+      notAvailable: 'このバックエンドでは更新を利用できません。',
+      failed: 'バックエンドの更新に失敗しました。',
+      noReturn: 'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
+    }
   },
 
   install: {

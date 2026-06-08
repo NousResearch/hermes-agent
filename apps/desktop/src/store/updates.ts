@@ -336,7 +336,7 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
     applying: false,
     stage: 'error',
     error: 'apply-failed',
-    message: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+    message: translateNow('updates.applyStatus.noReturn')
   })
 
   return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
@@ -344,20 +344,20 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
 
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
-  $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Updating backend…' })
+  $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: translateNow('updates.applyStatus.preparing') })
 
   try {
     const started = await updateHermes()
 
     if (!started.ok) {
-      const message = (started as { message?: string }).message || 'Update not available for this backend.'
+      const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
       const command = (started as { update_command?: string }).update_command || 'hermes update'
       $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
 
       return { ok: false, error: 'manual', manual: true, message, command }
     }
 
-    $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'pull', message: 'Backend updating…' })
+    $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'pull', message: translateNow('updates.applyStatus.pulling') })
 
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -370,7 +370,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
           ...$backendUpdateApply.get(),
           applying: true,
           stage: 'restart',
-          message: 'Backend restarting to load the update…'
+          message: translateNow('updates.applyStatus.restarting')
         })
 
         return finishBackendApply(await waitForBackendReturn())
@@ -383,7 +383,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     const ok = !!last && (last.exit_code ?? 1) === 0
     if (ok) {
-      $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: 'Backend restarting to load the update…' })
+      $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: translateNow('updates.applyStatus.restarting') })
 
       return finishBackendApply(await waitForBackendReturn())
     }
@@ -393,7 +393,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       applying: false,
       stage: 'error',
       error: 'apply-failed',
-      message: 'Backend update failed.'
+      message: translateNow('updates.applyStatus.failed')
     })
 
     return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }

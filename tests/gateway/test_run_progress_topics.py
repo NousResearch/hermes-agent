@@ -1264,3 +1264,123 @@ async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, t
     assert VerboseAgent.LONG_CODE not in all_content
     # But should still contain the truncated portion with "..."
     assert "..." in all_content
+
+
+class CodeBlockProgressAdapter(ProgressCaptureAdapter):
+    """A markdown-capable progress adapter (declares supports_code_blocks)."""
+
+    supports_code_blocks = True
+
+
+class TerminalCommandAgent:
+    """Emits a terminal tool.started with a real, multi-line command arg."""
+
+    CMD = (
+        "set -euo pipefail\n"
+        "printf 'node: '; node --version\n"
+        "npm install -g hyperframes@latest"
+    )
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "terminal", self.CMD, {"command": self.CMD}
+        )
+        # Let the async progress task drain the queue and send before returning.
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_is_truncated_preview_not_bash_block(monkeypatch, tmp_path):
+    """Regression for #41215: terminal progress must render as a short truncated
+    preview, never the full command in a fenced ```bash block, even on a
+    markdown-capable (supports_code_blocks) gateway."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-no-bash-block",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    # Compact truncated preview, not a fenced bash block.
+    assert "```bash" not in all_content
+    assert 'terminal: "' in all_content
+    # The full multi-line command body must not reach the chat.
+    assert "npm install -g hyperframes@latest" not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_path):
+    """#41215 also rendered the bash block in verbose mode. The revert removed it
+    from both branches, so verbose progress must not emit a fenced ```bash block
+    either (verbose still shows args by opt-in, just not as a code block)."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-verbose-no-bash",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "```bash" not in all_content

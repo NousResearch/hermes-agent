@@ -239,6 +239,56 @@ def test_config_from_kanban_config_preserves_explicit_diagnostics_threshold():
     assert cfg["failure_limit"] == 5
 
 
+def test_auth_required_diagnostic_points_to_profile_auth():
+    task = _task(status="blocked", assignee="vvb-agent")
+    runs = [_run(outcome="auth_required", run_id=9, error="token_revoked")]
+
+    diags = kd.compute_task_diagnostics(task, [], runs)
+
+    diag = next(d for d in diags if d.kind == "auth_required")
+    assert diag.severity == "critical"
+    labels = [a.label for a in diag.actions]
+    assert any("hermes -p vvb-agent auth" in label for label in labels)
+    assert diag.data["outcome"] == "auth_required"
+
+
+def test_billing_or_quota_diagnostic_is_not_protocol_violation():
+    task = _task(status="blocked", assignee="vvb-agent")
+    events = [
+        _event(
+            "billing_or_quota_blocked",
+            ts=200,
+            outcome="billing_or_quota_blocked",
+            error="usage_limit_reached",
+        )
+    ]
+
+    diags = kd.compute_task_diagnostics(task, events, [], now=300)
+
+    kinds = {d.kind for d in diags}
+    assert "billing_or_quota_blocked" in kinds
+    assert "protocol_violation_exit" not in kinds
+
+
+def test_protocol_violation_exit_diagnostic_points_to_worker_logs():
+    task = _task(status="blocked", assignee="worker")
+    runs = [
+        _run(
+            outcome="protocol_violation",
+            run_id=11,
+            error="worker exited cleanly without kanban_complete",
+        )
+    ]
+
+    diags = kd.compute_task_diagnostics(task, [], runs)
+
+    diag = next(d for d in diags if d.kind == "protocol_violation_exit")
+    assert diag.severity == "error"
+    labels = [a.label for a in diag.actions]
+    assert any("kanban log" in label for label in labels)
+    assert diag.data["outcome"] == "protocol_violation"
+
+
 def test_repeated_crashes_counts_trailing_streak_only():
     task = _task(status="ready", assignee="crashy")
     runs = [

@@ -164,6 +164,11 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # 0/1/2 codes the worker uses for success / generic failure / usage error.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
+# Permanent/operational provider failures need a distinct worker exit path so
+# they do not collapse into the clean-exit protocol-violation classifier.
+KANBAN_AUTH_EXIT_CODE = 77       # sysexits EX_NOPERM
+KANBAN_BILLING_EXIT_CODE = 78    # sysexits EX_CONFIG
+
 
 def _resolve_crash_grace_seconds() -> int:
     """Return the crash-detection grace period in seconds.
@@ -4912,6 +4917,12 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    auth_required: list[str] = field(default_factory=list)
+    """Task ids whose workers hit a provider/OAuth authentication failure and
+    were blocked with an actionable auth-required outcome."""
+    billing_or_quota_blocked: list[str] = field(default_factory=list)
+    """Task ids whose workers hit non-transient billing/entitlement/quota
+    exhaustion and were blocked for operator action."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4964,6 +4975,12 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       provider rate-limited / exhausted quota, NOT because the task failed.
       ``detect_crashed_workers`` releases the task back to ``ready`` without
       counting a failure, so a long quota window can't trip the breaker.
+    * ``"auth_required"`` — ``WIFEXITED`` with status
+      ``KANBAN_AUTH_EXIT_CODE``. The worker hit a token/API-key/OAuth
+      failure; block for operator action instead of treating it as protocol.
+    * ``"billing_or_quota_blocked"`` — ``WIFEXITED`` with status
+      ``KANBAN_BILLING_EXIT_CODE``. The provider says access is blocked by
+      billing/entitlement, not task logic.
     * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
     * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
@@ -4985,6 +5002,10 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
                 return ("clean_exit", 0)
             if code == KANBAN_RATE_LIMIT_EXIT_CODE:
                 return ("rate_limited", code)
+            if code == KANBAN_AUTH_EXIT_CODE:
+                return ("auth_required", code)
+            if code == KANBAN_BILLING_EXIT_CODE:
+                return ("billing_or_quota_blocked", code)
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
@@ -5467,13 +5488,15 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    auth_required: list[str] = []
+    billing_or_quota_blocked: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
     # clean-exit-but-still-running case so we can trip the breaker
     # immediately instead of incrementing by 1.
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    crash_details: list[tuple[str, int, str, bool, str, str]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, outcome)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
@@ -5535,6 +5558,32 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "claimer": row["claim_lock"],
                     "exit_code": code,
                 }
+            elif kind == "auth_required":
+                protocol_violation = False
+                error_text = (
+                    f"pid {pid} exited with provider authentication failure "
+                    f"(auth_required) — operator re-authentication required"
+                )
+                event_kind = "auth_required"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_code": code,
+                    "failure_class": "auth_required",
+                }
+            elif kind == "billing_or_quota_blocked":
+                protocol_violation = False
+                error_text = (
+                    f"pid {pid} exited with billing/entitlement/quota blocker "
+                    f"(billing_or_quota_blocked) — operator action required"
+                )
+                event_kind = "billing_or_quota_blocked"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_code": code,
+                    "failure_class": "billing_or_quota_blocked",
+                }
             else:
                 protocol_violation = False
                 if kind == "nonzero_exit":
@@ -5559,7 +5608,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                if rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                elif kind == "auth_required":
+                    _run_outcome = "auth_required"
+                elif kind == "billing_or_quota_blocked":
+                    _run_outcome = "billing_or_quota_blocked"
+                else:
+                    _run_outcome = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -5582,11 +5638,32 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif kind == "auth_required":
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    auth_required.append(row["id"])
+                    crash_details.append(
+                        (row["id"], pid, row["claim_lock"],
+                         False, error_text, "auth_required")
+                    )
+                elif kind == "billing_or_quota_blocked":
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    billing_or_quota_blocked.append(row["id"])
+                    crash_details.append(
+                        (row["id"], pid, row["claim_lock"],
+                         False, error_text, "billing_or_quota_blocked")
+                    )
                 else:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text,
+                         "protocol_violation" if protocol_violation else "crashed")
                     )
     # Outside the main txn: increment the unified failure counter for
     # each crashed task. If the breaker trips, the task transitions
@@ -5602,20 +5679,25 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _outcome in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for tid, pid, claimer, protocol_violation, error_text, outcome in crash_details:
             fp = _error_fingerprint(error_text)
             is_systemic = (
                 not protocol_violation
+                and outcome == "crashed"
                 and _fp_counts.get(fp, 0) >= 3
             )
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
-                outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                outcome=outcome,
+                failure_limit=1 if (
+                    protocol_violation
+                    or outcome in {"auth_required", "billing_or_quota_blocked"}
+                    or is_systemic
+                ) else None,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -5630,6 +5712,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_auth_required = auth_required  # type: ignore[attr-defined]
+    detect_crashed_workers._last_billing_or_quota_blocked = billing_or_quota_blocked  # type: ignore[attr-defined]
     return crashed
 
 
@@ -6090,6 +6174,16 @@ def dispatch_once(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
+    _crash_auth_required = getattr(
+        detect_crashed_workers, "_last_auth_required", []
+    )
+    if _crash_auth_required:
+        result.auth_required.extend(_crash_auth_required)
+    _crash_billing_blocked = getattr(
+        detect_crashed_workers, "_last_billing_or_quota_blocked", []
+    )
+    if _crash_billing_blocked:
+        result.billing_or_quota_blocked.extend(_crash_billing_blocked)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 

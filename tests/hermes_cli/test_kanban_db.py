@@ -707,6 +707,27 @@ def test_classify_worker_exit_recognizes_rate_limit_sentinel(kanban_home):
     assert _kb._classify_worker_exit(pid + 1) == ("nonzero_exit", 1)
 
 
+def test_classify_worker_exit_recognizes_auth_and_billing_sentinels(kanban_home):
+    import hermes_cli.kanban_db as _kb
+
+    auth_pid = 31338
+    billing_pid = 31339
+    _kb._record_worker_exit(auth_pid, _exited_status(_kb.KANBAN_AUTH_EXIT_CODE))
+    _kb._record_worker_exit(
+        billing_pid,
+        _exited_status(_kb.KANBAN_BILLING_EXIT_CODE),
+    )
+
+    assert _kb._classify_worker_exit(auth_pid) == (
+        "auth_required",
+        _kb.KANBAN_AUTH_EXIT_CODE,
+    )
+    assert _kb._classify_worker_exit(billing_pid) == (
+        "billing_or_quota_blocked",
+        _kb.KANBAN_BILLING_EXIT_CODE,
+    )
+
+
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):
@@ -766,6 +787,77 @@ def test_rate_limit_exit_requeues_without_counting_failure(
             ).fetchall()
         ]
         assert "rate_limited" in outcomes
+        assert "crashed" not in outcomes
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "side_attr", "expected_outcome", "error_fragment"),
+    [
+        (
+            "KANBAN_AUTH_EXIT_CODE",
+            "_last_auth_required",
+            "auth_required",
+            "authentication",
+        ),
+        (
+            "KANBAN_BILLING_EXIT_CODE",
+            "_last_billing_or_quota_blocked",
+            "billing_or_quota_blocked",
+            "billing",
+        ),
+    ],
+)
+def test_provider_blocker_exits_block_without_protocol_violation(
+    kanban_home,
+    monkeypatch,
+    exit_code,
+    side_attr,
+    expected_outcome,
+    error_fragment,
+):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        pid = 72000
+        tid = kb.create_task(conn, title=expected_outcome, assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:provider")
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+
+        _kb._record_worker_exit(pid, _exited_status(getattr(_kb, exit_code)))
+        crashed = kb.detect_crashed_workers(conn)
+
+        assert tid not in crashed
+        assert tid in getattr(_kb.detect_crashed_workers, side_attr, [])
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        assert task.last_failure_error
+        assert error_fragment in task.last_failure_error.lower()
+
+        events = [
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=?", (tid,),
+            ).fetchall()
+        ]
+        assert expected_outcome in events
+        assert "protocol_violation" not in events
+        assert "crashed" not in events
+
+        outcomes = [
+            row["outcome"]
+            for row in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
+            ).fetchall()
+        ]
+        assert expected_outcome in outcomes
+        assert "protocol_violation" not in outcomes
         assert "crashed" not in outcomes
 
 

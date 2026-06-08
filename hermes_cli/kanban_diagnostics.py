@@ -637,6 +637,151 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_provider_or_protocol_exit(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Surface terminal worker exits that need different recovery paths.
+
+    Provider/auth/quota failures are not worker protocol bugs. A worker that
+    cannot call the model should block with a clear operator action, while a
+    true clean exit without ``kanban_complete`` / ``kanban_block`` should point
+    at worker logs and protocol repair.
+    """
+    del cfg
+
+    outcomes = {
+        "auth_required": {
+            "kind": "auth_required",
+            "severity": "critical",
+            "title": "Provider authentication required",
+            "detail": (
+                "The worker stopped because its model provider credentials "
+                "are invalid or revoked. Re-authenticate the affected profile "
+                "before retrying this task."
+            ),
+        },
+        "billing_or_quota_blocked": {
+            "kind": "billing_or_quota_blocked",
+            "severity": "error",
+            "title": "Provider billing or quota blocker",
+            "detail": (
+                "The worker stopped at a provider billing, entitlement, or "
+                "quota boundary. This is not a worker protocol failure; fix "
+                "the provider account or configure an approved fallback before "
+                "retrying."
+            ),
+        },
+        "protocol_violation": {
+            "kind": "protocol_violation_exit",
+            "severity": "error",
+            "title": "Worker exited without Kanban completion protocol",
+            "detail": (
+                "The worker process exited cleanly but did not report "
+                "``kanban_complete`` or ``kanban_block``. Inspect the worker "
+                "log and task history, then repair or reassign the worker "
+                "profile before retrying."
+            ),
+        },
+    }
+
+    seen: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        kind = _event_kind(ev)
+        payload = _parse_payload(ev)
+        outcome = payload.get("outcome") or kind
+        if outcome in outcomes or kind in outcomes:
+            key = str(outcome if outcome in outcomes else kind)
+            seen[key] = {
+                "ts": _event_ts(ev) or now,
+                "error": payload.get("error") or payload.get("reason"),
+                "run_id": payload.get("run_id"),
+            }
+    for run in runs:
+        outcome = _task_field(run, "outcome")
+        if outcome in outcomes:
+            seen[str(outcome)] = {
+                "ts": int(_task_field(run, "ended_at", now) or now),
+                "error": _task_field(run, "error"),
+                "run_id": _task_field(run, "id"),
+            }
+
+    if not seen:
+        return []
+
+    task_id = _task_field(task, "id")
+    assignee = _task_field(task, "assignee") or "default"
+    diagnostics: list[Diagnostic] = []
+    for outcome, meta in seen.items():
+        spec = outcomes[outcome]
+        actions: list[DiagnosticAction] = []
+        if outcome == "auth_required":
+            actions.extend([
+                DiagnosticAction(
+                    kind="cli_hint",
+                    label=f"Check profile: hermes -p {assignee} doctor",
+                    payload={"command": f"hermes -p {assignee} doctor"},
+                    suggested=True,
+                ),
+                DiagnosticAction(
+                    kind="cli_hint",
+                    label=f"Re-authenticate: hermes -p {assignee} auth",
+                    payload={"command": f"hermes -p {assignee} auth"},
+                    suggested=True,
+                ),
+                DiagnosticAction(kind="unblock", label="Unblock after re-authentication"),
+            ])
+        elif outcome == "billing_or_quota_blocked":
+            actions.extend([
+                DiagnosticAction(
+                    kind="cli_hint",
+                    label="Inspect fallback chain: hermes fallback list",
+                    payload={"command": "hermes fallback list"},
+                    suggested=True,
+                ),
+                DiagnosticAction(
+                    kind="cli_hint",
+                    label=f"Check provider account: hermes -p {assignee} doctor",
+                    payload={"command": f"hermes -p {assignee} doctor"},
+                ),
+                DiagnosticAction(kind="unblock", label="Unblock after provider fix"),
+            ])
+        else:
+            if task_id:
+                actions.extend([
+                    DiagnosticAction(
+                        kind="cli_hint",
+                        label=f"Check worker log: hermes kanban log {task_id}",
+                        payload={"command": f"hermes kanban log {task_id}"},
+                        suggested=True,
+                    ),
+                    DiagnosticAction(
+                        kind="cli_hint",
+                        label=f"Review task events: hermes kanban events {task_id}",
+                        payload={"command": f"hermes kanban events {task_id}"},
+                    ),
+                ])
+            actions.extend(_generic_recovery_actions(
+                task,
+                running=_task_field(task, "status") == "running",
+            ))
+
+        error = str(meta.get("error") or "").strip()
+        detail = spec["detail"]
+        if error:
+            detail = f"{detail}\n\nLast error:\n\n{error[:500]}"
+        diagnostics.append(Diagnostic(
+            kind=spec["kind"],
+            severity=spec["severity"],
+            title=spec["title"],
+            detail=detail,
+            actions=actions,
+            first_seen_at=int(meta.get("ts") or now),
+            last_seen_at=int(meta.get("ts") or now),
+            count=1,
+            run_id=meta.get("run_id"),
+            data={"outcome": outcome, "last_error": error or None},
+        ))
+    return diagnostics
+
+
 def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     """The worker spawns fine but keeps crashing mid-run. Check the last
     N runs' outcomes; N consecutive ``crashed`` without a successful
@@ -980,6 +1125,7 @@ _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
     _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,
+    _rule_provider_or_protocol_exit,
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
@@ -994,6 +1140,9 @@ DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
     "triage_aux_unavailable",
     "prose_phantom_refs",
+    "auth_required",
+    "billing_or_quota_blocked",
+    "protocol_violation_exit",
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",

@@ -14078,27 +14078,29 @@ def main(
 
                     # Ensure proper exit code for automation wrappers.
                     #
-                    # Kanban workers get a special case: when the run failed
-                    # purely because the provider rate-limited / exhausted
-                    # quota (not because the task itself is broken), exit with
-                    # the EX_TEMPFAIL sentinel instead of the generic 1. The
-                    # dispatcher's reap classifier maps that code to a
-                    # ``rate_limited`` exit and releases the task back to
-                    # ``ready`` WITHOUT incrementing the failure counter, so a
-                    # 5-hour quota window can't trip the circuit breaker and
-                    # permanently block the card. Non-kanban runs keep the
-                    # plain 0/1 contract automation wrappers expect.
+                    # Kanban workers get structured provider-failure exits.
+                    # Without these, auth/quota failures can look like a clean
+                    # conversational answer followed by rc=0, and the
+                    # dispatcher misclassifies them as worker protocol
+                    # violations. Non-kanban runs keep the plain 0/1 contract
+                    # automation wrappers expect.
                     _exit_code = 0
                     if isinstance(result, dict) and result.get("failed"):
                         _exit_code = 1
-                        if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                            "failure_reason"
-                        ) in ("rate_limit", "billing"):
+                        _failure_reason = result.get("failure_reason")
+                        if os.environ.get("HERMES_KANBAN_TASK") and _failure_reason:
                             try:
                                 from hermes_cli.kanban_db import (
+                                    KANBAN_AUTH_EXIT_CODE as _AUTH_CODE,
+                                    KANBAN_BILLING_EXIT_CODE as _BILLING_CODE,
                                     KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
                                 )
-                                _exit_code = _RL_CODE
+                                if _failure_reason == "rate_limit":
+                                    _exit_code = _RL_CODE
+                                elif _failure_reason == "billing":
+                                    _exit_code = _BILLING_CODE
+                                elif _failure_reason in ("auth", "auth_permanent"):
+                                    _exit_code = _AUTH_CODE
                             except Exception:
                                 _exit_code = 1
                     sys.exit(_exit_code)

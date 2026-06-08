@@ -2154,6 +2154,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "timed_out": res.timed_out,
             "stale": res.stale,
             "auto_blocked": res.auto_blocked,
+            "auth_required": res.auth_required,
+            "billing_or_quota_blocked": res.billing_or_quota_blocked,
             "promoted": res.promoted,
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}

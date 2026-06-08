@@ -3065,6 +3065,7 @@ def run_conversation(
                             "completed": False,
                             "failed": True,
                             "error": f"content_policy_blocked: {_summary}",
+                            "failure_reason": classified.reason.value,
                         }
                     return {
                         "final_response": None,
@@ -3073,6 +3074,7 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": str(api_error),
+                        "failure_reason": classified.reason.value,
                     }
 
                 if retry_count >= max_retries:

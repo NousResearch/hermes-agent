@@ -301,6 +301,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.reliability import build_reliability_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -6608,6 +6609,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_reliability(args):
+    """Bounded reliability checks and safe local repair."""
+    from hermes_cli.reliability import reliability_command
+
+    return reliability_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -12664,7 +12672,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
-        "prompt-size",
+        "prompt-size", "reliability",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
@@ -13366,6 +13374,11 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # reliability command — bounded self-healing checks
+    # =========================================================================
+    build_reliability_parser(subparsers, cmd_reliability=cmd_reliability)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

@@ -961,7 +961,8 @@ display:
   #         # How long to keep the reasoning bubble as a visible breadcrumb
   #         # before auto-deleting it (seconds).  0 = delete immediately
   #         # (OpenClaw default, conversation stays clean).
-  #         # Positive values < 60 give a few seconds to read, then clean up.
+  #         # A positive value (e.g. 10) gives a few seconds to read
+  #         # the reasoning before it's cleaned up.
   #         # reasoning_stream_ttl_seconds: 10
   cleanup_progress: false
 

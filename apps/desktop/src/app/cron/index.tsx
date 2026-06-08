@@ -85,6 +85,10 @@ function jobPrompt(job: CronJob): string {
   return asText(job.prompt)
 }
 
+function jobDescription(job: CronJob): string {
+  return asText(job.prompt) || asText(job.script)
+}
+
 function jobScheduleDisplay(job: CronJob): string {
   return asText(job.schedule_display) || asText(job.schedule?.display) || asText(job.schedule?.expr) || '—'
 }
@@ -545,7 +549,7 @@ function CronJobDetail({
   const state = jobState(job)
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
-  const prompt = jobPrompt(job)
+  const description = jobDescription(job)
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -559,6 +563,9 @@ function CronJobDetail({
                   <StatePill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</StatePill>
                   {deliver && deliver !== DEFAULT_DELIVER && (
                     <StatePill tone="muted">{c.deliveryLabels[deliver] ?? deliver}</StatePill>
+                  )}
+                  {!jobPrompt(job) && asText(job.script) && (
+                    <StatePill tone="muted">script</StatePill>
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.7rem] text-muted-foreground">
@@ -598,7 +605,7 @@ function CronJobDetail({
               </div>
             </div>
 
-            {prompt && <p className="line-clamp-3 text-xs text-muted-foreground">{prompt}</p>}
+            {description && <p className="line-clamp-3 text-xs text-muted-foreground">{description}</p>}
             {job.last_error && (
               <p className="inline-flex items-start gap-1 text-[0.7rem] text-destructive">
                 <AlertTriangle className="mt-px size-3 shrink-0" />

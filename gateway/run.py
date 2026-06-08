@@ -3506,7 +3506,11 @@ class GatewayRunner:
                     continue
 
                 platform_cfg = self.config.platforms.get(platform)
-                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+                _grn = any(
+                    getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+                )
+                if platform_cfg is not None and not _grn:
                     logger.info(
                         "Shutdown notification suppressed for active session: %s has gateway_restart_notification=false",
                         platform_str,
@@ -3549,7 +3553,11 @@ class GatewayRunner:
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            _grn = any(
+                getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+            )
+            if platform_cfg is not None and not _grn:
                 logger.info(
                     "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
                     platform.value,
@@ -4624,7 +4632,13 @@ class GatewayRunner:
         # user_id (thread_sessions_per_user defaults to False) — so the
         # next real user message in the thread shares this same session.
         platform_cfg = self.config.platforms.get(platform)
-        extra = platform_cfg.extra if platform_cfg else {}
+        # Multi-app configs may return a list of PlatformConfig instances.
+        _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+        extra = {}
+        for cfg in _configs:
+            if cfg is not None:
+                extra = cfg.extra
+                break
         session_key = build_session_key(
             dest_source,
             group_sessions_per_user=extra.get("group_sessions_per_user", True),
@@ -6749,9 +6763,11 @@ class GatewayRunner:
         # Check for an explicit per-platform override first.
         if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:
             platform_cfg = config.platforms.get(platform) if hasattr(config, "platforms") else None
-            if platform_cfg and "unauthorized_dm_behavior" in getattr(platform_cfg, "extra", {}):
-                # Operator explicitly configured behavior for this platform — respect it.
-                return config.get_unauthorized_dm_behavior(platform)
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in _configs:
+                if cfg and "unauthorized_dm_behavior" in getattr(cfg, "extra", {}):
+                    # Operator explicitly configured behavior for this platform — respect it.
+                    return config.get_unauthorized_dm_behavior(platform)
 
         # Check for an explicit global config override.
         if config and hasattr(config, "unauthorized_dm_behavior"):
@@ -14831,7 +14847,11 @@ class GatewayRunner:
                 return None
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            _grn = any(
+                getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+            )
+            if platform_cfg is not None and not _grn:
                 logger.info(
                     "Restart notification suppressed: %s has gateway_restart_notification=false",
                     platform_str,
@@ -14890,7 +14910,11 @@ class GatewayRunner:
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            _grn = any(
+                getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+            )
+            if platform_cfg is not None and not _grn:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,

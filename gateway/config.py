@@ -682,22 +682,28 @@ class GatewayConfig:
         """Return the effective unauthorized-DM behavior for a platform."""
         if platform:
             platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "unauthorized_dm_behavior" in platform_cfg.extra:
-                return _normalize_unauthorized_dm_behavior(
-                    platform_cfg.extra.get("unauthorized_dm_behavior"),
-                    self.unauthorized_dm_behavior,
-                )
+            # Multi-app configs may store a list of PlatformConfig instances.
+            configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in configs:
+                if cfg and "unauthorized_dm_behavior" in cfg.extra:
+                    return _normalize_unauthorized_dm_behavior(
+                        cfg.extra.get("unauthorized_dm_behavior"),
+                        self.unauthorized_dm_behavior,
+                    )
         return self.unauthorized_dm_behavior
 
     def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
         """Return the effective notice-delivery mode for a platform."""
         if platform:
             platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "notice_delivery" in platform_cfg.extra:
-                return _normalize_notice_delivery(
-                    platform_cfg.extra.get("notice_delivery"),
-                    "public",
-                )
+            # Multi-app configs may store a list of PlatformConfig instances.
+            configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in configs:
+                if cfg and "notice_delivery" in cfg.extra:
+                    return _normalize_notice_delivery(
+                        cfg.extra.get("notice_delivery"),
+                        "public",
+                    )
         return "public"
 
 

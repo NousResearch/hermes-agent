@@ -8385,6 +8385,71 @@ class GatewayRunner:
         )
 
 
+    @staticmethod
+    def _gateway_kanban_parse_args(tokens: List[str]):
+        """Parse Kanban argv with the same argparse semantics as /kanban."""
+        if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
+            return None
+
+        import argparse
+        import contextlib
+        import io
+        from hermes_cli.kanban import build_parser
+
+        wrapper = argparse.ArgumentParser(prog="/kanban-wrap", add_help=False)
+        wrapper.exit_on_error = False  # type: ignore[attr-defined]
+        top_subparsers = wrapper.add_subparsers(dest="_top")
+        kanban_parser = build_parser(top_subparsers)
+        kanban_parser.prog = "/kanban"
+        kanban_parser.exit_on_error = False  # type: ignore[attr-defined]
+        for action in kanban_parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, choice in action.choices.items():
+                    choice.prog = f"/kanban {name}"
+                    choice.exit_on_error = False  # type: ignore[attr-defined]
+
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    return kanban_parser.parse_args(tokens)
+        except (argparse.ArgumentError, SystemExit):
+            return None
+
+    @staticmethod
+    def _gateway_kanban_is_unassign(profile: str | None) -> bool:
+        """Return whether a profile argument means "remove assignee"."""
+        return (profile or "").lower() in {"", "none", "-", "null"}
+
+    @classmethod
+    def _gateway_kanban_spawn_denial(cls, args) -> Optional[str]:
+        """Deny gateway Kanban requests that can launch or relaunch profiles."""
+        action = getattr(args, "kanban_action", None) if args else None
+        if not action:
+            return None
+
+        if action in {"dispatch", "unblock"}:
+            return (
+                "kanban: this subcommand can start work under another Hermes "
+                "profile and is only available from the local CLI"
+            )
+
+        if action in {"assign", "reassign"}:
+            if not cls._gateway_kanban_is_unassign(getattr(args, "profile", None)):
+                return (
+                    "kanban: assigning tasks from the gateway is disabled; "
+                    "assign worker profiles from the local CLI"
+                )
+            return None
+
+        if action == "create" and (getattr(args, "assignee", None) or "").strip():
+            return (
+                "kanban: creating assigned tasks from the gateway is disabled; "
+                "create the task unassigned and assign it from the local CLI"
+            )
+
+        return None
+
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
 
@@ -8411,33 +8476,20 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        if text:
-            try:
-                tokens = shlex.split(text)
-            except ValueError:
-                tokens = text.split()
-        else:
-            tokens = []
-        requested_board = None
-        action = None
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if tok == "--board":
-                if i + 1 >= len(tokens):
-                    break
-                requested_board = tokens[i + 1]
-                i += 2
-                continue
-            if tok.startswith("--board="):
-                requested_board = tok.split("=", 1)[1]
-                i += 1
-                continue
-            action = tok
-            break
+        try:
+            tokens = shlex.split(text) if text else []
+        except ValueError as exc:
+            return f"kanban: invalid arguments: {exc}"
 
-        is_create = action == "create"
-        if action == "notify-subscribe":
+        parsed_args = self._gateway_kanban_parse_args(tokens)
+        requested_board = getattr(parsed_args, "board", None) if parsed_args else None
+
+        denial = self._gateway_kanban_spawn_denial(parsed_args)
+        if denial:
+            return denial
+
+        is_create = (getattr(parsed_args, "kanban_action", None) == "create") if parsed_args else False
+        if getattr(parsed_args, "kanban_action", None) == "notify-subscribe":
             # Gateway-originated subscriptions must always be bound to the
             # currently running profile, never caller-supplied text.
             safe_tokens: list[str] = []

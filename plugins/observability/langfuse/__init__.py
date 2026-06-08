@@ -50,6 +50,11 @@ class TraceState:
     pending_tools_by_name: Dict[str, list] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     last_updated_at: float = field(default_factory=time.time)
+    # Accumulated usage/cost from post_api_request hooks.  Used as a
+    # fallback when post_llm_call fires without a response or usage dict
+    # (see #42306 — turn_finalizer.py doesn't forward usage to post_llm_call).
+    accumulated_usage_details: Dict[str, int] = field(default_factory=dict)
+    accumulated_cost_details: Dict[str, float] = field(default_factory=dict)
 
 
 _STATE_LOCK = threading.Lock()
@@ -668,6 +673,19 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
         if final_output is not None:
             state.root_span.set_trace_io(output=final_output)
             state.root_span.update(output=final_output)
+        # Attach accumulated usage/cost to the root trace so the Langfuse
+        # dashboard shows totals even when individual generation spans
+        # were ended without usage data (#42306).
+        trace_update: Dict[str, Any] = {}
+        if state.accumulated_usage_details:
+            trace_update["usage_details"] = state.accumulated_usage_details
+        if state.accumulated_cost_details:
+            trace_update["cost_details"] = state.accumulated_cost_details
+        if trace_update:
+            try:
+                state.root_span.update(**trace_update)
+            except Exception:
+                pass
         state.root_span.end()
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"finish trace failed: {exc}")
@@ -837,7 +855,12 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     if output.get("tool_calls"):
         state.turn_tool_calls.extend(output["tool_calls"])
 
-    # Extract usage: prefer response object, fall back to usage dict from post_api_request
+    # Extract usage: prefer response object, fall back to usage dict from post_api_request.
+    # When neither is available (e.g. post_llm_call from turn_finalizer.py which
+    # doesn't forward response/usage), fall back to values accumulated from
+    # earlier post_api_request calls for this trace (#42306).
+    usage_details: Dict[str, int] = {}
+    cost_details: Dict[str, float] = {}
     if response is not None:
         usage_details, cost_details = _usage_and_cost(
             response,
@@ -866,7 +889,6 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
             usage_details["cache_creation_input_tokens"] = _cache_write
         if _reasoning:
             usage_details["reasoning_tokens"] = _reasoning
-        cost_details = {}
         # Estimate per-type cost from the summary if possible
         try:
             from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry
@@ -896,7 +918,22 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         except Exception:
             pass
     else:
-        usage_details, cost_details = {}, {}
+        # Neither response nor usage dict — use accumulated values from
+        # earlier post_api_request calls for this trace.  This handles the
+        # case where post_llm_call fires (from turn_finalizer.py) without
+        # usage data, but post_api_request already provided it per-call.
+        usage_details = dict(state.accumulated_usage_details)
+        cost_details = dict(state.accumulated_cost_details)
+
+    # Accumulate usage/cost into trace state so that subsequent hook
+    # invocations (e.g. post_llm_call after post_api_request) can fall
+    # back to these values when they don't receive usage data directly.
+    if usage_details:
+        for k, v in usage_details.items():
+            state.accumulated_usage_details[k] = state.accumulated_usage_details.get(k, 0) + v
+    if cost_details:
+        for k, v in cost_details.items():
+            state.accumulated_cost_details[k] = state.accumulated_cost_details.get(k, 0.0) + v
 
     tool_count = len(output.get("tool_calls", [])) or assistant_tool_call_count
     gen_metadata: Dict[str, Any] = {"tool_call_count": tool_count}

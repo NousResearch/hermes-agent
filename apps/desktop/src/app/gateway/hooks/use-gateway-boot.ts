@@ -34,6 +34,9 @@ import {
 } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
+const POST_BOOT_RECONNECT_RECOVERY_ATTEMPT = 6
+const POST_BOOT_RECONNECT_RECOVERY_MESSAGE = 'Lost connection to the Hermes gateway and could not reconnect.'
+
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
   onConnectionReady: (
@@ -95,6 +98,7 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    let reconnectRecoverySurfaced = false
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -175,6 +179,11 @@ export function useGatewayBoot({
         return
       }
 
+      if (bootCompleted && reconnectAttempt >= POST_BOOT_RECONNECT_RECOVERY_ATTEMPT && !reconnectRecoverySurfaced) {
+        reconnectRecoverySurfaced = true
+        failDesktopBoot(POST_BOOT_RECONNECT_RECOVERY_MESSAGE)
+      }
+
       // 1s, 2s, 4s … capped at 15s.
       const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
       reconnectAttempt += 1
@@ -223,6 +232,7 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         reconnectAttempt = 0
+        reconnectRecoverySurfaced = false
         reauthNotified = false
         clearReconnectTimer()
 

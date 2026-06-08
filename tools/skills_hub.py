@@ -420,6 +420,10 @@ class GitHubSource(SkillSource):
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        # Last aggregate-repo scan result for error messages.
+        # Set by _fetch_from_aggregate_repo when multiple skills are found.
+        # Format: (repo, [path1, path2, ...])
+        self._last_aggregate_scan: Optional[Tuple[str, List[str]]] = None
         # Per-repo cache of the optional skills.sh.json grouping sidecar,
         # mapping skill_name -> human-readable grouping title. ``None`` means
         # "fetched, no sidecar"; a missing key means "not fetched yet".
@@ -477,12 +481,22 @@ class GitHubSource(SkillSource):
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """
         Download a skill from GitHub.
-        identifier format: "owner/repo/path/to/skill-dir"
+
+        Supports two identifier formats:
+
+        - ``owner/repo/path/to/skill-dir`` — fetch a specific skill directory.
+        - ``owner/repo`` — scan the repo for SKILL.md files.  If exactly one
+          skill is found, fetch it automatically; if multiple are found, log
+          them and return ``None`` so the caller can present the list.
         """
         parts = identifier.split("/", 2)
-        if len(parts) < 3:
-            return None
 
+        # --- owner/repo (aggregate repo) → scan for skills ---
+        if len(parts) == 2:
+            repo = f"{parts[0]}/{parts[1]}"
+            return self._fetch_from_aggregate_repo(repo, identifier)
+
+        # --- owner/repo/path (direct skill) ---
         repo = f"{parts[0]}/{parts[1]}"
         skill_path = parts[2]
 
@@ -501,11 +515,114 @@ class GitHubSource(SkillSource):
             trust_level=trust,
         )
 
+    def _fetch_from_aggregate_repo(
+        self, repo: str, identifier: str,
+    ) -> Optional[SkillBundle]:
+        """Scan an aggregate (multi-skill) repo for SKILL.md files.
+
+        Tries the repo root first (``ninehills/skills`` layout), then
+        common sub-directories (``skills/``, ``skill/``).  Returns a
+        :class:`SkillBundle` when exactly one skill is found, or ``None``
+        when zero or multiple skills are found.
+        """
+        found: List[str] = []
+
+        # 1) Check root for SKILL.md
+        root_files = self._download_directory(repo, "")
+        if root_files and "SKILL.md" in root_files:
+            found.append("")
+
+        # 2) Scan immediate sub-directories via Contents API
+        if not found:
+            for scan_path in ("", "skills", "skill"):
+                try:
+                    url = f"https://api.github.com/repos/{repo}/contents/{scan_path}".rstrip("/")
+                    resp = httpx.get(
+                        url,
+                        headers=self.auth.get_headers(),
+                        timeout=15,
+                        follow_redirects=True,
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    entries = resp.json()
+                    if not isinstance(entries, list):
+                        continue
+                    for entry in entries:
+                        if entry.get("type") != "dir":
+                            continue
+                        name = entry["name"]
+                        if name.startswith((".", "_")):
+                            continue
+                        sub = (
+                            f"{scan_path}/{name}" if scan_path else name
+                        )
+                        if sub not in found:
+                            found.append(sub)
+                    break  # first successful scan wins
+                except Exception:
+                    continue
+
+        if not found:
+            return None
+
+        if len(found) == 1:
+            # Exactly one skill — fetch it directly.
+            skill_path = found[0]
+            files = self._download_directory(repo, skill_path)
+            if not files or "SKILL.md" not in files:
+                return None
+            skill_name = skill_path.rstrip("/").split("/")[-1] if skill_path else repo.split("/")[-1]
+            full_id = f"{repo}/{skill_path}" if skill_path else repo
+            return SkillBundle(
+                name=skill_name,
+                files=files,
+                source="github",
+                identifier=full_id,
+                trust_level=self.trust_level_for(full_id),
+            )
+
+        # Multiple skills — store for caller and log.
+        self._last_aggregate_scan = (repo, found)
+        logger.info(
+            "Aggregate repo %s has %d skill(s): %s — "
+            "use `owner/repo/path` to install a specific one",
+            repo, len(found), ", ".join(found[:10]),
+        )
+        return None
+
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
         parts = identifier.split("/", 2)
-        if len(parts) < 3:
-            return None
+
+        # --- owner/repo (aggregate repo) → try root SKILL.md ---
+        if len(parts) == 2:
+            repo = f"{parts[0]}/{parts[1]}"
+            content = self._fetch_file_content(repo, "SKILL.md")
+            if not content:
+                return None
+            fm = self._parse_frontmatter_quick(content)
+            skill_name = fm.get("name", repo.split("/")[-1])
+            description = fm.get("description", "")
+            tags = []
+            metadata = fm.get("metadata", {})
+            if isinstance(metadata, dict):
+                hermes_meta = metadata.get("hermes", {})
+                if isinstance(hermes_meta, dict):
+                    tags = hermes_meta.get("tags", [])
+            if not tags:
+                raw_tags = fm.get("tags", [])
+                tags = raw_tags if isinstance(raw_tags, list) else []
+            return SkillMeta(
+                name=skill_name,
+                description=str(description),
+                source="github",
+                identifier=identifier,
+                trust_level=self.trust_level_for(identifier),
+                repo=repo,
+                path="",
+                tags=[str(t) for t in tags],
+            )
 
         repo = f"{parts[0]}/{parts[1]}"
         skill_path = parts[2].rstrip("/")

@@ -166,7 +166,8 @@ Relay owns exporter lifecycle through that config. The direct
 `HERMES_NEMO_RELAY_ATOF_*` fallback setup is skipped. If the same
 `plugins.toml` observability config enables `atif`, the direct
 `HERMES_NEMO_RELAY_ATIF_*` fallback setup is also skipped so Hermes does not
-double-export trajectories on teardown.
+double-export trajectories on teardown. If `plugins.toml` initialization fails,
+Hermes keeps the direct env-var fallbacks active for that run.
 
 To enable NeMo Relay managed execution intercepts for provider and tool calls,
 include an adaptive component in the same `plugins.toml`:

@@ -564,25 +564,40 @@ def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    return _resolve_api_key_provider_secret_and_url(provider_id, pconfig)[0:2]
+
+
+def _resolve_api_key_provider_secret_and_url(
+    provider_id: str, pconfig: ProviderConfig
+) -> tuple[str, str, str]:
+    """Resolve an API-key provider's token, source, and optional base_url.
+
+    Returns (api_key, source, pool_base_url) where *pool_base_url* is the
+    ``base_url`` stored alongside the credential in the credential pool (may
+    be empty if the credential came from an env var or the pool entry has no
+    custom base_url).
+    """
+    pool_base_url = ""
+
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
-                return get_copilot_api_token(token), source
+                return get_copilot_api_token(token), source, ""
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
             pass
-        return "", ""
+        return "", "", ""
 
     from hermes_cli.config import get_env_value
     for env_var in pconfig.api_key_env_vars:
         # Check both os.environ and ~/.hermes/.env file
         val = (get_env_value(env_var) or "").strip()
         if has_usable_secret(val):
-            return val, env_var
+            return val, env_var, ""
 
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:
@@ -594,11 +609,19 @@ def _resolve_api_key_provider_secret(
                 key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
                 key = str(key).strip()
                 if has_usable_secret(key):
-                    return key, f"credential_pool:{provider_id}"
+                    # Extract the base_url stored alongside the credential so
+                    # callers can honour a user-configured endpoint instead of
+                    # always falling back to the built-in default (fixes #42269).
+                    pool_base_url = str(
+                        getattr(entry, "base_url", "")
+                        or getattr(entry, "inference_base_url", "")
+                        or ""
+                    ).strip()
+                    return key, f"credential_pool:{provider_id}", pool_base_url
     except Exception:
         pass
 
-    return "", ""
+    return "", "", ""
 
 
 # =============================================================================
@@ -5760,7 +5783,8 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     api_key = ""
     key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    pool_base_url = ""
+    api_key, key_source, pool_base_url = _resolve_api_key_provider_secret_and_url(provider_id, pconfig)
 
     env_url = ""
     if pconfig.base_url_env_var:
@@ -5770,6 +5794,8 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
+    elif pool_base_url:
+        base_url = pool_base_url
     else:
         base_url = pconfig.inference_base_url
 
@@ -5942,7 +5968,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     api_key = ""
     key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    pool_base_url = ""
+    api_key, key_source, pool_base_url = _resolve_api_key_provider_secret_and_url(provider_id, pconfig)
 
     # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
     # see the local server as configured. doctor still reports unconfigured
@@ -5961,6 +5988,12 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
+    elif pool_base_url:
+        # Honour the base_url stored alongside the credential in the pool
+        # (e.g. via `hermes auth add <provider>`) so providers with
+        # user-configured endpoints (proxies, regional variants) work
+        # out of the box.  Fixes #42269.
+        base_url = pool_base_url.rstrip("/")
     else:
         base_url = pconfig.inference_base_url
 

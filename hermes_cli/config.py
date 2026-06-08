@@ -2185,6 +2185,18 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Local per-thread/topic summary injection. When enabled, the gateway
+        # looks for a Markdown file for threaded messages at:
+        # ``<root>/<platform>/<chat_id>/thread-<thread_id>.md`` and injects it
+        # into the agent prompt as bounded ephemeral context. Missing files are
+        # ignored. Disabled by default because local summaries can contain
+        # private information and should be opted into deliberately.
+        "thread_context": {
+            "enabled": False,
+            # Defaults to ~/.hermes/workspace/topics when unset.
+            "root": None,
+            "max_chars": 12000,
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

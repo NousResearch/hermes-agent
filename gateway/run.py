@@ -1160,6 +1160,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.thread_context import build_thread_context_block
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -9021,6 +9022,15 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        thread_context = build_thread_context_block(
+            platform=context.source.platform,
+            chat_id=context.source.chat_id,
+            thread_id=context.source.thread_id,
+            chat_name=context.source.chat_name,
+            config=self.config.thread_context,
+        )
+        if thread_context:
+            context_prompt = (context_prompt + "\n\n" + thread_context).strip()
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

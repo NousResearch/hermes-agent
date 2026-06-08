@@ -18,6 +18,7 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
+from gateway.thread_context import ThreadContextConfig
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +503,9 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Local per-thread summary injection
+    thread_context: ThreadContextConfig = field(default_factory=ThreadContextConfig)
+
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
     # growing unbounded in gateways serving many chats/threads/users over
@@ -602,6 +606,11 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "thread_context": {
+                "enabled": self.thread_context.enabled,
+                "root": str(self.thread_context.root) if self.thread_context.root is not None else None,
+                "max_chars": self.thread_context.max_chars,
+            },
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -656,6 +665,16 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        thread_context_data = data.get("thread_context", {})
+        if not isinstance(thread_context_data, dict):
+            thread_context_data = {}
+        thread_context_root = thread_context_data.get("root")
+        thread_context = ThreadContextConfig(
+            enabled=_coerce_bool(thread_context_data.get("enabled"), False),
+            root=Path(thread_context_root).expanduser() if thread_context_root else None,
+            max_chars=max(_coerce_int(thread_context_data.get("max_chars"), 12_000), 0),
+        )
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -673,6 +692,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            thread_context=thread_context,
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -768,6 +788,16 @@ def load_gateway_config() -> GatewayConfig:
                 streaming_cfg = yaml_cfg.get("gateway", {}).get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
+
+            thread_context_cfg = yaml_cfg.get("thread_context")
+            if not isinstance(thread_context_cfg, dict):
+                # Prefer the namespaced form for new configs:
+                # ``gateway.thread_context.*``.
+                gateway_section = yaml_cfg.get("gateway", {})
+                if isinstance(gateway_section, dict):
+                    thread_context_cfg = gateway_section.get("thread_context")
+            if isinstance(thread_context_cfg, dict):
+                gw_data["thread_context"] = thread_context_cfg
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]

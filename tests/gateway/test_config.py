@@ -1,6 +1,7 @@
 """Tests for gateway configuration management."""
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 from gateway.config import (
@@ -233,6 +234,28 @@ class TestGatewayConfigRoundtrip:
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
 
+    def test_thread_context_defaults_off(self):
+        restored = GatewayConfig.from_dict({})
+
+        assert restored.thread_context.enabled is False
+        assert restored.thread_context.max_chars == 12_000
+        assert restored.thread_context.root is None
+
+    def test_thread_context_accepts_mapping_values(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "thread_context": {
+                    "enabled": "true",
+                    "root": "/tmp/hermes-topics",
+                    "max_chars": "42",
+                }
+            }
+        )
+
+        assert restored.thread_context.enabled is True
+        assert restored.thread_context.root == Path("/tmp/hermes-topics")
+        assert restored.thread_context.max_chars == 42
+
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(
             platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}
@@ -308,6 +331,28 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is False
+
+    def test_bridges_thread_context_from_gateway_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        context_root = tmp_path / "thread-context"
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  thread_context:\n"
+            "    enabled: true\n"
+            f"    root: {context_root}\n"
+            "    max_chars: 123\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.thread_context.enabled is True
+        assert config.thread_context.root == context_root
+        assert config.thread_context.max_chars == 123
 
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""

@@ -1669,6 +1669,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Webhook platform
     webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
     webhook_port = os.getenv("WEBHOOK_PORT")
+    webhook_host = os.getenv("WEBHOOK_HOST")
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
@@ -1679,6 +1680,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
             except ValueError:
                 pass
+        if webhook_host:
+            config.platforms[Platform.WEBHOOK].extra["host"] = webhook_host
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 

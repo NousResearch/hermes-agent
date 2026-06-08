@@ -6,6 +6,7 @@ Single-user Hermes memory store plugin.
 import re
 import sqlite3
 import threading
+import unicodedata
 from pathlib import Path
 
 try:
@@ -17,6 +18,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
     content         TEXT NOT NULL UNIQUE,
+    content_normalized TEXT DEFAULT '',
     category        TEXT DEFAULT 'general',
     tags            TEXT DEFAULT '',
     trust_score     REAL DEFAULT 0.5,
@@ -46,23 +48,23 @@ CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
+    USING fts5(content_normalized, tags, content=facts, content_rowid=fact_id, tokenize='trigram');
 
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-    INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
+    INSERT INTO facts_fts(rowid, content_normalized, tags)
+        VALUES (new.fact_id, new.content_normalized, new.tags);
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
+    INSERT INTO facts_fts(facts_fts, rowid, content_normalized, tags)
+        VALUES ('delete', old.fact_id, old.content_normalized, old.tags);
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
-    INSERT INTO facts_fts(rowid, content, tags)
-        VALUES (new.fact_id, new.content, new.tags);
+    INSERT INTO facts_fts(facts_fts, rowid, content_normalized, tags)
+        VALUES ('delete', old.fact_id, old.content_normalized, old.tags);
+    INSERT INTO facts_fts(rowid, content_normalized, tags)
+        VALUES (new.fact_id, new.content_normalized, new.tags);
 END;
 
 CREATE TABLE IF NOT EXISTS memory_banks (
@@ -89,6 +91,53 @@ _RE_AKA          = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
 )
+
+
+def normalize_arabic_text(text: str) -> str:
+    """Normalize Arabic text for FTS5 matching.
+
+    The facts table stores normalized content, so queries must be normalized
+    the same way.  This makes hamza/teh-marbuta variants match, e.g.
+    ``إعدادات`` -> ``اعدادات`` and ``ذاكرة`` -> ``ذاكره``.
+    """
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFC", text)
+    text = re.sub(r"[\u064B-\u065F\u0670\u06D6-\u06DC\u06DF-\u06E8\u06EA-\u06ED]", "", text)
+    text = re.sub(r"[أإآٱ]", "ا", text)
+    text = text.replace("ى", "ي")
+    text = text.replace("ئ", "ي")
+    text = text.replace("ؤ", "و")
+    text = text.replace("ة", "ه")
+    return text.strip()
+
+
+_FTS_TRIGRAM_SCHEMA = """
+DROP TRIGGER IF EXISTS facts_ai;
+DROP TRIGGER IF EXISTS facts_ad;
+DROP TRIGGER IF EXISTS facts_au;
+DROP TABLE IF EXISTS facts_fts;
+
+CREATE VIRTUAL TABLE facts_fts
+    USING fts5(content_normalized, tags, content=facts, content_rowid=fact_id, tokenize='trigram');
+
+CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
+    INSERT INTO facts_fts(rowid, content_normalized, tags)
+        VALUES (new.fact_id, new.content_normalized, new.tags);
+END;
+
+CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN
+    INSERT INTO facts_fts(facts_fts, rowid, content_normalized, tags)
+        VALUES ('delete', old.fact_id, old.content_normalized, old.tags);
+END;
+
+CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN
+    INSERT INTO facts_fts(facts_fts, rowid, content_normalized, tags)
+        VALUES ('delete', old.fact_id, old.content_normalized, old.tags);
+    INSERT INTO facts_fts(rowid, content_normalized, tags)
+        VALUES (new.fact_id, new.content_normalized, new.tags);
+END;
+"""
 
 
 def _clamp_trust(value: float) -> float:
@@ -135,8 +184,26 @@ class MemoryStore:
         self._conn.executescript(_SCHEMA)
         # Migrate: add hrr_vector column if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
+        if "content_normalized" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN content_normalized TEXT DEFAULT ''")
+            columns.add("content_normalized")
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Keep normalized content populated for existing rows.
+        rows = self._conn.execute("SELECT fact_id, content FROM facts WHERE COALESCE(content_normalized, '') = ''").fetchall()
+        for row in rows:
+            self._conn.execute(
+                "UPDATE facts SET content_normalized = ? WHERE fact_id = ?",
+                (normalize_arabic_text(row["content"]), row["fact_id"]),
+            )
+        # Upgrade old FTS schemas that indexed raw content or lacked trigram.
+        fts_sql_row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='facts_fts'"
+        ).fetchone()
+        fts_sql = (fts_sql_row["sql"] if fts_sql_row else "") or ""
+        if "content_normalized" not in fts_sql or "trigram" not in fts_sql.lower():
+            self._conn.executescript(_FTS_TRIGRAM_SCHEMA)
+            self._conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -163,10 +230,10 @@ class MemoryStore:
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO facts (content, content_normalized, category, tags, trust_score)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust),
+                    (content, normalize_arabic_text(content), category, tags, self.default_trust),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
@@ -205,7 +272,8 @@ class MemoryStore:
             if not query:
                 return []
 
-            params: list = [query, min_trust]
+            query_normalized = normalize_arabic_text(query)
+            params: list = [query_normalized, min_trust]
             category_clause = ""
             if category is not None:
                 category_clause = "AND f.category = ?"
@@ -225,7 +293,12 @@ class MemoryStore:
                 LIMIT ?
             """
 
-            rows = self._conn.execute(sql, params).fetchall()
+            try:
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                # FTS5 MATCH raises on symbol-only / malformed queries (e.g. "!!!").
+                # Treat those as no-match searches instead of surfacing an agent error.
+                return []
             results = [self._row_to_dict(r) for r in rows]
 
             if results:
@@ -263,7 +336,10 @@ class MemoryStore:
 
             if content is not None:
                 assignments.append("content = ?")
-                params.append(content.strip())
+                stripped_content = content.strip()
+                params.append(stripped_content)
+                assignments.append("content_normalized = ?")
+                params.append(normalize_arabic_text(stripped_content))
             if tags is not None:
                 assignments.append("tags = ?")
                 params.append(tags)

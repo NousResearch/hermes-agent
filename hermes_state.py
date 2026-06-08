@@ -3207,11 +3207,13 @@ class SessionDB:
                 0x3000 <= cp <= 0x303F or    # CJK Symbols
                 0x3040 <= cp <= 0x309F or    # Hiragana
                 0x30A0 <= cp <= 0x30FF or    # Katakana
-                0xAC00 <= cp <= 0xD7AF)      # Hangul Syllables
+                0xAC00 <= cp <= 0xD7AF or    # Hangul Syllables
+                0x0600 <= cp <= 0x06FF or    # Arabic
+                0x0750 <= cp <= 0x077F)      # Arabic Supplement
 
     @staticmethod
     def _contains_cjk(text: str) -> bool:
-        """Check if text contains CJK (Chinese, Japanese, Korean) characters."""
+        """Check if text contains CJK (Chinese, Japanese, Korean) or Arabic characters."""
         for ch in text:
             cp = ord(ch)
             if (0x4E00 <= cp <= 0x9FFF or    # CJK Unified Ideographs
@@ -3220,7 +3222,9 @@ class SessionDB:
                 0x3000 <= cp <= 0x303F or    # CJK Symbols
                 0x3040 <= cp <= 0x309F or    # Hiragana
                 0x30A0 <= cp <= 0x30FF or    # Katakana
-                0xAC00 <= cp <= 0xD7AF):     # Hangul Syllables
+                0xAC00 <= cp <= 0xD7AF or    # Hangul Syllables
+                0x0600 <= cp <= 0x06FF or    # Arabic
+                0x0750 <= cp <= 0x077F):     # Arabic Supplement
                 return True
         return False
 

@@ -14,6 +14,11 @@ if TYPE_CHECKING:
     from .store import MemoryStore
 
 try:
+    from .store import normalize_arabic_text
+except ImportError:
+    from store import normalize_arabic_text  # type: ignore[no-redef]
+
+try:
     from . import holographic as hrr
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
@@ -496,7 +501,7 @@ class FactRetriever:
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(normalize_arabic_text(query))
 
         if category:
             where_clauses.append("f.category = ?")

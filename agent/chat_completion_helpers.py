@@ -576,6 +576,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            response_format=getattr(agent, "_gateway_response_format", None),
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -679,6 +680,14 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
 
+    # Structured output requested via the gateway (/v1/chat/completions
+    # response_format or /v1/responses text.format).  Only the chat_completions
+    # backend path reaches here (anthropic_messages / bedrock_converse /
+    # codex_responses return above); structured_output.apply attaches it in the
+    # OpenAI `response_format` shape.  None for normal requests.
+    _structured_rf = getattr(agent, "_gateway_response_format", None)
+    from agent.structured_output import apply as _apply_structured_output
+
     # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
     # sentinel (temperature omitted entirely), a numeric override, or None.
     try:
@@ -741,7 +750,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
+        _profile_kwargs = _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
@@ -762,6 +771,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
         )
+        _apply_structured_output(_profile_kwargs, _structured_rf, "chat_completions")
+        return _profile_kwargs
 
     # ── Legacy flag path ────────────────────────────────────────────
     # Reached only when get_provider_profile() returns None — i.e. a
@@ -773,7 +784,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
+    _legacy_kwargs = _ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
@@ -809,6 +820,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
     )
+    _apply_structured_output(_legacy_kwargs, _structured_rf, "chat_completions")
+    return _legacy_kwargs
 
 
 

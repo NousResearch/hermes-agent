@@ -7,8 +7,37 @@ interface RpcEventLike {
   type?: string
 }
 
+const SESSION_SCOPED_EVENT_TYPES = new Set([
+  'approval.request',
+  'clarify.request',
+  'error',
+  'message.complete',
+  'message.delta',
+  'message.start',
+  'reasoning.available',
+  'reasoning.delta',
+  'secret.request',
+  'status.update',
+  'subagent.complete',
+  'subagent.progress',
+  'subagent.spawn_requested',
+  'subagent.start',
+  'subagent.thinking',
+  'subagent.tool',
+  'sudo.request',
+  'thinking.delta'
+])
+
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+}
+
+export function gatewayEventRequiresSessionId(eventType: string | undefined): boolean {
+  if (!eventType) {
+    return false
+  }
+
+  return SESSION_SCOPED_EVENT_TYPES.has(eventType) || eventType.startsWith('tool.')
 }
 
 export function gatewayEventCompletedFileDiff(event: RpcEventLike): boolean {

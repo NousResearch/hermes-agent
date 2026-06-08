@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,27 @@ class TestGatewayPidState:
         assert payload["kind"] == "hermes-gateway"
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
+
+    def test_write_pid_file_uses_owner_only_permissions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_pid_file()
+
+        mode = stat.S_IMODE((tmp_path / "gateway.pid").stat().st_mode)
+        assert mode == 0o600
+
+    def test_write_pid_file_refreshes_gateway_heartbeat(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_pid_file()
+
+        heartbeat = status.read_gateway_heartbeat()
+        assert heartbeat["pid"] == os.getpid()
+        assert heartbeat["kind"] == "hermes-gateway"
+        assert heartbeat["status"] == "running"
+        assert heartbeat["last_heartbeat_at"]
+        mode = stat.S_IMODE((tmp_path / "gateway_heartbeat.json").stat().st_mode)
+        assert mode == 0o600
 
     def test_write_pid_file_is_atomic_against_concurrent_writers(self, tmp_path, monkeypatch):
         """Regression: two concurrent --replace invocations must not both win.
@@ -157,6 +179,16 @@ class TestGatewayPidState:
 
         assert status.is_gateway_runtime_lock_active() is False
 
+    def test_runtime_lock_uses_owner_only_permissions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            mode = stat.S_IMODE((tmp_path / "gateway.lock").stat().st_mode)
+            assert mode == 0o600
+        finally:
+            status.release_gateway_runtime_lock()
+
     def test_get_running_pid_treats_pid_file_as_stale_without_runtime_lock(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
@@ -286,6 +318,9 @@ class TestGatewayRuntimeStatus:
         payload = status.read_runtime_status()
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
+        heartbeat = status.read_gateway_heartbeat()
+        assert heartbeat["status"] == "running"
+        assert heartbeat["pid"] == os.getpid()
 
     def test_write_runtime_status_overwrites_stale_argv_on_restart(self, tmp_path, monkeypatch):
         """Regression: gateway_state.json must not keep the previous launch argv."""
@@ -357,6 +392,17 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_remove_pid_file_marks_heartbeat_stopped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_pid_file()
+        status.remove_pid_file()
+
+        assert not (tmp_path / "gateway.pid").exists()
+        heartbeat = status.read_gateway_heartbeat()
+        assert heartbeat["status"] == "stopped"
+        assert heartbeat["pid"] == os.getpid()
 
 
 class TestTerminatePid:

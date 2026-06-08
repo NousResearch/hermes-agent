@@ -907,6 +907,20 @@ DEFAULT_CONFIG = {
         "image_input_mode": "auto",
         "disabled_toolsets": [],
     },
+        "wisdom": {
+            "enabled": True,
+            "db_path": "",
+            "capture_mode": "explicit",
+            "max_results": 5,
+            "interpret_timeout_seconds": 5,
+            "interpretation": {
+                "mode": "deterministic",
+            },
+            "application": {
+                "mode": "deterministic",
+                "timeout_seconds": 30,
+            },
+        },
     
     "terminal": {
         "backend": "local",
@@ -1279,6 +1293,14 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
         "title_generation": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
+        "wisdom_apply": {
             "provider": "auto",
             "model": "",
             "base_url": "",

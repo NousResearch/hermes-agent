@@ -3043,6 +3043,12 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
         except Exception:
             pass
 
+    async def _runtime_heartbeat_watcher(self, interval: float = 30.0) -> None:
+        """Keep the local runtime heartbeat fresh while the gateway is alive."""
+        while self._running:
+            self._update_runtime_status("running")
+            await asyncio.sleep(interval)
+
     # ------------------------------------------------------------------
     # Per-platform circuit breaker (pause/resume) — used by the reconnect
     # watcher when a retryable failure recurs past a threshold, and by the
@@ -4850,6 +4856,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher to finalize expired sessions
+        asyncio.create_task(self._runtime_heartbeat_watcher())
         asyncio.create_task(self._session_expiry_watcher())
 
         # Start background kanban notifier — delivers `completed`, `blocked`,
@@ -7206,6 +7213,21 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        if canonical == "wisdom":
+            try:
+                from wisdom.integration import handle_gateway_command
+
+                return await handle_gateway_command(event, self)
+            except Exception as _wisdom_err:
+                try:
+                    from wisdom.redaction import redact_for_log as _wisdom_redact
+
+                    _wisdom_msg = _wisdom_redact(str(_wisdom_err))
+                except Exception:
+                    _wisdom_msg = type(_wisdom_err).__name__
+                logger.warning("Wisdom command failed: %s", _wisdom_msg)
+                return "Wisdom command failed. Normal Hermes is still available."
+
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
                 return self._telegram_topic_root_new_message()
@@ -7558,6 +7580,27 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        if not command:
+            try:
+                from wisdom.integration import maybe_capture_gateway_event
+
+                _wisdom_response = await maybe_capture_gateway_event(
+                    event,
+                    source,
+                    session_key=_quick_key,
+                    gateway=self,
+                )
+                if _wisdom_response:
+                    return _wisdom_response
+            except Exception as _wisdom_err:
+                try:
+                    from wisdom.redaction import redact_for_log as _wisdom_redact
+
+                    _wisdom_msg = _wisdom_redact(str(_wisdom_err))
+                except Exception:
+                    _wisdom_msg = type(_wisdom_err).__name__
+                logger.warning("Wisdom natural capture failed open: %s", _wisdom_msg)
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there

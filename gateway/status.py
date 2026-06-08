@@ -30,10 +30,12 @@ else:
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
+_GATEWAY_HEARTBEAT_FILE = "gateway_heartbeat.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
+_RUNTIME_FILE_MODE = 0o600
 _gateway_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
@@ -58,6 +60,11 @@ def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
 def _get_runtime_status_path() -> Path:
     """Return the persisted runtime health/status file path."""
     return _get_pid_path().with_name(_RUNTIME_STATUS_FILE)
+
+
+def _get_gateway_heartbeat_path() -> Path:
+    """Return the persisted gateway heartbeat file path."""
+    return _get_pid_path().with_name(_GATEWAY_HEARTBEAT_FILE)
 
 
 def _get_lock_dir() -> Path:
@@ -241,8 +248,16 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def _chmod_owner_only(path: Path) -> None:
+    try:
+        path.chmod(_RUNTIME_FILE_MODE)
+    except OSError:
+        pass
+
+
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     atomic_json_write(path, payload, indent=None, separators=(",", ":"))
+    _chmod_owner_only(path)
 
 
 def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
@@ -435,6 +450,7 @@ def acquire_gateway_runtime_lock() -> bool:
     path = _get_gateway_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+", encoding="utf-8")
+    _chmod_owner_only(path)
     if not _try_acquire_file_lock(handle):
         handle.close()
         return False
@@ -491,12 +507,17 @@ def write_pid_file() -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     record = json.dumps(_build_pid_record())
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _RUNTIME_FILE_MODE)
     except FileExistsError:
         raise  # Let caller decide: another gateway is racing us
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(record)
+        _chmod_owner_only(path)
+        try:
+            write_gateway_heartbeat(status="running")
+        except Exception:
+            pass
     except Exception:
         try:
             path.unlink(missing_ok=True)
@@ -548,11 +569,45 @@ def write_runtime_status(
         payload["platforms"][platform] = platform_payload
 
     _write_json_file(path, payload)
+    try:
+        write_gateway_heartbeat(status=payload.get("gateway_state", "running"))
+    except Exception:
+        pass
 
 
 def read_runtime_status() -> Optional[dict[str, Any]]:
     """Read the persisted gateway runtime health/status information."""
     return _read_json_file(_get_runtime_status_path())
+
+
+def write_gateway_heartbeat(*, status: Any = "running") -> None:
+    """Persist a small fresh heartbeat for service managers and diagnostics."""
+    path = _get_gateway_heartbeat_path()
+    existing = _read_json_file(path) or {}
+    current_record = _build_pid_record()
+    now = _utc_now_iso()
+    payload = {
+        "kind": current_record["kind"],
+        "pid": current_record["pid"],
+        "argv": current_record["argv"],
+        "start_time": current_record["start_time"],
+        "status": str(status),
+        "created_at": now,
+        "updated_at": now,
+        "last_heartbeat_at": now,
+    }
+    if (
+        existing.get("pid") == payload["pid"]
+        and existing.get("start_time") == payload["start_time"]
+        and existing.get("created_at")
+    ):
+        payload["created_at"] = existing["created_at"]
+    _write_json_file(path, payload)
+
+
+def read_gateway_heartbeat() -> Optional[dict[str, Any]]:
+    """Read the persisted gateway heartbeat, if present."""
+    return _read_json_file(_get_gateway_heartbeat_path())
 
 
 def remove_pid_file() -> None:
@@ -574,6 +629,10 @@ def remove_pid_file() -> None:
             if file_pid is not None and file_pid != os.getpid():
                 # PID file belongs to a different process — leave it alone.
                 return
+        try:
+            write_gateway_heartbeat(status="stopped")
+        except Exception:
+            pass
         path.unlink(missing_ok=True)
     except Exception:
         pass
@@ -613,6 +672,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 
         if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
             _write_json_file(lock_path, record)
+            _chmod_owner_only(lock_path)
             return True, existing
 
         stale = existing_pid is None
@@ -667,12 +727,13 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             return False, existing
 
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _RUNTIME_FILE_MODE)
     except FileExistsError:
         return False, _read_json_file(lock_path)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle)
+        _chmod_owner_only(lock_path)
     except Exception:
         try:
             lock_path.unlink(missing_ok=True)

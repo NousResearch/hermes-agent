@@ -2211,6 +2211,7 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "approval",
     "mcp",
     "title_generation",
+    "wisdom_apply",
     "triage_specifier",
     "kanban_decomposer",
     "profile_describer",

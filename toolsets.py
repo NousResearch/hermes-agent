@@ -26,6 +26,23 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
+_WISDOM_TOOLS = [
+    "wisdom_status",
+    "wisdom_capture",
+    "wisdom_search",
+    "wisdom_original",
+    "wisdom_interpret",
+    "wisdom_apply",
+    "wisdom_review",
+    "wisdom_related",
+    "wisdom_accept",
+    "wisdom_dismiss",
+    "wisdom_archive",
+    "wisdom_inbox",
+    "wisdom_set_enabled",
+]
+
+
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
@@ -48,6 +65,8 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # Durable conversational idea memory
+    *_WISDOM_TOOLS,
     # Session history search
     "session_search",
     # Clarifying questions
@@ -213,6 +232,12 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "wisdom": {
+        "description": "Hermes Wisdom memory tools for saving, searching, retrieving exact originals, reviewing, and applying captured ideas",
+        "tools": _WISDOM_TOOLS,
         "includes": []
     },
 
@@ -383,6 +408,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
             "todo", "memory",
+            *_WISDOM_TOOLS,
             # Session history search
             "session_search",
             # Code execution + delegation

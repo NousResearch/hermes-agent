@@ -13,6 +13,7 @@ import copy
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.model_metadata import is_local_endpoint
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -374,6 +375,21 @@ class ChatCompletionsTransport(ProviderTransport):
             )
             if _lm_effort is not None:
                 api_kwargs["reasoning_effort"] = _lm_effort
+
+        # Ollama (local endpoint): qwen3-family models default to thinking ON, and
+        # when tools are present the reasoning swallows the tool call -> empty output
+        # with no tool_calls (ollama/ollama #10976, #11381). On Ollama's OpenAI-compat
+        # /v1 the only honored control is reasoning_effort: "none" -> Think=false
+        # (chat_template_kwargs.enable_thinking is ignored, #10809). Hermes emitted no
+        # reasoning field for local Ollama, so `reasoning_effort: none` in config was a
+        # silent no-op. Emit it when the user has explicitly disabled reasoning, which
+        # restores tool-calling and leaves every other provider untouched. (#6152)
+        if (
+            isinstance(reasoning_config, dict)
+            and reasoning_config.get("enabled") is False
+            and is_local_endpoint(params.get("base_url") or "")
+        ):
+            api_kwargs["reasoning_effort"] = "none"
 
         # extra_body assembly
         extra_body: dict[str, Any] = {}

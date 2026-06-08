@@ -489,7 +489,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
-  it('keeps sticky-bottom armed through viewport height changes during streaming', async () => {
+  it('does not follow streaming content growth even while parked at the bottom', async () => {
     const { container } = render(<StreamingHarness />)
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
@@ -508,6 +508,7 @@ describe('assistant-ui streaming renderer', () => {
 
     await wait(80)
 
+    // Park the user at the bottom of the current content.
     await act(async () => {
       viewport.scrollTop = 800
       fireEvent.scroll(viewport)
@@ -520,6 +521,9 @@ describe('assistant-ui streaming renderer', () => {
       fireEvent.scroll(viewport)
     })
 
+    // Content grows as tokens stream in. Streaming auto-follow is removed, so
+    // the viewport must NOT chase the new bottom — it stays where the user
+    // last left it.
     scrollHeight = 1_200
 
     await act(async () => {
@@ -529,7 +533,7 @@ describe('assistant-ui streaming renderer', () => {
     })
     await wait(0)
 
-    expect(viewport.scrollTop).toBe(1_200)
+    expect(viewport.scrollTop).toBe(760)
   })
 
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
@@ -566,7 +570,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
-  it('keeps following final code-highlight growth when a run completes at bottom', async () => {
+  it('does not snap to the bottom on final code-highlight growth after a run completes', async () => {
     const { container } = render(<StreamingHarness />)
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
@@ -588,10 +592,13 @@ describe('assistant-ui streaming renderer', () => {
 
     await wait(650)
 
+    // Completion re-measures (Shiki highlight) and grows the content. The
+    // post-run bottom lock is removed, so the viewport stays put instead of
+    // snapping to the new bottom.
     scrollHeight = 1_700
     await wait(0)
 
-    expect(viewport.scrollTop).toBe(1_700)
+    expect(viewport.scrollTop).toBe(800)
   })
 
   it('does not restart bottom-follow after completion when the user scrolled up', async () => {

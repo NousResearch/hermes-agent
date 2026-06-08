@@ -2,11 +2,14 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { setRightSidebarTab } from '@/app/right-sidebar/store'
+import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { PROFILE_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
 import {
+  CHAT_SIDEBAR_PANE_ID,
+  FILE_BROWSER_PANE_ID,
   requestSessionSearchFocus,
   setFileBrowserOpen,
   toggleFileBrowserOpen,
@@ -109,8 +112,14 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
 
-    'view.toggleSidebar': toggleSidebarOpen,
-    'view.toggleRightSidebar': toggleFileBrowserOpen,
+    'view.toggleSidebar': () => {
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: CHAT_SIDEBAR_PANE_ID } }))
+      toggleSidebarOpen()
+    },
+    'view.toggleRightSidebar': () => {
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: FILE_BROWSER_PANE_ID } }))
+      toggleFileBrowserOpen()
+    },
     'view.showFiles': () => showRightSidebarTab('files'),
     'view.showTerminal': () => showRightSidebarTab('terminal'),
     'view.flipPanes': togglePanesFlipped,

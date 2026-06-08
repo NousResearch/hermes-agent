@@ -80,6 +80,10 @@ const HOVER_INTENT_SENSITIVITY = 5 // px; below this between polls === settled
 const HOVER_REVEAL_SLIDE_MS = 260 // panel slide-in duration; inert until elapsed
 const HOVER_REVEAL_GRACE = 24 // px slop around the panel before a revealed pane closes
 
+// Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
+// from the keyboard, since its store-open toggle is a no-op while collapsed.
+export const PANE_TOGGLE_REVEAL_EVENT = 'hermes:pane-toggle-reveal'
+
 const widthToCss = (value: WidthValue | undefined, fallback: string) =>
   value === undefined ? fallback : typeof value === 'number' ? `${value}px` : value
 
@@ -234,6 +238,15 @@ export function Pane({
   // then so the cursor never flips or lands on a row before it's in view.
   const [interactive, setInteractive] = useState(false)
 
+  const slot = ctx?.paneById.get(id)
+  const open = Boolean(slot?.open && !disabled)
+  // Collapsed + hoverReveal: float the pane contents over the main column on
+  // hover/focus instead of hiding them. Honors any persisted resize width.
+  const overlayActive = !open && hoverReveal && !disabled
+  const override = resizable ? paneStates[id]?.widthOverride : undefined
+  const overlayWidth = override !== undefined ? `${override}px` : widthToCss(width, DEFAULT_WIDTH)
+  const revealed = overlayActive && hoverRevealed
+
   const stopPoll = useCallback(() => {
     if (pollId.current !== null) {
       clearTimeout(pollId.current)
@@ -301,6 +314,25 @@ export function Pane({
 
   useEffect(() => stopPoll, [stopPoll])
 
+  // Keyboard toggle (mod+b / mod+j) routes here when the track is force-collapsed
+  // (narrow window) so the shortcut still does something — it flips the reveal.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !overlayActive) {
+      return
+    }
+
+    const onToggle = (e: Event) => {
+      if ((e as CustomEvent<{ id: string }>).detail?.id === id) {
+        stopPoll()
+        setHoverRevealed(v => !v)
+      }
+    }
+
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
+
+    return () => window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
+  }, [id, overlayActive, stopPoll])
+
   // While revealed, drive close off cursor geometry rather than pointer-events
   // bookkeeping: a panel that slid in under a still cursor never fires
   // pointerenter/leave, so listen on the document and close once the cursor
@@ -356,19 +388,10 @@ export function Pane({
     ensurePaneRegistered(id, { open: defaultOpen })
   }, [defaultOpen, id])
 
-  const slot = ctx?.paneById.get(id)
-  const open = Boolean(slot?.open && !disabled)
   const canResize = open && resizable
   const lo = widthToPx(minWidth) ?? DEFAULT_RESIZE_MIN_WIDTH
   const hi = widthToPx(maxWidth) ?? Number.POSITIVE_INFINITY
   const side = slot?.side ?? 'left'
-
-  // Collapsed + hoverReveal: float the pane contents over the main column on
-  // hover/focus instead of hiding them. Honors any persisted resize width.
-  const overlayActive = !open && hoverReveal && !disabled
-  const override = resizable ? paneStates[id]?.widthOverride : undefined
-  const overlayWidth = override !== undefined ? `${override}px` : widthToCss(width, DEFAULT_WIDTH)
-  const revealed = overlayActive && hoverRevealed
 
   // Reset stale reveal state when the track reopens/disables, and surface the
   // effective state so consumers can render full content while floated.

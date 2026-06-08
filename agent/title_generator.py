@@ -51,7 +51,7 @@ def _title_language() -> str:
 def generate_title(
     user_message: str,
     assistant_response: str,
-    timeout: float = 30.0,
+    timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
 ) -> Optional[str]:

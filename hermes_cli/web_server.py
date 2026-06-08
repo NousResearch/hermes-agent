@@ -247,6 +247,10 @@ def _has_valid_session_token(request: Request) -> bool:
 
 def _require_token(request: Request) -> None:
     """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    # In gated mode, cookie auth (gated_auth_middleware) is authoritative and
+    # the legacy _SESSION_TOKEN is never issued to clients.  Trust the gate.
+    if getattr(request.app.state, "auth_required", False):
+        return
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 

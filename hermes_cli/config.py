@@ -1454,6 +1454,15 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        # CLI interactive status bar field customization.  When set, only the
+        # listed fields appear (in order).  Omit to keep the default set.
+        # Available: model, context_pct, context_detail, compressions,
+        #   bg_tasks, bg_processes, duration, prompt_elapsed, yolo, total_tokens
+        # Narrow terminals (<76 cols) automatically drop context_detail and
+        # compressions regardless of this setting.
+        "status_bar": {
+            "fields": [],  # empty = use built-in defaults (all fields)
+        },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 

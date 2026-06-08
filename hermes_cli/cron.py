@@ -89,7 +89,10 @@ def cron_list(show_all: bool = False):
         repeat_completed = repeat_info.get("completed", 0)
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
-        deliver = job.get("deliver", ["local"])
+        # `deliver` may be present-but-null (e.g. a no-agent script job that
+        # only writes to the vault), so coalesce to the default rather than
+        # relying on the dict-default, which only applies to a missing key.
+        deliver = job.get("deliver") or ["local"]
         if isinstance(deliver, str):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)

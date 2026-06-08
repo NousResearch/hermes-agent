@@ -187,6 +187,15 @@ class TestCodexBuildKwargs:
         # "minimal" should be clamped to "low"
         assert kw.get("reasoning", {}).get("effort") == "low"
 
+    def test_xhigh_effort_not_clamped_for_generic_codex(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            reasoning_config={"effort": "xhigh"},
+        )
+        # "xhigh" should NOT be clamped to "high" for non-xAI models
+        assert kw.get("reasoning", {}).get("effort") == "xhigh"
+
     def test_xai_reasoning_effort_passed(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -223,6 +232,16 @@ class TestCodexBuildKwargs:
         )
         # "minimal" should be clamped to "low" for xAI as well
         assert kw.get("reasoning", {}).get("effort") == "low"
+
+    def test_xai_xhigh_effort_clamped(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+        # "xhigh" should be clamped to "high" for xAI as well
+        assert kw.get("reasoning", {}).get("effort") == "high"
 
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"

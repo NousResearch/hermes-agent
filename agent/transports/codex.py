@@ -125,6 +125,8 @@ class ResponsesApiTransport(ProviderTransport):
                 reasoning_effort = reasoning_config["effort"]
 
         _effort_clamp = {"minimal": "low"}
+        if is_xai_responses:
+            _effort_clamp["xhigh"] = "high"
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)

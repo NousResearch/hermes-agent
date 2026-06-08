@@ -1407,7 +1407,50 @@ class HindsightMemoryProvider(MemoryProvider):
             metadata["thread_id"] = self._thread_id
         if self._agent_identity:
             metadata["agent_identity"] = self._agent_identity
+        # 2026-06-05: C 方案基础 metadata 增强（Stage 5a）
+        metadata["extraction_method"] = "auto"
+        metadata["feedback_score"] = "0"
         return metadata
+
+    # 2026-06-05: Q5 mental models 数量阈值清理（被动式，每次 reflect 后检查）
+    # 阈值 = 100 条 mental models 时触发"合并/去重 reflect"
+    MENTAL_MODEL_CONSOLIDATION_THRESHOLD = 100
+
+    def _maybe_consolidate_mental_models(self) -> None:
+        """如果 mental models 超过阈值，触发一次"清理 reflect"让 LLM 合并/去重。
+
+        这是 Q5 拍板的钩子 #5：被动触发（不阻塞日常 recall/reflect）。
+        实现：每 N 次 reflect 触发一次（用 _reflect_call_counter 节流），不每次都查。
+        """
+        if not hasattr(self, '_reflect_call_counter'):
+            self._reflect_call_counter = 0
+        self._reflect_call_counter += 1
+        # 每 5 次 reflect 检查一次 mental_models 数量（节流避免 API 调用过频）
+        if self._reflect_call_counter % 5 != 0:
+            return
+        try:
+            # 列出 mental_models 检查数量
+            # 使用 sync wrapper (list_mental_models) - 已经是 sync 调用
+            # 返回类型是 MentalModelListResponse，字段是 items（不是 mental_models）
+            resp = self._client.list_mental_models(bank_id=self._bank_id)
+            mm_list = getattr(resp, 'items', None) or []
+            mm_count = len(mm_list) if isinstance(mm_list, list) else 0
+            logger.debug("Mental models count check: %d (threshold=%d)", mm_count, self.MENTAL_MODEL_CONSOLIDATION_THRESHOLD)
+            if mm_count > self.MENTAL_MODEL_CONSOLIDATION_THRESHOLD:
+                logger.info("Mental models count %d > threshold %d, triggering consolidation reflect",
+                            mm_count, self.MENTAL_MODEL_CONSOLIDATION_THRESHOLD)
+                # 触发一次"清理 reflect" - 用 high budget 让 LLM 合并去重
+                # areflect 是 async，必须包成 sync 调用
+                self._run_sync(
+                    self._client.areflect(
+                        bank_id=self._bank_id,
+                        query=f"当前 mental models 数量 {mm_count}，请检查并合并相似的、删除过时的、保留核心洞察",
+                        budget="high"
+                    )
+                )
+                logger.info("Consolidation reflect completed")
+        except Exception as e:
+            logger.warning("Mental models consolidation check failed: %s", e)
 
     def _build_retain_kwargs(
         self,
@@ -1500,7 +1543,16 @@ class HindsightMemoryProvider(MemoryProvider):
         num_turns = len(turns_to_retain)
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
-        retain_context = self._retain_context
+        # 2026-06-06: D 方案 - 把 C 方案新增的 metadata 字段编码到 context 前缀
+        # Hindsight 后端 fact extraction 阶段会丢弃 metadata 中非 allow-list 字段
+        # 但 context 字段是 Hindsight 已知字段，必透传
+        # 格式: "[em=auto,fs=0] <原始 context>"
+        metadata_prefix = f"[em=auto,fs=0] "
+        retain_context = (
+            f"{metadata_prefix}{self._retain_context}"
+            if self._retain_context
+            else metadata_prefix.rstrip()
+        )
 
         def _do_retain() -> None:
             item = self._build_retain_kwargs(
@@ -1590,15 +1642,24 @@ class HindsightMemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
+            # 2026-06-05: Q5 关键词触发 - 检测中文"反思/总结/学到" + 英文"reflect/summarize/insight"
+            # 自动升级到 high budget 确保拿到完整 synthesis
+            keyword_triggers = ("反思", "总结", "学到", "洞察", "模式", "归纳", "reflect", "summarize", "insight", "pattern")
+            effective_budget = self._budget
+            if any(kw in query.lower() for kw in keyword_triggers):
+                effective_budget = "high"
+                logger.debug("Tool hindsight_reflect: keyword trigger detected, forcing budget=high")
             try:
                 logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
+                             self._bank_id, len(query), effective_budget)
                 resp = self._run_hindsight_operation(
                     lambda client: client.areflect(
-                        bank_id=self._bank_id, query=query, budget=self._budget
+                        bank_id=self._bank_id, query=query, budget=effective_budget
                     )
                 )
                 logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
+                # Q5 mental models 数量阈值检查 - 每次 reflect 后被动检查
+                self._maybe_consolidate_mental_models()
                 return json.dumps({"result": resp.text or "No relevant memories found."})
             except Exception as e:
                 logger.warning("hindsight_reflect failed: %s", e, exc_info=True)

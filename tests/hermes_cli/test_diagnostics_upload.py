@@ -177,42 +177,11 @@ class TestPutBundle:
 
 
 # ---------------------------------------------------------------------------
-# confirm_upload
-# ---------------------------------------------------------------------------
-
-class TestConfirmUpload:
-    def test_confirm_posts(self):
-        from hermes_cli.diagnostics_upload import confirm_upload
-
-        resp = _resp(status=200, body=b"")
-        with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
-            return_value=resp,
-        ) as urlopen:
-            confirm_upload("abc-123", 1024)
-        req = urlopen.call_args[0][0]
-        assert req.method == "POST"
-        assert req.full_url.endswith("/api/diagnostics/confirm")
-        sent = json.loads(req.data.decode())
-        assert sent == {"id": "abc-123", "sizeBytes": 1024}
-
-    def test_confirm_failure_is_swallowed(self):
-        from hermes_cli.diagnostics_upload import confirm_upload
-
-        with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
-            side_effect=urllib.error.URLError("connection refused"),
-        ):
-            # Must NOT raise.
-            confirm_upload("abc-123", 1024)
-
-
-# ---------------------------------------------------------------------------
 # share_to_nous (orchestration)
 # ---------------------------------------------------------------------------
 
 class TestShareToNous:
-    def test_orchestrates_request_put_confirm(self):
+    def test_orchestrates_request_then_put(self):
         from hermes_cli import diagnostics_upload as mod
 
         info = {
@@ -224,38 +193,35 @@ class TestShareToNous:
         blob = b"gzipped-bundle"
 
         with patch.object(mod, "request_upload_url", return_value=info) as req, \
-             patch.object(mod, "put_bundle") as put, \
-             patch.object(mod, "confirm_upload") as confirm:
+             patch.object(mod, "put_bundle") as put:
             result = mod.share_to_nous(blob)
 
         assert result == info
         req.assert_called_once()
-        # request was told the real byte size
+        # request was told the real byte size (NAS signs it into ContentLength)
         assert req.call_args.kwargs["size_bytes"] == len(blob)
         # PUT got the signed URL + the exact blob
         put.assert_called_once_with(
             info["uploadUrl"], blob, content_type="application/gzip"
         )
-        confirm.assert_called_once_with("id-9", len(blob))
 
     def test_put_failure_propagates(self):
         from hermes_cli import diagnostics_upload as mod
 
         info = {"id": "id-9", "uploadUrl": "https://u", "viewUrl": "v"}
         with patch.object(mod, "request_upload_url", return_value=info), \
-             patch.object(mod, "put_bundle", side_effect=RuntimeError("PUT failed")), \
-             patch.object(mod, "confirm_upload") as confirm:
+             patch.object(mod, "put_bundle", side_effect=RuntimeError("PUT failed")):
             with pytest.raises(RuntimeError):
                 mod.share_to_nous(b"data")
-        # confirm never runs if PUT failed
-        confirm.assert_not_called()
 
-    def test_confirm_skipped_without_id(self):
+    def test_share_succeeds_without_id_in_response(self):
         from hermes_cli import diagnostics_upload as mod
 
+        # NAS is stateless and there is no confirm step, so the share must
+        # succeed regardless of whether the response carries an ``id``.
         info = {"uploadUrl": "https://u", "viewUrl": "v"}  # no id
         with patch.object(mod, "request_upload_url", return_value=info), \
-             patch.object(mod, "put_bundle"), \
-             patch.object(mod, "confirm_upload") as confirm:
-            mod.share_to_nous(b"data")
-        confirm.assert_not_called()
+             patch.object(mod, "put_bundle") as put:
+            result = mod.share_to_nous(b"data")
+        assert result == info
+        put.assert_called_once()

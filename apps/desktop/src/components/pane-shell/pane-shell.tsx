@@ -220,16 +220,36 @@ export function Pane({
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
   const lastSample = useRef<{ t: number; x: number; y: number } | null>(null)
+  const resizingUntil = useRef(0)
   const [hoverRevealed, setHoverRevealed] = useState(false)
 
+  // A window resize parks the cursor on the screen edge and fires slow
+  // pointermoves over the hot-zone — which reads as deliberate intent. Suppress
+  // the reveal during, and briefly after, any window resize.
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const onResize = () => {
+      resizingUntil.current = performance.now() + 250
+      setHoverRevealed(false)
+    }
+
+    window.addEventListener('resize', onResize)
+
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   // Arm the reveal only on a slow, deliberate pass through the edge zone —
-  // ignore fast fly-bys (toward the titlebar/statusbar, or leaving the window).
+  // ignore fast fly-bys (toward the titlebar/statusbar, or leaving the window),
+  // button-held drags, and the slow drift of a window resize.
   const onEdgeMove = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
     const prev = lastSample.current
     const now = e.timeStamp
     lastSample.current = { t: now, x: e.clientX, y: e.clientY }
 
-    if (!prev) {
+    if (!prev || e.buttons !== 0 || performance.now() < resizingUntil.current) {
       return
     }
 

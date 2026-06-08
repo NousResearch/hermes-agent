@@ -294,7 +294,7 @@ def test_xai_loopback_login_manual_paste_skips_http_server(monkeypatch):
     monkeypatch.setattr(auth_mod.httpx, "post", _fake_token_post)
 
     with contextlib.redirect_stdout(io.StringIO()):
-        creds = auth_mod._xai_oauth_loopback_login(manual_paste=True)
+        creds = auth_mod._xai_oauth_loopback_login(manual_paste=True, open_browser=False)
 
     assert creds["tokens"]["access_token"] == "at"
     assert creds["tokens"]["refresh_token"] == "rt"
@@ -326,7 +326,7 @@ def test_xai_loopback_login_manual_paste_state_mismatch_raises(monkeypatch):
 
     with contextlib.redirect_stdout(io.StringIO()):
         with pytest.raises(auth_mod.AuthError) as exc:
-            auth_mod._xai_oauth_loopback_login(manual_paste=True)
+            auth_mod._xai_oauth_loopback_login(manual_paste=True, open_browser=False)
     assert exc.value.code == "xai_state_mismatch"
 
 
@@ -359,7 +359,7 @@ def test_xai_loopback_login_manual_paste_missing_code_raises(monkeypatch):
 
     with contextlib.redirect_stdout(io.StringIO()):
         with pytest.raises(auth_mod.AuthError) as exc:
-            auth_mod._xai_oauth_loopback_login(manual_paste=True)
+            auth_mod._xai_oauth_loopback_login(manual_paste=True, open_browser=False)
     assert exc.value.code == "xai_code_missing"
 
 

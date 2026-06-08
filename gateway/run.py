@@ -308,8 +308,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
+    # The Codex gpt-5.5 compaction autoraise notice is useful in CLI startup
+    # output but hostile in messaging gateways: cached/recreated agents can
+    # replay it at the start of ordinary replies, making every Discord answer
+    # begin with configuration boilerplate. Keep the threshold behavior; suppress
+    # only the chat bubble.
+    if text.startswith("ℹ Codex gpt-5.5 caps context at 272K"):
+        return None
     if _gateway_platform_value(platform) != "telegram":
-        return text
+        return _redact_gateway_user_facing_secrets(text)
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
@@ -17343,19 +17350,19 @@ class GatewayRunner:
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
 
-            # Markdown-capable platforms render a terminal command as a native
-            # ```bash fenced block (full command, no quotes, no label, no
-            # truncation) instead of the noisy `terminal: "cmd…"` line.  Gated
-            # on the adapter's ``supports_code_blocks`` capability so every
-            # markdown-rendering platform (and plugin adapters that opt in) gets
-            # it, while plain-text platforms keep the compact line.
+            # Markdown-capable platforms *used* to render terminal commands as a
+            # native ```bash fenced block.  That is acceptable only in explicit
+            # verbose mode: normal gateway progress is permanent chat history,
+            # and full shell snippets quickly drown Discord channels in code
+            # blocks.  Keep all/new mode compact via the normal preview path.
             _bash_block = None
             try:
                 _progress_adapter = self.adapters.get(source.platform)
             except Exception:
                 _progress_adapter = None
             if (
-                getattr(_progress_adapter, "supports_code_blocks", False)
+                progress_mode == "verbose"
+                and getattr(_progress_adapter, "supports_code_blocks", False)
                 and tool_name == "terminal"
                 and isinstance(args, dict)
                 and isinstance(args.get("command"), str)
@@ -17627,7 +17634,15 @@ class GatewayRunner:
                         continue
                     else:
                         msg = raw
-                        progress_lines.append(msg)
+                        if progress_mode == "verbose":
+                            progress_lines.append(msg)
+                        else:
+                            # Compact gateway progress is a single editable
+                            # status line, not a growing transcript.  The
+                            # permanent final answer carries the real result;
+                            # tool progress should just show the latest active
+                            # tool and keep editing the same bubble.
+                            progress_lines = [msg]
 
                     if await _roll_progress_overflow_if_needed():
                         _last_edit_ts = time.monotonic()

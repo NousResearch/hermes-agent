@@ -11,7 +11,19 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.run import _prepare_gateway_status_message
 from gateway.session import SessionSource
+
+
+def test_gateway_status_suppresses_codex_autoraise_notice():
+    notice = (
+        "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
+        "to 85% (from 50%) to use more of the window before summarizing.\n"
+        "  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+    )
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", notice) is None
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", notice) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", "normal status") == "normal status"
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -162,6 +174,30 @@ class LongPreviewAgent:
         }
 
 
+class TerminalArgsAgent:
+    """Agent that emits terminal progress with full args, like production."""
+
+    COMMAND = "python - <<'PY'\nprint('this should not become a Discord code block')\nPY"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started",
+            "terminal",
+            self.COMMAND,
+            {"command": self.COMMAND, "timeout": 120},
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class DelayedProgressAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -257,6 +293,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+    import tools.browser_tool  # noqa: F401 - register browser emoji for this fake-agent test
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
@@ -289,6 +326,8 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
         }
     ]
     assert adapter.edits
+    assert adapter.edits[-1]["content"] == '🌐 browser_navigate: "https://example.com"'
+    assert "\n" not in adapter.edits[-1]["content"]
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
 
 
@@ -519,6 +558,60 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
         )
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured_mode", ["all", "compact"])
+async def test_discord_non_verbose_modes_keep_terminal_args_compact(monkeypatch, tmp_path, configured_mode):
+    """Discord non-verbose progress must not leak full terminal args as code blocks."""
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", configured_mode)
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalArgsAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_preview_length": 0}}),
+        encoding="utf-8",
+    )
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    adapter.supports_code_blocks = True
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="dm-compact",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-discord-compact",
+        session_key="agent:main:discord:dm:dm-compact",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    progress_text = adapter.sent[0]["content"]
+    assert progress_text.startswith('💻 terminal: "')
+    assert "```bash" not in progress_text
+    assert "this should not become" not in progress_text
+    assert len(progress_text) < len(TerminalArgsAgent.COMMAND)
 
 
 def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):

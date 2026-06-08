@@ -293,6 +293,24 @@ export default function SystemPage() {
     <div className="flex flex-col gap-8">
       <Toast toast={toast} />
 
+      {/* ── Admin identity ─────────────────────────────────────────── */}
+      {status?.owner_email && (
+        <section className="flex flex-col gap-3">
+          <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+            <ShieldCheck className="h-4 w-4" /> Admin
+          </H2>
+          <Card>
+            <CardContent className="flex items-center justify-between py-4">
+              <div className="flex items-center gap-3">
+                <Badge tone="success">owner</Badge>
+                <span className="text-sm font-medium">{status.owner_email}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">Full admin access</span>
+            </CardContent>
+          </Card>
+        </section>
+      )}
+
       <DeleteConfirmDialog
         open={memoryReset.isOpen}
         onCancel={memoryReset.cancel}

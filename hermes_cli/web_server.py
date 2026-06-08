@@ -43,6 +43,7 @@ from hermes_cli.config import (
     get_config_path,
     get_env_path,
     get_hermes_home,
+    get_owner_email,
     load_config,
     load_env,
     save_config,
@@ -750,6 +751,7 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+        "owner_email": get_owner_email(),
     }
 
 

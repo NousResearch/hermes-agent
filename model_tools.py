@@ -1117,6 +1117,18 @@ def handle_function_call(
                         task_id=task_id,
                         enabled_tools=sandbox_enabled,
                     )
+            elif function_name in {
+                "hermes_codemode_status",
+                "hermes_codemode_schema",
+                "hermes_codemode_execute",
+            }:
+                def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    return registry.dispatch(
+                        function_name, next_args,
+                        task_id=task_id,
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                    )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(

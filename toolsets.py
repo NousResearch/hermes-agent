@@ -239,6 +239,18 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
+
+    "hermes_codemode": {
+        "description": "Lazy programmable Hermes tool control plane: status, schema lookup, and plan/apply execution",
+        "tools": ["hermes_codemode_status", "hermes_codemode_schema", "hermes_codemode_execute"],
+        "includes": []
+    },
+
+    "hermes-codemode-cli": {
+        "description": "Lean CLI surface: expose only Hermes Codemode bridge tools while Codemode can lazily reach the full hermes-cli backing catalog",
+        "tools": ["hermes_codemode_status", "hermes_codemode_schema", "hermes_codemode_execute"],
+        "includes": []
+    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",

@@ -88,6 +88,52 @@ def test_lazy_installable_extras_excluded_from_all():
         )
 
 
+def _exact_pins(specs):
+    pins = {}
+    for spec in specs:
+        requirement = spec.split(";", 1)[0].strip()
+        if "==" not in requirement:
+            continue
+        package, version = requirement.split("==", 1)
+        package = package.split("[", 1)[0].lower().replace("_", "-")
+        pins[package] = version
+    return pins
+
+
+def test_pyproject_aiohttp_pins_match_lazy_slack_pin():
+    """Avoid update/lazy-install churn from conflicting aiohttp pins.
+
+    pyproject extras (messaging/slack/homeassistant/sms) exact-pin aiohttp.
+    The Slack lazy-install deps (LAZY_DEPS['platform.slack']) also pin it.
+    If the two drift, `hermes update` resolves the pyproject pin and
+    downgrades aiohttp, reopening the CVEs the lazy pin fixed (#31817) —
+    only for Slack's lazy refresh to upgrade it again on next use.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    lazy_aiohttp = _exact_pins(LAZY_DEPS["platform.slack"])["aiohttp"]
+
+    pyproject_aiohttp_pins = {
+        extra: pins["aiohttp"]
+        for extra, specs in optional_dependencies.items()
+        if "aiohttp" in (pins := _exact_pins(specs))
+    }
+
+    assert pyproject_aiohttp_pins, "expected at least one pyproject extra to pin aiohttp"
+    mismatches = {
+        extra: pin
+        for extra, pin in pyproject_aiohttp_pins.items()
+        if pin != lazy_aiohttp
+    }
+    assert not mismatches, (
+        "pyproject.toml aiohttp pins must match "
+        "LAZY_DEPS['platform.slack'] to avoid hermes update downgrading "
+        "aiohttp before Slack's lazy refresh upgrades it again. "
+        f"lazy aiohttp=={lazy_aiohttp}; mismatched extras: {mismatches}"
+    )
+
+
 def test_dev_extra_excluded_from_all():
     """End-user installs should not pull test/lint/debug tooling."""
     optional_dependencies = _load_optional_dependencies()

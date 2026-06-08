@@ -299,7 +299,7 @@ def env_int(key: str, default: int = 0) -> int:
 
 def env_bool(key: str, default: bool = False) -> bool:
     """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
+    return is_truthy_value(os.getenv(key), default=default)
 
 
 # ─── Proxy Helpers ────────────────────────────────────────────────────────────

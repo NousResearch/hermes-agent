@@ -61,6 +61,29 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+def _hermes_version() -> str:
+    """Return the hermes-agent version string, or "dev" if it can't be resolved.
+
+    Tries the installed package metadata first (authoritative for a pip/uv
+    install), then the in-tree ``hermes_cli.__version__`` (covers editable /
+    source checkouts where metadata may be stale or absent). Never raises —
+    a version probe must not be able to break the health endpoint.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("hermes-agent")
+    except Exception:
+        pass
+    try:
+        from hermes_cli import __version__
+
+        return __version__
+    except Exception:
+        return "dev"
+
+
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
@@ -423,7 +446,19 @@ class ResponseStore:
             (time.time(), response_id),
         )
         self._conn.commit()
-        return json.loads(row[0])
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "Corrupted JSON in response store for id=%s, evicting entry",
+                response_id,
+            )
+            self._conn.execute(
+                "DELETE FROM responses WHERE response_id = ?",
+                (response_id,),
+            )
+            self._conn.commit()
+            return None
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
@@ -675,6 +710,19 @@ except ImportError:
     _cron_pause = None
     _cron_resume = None
     _cron_trigger = None
+
+# Defense-in-depth: mirror the agent-facing cronjob tool, which scans the
+# user-supplied prompt for exfiltration/injection payloads at create/update
+# time (tools/cronjob_tools.py).  The REST cron endpoints are authenticated
+# (every handler runs _check_auth, and connect() refuses to start without
+# API_SERVER_KEY), so this is not the trust boundary — it's parity with the
+# tool path so a malicious prompt is rejected the same way regardless of
+# which surface created the job.  Imported defensively: a missing scanner
+# must not disable the cron REST API.
+try:
+    from tools.cronjob_tools import _scan_cron_prompt as _scan_cron_prompt
+except Exception:  # pragma: no cover - scanner is optional hardening
+    _scan_cron_prompt = None
 
 
 class APIServerAdapter(BasePlatformAdapter):
@@ -1022,7 +1070,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        return web.json_response(
+            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
+        )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — rich status for cross-container dashboard probing.
@@ -1037,6 +1087,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({
             "status": "ok",
             "platform": "hermes-agent",
+            "version": _hermes_version(),
             "gateway_state": runtime.get("gateway_state"),
             "platforms": runtime.get("platforms", {}),
             "active_agents": runtime.get("active_agents", 0),
@@ -3128,6 +3179,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
+            if prompt and _scan_cron_prompt is not None:
+                scan_error = _scan_cron_prompt(prompt)
+                if scan_error:
+                    return web.json_response({"error": scan_error}, status=400)
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
 
@@ -3193,6 +3248,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
+            if sanitized.get("prompt") and _scan_cron_prompt is not None:
+                scan_error = _scan_cron_prompt(sanitized["prompt"])
+                if scan_error:
+                    return web.json_response({"error": scan_error}, status=400)
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)

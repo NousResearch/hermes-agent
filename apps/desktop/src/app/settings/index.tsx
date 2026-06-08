@@ -1,9 +1,11 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
 import { useRef } from 'react'
 
+import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Wrench } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -16,13 +18,15 @@ import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
-import { KeysSettings } from './keys-settings'
+import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
+import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
+  'providers',
   'gateway',
   'keys',
   'mcp',
@@ -31,7 +35,22 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 ]
 
 export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+  const { t } = useI18n()
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  // Providers subnav (Accounts vs API keys) lives in its own param so each
+  // sub-view is deep-linkable and survives a refresh.
+  const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
+  const [keysView, setKeysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
+
+  const openProviderView = (view: ProviderView) => {
+    setActiveView('providers')
+    setProviderView(view)
+  }
+
+  const openKeysView = (view: KeysView) => {
+    setActiveView('keys')
+    setKeysView(view)
+  }
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -47,12 +66,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
       URL.revokeObjectURL(url)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Export failed')
+      notifyError(err, t.settings.exportFailed)
     }
   }
 
   const resetConfig = async () => {
-    if (!window.confirm('Reset all settings to Hermes defaults?')) {
+    if (!window.confirm(t.settings.resetConfirm)) {
       return
     }
 
@@ -61,12 +80,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
       triggerHaptic('success')
       onConfigSaved?.()
     } catch (err) {
-      notifyError(err, 'Reset failed')
+      notifyError(err, t.settings.resetFailed)
     }
   }
 
   return (
-    <OverlayView closeLabel="Close settings" onClose={onClose}>
+    <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(s => {
@@ -77,66 +96,112 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 active={activeView === view}
                 icon={s.icon}
                 key={s.id}
-                label={s.label}
+                label={t.settings.sections[s.id] ?? s.label}
                 onClick={() => setActiveView(view)}
               />
             )
           })}
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
+            active={activeView === 'providers'}
+            icon={Zap}
+            label={t.settings.nav.providers}
+            onClick={() => setActiveView('providers')}
+          />
+          {activeView === 'providers' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <OverlayNavItem
+                active={providerView === 'accounts'}
+                icon={Sparkles}
+                label={t.settings.nav.providerAccounts}
+                nested
+                onClick={() => openProviderView('accounts')}
+              />
+              <OverlayNavItem
+                active={providerView === 'keys'}
+                icon={KeyRound}
+                label={t.settings.nav.providerApiKeys}
+                nested
+                onClick={() => openProviderView('keys')}
+              />
+            </div>
+          )}
+          <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
-            label="Gateway"
+            label={t.settings.nav.gateway}
             onClick={() => setActiveView('gateway')}
           />
           <OverlayNavItem
             active={activeView === 'keys'}
             icon={KeyRound}
-            label="API Keys"
+            label={t.settings.nav.apiKeys}
             onClick={() => setActiveView('keys')}
           />
+          {activeView === 'keys' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <OverlayNavItem
+                active={keysView === 'tools'}
+                icon={Wrench}
+                label={t.settings.nav.keysTools}
+                nested
+                onClick={() => openKeysView('tools')}
+              />
+              <OverlayNavItem
+                active={keysView === 'settings'}
+                icon={Settings2}
+                label={t.settings.nav.keysSettings}
+                nested
+                onClick={() => openKeysView('settings')}
+              />
+            </div>
+          )}
           <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
-            label="MCP"
+            label={t.settings.nav.mcp}
             onClick={() => setActiveView('mcp')}
           />
           <OverlayNavItem
             active={activeView === 'sessions'}
             icon={Archive}
-            label="Archived Chats"
+            label={t.settings.nav.archivedChats}
             onClick={() => setActiveView('sessions')}
           />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'about'}
             icon={Info}
-            label="About"
+            label={t.settings.nav.about}
             onClick={() => setActiveView('about')}
           />
           <div className="mt-auto flex items-center gap-1 pt-2">
-            <OverlayIconButton onClick={() => void exportConfig()} title="Export config">
-              <IconDownload className="size-3.5" />
-            </OverlayIconButton>
-            <OverlayIconButton
-              onClick={() => {
-                triggerHaptic('open')
-                importInputRef.current?.click()
-              }}
-              title="Import config"
-            >
-              <IconUpload className="size-3.5" />
-            </OverlayIconButton>
-            <OverlayIconButton
-              className="hover:text-destructive"
-              onClick={() => {
-                triggerHaptic('warning')
-                void resetConfig()
-              }}
-              title="Reset to defaults"
-            >
-              <IconRefresh className="size-3.5" />
-            </OverlayIconButton>
+            <Tip label={t.settings.exportConfig}>
+              <OverlayIconButton onClick={() => void exportConfig()}>
+                <IconDownload className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
+            <Tip label={t.settings.importConfig}>
+              <OverlayIconButton
+                onClick={() => {
+                  triggerHaptic('open')
+                  importInputRef.current?.click()
+                }}
+              >
+                <IconUpload className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
+            <Tip label={t.settings.resetToDefaults}>
+              <OverlayIconButton
+                className="hover:text-destructive"
+                onClick={() => {
+                  triggerHaptic('warning')
+                  void resetConfig()
+                }}
+              >
+                <IconRefresh className="size-3.5" />
+              </OverlayIconButton>
+            </Tip>
           </div>
         </OverlaySidebar>
 
@@ -154,8 +219,10 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               onConfigSaved={onConfigSaved}
               onMainModelChanged={onMainModelChanged}
             />
+          ) : activeView === 'providers' ? (
+            <ProvidersSettings onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
-            <KeysSettings />
+            <KeysSettings view={keysView} />
           ) : activeView === 'mcp' ? (
             <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
           ) : (

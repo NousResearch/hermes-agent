@@ -646,6 +646,11 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     # much larger; shrinking to 4 MB here loses quality but only fires
     # after a confirmed provider rejection, so the alternative is failure.
     target_bytes = 4 * 1024 * 1024
+    # Anthropic enforces an 8000px per-side dimension cap independently of
+    # the 5 MB byte cap.  A tall screenshot can be well under 5 MB yet far
+    # over 8000px (e.g. 1200×12000 at 0.06 MB).  We check pixel dimensions
+    # even when the byte budget is fine.
+    max_dimension = 8000
     changed_count = 0
     # Track parts that are over the target but could NOT be shrunk under it.
     # If any survive, retrying is pointless — the same oversized payload will
@@ -658,9 +663,30 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
         """Return a smaller data URL, or None if shrink can't help."""
         if not isinstance(url, str) or not url.startswith("data:"):
             return None
-        if len(url) <= target_bytes:
-            # This specific image wasn't the oversized one.
-            return None
+
+        # Check both byte size AND pixel dimensions.
+        needs_shrink = len(url) > target_bytes  # over byte budget
+        if not needs_shrink:
+            # Even if bytes are fine, check pixel dimensions against
+            # Anthropic's 8000px cap.  A tall image can be tiny in bytes
+            # yet huge in pixels.
+            try:
+                import base64 as _b64_dim
+                header_d, _, data_d = url.partition(",")
+                if not data_d:
+                    return None
+                raw_d = _b64_dim.b64decode(data_d)
+                from PIL import Image as _PILImage
+                import io as _io_dim
+                with _PILImage.open(_io_dim.BytesIO(raw_d)) as _img:
+                    if max(_img.size) <= max_dimension:
+                        return None  # both bytes and pixels are fine
+                needs_shrink = True  # pixels exceed limit, force shrink
+            except Exception:
+                # If we can't check dimensions (Pillow unavailable, corrupt
+                # image, etc.), fall back to byte-only check.
+                return None
+
         try:
             header, _, data = url.partition(",")
             mime = "image/jpeg"
@@ -684,6 +710,7 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                     Path(tmp.name),
                     mime_type=mime,
                     max_base64_bytes=target_bytes,
+                    max_dimension=max_dimension,
                 )
             finally:
                 try:

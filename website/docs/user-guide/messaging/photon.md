@@ -100,6 +100,37 @@ When `PHOTON_ALLOWED_USERS` is set, unknown senders are silently
 ignored rather than offered a pairing code (the allowlist signals you
 deliberately restricted access).
 
+### Require mentions in group chats
+
+By default Hermes responds to every authorized DM and group message.
+To make group chats opt-in, enable mention gating (DMs still always
+work):
+
+```yaml
+gateway:
+  platforms:
+    photon:
+      enabled: true
+      require_mention: true
+```
+
+With `require_mention: true`, group-chat messages are ignored unless
+they match a wake-word pattern. The defaults match `Hermes` and
+`@Hermes agent` variants. For a custom agent name, set regex patterns:
+
+```yaml
+gateway:
+  platforms:
+    photon:
+      require_mention: true
+      mention_patterns:
+        - '(?<![\w@])@?amos\b[,:\-]?'
+```
+
+Both keys also accept env vars (`PHOTON_REQUIRE_MENTION`,
+`PHOTON_MENTION_PATTERNS`). This is the same mention-gating model the
+BlueBubbles iMessage channel uses.
+
 ## Registering the webhook
 
 Photon needs a public URL it can POST to. Expose your local listener
@@ -201,6 +232,8 @@ hermes photon webhook delete <webhook-id>   # remove one
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
+| `PHOTON_REQUIRE_MENTION`  | `false`            | Require a wake word before responding in groups |
+| `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
 | `PHOTON_API_HOST`         | `spectrum.photon.codes` | Override the Spectrum management API host |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 

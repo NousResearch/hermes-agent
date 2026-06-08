@@ -773,17 +773,20 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_custom_endpoint_without_metadata_skips_name_based_default(self, mock_endpoint_fetch, mock_fetch):
+    def test_custom_endpoint_without_metadata_falls_through_to_hardcoded_default(self, mock_endpoint_fetch, mock_fetch):
+        """When custom endpoint returns no metadata, fall through to hardcoded defaults."""
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
+        # Model "zai-org/GLM-5-TEE" falls through to DEFAULT_CONTEXT_LENGTHS
+        # where 'zai-org/GLM-5' matches → 202752
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
 
-        assert result == CONTEXT_PROBE_TIERS[0]
+        assert result == 202752
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
@@ -819,6 +822,50 @@ class TestGetModelContextLength:
         )
 
         assert result == 131072
+
+    @patch("agent.model_metadata._query_local_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_no_context_length_falls_through_to_defaults(self, mock_endpoint_fetch, mock_fetch, _mock_local):
+        """When custom endpoint returns model WITHOUT context_length, fall through to hardcoded defaults."""
+        mock_fetch.return_value = {}
+        # Endpoint returns model metadata but WITHOUT context_length field
+        mock_endpoint_fetch.return_value = {
+            "claude-opus-4.6-1m": {"id": "claude-opus-4.6-1m"}  # no context_length
+        }
+
+        result = get_model_context_length(
+            "claude-opus-4.6-1m",
+            base_url="http://localhost:7024/v1",
+            api_key="test-key",
+        )
+
+        # Should fall through to DEFAULT_CONTEXT_LENGTHS where 'claude-opus-4.6'
+        # is a substring of 'claude-opus-4.6-1m' → 1M
+        assert result == 1000000
+
+    @patch("agent.model_metadata._query_local_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_no_match_falls_through_to_defaults(self, mock_endpoint_fetch, mock_fetch, _mock_local):
+        """When custom endpoint returns no matching model, fall through to hardcoded defaults."""
+        mock_fetch.return_value = {}
+        # Endpoint returns multiple models (avoiding single-model fallback),
+        # none matching our requested model
+        mock_endpoint_fetch.return_value = {
+            "other-model-1": {"context_length": 32768},
+            "other-model-2": {"context_length": 65536},
+        }
+
+        result = get_model_context_length(
+            "claude-opus-4.6-1m",
+            base_url="http://localhost:7024/v1",
+            api_key="test-key",
+        )
+
+        # Should fall through to DEFAULT_CONTEXT_LENGTHS where 'claude-opus-4.6'
+        # is a substring of 'claude-opus-4.6-1m' → 1M
+        assert result == 1000000
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_config_context_length_overrides_all(self, mock_fetch):

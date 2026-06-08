@@ -518,6 +518,14 @@ def classify_api_error(
         parts.append(_body_msg)
     if _metadata_msg and _metadata_msg not in _raw_msg and _metadata_msg not in _body_msg:
         parts.append(_metadata_msg)
+    # Include body.param — some providers (Xiaomi MiMo) put the real
+    # diagnostic in a top-level "param" field, e.g.
+    # {"code":"400","message":"Param Incorrect","param":"`text` is not set"}
+    _param_msg = ""
+    if isinstance(body, dict):
+        _param_msg = str(body.get("param") or "").lower()
+    if _param_msg and _param_msg not in error_msg:
+        parts.append(_param_msg)
     error_msg = " ".join(parts)
     provider_lower = (provider or "").strip().lower()
     model_lower = (model or "").strip().lower()

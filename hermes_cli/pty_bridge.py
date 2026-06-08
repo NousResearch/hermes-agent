@@ -251,7 +251,7 @@ class PtyBridge:
         self._closed = True
 
         try:
-            pgid = os.getpgid(self._proc.pid)
+            pgid = os.getpgid(self._proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
         except Exception:
             pgid = None
 
@@ -264,7 +264,7 @@ class PtyBridge:
                 break
             try:
                 if pgid is not None:
-                    os.killpg(pgid, sig)
+                    os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
                 else:
                     self._proc.kill(sig)
             except Exception:

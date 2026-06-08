@@ -2998,3 +2998,48 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+def test_codex_device_code_sync_respects_provider_label(tmp_path, monkeypatch):
+    """A provider singleton for one profile must not overwrite another profile row."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "label": "profile-two",
+                    "tokens": {"access_token": "profile-two-at", "refresh_token": "profile-two-rt"},
+                    "last_refresh": "2026-06-01T00:00:00Z",
+                    "auth_mode": "chatgpt",
+                },
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "entry-one",
+                        "label": "profile-one",
+                        "auth_type": "oauth",
+                        "source": "device_code",
+                        "access_token": "profile-one-at",
+                        "refresh_token": "profile-one-rt",
+                        "last_status": "exhausted",
+                        "last_error_code": 429,
+                    },
+                ],
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.entries()[0]
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+
+    assert synced.access_token == "profile-one-at"
+    assert synced.refresh_token == "profile-one-rt"
+    assert synced.last_status == "exhausted"
+    assert synced.last_error_code == 429
+    assert pool.entries()[0].access_token == "profile-one-at"

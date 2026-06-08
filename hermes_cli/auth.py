@@ -3369,70 +3369,139 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _codex_pool_entries(auth_store: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        return None
+    entries = pool.get("openai-codex")
+    if not isinstance(entries, list):
+        return None
+    return entries
+
+
+def _apply_codex_tokens_to_pool_entry(
+    entry: Dict[str, Any],
+    tokens: Dict[str, str],
+    last_refresh: Optional[str],
+) -> None:
+    access_token = tokens.get("access_token")
+    if not access_token:
+        return
+    refresh_token = tokens.get("refresh_token")
+    entry["access_token"] = access_token
+    if refresh_token:
+        entry["refresh_token"] = refresh_token
+    if last_refresh:
+        entry["last_refresh"] = last_refresh
+    entry["last_status"] = None
+    entry["last_status_at"] = None
+    entry["last_error_code"] = None
+    entry["last_error_reason"] = None
+    entry["last_error_message"] = None
+    entry["last_error_reset_at"] = None
+
+
+def _codex_non_target_snapshot(
+    entries: Optional[List[Dict[str, Any]]],
+    target_label: Optional[str],
+) -> List[tuple]:
+    if not entries:
+        return []
+    snapshot = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        if target_label and entry.get("label") == target_label:
+            continue
+        snapshot.append((
+            index,
+            entry.get("id"),
+            entry.get("label"),
+            entry.get("source"),
+            entry.get("access_token"),
+            entry.get("refresh_token"),
+            entry.get("last_status"),
+            entry.get("last_status_at"),
+            entry.get("last_error_code"),
+            entry.get("last_error_reason"),
+            entry.get("last_error_message"),
+            entry.get("last_error_reset_at"),
+        ))
+    return snapshot
+
+
+def _assert_codex_non_targets_unchanged(
+    before: List[tuple],
+    entries: Optional[List[Dict[str, Any]]],
+    target_label: Optional[str],
+) -> None:
+    after = _codex_non_target_snapshot(entries, target_label)
+    if after != before:
+        raise AuthError(
+            "safety_guard_non_target_codex_profiles_changed: refusing to write auth.json",
+            provider="openai-codex",
+            code="codex_non_target_profiles_changed",
+        )
+
+
 def _sync_codex_pool_entries(
     auth_store: Dict[str, Any],
     tokens: Dict[str, str],
     last_refresh: Optional[str],
     previous_singleton_tokens: Optional[Dict[str, str]] = None,
+    label: Optional[str] = None,
+    singleton_label: Optional[str] = None,
 ) -> None:
-    """Mirror a fresh Codex re-auth into the credential_pool OAuth entries.
+    """Mirror fresh Codex OAuth tokens into the intended pool entry.
 
-    The runtime selects credentials from ``credential_pool.openai-codex``, not
-    from ``providers.openai-codex.tokens``.  A re-auth invalidates the prior
-    OAuth pair server-side, but pool entries keep holding the now-consumed
-    refresh token plus any stale error markers — so the next request spends a
-    dead token and gets a 401 ``token_invalidated``.
+    Labelled Codex auth is a profile-targeted operation: ``--label profile-two``
+    updates only the pool entry whose label is ``profile-two``.  It must not
+    rewrite sibling ``manual:device_code`` entries, because those entries can be
+    independent ChatGPT accounts with separate quota and refresh-token state.
 
-    What gets refreshed:
-
-    * ``device_code`` — the singleton-seeded entry written by the device-code
-      OAuth flow when the user logged in via ``hermes setup`` / the model
-      picker.  Always synced with the fresh tokens.
-    * ``manual:device_code`` — entries created by ``hermes auth add openai-codex``
-      that use the same device-code OAuth mechanism.  ONLY synced if the
-      entry's existing access_token matches the *previous* singleton
-      access_token (i.e. the entry is a legacy singleton-alias from the
-      #33000 workaround era).  Manual entries whose tokens never matched the
-      singleton represent INDEPENDENT accounts added via
-      ``hermes auth add openai-codex`` and must not be overwritten by a
-      re-auth that targeted a different account (regression for #39236).
-
-      The original #33538 fix refreshed every ``manual:device_code`` entry
-      unconditionally.  That worked when ``manual:device_code`` only meant
-      "legacy alias of the singleton", but the same source string is now
-      also produced by independent-account additions, and the broad sync
-      silently clobbered distinct accounts with the latest-authenticated
-      token pair.  The access_token-match check distinguishes the two cases
-      without changing the source-string contract.
-
-    What does NOT get refreshed:
-
-    * ``manual:api_key`` and any other non-device-code manual sources — those
-      are independent credentials (an explicit API key, a different ChatGPT
-      account, etc.) and must not be overwritten by a single re-auth.
-    * ``manual:device_code`` entries whose access_token does NOT match the
-      previous singleton — see above; these are independent accounts.
-
-    Error markers (``last_status``, ``last_error_*``) are cleared ONLY on
-    entries that actually had their tokens rewritten by this re-auth.
-    Independent entries keep their own error state (their 401/429 markers
-    belong to that account's own auth flow, not this re-auth).
+    Unlabelled singleton refreshes keep the legacy behavior when the singleton
+    has no label: refresh the ``device_code`` mirror and true legacy aliases
+    whose token material matched the previous singleton token.  If the provider
+    singleton has a label, the refresh is scoped to the matching labelled pool
+    entry instead of blindly updating the first ``device_code`` row.
     """
     access_token = tokens.get("access_token")
     if not access_token:
         return
-    refresh_token = tokens.get("refresh_token")
-    pool = auth_store.get("credential_pool")
-    if not isinstance(pool, dict):
+    entries = _codex_pool_entries(auth_store)
+    if entries is None:
         return
-    entries = pool.get("openai-codex")
-    if not isinstance(entries, list):
+
+    target_label = str(label or singleton_label or "").strip() or None
+    if target_label:
+        matches = [entry for entry in entries if isinstance(entry, dict) and entry.get("label") == target_label]
+        if len(matches) > 1:
+            raise AuthError(
+                "duplicate Codex profile label; refusing to write auth.json",
+                provider="openai-codex",
+                code="codex_duplicate_profile_label",
+            )
+        if matches:
+            _apply_codex_tokens_to_pool_entry(matches[0], tokens, last_refresh)
+            return
+        entries.append({
+            "id": uuid.uuid4().hex[:12],
+            "label": target_label,
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "priority": len(entries),
+            "access_token": tokens.get("access_token"),
+            "refresh_token": tokens.get("refresh_token"),
+            "last_refresh": last_refresh,
+            "last_status": None,
+            "last_status_at": None,
+            "last_error_code": None,
+            "last_error_reason": None,
+            "last_error_message": None,
+            "last_error_reset_at": None,
+        })
         return
-    # Previous singleton access_token (before this re-auth overwrote it) —
-    # used to distinguish legacy singleton-aliases from independent accounts.
-    # When None or empty, no manual entry can be treated as an alias (which
-    # is the right default for first-ever-save or a freshly initialized
-    # auth.json).
+
     prev_at = None
     if isinstance(previous_singleton_tokens, dict):
         prev_at = previous_singleton_tokens.get("access_token") or None
@@ -3441,33 +3510,13 @@ def _sync_codex_pool_entries(
             continue
         source = entry.get("source")
         if source == "device_code":
-            # Singleton-seeded mirror — always refresh.
             refresh_this_entry = True
         elif source == "manual:device_code":
-            # Refresh only if this entry's existing access_token matches the
-            # previous singleton access_token (i.e. it is a true alias of the
-            # singleton from the #33000 workaround era).  An entry with its
-            # own distinct token material is an independent account and must
-            # be left alone (#39236).
-            refresh_this_entry = bool(
-                prev_at and entry.get("access_token") == prev_at
-            )
+            refresh_this_entry = bool(prev_at and entry.get("access_token") == prev_at)
         else:
-            # ``manual:api_key`` and any future non-device-code sources.
             refresh_this_entry = False
-        if not refresh_this_entry:
-            continue
-        entry["access_token"] = access_token
-        if refresh_token:
-            entry["refresh_token"] = refresh_token
-        if last_refresh:
-            entry["last_refresh"] = last_refresh
-        entry["last_status"] = None
-        entry["last_status_at"] = None
-        entry["last_error_code"] = None
-        entry["last_error_reason"] = None
-        entry["last_error_message"] = None
-        entry["last_error_reset_at"] = None
+        if refresh_this_entry:
+            _apply_codex_tokens_to_pool_entry(entry, tokens, last_refresh)
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
@@ -3477,12 +3526,25 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
-        # Capture the previous singleton tokens BEFORE overwriting them.  The
-        # pool-sync step uses this to distinguish legacy singleton-aliases
-        # (which should be refreshed) from independent accounts that
-        # ``hermes auth add openai-codex`` created (which must not be
-        # overwritten — see #39236).
         previous_singleton_tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else None
+        singleton_label = state.get("label") if isinstance(state.get("label"), str) else None
+        target_label = str(label or singleton_label or "").strip() or None
+        entries = _codex_pool_entries(auth_store)
+        before_non_targets = (
+            _codex_non_target_snapshot(entries, target_label) if target_label else []
+        )
+
+        # Validate ambiguous target labels before mutating provider singleton state,
+        # so duplicate-label auth stores fail closed with auth.json unchanged.
+        if target_label and entries is not None:
+            matches = [entry for entry in entries if isinstance(entry, dict) and entry.get("label") == target_label]
+            if len(matches) > 1:
+                raise AuthError(
+                    "duplicate Codex profile label; refusing to write auth.json",
+                    provider="openai-codex",
+                    code="codex_duplicate_profile_label",
+                )
+
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
@@ -3494,9 +3556,12 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             tokens,
             last_refresh,
             previous_singleton_tokens=previous_singleton_tokens,
+            label=label,
+            singleton_label=singleton_label,
         )
+        if target_label:
+            _assert_codex_non_targets_unchanged(before_non_targets, entries, target_label)
         _save_auth_store(auth_store)
-
 
 def refresh_codex_oauth_pure(
     access_token: str,

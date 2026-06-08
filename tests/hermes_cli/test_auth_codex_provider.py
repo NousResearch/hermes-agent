@@ -817,6 +817,157 @@ def _patch_httpx(monkeypatch, response):
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
 
 
+
+def test_save_codex_tokens_with_label_updates_matching_profile_only(tmp_path, monkeypatch):
+    """A labelled Codex re-auth must not mutate sibling OAuth profiles."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    original = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "label": "profile-two",
+                "tokens": {"access_token": "profile-two-at", "refresh_token": "profile-two-rt"},
+                "last_refresh": "2026-01-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "entry-one", "label": "profile-one", "source": "device_code",
+                    "auth_type": "oauth", "priority": 0,
+                    "access_token": "profile-one-at", "refresh_token": "profile-one-rt",
+                    "last_status": "exhausted", "last_error_code": 429,
+                    "last_error_reason": "usage_limit_reached",
+                },
+                {
+                    "id": "entry-two", "label": "profile-two", "source": "manual:device_code",
+                    "auth_type": "oauth", "priority": 1,
+                    "access_token": "profile-two-at", "refresh_token": "profile-two-rt",
+                    "last_status": "ok",
+                },
+                {
+                    "id": "entry-three", "label": "profile-three", "source": "manual:device_code",
+                    "auth_type": "oauth", "priority": 2,
+                    "access_token": "profile-three-at", "refresh_token": "profile-three-rt",
+                    "last_status": "exhausted", "last_error_code": 429,
+                    "last_error_reason": "usage_limit_reached",
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(original))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens(
+        {"access_token": "fresh-profile-two-at", "refresh_token": "fresh-profile-two-rt"},
+        last_refresh="2026-06-01T00:00:00Z",
+        label="profile-two",
+    )
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    entries = {entry["id"]: entry for entry in auth["credential_pool"]["openai-codex"]}
+    assert entries["entry-one"] == original["credential_pool"]["openai-codex"][0]
+    assert entries["entry-three"] == original["credential_pool"]["openai-codex"][2]
+    updated = entries["entry-two"]
+    assert updated["label"] == "profile-two"
+    assert updated["source"] == "manual:device_code"
+    assert updated["priority"] == 1
+    assert updated["access_token"] == "fresh-profile-two-at"
+    assert updated["refresh_token"] == "fresh-profile-two-rt"
+    assert updated["last_refresh"] == "2026-06-01T00:00:00Z"
+    assert updated["last_status"] is None
+    assert updated["last_error_code"] is None
+
+
+def test_save_codex_tokens_with_label_refuses_duplicate_profile_labels(tmp_path, monkeypatch):
+    """Ambiguous target labels must fail closed before writing auth.json."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    original = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "label": "profile-one",
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+                "last_refresh": "2026-01-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "entry-one-a", "label": "profile-one", "source": "device_code",
+                    "auth_type": "oauth", "access_token": "profile-one-a-at",
+                    "refresh_token": "profile-one-a-rt",
+                },
+                {
+                    "id": "entry-one-b", "label": "profile-one", "source": "manual:device_code",
+                    "auth_type": "oauth", "access_token": "profile-one-b-at",
+                    "refresh_token": "profile-one-b-rt",
+                },
+            ],
+        },
+    }
+    auth_file = hermes_home / "auth.json"
+    auth_file.write_text(json.dumps(original, indent=2))
+    before = auth_file.read_text()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError, match="duplicate Codex profile label"):
+        _save_codex_tokens(
+            {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
+            last_refresh="2026-06-01T00:00:00Z",
+            label="profile-one",
+        )
+
+    assert auth_file.read_text() == before
+
+
+def test_save_codex_tokens_without_label_uses_provider_singleton_label(tmp_path, monkeypatch):
+    """Unlabelled refresh should not blindly update the first device_code row."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    original = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "label": "profile-three",
+                "tokens": {"access_token": "profile-three-at", "refresh_token": "profile-three-rt"},
+                "last_refresh": "2026-01-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "entry-one", "label": "profile-one", "source": "device_code",
+                    "auth_type": "oauth", "access_token": "profile-one-at",
+                    "refresh_token": "profile-one-rt",
+                },
+                {
+                    "id": "entry-three", "label": "profile-three", "source": "manual:device_code",
+                    "auth_type": "oauth", "access_token": "profile-three-at",
+                    "refresh_token": "profile-three-rt",
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(original))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens(
+        {"access_token": "fresh-profile-three-at", "refresh_token": "fresh-profile-three-rt"},
+        last_refresh="2026-06-01T00:00:00Z",
+    )
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    entries = {entry["id"]: entry for entry in auth["credential_pool"]["openai-codex"]}
+    assert entries["entry-one"] == original["credential_pool"]["openai-codex"][0]
+    assert entries["entry-three"]["access_token"] == "fresh-profile-three-at"
+    assert entries["entry-three"]["refresh_token"] == "fresh-profile-three-rt"
+
 def test_refresh_parses_openai_nested_error_shape_refresh_token_reused(monkeypatch):
     """OpenAI returns {"error": {"code": "refresh_token_reused", "message": "..."}}
     — parser must surface relogin_required and the dedicated message.

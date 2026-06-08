@@ -600,6 +600,14 @@ class CredentialPool:
                 state = _load_provider_state(auth_store, "openai-codex")
             if not isinstance(state, dict):
                 return entry
+            state_label = state.get("label") if isinstance(state.get("label"), str) else None
+            if state_label and entry.label and state_label != entry.label:
+                logger.debug(
+                    "Pool entry %s: refusing Codex auth.json sync for mismatched label %r",
+                    entry.id,
+                    state_label,
+                )
+                return entry
             tokens = state.get("tokens")
             if not isinstance(tokens, dict):
                 return entry
@@ -1891,22 +1899,37 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # existing Codex CLI credentials get a one-time, explicit prompt
         # via `hermes auth openai-codex`.
         if isinstance(tokens, dict) and tokens.get("access_token"):
+            access_token = str(tokens.get("access_token") or "")
             active_sources.add("device_code")
             custom_label = str(state.get("label") or "").strip()
-            changed |= _upsert_entry(
-                entries,
-                provider,
-                "device_code",
-                {
-                    "source": "device_code",
-                    "auth_type": AUTH_TYPE_OAUTH,
-                    "access_token": tokens.get("access_token", ""),
-                    "refresh_token": tokens.get("refresh_token"),
-                    "base_url": "https://chatgpt.com/backend-api/codex",
-                    "last_refresh": state.get("last_refresh"),
-                    "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
-                },
-            )
+            existing_device_code = next((entry for entry in entries if entry.source == "device_code"), None)
+            if (
+                custom_label
+                and existing_device_code is not None
+                and existing_device_code.label
+                and existing_device_code.label != custom_label
+            ):
+                logger.debug(
+                    "Refusing to seed Codex singleton label %r over device_code entry %s labelled %r",
+                    custom_label,
+                    existing_device_code.id,
+                    existing_device_code.label,
+                )
+            else:
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    "device_code",
+                    {
+                        "source": "device_code",
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": access_token,
+                        "refresh_token": tokens.get("refresh_token"),
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_refresh": state.get("last_refresh"),
+                        "label": custom_label or label_from_token(access_token, "device_code"),
+                    },
+                )
 
     elif provider == "xai-oauth":
         # When the user logs in via ``hermes model`` -> xAI Grok OAuth,

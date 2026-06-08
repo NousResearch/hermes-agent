@@ -348,14 +348,31 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         except Exception:
             pass
 
+    # Close the slash-worker subprocess as part of finalize itself, not just
+    # in the callers. Defense-in-depth: every session-end path goes through
+    # _finalize_session (it's the single ``_finalized``-guarded chokepoint), so
+    # folding worker cleanup in here means a future code path that calls
+    # _finalize_session directly — without the surrounding _teardown_session /
+    # _shutdown_sessions worker.close() — can't reintroduce the #38095 leak.
+    # Idempotent: _SlashWorker.close() is poll()-guarded, so the explicit
+    # close() still in those callers is harmless.
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
+
 
 def _teardown_session(session: dict | None) -> None:
     """Fully tear down a session: finalize, unregister, close agent + worker.
 
-    Shared by ``session.close`` and the orphaned-WS-session reaper so the
-    slash-worker subprocess is always closed exactly once via the same path.
-    Idempotent: the ``_finalized`` guard in ``_finalize_session`` and the
-    ``poll()`` guard in ``_SlashWorker.close`` make repeat calls harmless.
+    Shared by ``session.close`` and the orphaned-WS-session reaper. The
+    slash-worker subprocess is closed inside ``_finalize_session`` (the single
+    finalize chokepoint); this still unregisters the approval notifier and
+    closes the in-process agent. Idempotent: the ``_finalized`` guard in
+    ``_finalize_session`` and the ``poll()`` guard in ``_SlashWorker.close``
+    make repeat calls harmless.
     """
     if not session:
         return
@@ -370,12 +387,6 @@ def _teardown_session(session: dict | None) -> None:
         agent = session.get("agent")
         if agent and hasattr(agent, "close"):
             agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
     except Exception:
         pass
 
@@ -425,13 +436,8 @@ def _shutdown_sessions() -> None:
     with _sessions_lock:
         snapshot = list(_sessions.values())
     for session in snapshot:
+        # _finalize_session closes the slash-worker subprocess too.
         _finalize_session(session, end_reason="tui_shutdown")
-        try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
 
 
 atexit.register(_shutdown_sessions)

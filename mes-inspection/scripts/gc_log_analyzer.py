@@ -13,8 +13,10 @@ if _project_root not in sys.path:
 
 from scripts.ssh_executor import create_executor
 
-MAX_LINES = 50000
-DEFAULT_GC_LOG_PATH = "/u01/app/mes-app/logs/gc.log"
+def _get_default(key: str):
+    """从 DEFAULT_THRESHOLDS 读取默认值。"""
+    from config.default_thresholds import DEFAULT_THRESHOLDS
+    return DEFAULT_THRESHOLDS.get("debug", {}).get(key)
 
 # G1/Mixed/Full GC: [GC pause ... (young|mixed) NNNM->NNNM(NNNM), N.NNN secs]
 # Full GC: [Full GC ... NNNM->NNNM(NNNM), N.NNN secs]
@@ -113,7 +115,7 @@ class GcLogAnalyzer:
     ) -> List[GcLogEntry]:
         """通过 SSH 获取 GC 日志并解析为条目列表。"""
         executor = create_executor(self.config)
-        log_path = self.config.get("gc_log_path", DEFAULT_GC_LOG_PATH)
+        log_path = self.config.get("gc_log_path") or _get_default("gc_log_path") or "/u01/app/mes-app/logs/gc.log"
         cmd = self._build_fetch_cmd(log_path, start_time, end_time)
         result = executor.run(cmd, timeout=self.SSH_TIMEOUT)
         if result.returncode != 0:
@@ -129,7 +131,8 @@ class GcLogAnalyzer:
             return f"sed -n '/{_escape_sed_pattern(start_time)}/,/{_escape_sed_pattern(end_time)}/p' {shlex.quote(log_path)}"
         if start_time:
             return f"sed -n '/{_escape_sed_pattern(start_time)}/,$p' {shlex.quote(log_path)}"
-        return f"tail -n {MAX_LINES} {shlex.quote(log_path)}"
+        max_lines = self.config.get("gc_max_lines") or _get_default("gc_max_lines") or 50000
+        return f"tail -n {max_lines} {shlex.quote(log_path)}"
 
     @staticmethod
     def _parse_lines(raw: str) -> List[GcLogEntry]:

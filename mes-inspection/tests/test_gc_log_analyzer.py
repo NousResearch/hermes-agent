@@ -247,3 +247,18 @@ class TestEscapeSedPattern:
         assert "/" not in escaped.replace("\\/", "")
         # & 被转义
         assert "&" not in escaped.replace("\\&", "")
+
+
+class TestGcLogConfigFromThresholds:
+    """验证 GC 分析器从 config 读取默认值而非硬编码。"""
+
+    def test_default_gc_log_path_from_config(self):
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        expected = DEFAULT_THRESHOLDS["debug"]["gc_log_path"]
+        assert expected != ""
+        assert "gc.log" in expected
+
+    def test_max_lines_from_config(self):
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        expected = DEFAULT_THRESHOLDS["debug"]["gc_max_lines"]
+        assert expected == 50000

@@ -1,5 +1,5 @@
 name: photon-platform
-label: Photon iMessage
+label: iMessage via Photon
 kind: platform
 version: 0.2.0
 description: >

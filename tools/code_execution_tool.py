@@ -571,16 +571,17 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _resolve_container_task_id, _acquire_cached_env,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
 
-    # Fast path: environment already exists
-    with _env_lock:
-        if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+    # Fast path: live environment already exists. Probes liveness so a
+    # container killed out-of-band (prune/OOM/manual rm) is evicted and rebuilt
+    # rather than RPC-ing into a corpse forever — see _acquire_cached_env.
+    cached = _acquire_cached_env(effective_task_id)
+    if cached is not None:
+        return cached, _get_env_config()["env_type"]
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -589,10 +590,9 @@ def _get_or_create_env(task_id: str):
         task_lock = _creation_locks[effective_task_id]
 
     with task_lock:
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+        cached = _acquire_cached_env(effective_task_id)
+        if cached is not None:
+            return cached, _get_env_config()["env_type"]
 
         config = _get_env_config()
         env_type = config["env_type"]

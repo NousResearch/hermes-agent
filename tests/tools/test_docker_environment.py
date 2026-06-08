@@ -534,3 +534,60 @@ def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog)
         "does not expose POSIX uid/gid" in rec.getMessage()
         for rec in caplog.records
     ), "expected a warning when POSIX ids are unavailable"
+
+
+class TestIsAlive:
+    """DockerEnvironment.is_alive() probes the real container so the terminal
+    tool can evict a cached env whose container was killed out-of-band."""
+
+    def _make_started_env(self, monkeypatch, inspect_returncode, inspect_stdout):
+        _mock_subprocess_run(monkeypatch)  # don't touch real docker on construct
+        env = _make_dummy_env()
+        env._container_id = "fake-container-id"
+        env._docker_exe = "/usr/bin/docker"
+
+        def _run(cmd, **kwargs):
+            if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "inspect":
+                return subprocess.CompletedProcess(
+                    cmd, inspect_returncode, stdout=inspect_stdout, stderr=""
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(docker_env.subprocess, "run", _run)
+        return env
+
+    def test_alive_when_running_true(self, monkeypatch):
+        env = self._make_started_env(monkeypatch, 0, "true\n")
+        assert env.is_alive() is True
+
+    def test_dead_when_running_false(self, monkeypatch):
+        env = self._make_started_env(monkeypatch, 0, "false\n")
+        assert env.is_alive() is False
+
+    def test_dead_when_container_removed(self, monkeypatch):
+        # `docker inspect` on a removed container exits non-zero.
+        env = self._make_started_env(monkeypatch, 1, "")
+        assert env.is_alive() is False
+
+    def test_dead_when_not_started(self, monkeypatch):
+        _mock_subprocess_run(monkeypatch)  # avoid touching real docker on construct
+        env = _make_dummy_env()
+        env._container_id = None  # never started / already cleaned up
+        monkeypatch.setattr(
+            docker_env.subprocess,
+            "run",
+            lambda *a, **k: pytest.fail("must not probe before container exists"),
+        )
+        assert env.is_alive() is False
+
+    def test_dead_when_probe_raises(self, monkeypatch):
+        _mock_subprocess_run(monkeypatch)
+        env = _make_dummy_env()
+        env._container_id = "fake-container-id"
+        env._docker_exe = "/usr/bin/docker"
+
+        def _boom(*a, **k):
+            raise OSError("docker daemon unreachable")
+
+        monkeypatch.setattr(docker_env.subprocess, "run", _boom)
+        assert env.is_alive() is False

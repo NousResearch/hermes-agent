@@ -1360,6 +1360,44 @@ def get_active_env(task_id: str):
         return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
+def _acquire_cached_env(effective_task_id: str):
+    """Return a *live* cached environment for the task, or None.
+
+    Probes ``is_alive()`` before reuse so an environment whose backing
+    container/sandbox was killed out-of-band (prune, OOM, manual rm) is evicted
+    instead of being reused forever — ``docker exec`` into a dead container
+    returns a normal non-zero result rather than raising, so the execute retry
+    loop never rebuilds it on its own. A live env has its ``_last_activity``
+    refreshed; a dead one is dropped so the caller falls through to recreation.
+    """
+    with _env_lock:
+        env = _active_environments.get(effective_task_id)
+    if env is None:
+        return None
+
+    # Probe OUTSIDE _env_lock — never hold the global lock across a subprocess
+    # (docker inspect), which would serialize all terminal calls behind it.
+    # Env-likes predating the is_alive() contract are assumed alive (old behavior).
+    probe = getattr(env, "is_alive", None)
+    if probe is None or probe():
+        with _env_lock:
+            # Only refresh if another thread hasn't swapped the env underneath us.
+            if _active_environments.get(effective_task_id) is env:
+                _last_activity[effective_task_id] = time.time()
+                return env
+        return None
+
+    with _env_lock:
+        if _active_environments.get(effective_task_id) is env:
+            _active_environments.pop(effective_task_id, None)
+            _last_activity.pop(effective_task_id, None)
+    logger.warning(
+        "Evicted dead %s env for task %s; recreating",
+        type(env).__name__, effective_task_id[:8],
+    )
+    return None
+
+
 def is_persistent_env(task_id: str) -> bool:
     """Return True if the active environment for task_id is configured for
     cross-turn persistence (``persistent_filesystem=True``).
@@ -1770,13 +1808,8 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                env = _active_environments[effective_task_id]
-                needs_creation = False
-            else:
-                needs_creation = True
+        env = _acquire_cached_env(effective_task_id)
+        needs_creation = env is None
 
         if needs_creation:
             # Per-task lock: only one thread creates the sandbox, others wait
@@ -1787,11 +1820,9 @@ def terminal_tool(
 
             with task_lock:
                 # Double-check after acquiring the per-task lock
-                with _env_lock:
-                    if effective_task_id in _active_environments:
-                        _last_activity[effective_task_id] = time.time()
-                        env = _active_environments[effective_task_id]
-                        needs_creation = False
+                env = _acquire_cached_env(effective_task_id)
+                if env is not None:
+                    needs_creation = False
 
                 if needs_creation:
                     if env_type == "singularity":

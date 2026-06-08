@@ -322,25 +322,25 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks,
         _creation_locks_lock,
-        _resolve_container_task_id,
+        _resolve_container_task_id, _acquire_cached_env,
     )
     import time
 
     task_id = _resolve_container_task_id(task_id)
 
-    # Fast path: check cache -- but also verify the underlying environment
-    # is still alive (it may have been killed by the cleanup thread).
+    # Fast path: check cache -- but also verify the underlying environment is
+    # still LIVE. Membership in _active_environments isn't enough: the
+    # container can be killed out-of-band (prune/OOM/manual rm) while the dict
+    # entry lingers, leaving file_ops serving a corpse. _acquire_cached_env
+    # probes liveness and evicts a dead env so we rebuild.
     with _file_ops_lock:
         cached = _file_ops_cache.get(task_id)
     if cached is not None:
-        with _env_lock:
-            if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                return cached
-            else:
-                # Environment was cleaned up -- invalidate stale cache entry
-                with _file_ops_lock:
-                    _file_ops_cache.pop(task_id, None)
+        if _acquire_cached_env(task_id) is not None:
+            return cached
+        # Environment was cleaned up or died -- invalidate stale cache entry.
+        with _file_ops_lock:
+            _file_ops_cache.pop(task_id, None)
 
     # Need to ensure the environment exists before building file_ops.
     # Acquire per-task lock so only one thread creates the sandbox.
@@ -350,13 +350,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         task_lock = _creation_locks[task_id]
 
     with task_lock:
-        # Double-check: another thread may have created it while we waited
-        with _env_lock:
-            if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                terminal_env = _active_environments[task_id]
-            else:
-                terminal_env = None
+        # Double-check: another thread may have created a live env while we
+        # waited. Probe liveness so a dead env is evicted, not reused.
+        terminal_env = _acquire_cached_env(task_id)
 
         if terminal_env is None:
             from tools.terminal_tool import _task_env_overrides

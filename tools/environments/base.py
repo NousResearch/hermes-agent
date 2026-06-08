@@ -868,6 +868,17 @@ class BaseEnvironment(ABC):
         """
         pass
 
+    def is_alive(self) -> bool:
+        """Whether this environment's backing sandbox is still usable.
+
+        The terminal tool probes this before reusing a cached environment so
+        it can evict and recreate one whose container/sandbox was killed
+        out-of-band (prune, OOM, manual rm). Backends without a cheap liveness
+        check default to True, leaving their reuse path unchanged; Docker and
+        other container backends override this.
+        """
+        return True
+
     # ------------------------------------------------------------------
     # Unified execute()
     # ------------------------------------------------------------------

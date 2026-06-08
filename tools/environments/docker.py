@@ -642,6 +642,25 @@ class DockerEnvironment(BaseEnvironment):
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
 
+    def is_alive(self) -> bool:
+        """Probe whether the backing container is still running.
+
+        Returns False when the container was never started, was killed
+        out-of-band (prune / OOM / manual rm), or the daemon is unreachable —
+        so a dead env cached in ``_active_environments`` is evicted and
+        recreated instead of `docker exec`-ing into a corpse forever.
+        """
+        if not self._container_id:
+            return False
+        try:
+            result = subprocess.run(
+                [self._docker_exe, "inspect", "-f", "{{.State.Running}}", self._container_id],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return False
+        return result.returncode == 0 and result.stdout.strip() == "true"
+
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:

@@ -28,6 +28,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -92,6 +93,15 @@ _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
+
+# Group-chat mention wake words. When ``require_mention`` is enabled, group
+# messages are ignored unless they match one of these patterns — same
+# behavior and defaults as the BlueBubbles iMessage channel so the two
+# iMessage adapters gate group chats identically.
+_DEFAULT_MENTION_PATTERNS = [
+    r"(?<![\w@])@?hermes\s+agent\b[,:\-]?",
+    r"(?<![\w@])@?hermes\b[,:\-]?",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +264,81 @@ class PhotonAdapter(BasePlatformAdapter):
         # Lightweight in-memory dedup. Photon's at-least-once guarantee
         # means we WILL see the same message.id more than once.
         self._seen_messages: Dict[str, float] = {}
+
+        # Group-chat mention gating (parity with BlueBubbles). When enabled,
+        # group messages are ignored unless they match a wake word; DMs are
+        # always processed. Config key wins, then env var.
+        _require_mention = extra.get("require_mention")
+        if _require_mention is None:
+            _require_mention = os.getenv("PHOTON_REQUIRE_MENTION")
+        self.require_mention = str(_require_mention).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+        self._mention_patterns = self._compile_mention_patterns(
+            extra["mention_patterns"]
+            if "mention_patterns" in extra
+            else os.getenv("PHOTON_MENTION_PATTERNS")
+        )
+
+    # -- Group-mention gating (parity with BlueBubbles) -------------------
+
+    @staticmethod
+    def _compile_mention_patterns(raw: Any) -> "list[re.Pattern]":
+        """Compile group-mention wake words from config/env.
+
+        ``raw`` is a list (config or env JSON), a string (env var: JSON
+        list, or comma/newline-separated), or None (use Hermes defaults).
+        Mirrors the BlueBubbles implementation so both iMessage channels
+        accept the same configuration shapes.
+        """
+        if raw is None:
+            patterns = list(_DEFAULT_MENTION_PATTERNS)
+        elif isinstance(raw, str):
+            text = raw.strip()
+            try:
+                loaded = json.loads(text) if text else []
+            except Exception:
+                loaded = None
+            patterns = loaded if isinstance(loaded, list) else [
+                part.strip()
+                for line in text.splitlines()
+                for part in line.split(",")
+            ]
+        elif isinstance(raw, list):
+            patterns = raw
+        else:
+            patterns = [raw]
+
+        compiled: "list[re.Pattern]" = []
+        for pattern in patterns:
+            text = str(pattern).strip()
+            if not text:
+                continue
+            try:
+                compiled.append(re.compile(text, re.IGNORECASE))
+            except re.error as exc:
+                logger.warning("[photon] Invalid mention pattern %r: %s", text, exc)
+        return compiled
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        if not text or not self._mention_patterns:
+            return False
+        return any(pattern.search(text) for pattern in self._mention_patterns)
+
+    def _clean_mention_text(self, text: str) -> str:
+        """Strip a leading wake word before dispatch.
+
+        Custom mention patterns are regexes, so we only strip a leading
+        match to avoid deleting ordinary words later in the prompt.
+        """
+        if not text:
+            return text
+        for pattern in self._mention_patterns:
+            match = pattern.match(text.lstrip())
+            if match:
+                cleaned = text.lstrip()[match.end():].lstrip(" ,:-")
+                return cleaned or text
+        return text
 
     # -- Connection lifecycle ---------------------------------------------
 
@@ -440,6 +525,19 @@ class PhotonAdapter(BasePlatformAdapter):
         else:
             text = f"[Photon content type not handled: {content.get('type')}]"
             mtype = MessageType.TEXT
+
+        # Group-mention gating (parity with BlueBubbles). In group chats with
+        # require_mention enabled, drop messages that don't hit a wake word;
+        # strip the leading wake word from the ones that do. DMs are never
+        # gated.
+        if chat_type == "group" and self.require_mention:
+            if not self._message_matches_mention_patterns(text):
+                logger.debug(
+                    "[photon] ignoring group message "
+                    "(require_mention=true, no mention pattern matched)"
+                )
+                return
+            text = self._clean_mention_text(text)
 
         source = self.build_source(
             chat_id=space_id,

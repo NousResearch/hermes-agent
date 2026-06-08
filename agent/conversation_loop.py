@@ -5245,5 +5245,39 @@ def run_conversation(
         _turn_exit_reason=_turn_exit_reason,
     )
 
+    # Background memory/skill review runs after the response is delivered
+    # so it never competes with the user's task for model attention.
+    if (
+        final_response
+        and not interrupted
+        and (_should_review_memory or _should_review_skills)
+    ):
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=list(messages),
+                review_memory=_should_review_memory,
+                review_skills=_should_review_skills,
+            )
+        except Exception:
+            pass
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(
+            "on_session_end",
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            completed=completed,
+            interrupted=interrupted,
+            model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+    except Exception as exc:
+        logger.warning("on_session_end hook failed: %s", exc)
+
+    return result
+
 
 __all__ = ["run_conversation"]

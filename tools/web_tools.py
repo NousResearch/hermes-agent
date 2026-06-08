@@ -102,7 +102,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from tools.url_safety import is_safe_url
+from tools.url_safety import is_safe_url, normalize_url_for_request
 import sys
 
 logger = logging.getLogger(__name__)

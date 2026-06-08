@@ -1004,16 +1004,21 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         Combined reasoning text, or None if no reasoning found
     """
     reasoning_parts = []
+
+    def _append_reasoning_part(value) -> None:
+        if not isinstance(value, str) or not value:
+            return
+        if value not in reasoning_parts:
+            reasoning_parts.append(value)
     
     # Check direct reasoning field
     if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-        reasoning_parts.append(assistant_message.reasoning)
+        _append_reasoning_part(assistant_message.reasoning)
     
     # Check reasoning_content field (alternative name used by some providers)
     if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
         # Don't duplicate if same as reasoning
-        if assistant_message.reasoning_content not in reasoning_parts:
-            reasoning_parts.append(assistant_message.reasoning_content)
+        _append_reasoning_part(assistant_message.reasoning_content)
     
     # Check reasoning_details array (OpenRouter unified format)
     # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
@@ -1027,8 +1032,7 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                     or detail.get('content')
                     or detail.get('text')
                 )
-                if summary and summary not in reasoning_parts:
-                    reasoning_parts.append(summary)
+                _append_reasoning_part(summary)
 
     # Some providers embed reasoning directly inside assistant content
     # instead of returning structured reasoning fields.  Only fall back

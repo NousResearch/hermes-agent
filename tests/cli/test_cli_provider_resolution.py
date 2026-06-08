@@ -569,6 +569,66 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     assert saved_env["MODEL"] == "llm"
 
 
+def test_model_flow_custom_clears_stale_global_context_length(monkeypatch):
+    saved_cfg = {
+        "model": {
+            "default": "old-model",
+            "provider": "openai-codex",
+            "base_url": "",
+            "context_length": 64000,
+        }
+    }
+    captured_provider = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": [],
+            "probed_url": f"{base_url.rstrip('/')}/models",
+            "resolved_base_url": None,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved_cfg)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
+    monkeypatch.setattr(
+        "hermes_cli.main._save_custom_provider",
+        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None: captured_provider.update(
+            {"model": model, "context_length": context_length, "name": name}
+        ),
+    )
+
+    answers = iter(
+        [
+            "https://deepsproxy.example.com/v1",
+            "",  # api mode: auto-detect
+            "deepseek-chat",
+            "64k",
+            "deepsproxy",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "test-key")
+
+    hermes_main._model_flow_custom({"model": dict(saved_cfg["model"])})
+
+    assert saved_cfg["model"]["provider"] == "custom"
+    assert saved_cfg["model"]["base_url"] == "https://deepsproxy.example.com/v1"
+    assert "context_length" not in saved_cfg["model"]
+    assert captured_provider == {
+        "model": "deepseek-chat",
+        "context_length": 64000,
+        "name": "deepsproxy",
+    }
+
+
 def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     saved_cfg = {"model": {"default": "", "provider": "custom", "base_url": ""}}
     captured_provider = {}

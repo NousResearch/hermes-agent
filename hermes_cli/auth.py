@@ -6273,6 +6273,11 @@ def _save_model_choice(model_id: str) -> None:
     # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
+        # ``model.context_length`` is a global override. Older custom-endpoint
+        # setup flows could leave a provider-specific value here, which then
+        # leaked to every later provider/model selection. Model-specific
+        # context belongs under provider/custom-provider metadata.
+        config["model"].pop("context_length", None)
     else:
         config["model"] = {"default": model_id}
     save_config(config)

@@ -4124,6 +4124,7 @@ def _model_flow_custom(config):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = effective_url
+        _clear_model_context_length_override(model)
         if effective_key:
             model["api_key"] = effective_key
         if api_mode:
@@ -4150,6 +4151,7 @@ def _model_flow_custom(config):
             _caller_model = {"default": _caller_model} if _caller_model else {}
         _caller_model["provider"] = "custom"
         _caller_model["base_url"] = effective_url
+        _clear_model_context_length_override(_caller_model)
         if effective_key:
             _caller_model["api_key"] = effective_key
         if api_mode:
@@ -4259,6 +4261,19 @@ def _auto_provider_name(base_url: str) -> str:
     else:
         name = name.capitalize()
     return name
+
+
+def _clear_model_context_length_override(model: dict) -> None:
+    """Remove stale global context-length override from ``model`` config.
+
+    ``model.context_length`` applies globally to the active runtime model. The
+    custom-provider wizard asks for a context length for the selected custom
+    model, but that value must be saved under provider metadata, not retained in
+    the global ``model`` block where it would affect OpenAI, Anthropic, Codex,
+    and every subsequent provider switch.
+    """
+    if isinstance(model, dict):
+        model.pop("context_length", None)
 
 
 def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
@@ -4917,6 +4932,7 @@ def _model_flow_named_custom(config, provider_info):
         if config_api_key:
             model["api_key"] = config_api_key
     # Apply api_mode from custom_providers entry, or clear stale value
+    _clear_model_context_length_override(model)
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:
         model["api_mode"] = custom_api_mode
@@ -6243,6 +6259,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        _clear_model_context_length_override(model)
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:

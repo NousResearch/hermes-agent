@@ -17,6 +17,9 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         "⏳ Retrying in 4.2s (attempt 1/3)...",
         "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
         "⚠️ Max retries (3) exhausted — trying fallback...",
+        "⚠️ Empty response from model — retrying (1/3)",
+        "⚠️ Model returning empty responses — switching to fallback provider...",
+        "↻ Switched to fallback: gpt-5.1 (openai)",
     ]
 
     for message in noisy_messages:

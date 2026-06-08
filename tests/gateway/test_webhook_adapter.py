@@ -468,6 +468,89 @@ class TestEventFilter:
 
 
 # ===================================================================
+# Ignored actors
+# ===================================================================
+
+
+class TestIgnoredActors:
+    """Routes can drop self-authored webhook events before agent dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_ignored_actor_id_skips_agent_dispatch(self):
+        routes = {
+            "basecamp": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "process {type}",
+                "ignored_actor_ids": [51935392],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/basecamp",
+                json={"type": "card_created", "actor": {"id": 51935392, "name": "Quinn Bot"}},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"status": "ignored", "reason": "ignored_actor", "event": "card_created"}
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ignored_actor_name_checks_creator_author_user_fields(self):
+        routes = {
+            "basecamp": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "process {type}",
+                "ignored_actor_names": ["Quinn Bot", "Hermes"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for field in ("creator", "author", "user"):
+                resp = await cli.post(
+                    "/webhooks/basecamp",
+                    json={"type": "comment_created", field: {"id": 123, "name": "Hermes"}},
+                    headers={"X-Request-ID": f"delivery-{field}"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "ignored"
+                assert data["reason"] == "ignored_actor"
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_ignored_actor_still_dispatches(self):
+        routes = {
+            "basecamp": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "process {type}",
+                "ignored_actor_ids": [51935392],
+                "ignored_actor_names": ["Quinn Bot"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/basecamp",
+                json={"type": "card_created", "actor": {"id": 48470555, "name": "Anthony Franco"}},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+
+
+# ===================================================================
 # HTTP handling
 # ===================================================================
 

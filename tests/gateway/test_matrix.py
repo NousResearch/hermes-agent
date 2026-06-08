@@ -2859,3 +2859,66 @@ class TestCreateMatrixSession:
                     assert session.connector is fake_connector
                 finally:
                     await session.close()
+
+
+
+# ---------------------------------------------------------------------------
+# _send_local_file: file-not-found handling
+# ---------------------------------------------------------------------------
+
+class TestSendLocalFileNotFound:
+    """Verify _send_local_file returns SendResult instead of sending to wrong room."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        # Mock send() so we can assert it is NOT called for missing files
+        self.adapter.send = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_failure(self, tmp_path):
+        """Missing file returns SendResult(success=False) without calling send()."""
+        missing = str(tmp_path / "nonexistent.png")
+        result = await self.adapter._send_local_file(
+            room_id="!room:example.org",
+            file_path=missing,
+            msgtype="m.image",
+            caption="test caption",
+            reply_to="$event123",
+            metadata={"thread_id": "$thread456"},
+        )
+        assert result.success is False
+        assert "file not found" in result.error
+        assert missing in result.error
+        # send() must NOT have been called (no message to wrong room)
+        self.adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_file_does_not_leak_to_main_room(self, tmp_path):
+        """Even without metadata, missing file does not send error to any room."""
+        missing = str(tmp_path / "gone.jpg")
+        result = await self.adapter._send_local_file(
+            room_id="!room:example.org",
+            file_path=missing,
+            msgtype="m.image",
+        )
+        assert result.success is False
+        self.adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_existing_file_still_uploads(self, tmp_path):
+        """Existing file still goes through upload path (regression guard)."""
+        real_file = tmp_path / "real.png"
+        real_file.write_bytes(b"\x89PNG\r\n")
+        # Mock _upload_and_send so we don't need a real Matrix connection
+        self.adapter._upload_and_send = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+        result = await self.adapter._send_local_file(
+            room_id="!room:example.org",
+            file_path=str(real_file),
+            msgtype="m.image",
+        )
+        assert result.success is True
+        self.adapter._upload_and_send.assert_called_once()
+        # send() should not be called for existing files either
+        self.adapter.send.assert_not_called()

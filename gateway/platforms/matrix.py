@@ -1491,9 +1491,8 @@ class MatrixAdapter(BasePlatformAdapter):
         """Read a local file and upload it."""
         p = Path(file_path).expanduser()
         if not p.exists():
-            return await self.send(
-                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
-            )
+            logger.warning("Matrix: MEDIA file not found, skipping: %s", file_path)
+            return SendResult(success=False, error=f"file not found: {file_path}")
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"

@@ -1,3 +1,16 @@
+# ---------------------------------------------------------------------------
+# Hermes Agent — fork « Jean-Billie » (greffe via le plugin plugins/jb_outbound/).
+#
+# Basé sur Hermes Agent de Nous Research, distribué sous licence MIT.
+# Ce fork n'ajoute QUE le plugin jb_outbound + le wiring Docker/CI : le cœur
+# Hermes est inchangé pour garder un rebase upstream trivial. Crédit et licence
+# d'origine (MIT, Nous Research) conservés — voir LICENSE.
+#
+# Le plugin est embarqué tel quel par le `COPY . .` plus bas (plugins/jb_outbound/).
+# Il est opt-in via `plugins.enabled: [jb_outbound]` dans le config.yaml que le
+# bundle Jean-Billie dépose dans ~/.hermes ; son listener loopback se lance au
+# chargement des plugins quand la gateway démarre (voir le CMD en fin de fichier).
+# ---------------------------------------------------------------------------
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
 # Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm + corepack from the
@@ -323,4 +336,19 @@ VOLUME [ "/opt/data" ]
 # exit code. Without the wrapper-as-ENTRYPOINT, leading-dash args
 # like `--version` would be intercepted by /init's POSIX shell.
 ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
-CMD [ ]
+# Fork Jean-Billie: démarrer la gateway multi-canal par défaut.
+#
+# Upstream laisse CMD vide → main-wrapper.sh exec `hermes` (REPL/--tui interactif).
+# Pour la box Jean-Billie l'image doit lancer la gateway dès `docker run` (sans
+# argument) : main-wrapper.sh route `gateway run` vers `hermes gateway run`, ce
+# qui charge les plugins activés (plugins.enabled: [jb_outbound] dans le
+# config.yaml du bundle) et démarre donc le listener loopback du plugin.
+#
+# `hermes gateway run` lit ~/.hermes/.env via load_hermes_dotenv() au démarrage,
+# donc OPENROUTER_API_KEY / COMPOSIO_* / MCP_URL / JB_DRAFT_ADDR /
+# JB_DECISION_PUSH_URL déposés par le bundle sont visibles du process et du plugin.
+#
+# Reste surchargeable : `docker run <image> chat -q "hi"`, `--tui`, `bash`, etc.
+# La golden image (lane monorepo) épingle cette image par digest et peut garder
+# ou surcharger ce CMD.
+CMD [ "gateway", "run" ]

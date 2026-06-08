@@ -1,0 +1,148 @@
+# Fork Jean-Billie — build l'image Hermes (avec le plugin jb_outbound),
+# pousse sur GHCR, et émet le DIGEST que la golden image (lane monorepo,
+# branche feat/golden-image) épinglera dans JB_HERMES_IMAGE.
+#
+# Pourquoi un workflow distinct de docker-publish.yml :
+#   - docker-publish.yml est gardé par `if: github.repository == 'NousResearch/
+#     hermes-agent'` et pousse sur Docker Hub (nousresearch/hermes-agent) →
+#     no-op sur le fork. On ne le touche pas pour garder le rebase upstream
+#     trivial.
+#   - Ici on cible GHCR sous le namespace du fork et on expose le digest.
+#
+# ⚠️ NAMESPACE GHCR — à arbitrer avec le founder (remonté à l'orchestrateur) :
+#   L'org `jean-billie` N'EXISTE PAS sous le compte. Par défaut on publie sous
+#   le owner du dépôt → ghcr.io/gabiar-maker/hermes. Si l'org `jean-billie` est
+#   créé plus tard, il suffira de changer IMAGE_NAME (et de donner au dépôt le
+#   droit `write:packages` sur cet org). Aucune autre modif nécessaire.
+#
+# Plateforme : linux/amd64 uniquement (cf. tasks/lane-a3-fork.md). La vraie
+# topologie réseau (network_mode: host) se valide en CI Linux, pas sous Docker
+# Desktop/Windows.
+name: Build & Push (fork → GHCR)
+
+on:
+  push:
+    branches: [feat/dockerfile-ci, main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - 'docker/**'
+      - 'plugins/jb_outbound/**'
+      - '.github/workflows/build-push.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - 'docker/**'
+      - 'plugins/jb_outbound/**'
+      - '.github/workflows/build-push.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write  # push + cache vers ghcr.io sous le owner du dépôt
+
+concurrency:
+  group: build-push-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Namespace GHCR = owner du dépôt (gabiar-maker), forcé en minuscules pour
+  # respecter les contraintes de nom d'image OCI. Voir l'arbitrage en tête.
+  REGISTRY: ghcr.io
+  IMAGE_BASENAME: hermes
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      # Digest immuable de l'image poussée — consommé par la lane monorepo.
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      # GHCR exige un nom d'image tout en minuscules. github.repository_owner
+      # ('gabiar-maker') l'est déjà, mais on normalise par sûreté si le fork
+      # est recloné sous un autre owner.
+      - name: Compute image name
+        id: meta
+        run: |
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=${REGISTRY}/${owner}/${IMAGE_BASENAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags lisibles (pour les humains). La PROD épingle par DIGEST, jamais par
+      # ces tags flottants — voir les garde-fous de la lane.
+      - name: Docker metadata (tags + labels)
+        id: docker_meta
+        uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96  # v5.6.1
+        with:
+          images: ${{ steps.meta.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=long
+          labels: |
+            org.opencontainers.image.title=hermes-agent (fork Jean-Billie)
+            org.opencontainers.image.description=Hermes Agent + plugin jb_outbound (rien ne part sans accord). Basé sur Hermes Agent de Nous Research (MIT).
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.vendor=Nous Research (upstream) — fork Jean-Billie
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      # Push uniquement sur push/dispatch (jamais sur les PR : pas de pollution
+      # du registre, et les forks externes n'ont pas le packages:write).
+      - name: Build & push (linux/amd64)
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          provenance: false
+          cache-from: type=gha,scope=fork-amd64
+          cache-to: type=gha,mode=max,scope=fork-amd64
+
+      # Émission du DIGEST : output de job + résumé lisible dans l'onglet
+      # Summary. C'est le point de synchro avec la lane monorepo.
+      - name: Emit digest
+        if: steps.build.outputs.digest != ''
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          image="${{ steps.meta.outputs.image }}"
+          pinned="${image}@${digest}"
+          echo "digest=${digest}"
+          {
+            echo "## Image fork Hermes (Jean-Billie) poussée sur GHCR"
+            echo ""
+            echo "| Champ | Valeur |"
+            echo "| --- | --- |"
+            echo "| Image | \`${image}\` |"
+            echo "| Digest | \`${digest}\` |"
+            echo "| Épinglée (à mettre dans \`JB_HERMES_IMAGE\`) | \`${pinned}\` |"
+            echo "| Plateforme | linux/amd64 |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo "> Garde-fou : la golden image épingle PAR DIGEST (\`${pinned}\`), jamais par tag flottant."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -51,8 +51,16 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly wait for background MCP discovery before the first tool snapshot."""
+def wait_for_mcp_discovery(timeout: float = 5.0) -> None:
+    """Boundedly wait for background MCP discovery before the first tool snapshot.
+
+    Discovery stays off the startup path, but the agent snapshots its tool list
+    once at build time.  Some healthy OAuth-backed HTTP MCPs (notably Notion)
+    take a couple of seconds to connect; a sub-second default lets the first
+    one-shot chat miss those tools for the entire session.  Keep the wait
+    bounded so a dead server cannot hang startup, while giving reachable servers
+    enough time to land before tool selection.
+    """
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return

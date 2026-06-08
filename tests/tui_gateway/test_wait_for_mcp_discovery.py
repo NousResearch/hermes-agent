@@ -59,6 +59,25 @@ def test_fast_thread_is_joined():
         _restore_thread_slot(saved)
 
 
+def test_default_wait_covers_slow_reachable_thread():
+    """The DEFAULT wait (no explicit timeout) must outlast a reachable-but-slow
+    server such as Notion's ~2.6s OAuth handshake.  A thread finishing at ~1.1s
+    is joined to completion under the default — regression against the old 0.75s
+    default that snapshotted tools before Notion connected, hiding its tools."""
+    saved = entry._mcp_discovery_thread
+    try:
+        t = threading.Thread(target=lambda: time.sleep(1.1), daemon=True)
+        t.start()
+        entry._mcp_discovery_thread = t
+        start = time.monotonic()
+        entry.wait_for_mcp_discovery()  # default timeout, no override
+        elapsed = time.monotonic() - start
+        assert not t.is_alive()  # default wait outlasted the slow connect
+        assert elapsed >= 1.0
+    finally:
+        _restore_thread_slot(saved)
+
+
 def test_hung_thread_is_bounded_by_timeout():
     """A slow/dead server must NOT re-introduce the startup hang — the join is
     bounded by the timeout and returns even though the thread is still alive."""

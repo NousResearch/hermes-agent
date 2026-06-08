@@ -4943,3 +4943,160 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestBuildTableCardPayload(unittest.TestCase):
+    """_build_table_card_payload converts markdown tables to Feishu cards."""
+
+    # -- helper -----------------------------------------------------------
+
+    def _parse_card(self, content):
+        """Run _build_table_card_payload and return parsed card dict."""
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        raw = _build_table_card_payload(content)
+        self.assertIsNotNone(raw, "card payload should not be None")
+        return json.loads(raw)
+
+    # -- single table -----------------------------------------------------
+
+    def test_single_table_becomes_card(self):
+        table = "| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |"
+        card = self._parse_card(table)
+
+        self.assertEqual(card["config"]["wide_screen_mode"], True)
+        self.assertEqual(card["header"]["template"], "blue")
+        self.assertIn("📊", card["header"]["title"]["content"])
+        self.assertEqual(len(card["elements"]), 1)
+        self.assertEqual(card["elements"][0]["tag"], "markdown")
+        md = card["elements"][0]["content"]
+        self.assertIn("| Name | Age |", md)
+        self.assertIn("| Alice | 30 |", md)
+        self.assertIn("| Bob | 25 |", md)
+
+    # -- mixed text + table -----------------------------------------------
+
+    def test_text_before_and_after_table(self):
+        content = (
+            "Here is the report:\n"
+            "\n"
+            "| Col |\n| --- |\n| val |\n"
+            "\n"
+            "End of report."
+        )
+        card = self._parse_card(content)
+        elements = card["elements"]
+        # Should have: text-before, table, text-after
+        self.assertEqual(len(elements), 3)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("Here is the report", elements[0]["content"])
+        self.assertEqual(elements[1]["tag"], "markdown")
+        self.assertIn("| Col |", elements[1]["content"])
+        self.assertEqual(elements[2]["tag"], "markdown")
+        self.assertIn("End of report", elements[2]["content"])
+
+    # -- multiple tables --------------------------------------------------
+
+    def test_two_tables_in_one_message(self):
+        content = (
+            "| A |\n| --- |\n| 1 |\n"
+            "\nSome text\n\n"
+            "| B |\n| --- |\n| 2 |"
+        )
+        card = self._parse_card(content)
+        elements = card["elements"]
+        # table1, text, table2
+        self.assertEqual(len(elements), 3)
+        self.assertIn("| A |", elements[0]["content"])
+        self.assertIn("Some text", elements[1]["content"])
+        self.assertIn("| B |", elements[2]["content"])
+
+    # -- large table truncation -------------------------------------------
+
+    def test_large_table_truncated_to_50_rows(self):
+        rows = "\n".join(f"| row{i} |" for i in range(80))
+        content = f"| Id |\n| --- |\n{rows}"
+        card = self._parse_card(content)
+        elements = card["elements"]
+        # table + truncation note
+        self.assertTrue(len(elements) >= 2)
+        table_md = elements[0]["content"]
+        # Count data rows (lines excluding header and separator)
+        data_lines = [
+            ln for ln in table_md.split("\n")
+            if ln.startswith("|") and not ln.startswith("| Id") and not ln.startswith("| ---")
+        ]
+        self.assertEqual(len(data_lines), 50)
+        # Truncation warning
+        last = elements[-1]["content"]
+        self.assertIn("截断", last)
+
+    # -- malformed table falls back ---------------------------------------
+
+    def test_pipe_line_without_separator_produces_text_card(self):
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        # A string that looks like a pipe line but has no separator row.
+        # _parse_table_segments treats it as plain text, so
+        # _build_table_card_payload still returns a valid card (text-only).
+        result = _build_table_card_payload("| just a pipe line |\nnot a table")
+        card = json.loads(result)
+        self.assertEqual(card["elements"][0]["tag"], "markdown")
+
+    def test_empty_content_returns_none(self):
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        result = _build_table_card_payload("")
+        self.assertIsNone(result)
+
+    def test_whitespace_only_returns_none(self):
+        from gateway.platforms.feishu import _build_table_card_payload
+
+        result = _build_table_card_payload("   \n  \n  ")
+        self.assertIsNone(result)
+
+    # -- alignment markers stripped ---------------------------------------
+
+    def test_alignment_markers_are_replaced(self):
+        table = "| L | C | R |\n| :--- | :---: | ---: |\n| a | b | c |"
+        card = self._parse_card(table)
+        md = card["elements"][0]["content"]
+        self.assertNotIn(":---", md)
+        self.assertNotIn("---:", md)
+        self.assertIn("---", md)
+
+    # -- _build_outbound_payload integration ------------------------------
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_returns_interactive_for_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| X |\n| --- |\n| 1 |"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["config"]["wide_screen_mode"], True)
+        self.assertIn("X", card["header"]["title"]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_falls_back_for_plain_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "no tables here"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload)["text"], content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_falls_back_for_markdown_only(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "**bold** and _italic_"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")

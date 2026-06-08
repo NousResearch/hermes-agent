@@ -15,6 +15,12 @@ from scripts.gc_log_analyzer import GcLogAnalyzer
 from scripts.thread_stack_analyzer import ThreadStackAnalyzer
 
 
+def _config_default(section: str, key: str, fallback=None):
+    """从 DEFAULT_THRESHOLDS 读取默认值。"""
+    from config.default_thresholds import DEFAULT_THRESHOLDS
+    return DEFAULT_THRESHOLDS.get(section, {}).get(key, fallback)
+
+
 class DebugToolsCLI:
     """统一调试工具 CLI，通过子命令方式使用三个分析器。"""
 
@@ -32,9 +38,9 @@ class DebugToolsCLI:
         # gc 子命令
         gc_parser = subparsers.add_parser("gc", help="GC 日志分析")
         gc_parser.add_argument("--host", required=True, help="目标主机地址")
-        gc_parser.add_argument("--ssh-user", default="root", help="SSH 用户名 (默认: root)")
-        gc_parser.add_argument("--ssh-key", help="SSH 私钥路径")
-        gc_parser.add_argument("--ssh-port", type=int, default=22, help="SSH 端口 (默认: 22)")
+        gc_parser.add_argument("--ssh-user", default=_config_default("ssh", "default_user", "root"), help="SSH 用户名")
+        gc_parser.add_argument("--ssh-key", default=_config_default("ssh", "default_key_path"), help="SSH 私钥路径")
+        gc_parser.add_argument("--ssh-port", type=int, default=_config_default("ssh", "default_port", 22), help="SSH 端口")
         gc_parser.add_argument("--gc-log-path", help="GC 日志文件路径")
         gc_parser.add_argument("--start", help="开始时间")
         gc_parser.add_argument("--end", help="结束时间")
@@ -42,23 +48,23 @@ class DebugToolsCLI:
         # stack 子命令
         stack_parser = subparsers.add_parser("stack", help="线程堆栈分析")
         stack_parser.add_argument("--host", required=True, help="目标主机地址")
-        stack_parser.add_argument("--ssh-user", default="root", help="SSH 用户名")
-        stack_parser.add_argument("--ssh-key", help="SSH 私钥路径")
-        stack_parser.add_argument("--ssh-port", type=int, default=22, help="SSH 端口")
+        stack_parser.add_argument("--ssh-user", default=_config_default("ssh", "default_user", "root"), help="SSH 用户名")
+        stack_parser.add_argument("--ssh-key", default=_config_default("ssh", "default_key_path"), help="SSH 私钥路径")
+        stack_parser.add_argument("--ssh-port", type=int, default=_config_default("ssh", "default_port", 22), help="SSH 端口")
         stack_parser.add_argument("--pid", type=int, help="进程 PID")
-        stack_parser.add_argument("--process-name", default="catalina", help="进程名 (默认: catalina)")
+        stack_parser.add_argument("--process-name", default=_config_default("jvm", "tomcat_process_name", "catalina"), help="进程名")
         stack_parser.add_argument("--keyword", help="过滤关键字")
-        stack_parser.add_argument("--context-lines", type=int, default=10, help="上下文行数 (默认: 10)")
+        stack_parser.add_argument("--context-lines", type=int, default=_config_default("debug", "stack_context_lines", 10), help="上下文行数")
 
         # log 子命令
         log_parser = subparsers.add_parser("log", help="ES 日志检索")
-        log_parser.add_argument("--es-url", help="Elasticsearch URL")
+        log_parser.add_argument("--es-url", default=_config_default("elk", "elasticsearch_url"), help="Elasticsearch URL")
         log_parser.add_argument("--host-name", required=True, help="主机名")
         log_parser.add_argument("--start", required=True, help="开始时间")
         log_parser.add_argument("--end", required=True, help="结束时间")
         log_parser.add_argument("--keyword", help="搜索关键字")
         log_parser.add_argument("--level", help="日志级别")
-        log_parser.add_argument("--size", type=int, default=100, help="返回条数 (默认: 100)")
+        log_parser.add_argument("--size", type=int, default=_config_default("debug", "es_default_size", 100), help="返回条数")
 
         return parser
 

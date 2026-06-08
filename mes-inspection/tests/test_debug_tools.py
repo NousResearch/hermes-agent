@@ -155,3 +155,19 @@ class TestDebugToolsCLIRun:
         with pytest.raises(SystemExit) as exc_info:
             cli.run([])
         assert exc_info.value.code == 1
+
+
+class TestDebugToolsConfigDefaults:
+    """验证 CLI 默认值从 config 读取。"""
+
+    def test_default_ssh_user_from_config(self):
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        assert DEFAULT_THRESHOLDS["ssh"]["default_user"] == "root"
+
+    def test_default_ssh_port_from_config(self):
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        assert DEFAULT_THRESHOLDS["ssh"]["default_port"] == 22
+
+    def test_default_process_name_from_config(self):
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        assert DEFAULT_THRESHOLDS["jvm"]["tomcat_process_name"] == "catalina"

@@ -9,7 +9,53 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
+
+
+def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("max_concurrent_sessions: 1\n", encoding="utf-8")
+    token = set_hermes_home_override(home)
+
+    def _clear_server_sessions():
+        for session in list(server._sessions.values()):
+            server._teardown_session(session)
+        server._sessions.clear()
+
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        _clear_server_sessions()
+        monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+
+        first = server._methods["session.create"]("r1", {"cols": 80})
+        assert "result" in first
+        sid = first["result"]["session_id"]
+
+        second = server._methods["session.create"]("r2", {"cols": 80})
+        assert second["error"]["message"] == (
+            "Hermes is at the active session limit (1/1). "
+            "Try again when another session finishes."
+        )
+        assert list(server._sessions) == [sid]
+
+        closed = server._methods["session.close"]("r3", {"session_id": sid})
+        assert closed["result"]["closed"] is True
+        assert active_session_registry_snapshot() == []
+
+        third = server._methods["session.create"]("r4", {"cols": 80})
+        assert "result" in third
+    finally:
+        _clear_server_sessions()
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
 
 
 def test_session_context_uses_session_cwd(monkeypatch, tmp_path):

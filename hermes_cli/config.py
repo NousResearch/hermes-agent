@@ -805,6 +805,9 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Global active chat session cap across CLI, TUI/dashboard, and messaging.
+    # None/0 = unbounded.
+    "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

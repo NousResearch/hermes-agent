@@ -3462,6 +3462,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
+        self._active_session_lease = None
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
@@ -3489,6 +3490,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+    def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
+        """Claim a global active-session slot for this CLI process."""
+        if self._active_session_lease is not None:
+            return True
+        try:
+            from hermes_cli.active_sessions import try_acquire_active_session
+
+            lease, message = try_acquire_active_session(
+                session_id=self.session_id,
+                surface=surface,
+                config=self.config,
+            )
+        except Exception as exc:
+            logger.warning("Failed to claim active session slot: %s", exc)
+            return True
+        if message:
+            if stderr:
+                print(message, file=sys.stderr)
+            else:
+                self._console_print(f"[bold red]{message}[/]")
+            return False
+        self._active_session_lease = lease
+        try:
+            atexit.register(self._release_active_session)
+        except Exception:
+            pass
+        return True
+
+    def _release_active_session(self) -> None:
+        lease = getattr(self, "_active_session_lease", None)
+        if lease is None:
+            return
+        try:
+            lease.release()
+        except Exception:
+            logger.debug("Failed to release active session slot", exc_info=True)
+        finally:
+            self._active_session_lease = None
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint for high-frequency background updates.
@@ -10497,6 +10537,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
+        if not self._claim_active_session("cli"):
+            return
+
         # Detect light/dark terminal mode now (before pt grabs the tty).
         # Caches the result so subsequent _hex_to_ansi / style calls
         # don't risk re-querying mid-render.
@@ -12918,6 +12961,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     pass
             _run_cleanup()
             self._print_exit_summary()
+            self._release_active_session()
 
         # Deferred relaunch: /update sets _pending_relaunch so the exec
         # happens here — after prompt_toolkit has exited and fully restored
@@ -13281,219 +13325,224 @@ def main(
     
     # Handle single query mode
     if query or image:
-        query, single_query_images = _collect_query_images(query, image)
-        # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
-        # the actual task description lives in the task body. Mirror the
-        # gateway/CLI behaviour for inbound images by scanning the body for
-        # local image paths and http(s) image URLs and attaching them to the
-        # worker's first turn. Without this, users who paste a screenshot
-        # path or URL into a kanban task body never get it routed to the
-        # model's vision input.
-        single_query_image_urls: list[str] = []
-        _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
-        if _kanban_task_id:
-            try:
-                from hermes_cli import kanban_db as _kb
-                from agent.image_routing import extract_image_refs as _extract_refs
-
-                _conn = _kb.connect()
+        if not cli._claim_active_session("cli", stderr=bool(quiet)):
+            sys.exit(1)
+        try:
+            query, single_query_images = _collect_query_images(query, image)
+            # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
+            # the actual task description lives in the task body. Mirror the
+            # gateway/CLI behaviour for inbound images by scanning the body for
+            # local image paths and http(s) image URLs and attaching them to the
+            # worker's first turn. Without this, users who paste a screenshot
+            # path or URL into a kanban task body never get it routed to the
+            # model's vision input.
+            single_query_image_urls: list[str] = []
+            _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+            if _kanban_task_id:
                 try:
-                    _task = _kb.get_task(_conn, _kanban_task_id)
-                finally:
-                    try:
-                        _conn.close()
-                    except Exception:
-                        pass
-                _body = getattr(_task, "body", "") if _task is not None else ""
-                if _body:
-                    _kb_paths, _kb_urls = _extract_refs(_body)
-                    if _kb_paths:
-                        # Dedupe against any --image the user already passed.
-                        _seen = {str(p) for p in single_query_images}
-                        for _p in _kb_paths:
-                            if _p not in _seen:
-                                _seen.add(_p)
-                                single_query_images.append(Path(_p))
-                    if _kb_urls:
-                        single_query_image_urls.extend(_kb_urls)
-            except Exception as _exc:
-                # Best-effort enrichment; never block worker startup on it.
-                logger.debug("kanban image-ref extraction failed: %s", _exc)
-        if quiet:
-            # Quiet mode: suppress banner, spinner, tool previews.
-            # Only print the final response and parseable session info.
-            cli.tool_progress_mode = "off"
-            if cli._ensure_runtime_credentials():
-                effective_query: Any = query
-                if single_query_images or single_query_image_urls:
-                    # Honour the same image-routing decision used by the
-                    # interactive path. With a vision-capable model (incl.
-                    # custom-provider models declared via
-                    # `model.supports_vision: true`), attach images natively
-                    # as image_url content parts. Otherwise fall back to the
-                    # text-pipeline (vision_analyze pre-description).
-                    _img_mode = "text"
-                    _build_parts = None
-                    try:
-                        from agent.image_routing import (
-                            build_native_content_parts as _build_parts,  # noqa: F811
-                        )
-                        from agent.image_routing import decide_image_input_mode
-                        from hermes_cli.config import load_config
+                    from hermes_cli import kanban_db as _kb
+                    from agent.image_routing import extract_image_refs as _extract_refs
 
-                        _img_mode = decide_image_input_mode(
-                            (cli.provider or "").strip(),
-                            (cli.model or "").strip(),
-                            load_config(),
-                        )
-                    except Exception:
-                        _img_mode = "text"
-
-                    if _img_mode == "native" and _build_parts is not None:
+                    _conn = _kb.connect()
+                    try:
+                        _task = _kb.get_task(_conn, _kanban_task_id)
+                    finally:
                         try:
-                            _parts, _skipped = _build_parts(
-                                query if isinstance(query, str) else "",
-                                [str(p) for p in single_query_images],
-                                image_urls=list(single_query_image_urls) or None,
+                            _conn.close()
+                        except Exception:
+                            pass
+                    _body = getattr(_task, "body", "") if _task is not None else ""
+                    if _body:
+                        _kb_paths, _kb_urls = _extract_refs(_body)
+                        if _kb_paths:
+                            # Dedupe against any --image the user already passed.
+                            _seen = {str(p) for p in single_query_images}
+                            for _p in _kb_paths:
+                                if _p not in _seen:
+                                    _seen.add(_p)
+                                    single_query_images.append(Path(_p))
+                        if _kb_urls:
+                            single_query_image_urls.extend(_kb_urls)
+                except Exception as _exc:
+                    # Best-effort enrichment; never block worker startup on it.
+                    logger.debug("kanban image-ref extraction failed: %s", _exc)
+            if quiet:
+                # Quiet mode: suppress banner, spinner, tool previews.
+                # Only print the final response and parseable session info.
+                cli.tool_progress_mode = "off"
+                if cli._ensure_runtime_credentials():
+                    effective_query: Any = query
+                    if single_query_images or single_query_image_urls:
+                        # Honour the same image-routing decision used by the
+                        # interactive path. With a vision-capable model (incl.
+                        # custom-provider models declared via
+                        # `model.supports_vision: true`), attach images natively
+                        # as image_url content parts. Otherwise fall back to the
+                        # text-pipeline (vision_analyze pre-description).
+                        _img_mode = "text"
+                        _build_parts = None
+                        try:
+                            from agent.image_routing import (
+                                build_native_content_parts as _build_parts,  # noqa: F811
                             )
-                            if any(p.get("type") == "image_url" for p in _parts):
-                                effective_query = _parts
-                            else:
-                                # All images unreadable — text fallback.
-                                # ``_preprocess_images_with_vision`` only knows
-                                # about local files; URLs would be lost there,
-                                # so keep the original query text intact when
-                                # only URLs were supplied.
+                            from agent.image_routing import decide_image_input_mode
+                            from hermes_cli.config import load_config
+
+                            _img_mode = decide_image_input_mode(
+                                (cli.provider or "").strip(),
+                                (cli.model or "").strip(),
+                                load_config(),
+                            )
+                        except Exception:
+                            _img_mode = "text"
+
+                        if _img_mode == "native" and _build_parts is not None:
+                            try:
+                                _parts, _skipped = _build_parts(
+                                    query if isinstance(query, str) else "",
+                                    [str(p) for p in single_query_images],
+                                    image_urls=list(single_query_image_urls) or None,
+                                )
+                                if any(p.get("type") == "image_url" for p in _parts):
+                                    effective_query = _parts
+                                else:
+                                    # All images unreadable — text fallback.
+                                    # ``_preprocess_images_with_vision`` only knows
+                                    # about local files; URLs would be lost there,
+                                    # so keep the original query text intact when
+                                    # only URLs were supplied.
+                                    if single_query_images:
+                                        effective_query = cli._preprocess_images_with_vision(
+                                            query, single_query_images, announce=False,
+                                        )
+                            except Exception:
                                 if single_query_images:
                                     effective_query = cli._preprocess_images_with_vision(
                                         query, single_query_images, announce=False,
                                     )
-                        except Exception:
-                            if single_query_images:
-                                effective_query = cli._preprocess_images_with_vision(
-                                    query, single_query_images, announce=False,
-                                )
-                    elif single_query_images:
-                        effective_query = cli._preprocess_images_with_vision(
-                            query,
-                            single_query_images,
-                            announce=False,
-                        )
-                turn_route = cli._resolve_turn_agent_config(effective_query)
-                if turn_route["signature"] != cli._active_agent_route_signature:
-                    cli.agent = None
-                if cli._init_agent(
-                    model_override=turn_route["model"],
-                    runtime_override=turn_route["runtime"],
-                    request_overrides=turn_route.get("request_overrides"),
-                ):
-                    cli.agent.quiet_mode = True
-                    cli.agent.suppress_status_output = True
-                    # Suppress streaming display callbacks so stdout stays
-                    # machine-readable (no styled "Hermes" box, no tool-gen
-                    # status lines).  The response is printed once below.
-                    cli.agent.stream_delta_callback = None
-                    cli.agent.tool_gen_callback = None
-                    try:
-                        result = cli.agent.run_conversation(
-                            user_message=effective_query,
-                            conversation_history=cli.conversation_history,
-                        )
-                    except KeyboardInterrupt:
-                        _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
-                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                        sys.exit(130)
-                    # Sync session_id if mid-run compression created a
-                    # continuation session. The exit line below reports
-                    # session_id to stderr for automation wrappers; without
-                    # this sync it would point at the ended parent.
-                    if (
-                        getattr(cli.agent, "session_id", None)
-                        and cli.agent.session_id != cli.session_id
+                        elif single_query_images:
+                            effective_query = cli._preprocess_images_with_vision(
+                                query,
+                                single_query_images,
+                                announce=False,
+                            )
+                    turn_route = cli._resolve_turn_agent_config(effective_query)
+                    if turn_route["signature"] != cli._active_agent_route_signature:
+                        cli.agent = None
+                    if cli._init_agent(
+                        model_override=turn_route["model"],
+                        runtime_override=turn_route["runtime"],
+                        request_overrides=turn_route.get("request_overrides"),
                     ):
-                        cli.session_id = cli.agent.session_id
-                    response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                    # Surface backend errors that produced no visible output
-                    # (e.g. invalid model slug → provider 4xx). Mirrors the
-                    # interactive CLI path. Write to stderr so piped stdout
-                    # stays clean for automation wrappers.
-                    if (
-                        not response
-                        and isinstance(result, dict)
-                        and result.get("error")
-                        and (result.get("failed") or result.get("partial"))
-                    ):
-                        print(f"Error: {result['error']}", file=sys.stderr)
-                    elif response:
-                        print(response)
-
-                    # Kanban goal-loop mode: a worker spawned for a
-                    # goal_mode card keeps working in THIS session until an
-                    # auxiliary judge agrees the card is done, the worker
-                    # terminates the task itself, or the turn budget runs
-                    # out (→ sticky block). Gated on the env vars the
-                    # dispatcher sets in `_default_spawn`; a no-op for every
-                    # normal worker and every non-kanban `-q` run.
-                    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+                        cli.agent.quiet_mode = True
+                        cli.agent.suppress_status_output = True
+                        # Suppress streaming display callbacks so stdout stays
+                        # machine-readable (no styled "Hermes" box, no tool-gen
+                        # status lines).  The response is printed once below.
+                        cli.agent.stream_delta_callback = None
+                        cli.agent.tool_gen_callback = None
                         try:
-                            _run_kanban_goal_loop_q(cli, response)
-                        except Exception as _goal_exc:
-                            logger.debug("kanban goal loop failed: %s", _goal_exc)
+                            result = cli.agent.run_conversation(
+                                user_message=effective_query,
+                                conversation_history=cli.conversation_history,
+                            )
+                        except KeyboardInterrupt:
+                            _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                            sys.exit(130)
+                        # Sync session_id if mid-run compression created a
+                        # continuation session. The exit line below reports
+                        # session_id to stderr for automation wrappers; without
+                        # this sync it would point at the ended parent.
+                        if (
+                            getattr(cli.agent, "session_id", None)
+                            and cli.agent.session_id != cli.session_id
+                        ):
+                            cli.session_id = cli.agent.session_id
+                        response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                        # Surface backend errors that produced no visible output
+                        # (e.g. invalid model slug → provider 4xx). Mirrors the
+                        # interactive CLI path. Write to stderr so piped stdout
+                        # stays clean for automation wrappers.
+                        if (
+                            not response
+                            and isinstance(result, dict)
+                            and result.get("error")
+                            and (result.get("failed") or result.get("partial"))
+                        ):
+                            print(f"Error: {result['error']}", file=sys.stderr)
+                        elif response:
+                            print(response)
 
-                    # Session ID goes to stderr so piped stdout is clean.
-                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-
-                    # Ensure proper exit code for automation wrappers.
-                    #
-                    # Kanban workers get a special case: when the run failed
-                    # purely because the provider rate-limited / exhausted
-                    # quota (not because the task itself is broken), exit with
-                    # the EX_TEMPFAIL sentinel instead of the generic 1. The
-                    # dispatcher's reap classifier maps that code to a
-                    # ``rate_limited`` exit and releases the task back to
-                    # ``ready`` WITHOUT incrementing the failure counter, so a
-                    # 5-hour quota window can't trip the circuit breaker and
-                    # permanently block the card. Non-kanban runs keep the
-                    # plain 0/1 contract automation wrappers expect.
-                    _exit_code = 0
-                    if isinstance(result, dict) and result.get("failed"):
-                        _exit_code = 1
-                        if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                            "failure_reason"
-                        ) in ("rate_limit", "billing"):
+                        # Kanban goal-loop mode: a worker spawned for a
+                        # goal_mode card keeps working in THIS session until an
+                        # auxiliary judge agrees the card is done, the worker
+                        # terminates the task itself, or the turn budget runs
+                        # out (→ sticky block). Gated on the env vars the
+                        # dispatcher sets in `_default_spawn`; a no-op for every
+                        # normal worker and every non-kanban `-q` run.
+                        if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
                             try:
-                                from hermes_cli.kanban_db import (
-                                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
-                                )
-                                _exit_code = _RL_CODE
-                            except Exception:
-                                _exit_code = 1
-                    sys.exit(_exit_code)
-            
-            # Exit with error code if credentials or agent init fails
-            sys.exit(1)
-        else:
-            # Single-query mode (`hermes chat -q "…"`): skip the welcome
-            # banner. Building the banner takes ~420 ms on cold start —
-            # ~200 ms of that is the version-update check, the rest is
-            # toolset / skill enumeration and Rich panel rendering. None
-            # of that is useful for a one-shot query: the user already
-            # picked the prompt, doesn't need a toolset reference, and
-            # gets the session ID + resume hint from
-            # ``_print_exit_summary()`` after the response prints.
-            #
-            # The fully-quiet ``-Q`` / ``--quiet`` machine-readable path
-            # above was already banner-free; this brings the human-
-            # facing single-query path in line so all non-interactive
-            # invocations are fast.
-            _query_label = query or ("[image attached]" if single_query_images else "")
-            if _query_label:
-                cli.console.print(f"[bold blue]Query:[/] {_query_label}")
-            # Surface security advisories before the agent runs — short
-            # banner, doesn't depend on the welcome banner being shown.
-            cli._show_security_advisories()
-            cli.chat(query, images=single_query_images or None)
-            cli._print_exit_summary()
+                                _run_kanban_goal_loop_q(cli, response)
+                            except Exception as _goal_exc:
+                                logger.debug("kanban goal loop failed: %s", _goal_exc)
+
+                        # Session ID goes to stderr so piped stdout is clean.
+                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+
+                        # Ensure proper exit code for automation wrappers.
+                        #
+                        # Kanban workers get a special case: when the run failed
+                        # purely because the provider rate-limited / exhausted
+                        # quota (not because the task itself is broken), exit with
+                        # the EX_TEMPFAIL sentinel instead of the generic 1. The
+                        # dispatcher's reap classifier maps that code to a
+                        # ``rate_limited`` exit and releases the task back to
+                        # ``ready`` WITHOUT incrementing the failure counter, so a
+                        # 5-hour quota window can't trip the circuit breaker and
+                        # permanently block the card. Non-kanban runs keep the
+                        # plain 0/1 contract automation wrappers expect.
+                        _exit_code = 0
+                        if isinstance(result, dict) and result.get("failed"):
+                            _exit_code = 1
+                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
+                                "failure_reason"
+                            ) in ("rate_limit", "billing"):
+                                try:
+                                    from hermes_cli.kanban_db import (
+                                        KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                    )
+                                    _exit_code = _RL_CODE
+                                except Exception:
+                                    _exit_code = 1
+                        sys.exit(_exit_code)
+
+                # Exit with error code if credentials or agent init fails
+                sys.exit(1)
+            else:
+                # Single-query mode (`hermes chat -q "…"`): skip the welcome
+                # banner. Building the banner takes ~420 ms on cold start —
+                # ~200 ms of that is the version-update check, the rest is
+                # toolset / skill enumeration and Rich panel rendering. None
+                # of that is useful for a one-shot query: the user already
+                # picked the prompt, doesn't need a toolset reference, and
+                # gets the session ID + resume hint from
+                # ``_print_exit_summary()`` after the response prints.
+                #
+                # The fully-quiet ``-Q`` / ``--quiet`` machine-readable path
+                # above was already banner-free; this brings the human-
+                # facing single-query path in line so all non-interactive
+                # invocations are fast.
+                _query_label = query or ("[image attached]" if single_query_images else "")
+                if _query_label:
+                    cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+                # Surface security advisories before the agent runs — short
+                # banner, doesn't depend on the welcome banner being shown.
+                cli._show_security_advisories()
+                cli.chat(query, images=single_query_images or None)
+                cli._print_exit_summary()
+        finally:
+            cli._release_active_session()
         return
     
     # Run interactive mode

@@ -13,8 +13,37 @@ from gateway.platforms.base import (
     safe_url_for_log,
     utf16_len,
     _log_safe_path,
+    _normalize_media_path,
     _prefix_within_utf16_limit,
 )
+
+
+class TestNormalizeMediaPath:
+    def test_noop_on_non_windows(self):
+        # Unix path is returned unchanged when running as a non-Windows host.
+        assert (
+            _normalize_media_path("/c/Users/x/audio.mp3", platform="linux")
+            == "/c/Users/x/audio.mp3"
+        )
+
+    def test_drive_letter_path_on_windows(self):
+        assert (
+            _normalize_media_path("/c/Users/x/audio.mp3", platform="win32")
+            == "C:/Users/x/audio.mp3"
+        )
+
+    def test_unmatched_path_on_windows_unchanged(self):
+        # An ordinary native path doesn't match any rewrite rule.
+        assert (
+            _normalize_media_path("D:/already/native.png", platform="win32")
+            == "D:/already/native.png"
+        )
+
+    def test_tmp_path_on_windows(self, monkeypatch):
+        monkeypatch.setenv("TEMP", "C:\\Temp")
+        result = _normalize_media_path("/tmp/report.pdf", platform="win32")
+        assert result.endswith("report.pdf")
+        assert "/tmp/" not in result
 
 
 class TestSecretCaptureGuidance:

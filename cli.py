@@ -5485,10 +5485,25 @@ class HermesCLI:
         if not self._resumed or not self._session_db:
             return False
 
+        try:
+            return self._do_preload_resumed_session()
+        except Exception as exc:
+            # Rich markup errors or other rendering failures should not crash
+            # session restore — fall back to a plain-text warning.  See #41645.
+            import sys
+            print(
+                f"Warning: could not display session resume info: {exc}",
+                file=sys.stderr,
+            )
+            return False
+
+    def _do_preload_resumed_session(self) -> bool:
+        """Inner implementation of _preload_resumed_session (separated for
+        try/except wrapping of Rich rendering)."""
         session_meta = self._session_db.get_session(self.session_id)
         if not session_meta:
             self._console_print(
-                f"[bold red]Session not found: {self.session_id}[/]"
+                f"[bold red]Session not found: {_escape(str(self.session_id))}[/]"
             )
             self._console_print(
                 "[dim]Use a session ID from a previous CLI run "
@@ -5504,8 +5519,9 @@ class HermesCLI:
             resolved_id = self.session_id
         if resolved_id and resolved_id != self.session_id:
             self._console_print(
-                f"[dim]Session {self.session_id} was compressed into "
-                f"{resolved_id}; resuming the descendant with your transcript.[/]"
+                f"[dim]Session {_escape(str(self.session_id))} was compressed into "
+                f"{_escape(str(resolved_id))}; resuming the descendant with your "
+                f"transcript.[/]"
             )
             self.session_id = resolved_id
             resolved_meta = self._session_db.get_session(self.session_id)
@@ -5519,10 +5535,10 @@ class HermesCLI:
             msg_count = len([m for m in restored if m.get("role") == "user"])
             title_part = ""
             if session_meta.get("title"):
-                title_part = f' "{session_meta["title"]}"'
+                title_part = f" \"{_escape(str(session_meta['title']))}\""
             accent_color = _accent_hex()
             self._console_print(
-                f"[{accent_color}]↻ Resumed session [bold]{self.session_id}[/bold]"
+                f"[{accent_color}]↻ Resumed session [bold]{_escape(str(self.session_id))}[/bold]"
                 f"{title_part} "
                 f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                 f"{len(restored)} total messages)[/]"
@@ -5531,7 +5547,7 @@ class HermesCLI:
         else:
             accent_color = _accent_hex()
             self._console_print(
-                f"[{accent_color}]Session {self.session_id} found but has no "
+                f"[{accent_color}]Session {_escape(str(self.session_id))} found but has no "
                 f"messages. Starting fresh.[/]"
             )
             return False

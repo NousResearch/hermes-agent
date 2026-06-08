@@ -629,6 +629,62 @@ class TestPreloadResumedSession:
         assert "1 user message," in output
         assert "1 user messages" not in output
 
+    def test_markup_in_session_title_is_escaped(self):
+        """Session title containing Rich markup chars must not crash (#41645)."""
+        cli = _make_cli(resume="markup_session")
+        messages = [{"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"}]
+        mock_db = MagicMock()
+        # Title with Rich markup that would cause MarkupError if unescaped
+        mock_db.get_session.return_value = {
+            "id": "markup_session",
+            "title": "Test [/] session with [bold] markup",
+        }
+        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db._conn = MagicMock()
+        cli._session_db = mock_db
+
+        buf = StringIO()
+        cli.console.file = buf
+        # Should NOT raise MarkupError
+        result = cli._preload_resumed_session()
+
+        assert result is True
+        output = buf.getvalue()
+        assert "Resumed session" in output
+        # The literal markup chars should appear escaped (as \\[/] etc.)
+        assert "markup_session" in output
+
+    def test_markup_in_session_id_is_escaped(self):
+        """Session ID with bracket chars must not crash (#41645)."""
+        cli = _make_cli(resume="test[/]id")
+        messages = [{"role": "user", "content": "hi"}]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "test[/]id", "title": None}
+        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db._conn = MagicMock()
+        cli._session_db = mock_db
+
+        buf = StringIO()
+        cli.console.file = buf
+        # Should NOT raise MarkupError
+        result = cli._preload_resumed_session()
+
+        assert result is True
+
+    def test_rendering_failure_does_not_crash(self):
+        """Rich rendering errors are caught gracefully (#41645)."""
+        cli = _make_cli(resume="crash_session")
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "crash_session", "title": None}
+        # Make get_messages_as_conversation raise to trigger the outer except
+        mock_db.get_messages_as_conversation.side_effect = RuntimeError("db error")
+        cli._session_db = mock_db
+
+        # Should NOT propagate the exception
+        result = cli._preload_resumed_session()
+        assert result is False
+
 
 # ── Tests for _handle_resume_command recap display ───────────────────
 

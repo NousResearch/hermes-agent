@@ -29,6 +29,16 @@ def manager():
 
 
 class TestCreateSession:
+    def test_startup_skills_are_normalized_ordered_and_deduplicated(self):
+        manager = SessionManager(skills=["alpha,beta", "alpha", " gamma "])
+
+        assert manager._startup_skills == ("alpha", "beta", "gamma")
+
+    def test_startup_skills_default_empty(self):
+        manager = SessionManager()
+
+        assert manager._startup_skills == ()
+
     def test_create_session_returns_state(self, manager):
         state = manager.create_session(cwd="/tmp/work")
         assert isinstance(state, SessionState)
@@ -274,6 +284,102 @@ class TestPersistence:
             manager.create_session(cwd="/work")
 
         assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-olympus", "mcp-exa"]
+
+    def test_make_agent_injects_startup_skills_as_ephemeral_system_prompt(self, monkeypatch):
+        captured = {}
+        skill_calls = {}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_build_preloaded_skills_prompt(skills, task_id=None):
+            skill_calls["skills"] = list(skills)
+            skill_calls["task_id"] = task_id
+            return "SKILL PROMPT", ["alpha", "beta"], []
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"))
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "test-model"}})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "agent.skill_commands.build_preloaded_skills_prompt",
+            fake_build_preloaded_skills_prompt,
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda *_args, **_kwargs: None)
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=None, skills=["alpha,beta"])
+            manager._make_agent(session_id="acp-session", cwd=".")
+
+        assert skill_calls == {"skills": ["alpha", "beta"], "task_id": "acp-session"}
+        assert captured["ephemeral_system_prompt"] == "SKILL PROMPT"
+        assert "prefill_messages" not in captured
+
+    def test_make_agent_raises_for_unknown_startup_skill(self, monkeypatch):
+        def fake_build_preloaded_skills_prompt(skills, task_id=None):
+            return "", [], ["missing-skill"]
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "test-model"}})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            },
+        )
+        monkeypatch.setattr(
+            "agent.skill_commands.build_preloaded_skills_prompt",
+            fake_build_preloaded_skills_prompt,
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda *_args, **_kwargs: None)
+
+        manager = SessionManager(db=None, skills="missing-skill")
+
+        with pytest.raises(ValueError, match="Unknown skill\\(s\\): missing-skill"):
+            manager._make_agent(session_id="acp-session", cwd=".")
+
+    def test_make_agent_does_not_set_ephemeral_prompt_without_skills(self, monkeypatch):
+        captured = {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "test-model"}})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda *_args, **_kwargs: None)
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=None)
+            manager._make_agent(session_id="acp-session", cwd=".")
+
+        assert "ephemeral_system_prompt" not in captured
 
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")

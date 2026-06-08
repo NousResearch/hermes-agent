@@ -166,6 +166,30 @@ def _clear_task_cwd(task_id: str) -> None:
         logger.debug("Failed to clear ACP task cwd override", exc_info=True)
 
 
+def _normalize_startup_skills(
+    skills: str | list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """Normalize launch-time skill flags into an ordered, deduplicated tuple."""
+    if not skills:
+        return ()
+    if isinstance(skills, str):
+        raw_values = [skills]
+    elif isinstance(skills, (list, tuple)):
+        raw_values = [str(item) for item in skills if item is not None]
+    else:
+        raw_values = [str(skills)]
+
+    parsed: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in raw.replace("\n", ",").split(","):
+            item = part.strip()
+            if item and item not in seen:
+                seen.add(item)
+                parsed.append(item)
+    return tuple(parsed)
+
+
 @dataclass
 class SessionState:
     """Tracks per-session state for an ACP-managed Hermes agent."""
@@ -191,7 +215,13 @@ class SessionManager:
     via ``session_search``.
     """
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(
+        self,
+        agent_factory=None,
+        db=None,
+        *,
+        skills: str | list[str] | tuple[str, ...] | None = None,
+    ):
         """
         Args:
             agent_factory: Optional callable that creates an AIAgent-like object.
@@ -199,11 +229,14 @@ class SessionManager:
                            using the current Hermes runtime provider configuration.
             db:            Optional SessionDB instance. When omitted, the default
                            SessionDB (``~/.hermes/state.db``) is lazily created.
+            skills:        Optional launch-time skills to preload into every real
+                           ACP AIAgent created by this manager.
         """
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self._startup_skills = _normalize_startup_skills(skills)
 
     # ---- public API ---------------------------------------------------------
 
@@ -614,6 +647,21 @@ class SessionManager:
             )
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+
+        if self._startup_skills:
+            from agent.skill_commands import build_preloaded_skills_prompt
+
+            skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+                list(self._startup_skills),
+                task_id=session_id,
+            )
+            if missing_skills:
+                raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+            if skills_prompt:
+                existing_prompt = kwargs.get("ephemeral_system_prompt") or ""
+                kwargs["ephemeral_system_prompt"] = "\n\n".join(
+                    part for part in (existing_prompt, skills_prompt) if part
+                ).strip()
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)

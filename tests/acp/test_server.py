@@ -53,6 +53,12 @@ def agent(mock_manager):
     return HermesACPAgent(session_manager=mock_manager)
 
 
+def test_agent_passes_startup_skills_to_default_session_manager():
+    acp_agent = HermesACPAgent(skills="alpha,beta")
+
+    assert acp_agent.session_manager._startup_skills == ("alpha", "beta")
+
+
 @pytest.mark.asyncio
 async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
     resp = await agent.new_session(cwd="/tmp")

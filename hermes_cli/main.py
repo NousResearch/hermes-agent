@@ -15548,7 +15548,7 @@ Examples:
                 acp_argv.append("--setup-browser")
             if getattr(args, "assume_yes", False):
                 acp_argv.append("--yes")
-            acp_main(acp_argv)
+            acp_main(acp_argv, skills=getattr(args, "skills", None))
         except ImportError:
             print("ACP dependencies not installed.", file=sys.stderr)
             print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)

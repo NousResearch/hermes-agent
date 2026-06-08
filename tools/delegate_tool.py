@@ -1967,11 +1967,79 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_model_override(
+    model_obj: Any,
+    parent_agent,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a per-task/top-level model override into a credential dict.
+
+    ``model_obj`` is a dict with optional ``provider`` and ``model`` keys,
+    matching the cron job model override pattern.  Returns a credential dict
+    (model, provider, base_url, api_key, api_mode) or ``None`` when no
+    override is requested.
+
+    Raises ``ValueError`` on unresolvable provider references.
+    """
+    if not model_obj or not isinstance(model_obj, dict):
+        return None
+
+    model_name = str(model_obj.get("model") or "").strip() or None
+    provider_name = str(model_obj.get("provider") or "").strip() or None
+
+    # Bare "custom" is incomplete — ignore so it doesn't break resolution.
+    if provider_name == "custom":
+        provider_name = None
+
+    if not model_name and not provider_name:
+        return None
+
+    if not provider_name:
+        # Model-only override — use parent's provider credentials, just swap
+        # the model name.  This is the common "use a cheaper model for this
+        # task" pattern.
+        return {
+            "model": model_name,
+            "provider": getattr(parent_agent, "provider", None),
+            "base_url": getattr(parent_agent, "base_url", None),
+            "api_key": None,  # inherit from parent
+            "api_mode": getattr(parent_agent, "api_mode", None),
+        }
+
+    # Provider specified — resolve full credentials via the runtime system.
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=provider_name, target_model=model_name
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot resolve model override provider '{provider_name}': {exc}. "
+            f"Check that the provider is configured (API key set, valid provider name)."
+        ) from exc
+
+    api_key = runtime.get("api_key", "")
+    if not api_key:
+        raise ValueError(
+            f"Model override provider '{provider_name}' resolved but has no API key. "
+            f"Set the API key for this provider first."
+        )
+
+    return {
+        "model": model_name or runtime.get("model"),
+        "provider": runtime.get("provider", provider_name),
+        "base_url": runtime.get("base_url"),
+        "api_key": api_key,
+        "api_mode": runtime.get("api_mode", "chat_completions"),
+    }
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    model: Optional[Dict[str, Any]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -2050,6 +2118,15 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Top-level model override (from tool call argument) overrides delegation
+    # config credentials.  Per-task overrides take further precedence.
+    top_model_creds = None
+    if model:
+        try:
+            top_model_creds = _resolve_model_override(model, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2111,26 +2188,37 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Per-task model override > top-level model override > delegation config.
+            task_model_creds = None
+            if "model" in t:
+                task_model_creds = _resolve_model_override(t["model"], parent_agent)
+                if task_model_creds is None:
+                    return tool_error(
+                        f"Task {i}: 'model' must have at least 'model' or 'provider' key."
+                    )
+            effective_creds = task_model_creds or top_model_creds or creds
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=effective_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=effective_creds["provider"],
+                override_base_url=effective_creds["base_url"],
+                override_api_key=effective_creds["api_key"],
+                override_api_mode=effective_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or effective_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else effective_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2816,6 +2904,19 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string", "description": "Provider name (e.g. 'anthropic', 'openrouter', 'xiaomi'). If omitted, inherits the parent's provider."},
+                    "model": {"type": "string", "description": "Model ID (e.g. 'claude-sonnet-4', 'deepseek/deepseek-chat'). If omitted, uses the provider's default."},
+                },
+                "description": (
+                    "Optional model override for all child agents. "
+                    "Overrides delegation.* config for this call. "
+                    "Per-task 'model' in the tasks array takes further precedence. "
+                    "Use for routing delegation to a different model tier."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2848,6 +2949,19 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "provider": {"type": "string", "description": "Provider name (e.g. 'anthropic', 'openrouter', 'xiaomi'). If omitted, inherits the parent's provider."},
+                                "model": {"type": "string", "description": "Model ID (e.g. 'claude-sonnet-4', 'deepseek/deepseek-chat'). If omitted, uses the provider's default."},
+                            },
+                            "description": (
+                                "Per-task model override. Overrides both the top-level 'model' "
+                                "and the delegation.* config for this task only. "
+                                "Use for routing different tasks to different model tiers "
+                                "(e.g. expensive model for reasoning, cheap model for formatting)."
+                            ),
                         },
                     },
                     "required": ["goal"],
@@ -2902,6 +3016,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

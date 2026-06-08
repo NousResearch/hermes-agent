@@ -2795,5 +2795,212 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestModelOverride(unittest.TestCase):
+    """Tests for per-task and top-level model override in delegate_task."""
+
+    def test_schema_has_model_top_level(self):
+        """The schema must expose a top-level 'model' property."""
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("model", props)
+        self.assertEqual(props["model"]["type"], "object")
+        self.assertIn("provider", props["model"]["properties"])
+        self.assertIn("model", props["model"]["properties"])
+
+    def test_schema_has_model_per_task(self):
+        """The schema must expose a 'model' property in task items."""
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertEqual(task_props["model"]["type"], "object")
+
+    def test_resolve_model_override_none_returns_none(self):
+        """None or empty dict returns None (no override)."""
+        parent = _make_mock_parent()
+        from tools.delegate_tool import _resolve_model_override
+        self.assertIsNone(_resolve_model_override(None, parent))
+        self.assertIsNone(_resolve_model_override({}, parent))
+        self.assertIsNone(_resolve_model_override({"model": "", "provider": ""}, parent))
+
+    def test_resolve_model_override_model_only_inherits_parent_provider(self):
+        """Model-only override keeps the parent's provider and credentials."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_mode = "chat_completions"
+        from tools.delegate_tool import _resolve_model_override
+        creds = _resolve_model_override({"model": "deepseek/deepseek-chat"}, parent)
+        self.assertEqual(creds["model"], "deepseek/deepseek-chat")
+        self.assertEqual(creds["provider"], "openrouter")
+        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
+        self.assertIsNone(creds["api_key"])  # inherit from parent
+
+    def test_resolve_model_override_bare_custom_ignored(self):
+        """Bare 'custom' provider is treated as no provider (inherits parent)."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        from tools.delegate_tool import _resolve_model_override
+        creds = _resolve_model_override({"provider": "custom", "model": "test"}, parent)
+        self.assertEqual(creds["provider"], "openrouter")
+
+    def test_resolve_model_override_with_provider_resolves_credentials(self):
+        """Provider-specified override resolves full credentials."""
+        parent = _make_mock_parent()
+        from tools.delegate_tool import _resolve_model_override
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
+            mock_resolve.return_value = {
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "test-key",
+                "api_mode": "anthropic_messages",
+            }
+            creds = _resolve_model_override(
+                {"provider": "anthropic", "model": "claude-sonnet-4"}, parent
+            )
+        self.assertEqual(creds["model"], "claude-sonnet-4")
+        self.assertEqual(creds["provider"], "anthropic")
+        self.assertEqual(creds["api_key"], "test-key")
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
+    def test_resolve_model_override_provider_no_key_raises(self):
+        """Provider with no API key raises ValueError."""
+        parent = _make_mock_parent()
+        from tools.delegate_tool import _resolve_model_override
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
+            mock_resolve.return_value = {
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "",
+                "api_mode": "anthropic_messages",
+            }
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_model_override({"provider": "anthropic"}, parent)
+            self.assertIn("no API key", str(ctx.exception))
+
+    def test_resolve_model_override_invalid_provider_raises(self):
+        """Unresolvable provider raises ValueError."""
+        parent = _make_mock_parent()
+        from tools.delegate_tool import _resolve_model_override
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
+            mock_resolve.side_effect = RuntimeError("unknown provider")
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_model_override({"provider": "nonexistent"}, parent)
+            self.assertIn("Cannot resolve", str(ctx.exception))
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_model_override_used_for_child(self, mock_creds, mock_cfg):
+        """Top-level model override is passed to _build_child_agent."""
+        mock_creds.return_value = {
+            "model": None, "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None,
+        }
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_mode = "chat_completions"
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {"status": "completed", "summary": "ok"}
+            delegate_task(
+                goal="test task",
+                model={"model": "cheap-model"},
+                parent_agent=parent,
+            )
+        _, kwargs = mock_build.call_args
+        self.assertEqual(kwargs["model"], "cheap-model")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_overrides_top_level(self, mock_creds, mock_cfg):
+        """Per-task model override takes precedence over top-level."""
+        mock_creds.return_value = {
+            "model": None, "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None,
+        }
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_mode = "chat_completions"
+
+        def _fake_run(task_index, goal, child, parent_agent):
+            return {"task_index": task_index, "status": "completed", "summary": "ok", "_child_role": "leaf"}
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child", side_effect=_fake_run) as mock_run:
+            mock_build.return_value = MagicMock()
+            delegate_task(
+                tasks=[
+                    {"goal": "task A", "model": {"model": "per-task-model"}},
+                    {"goal": "task B"},
+                ],
+                model={"model": "top-level-model"},
+                parent_agent=parent,
+            )
+        # First call: per-task model wins
+        _, kwargs_a = mock_build.call_args_list[0]
+        self.assertEqual(kwargs_a["model"], "per-task-model")
+        # Second call: top-level model used (no per-task override)
+        _, kwargs_b = mock_build.call_args_list[1]
+        self.assertEqual(kwargs_b["model"], "top-level-model")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_no_model_override_uses_delegation_config(self, mock_creds, mock_cfg):
+        """Without model override, delegation config credentials are used."""
+        mock_creds.return_value = {
+            "model": "delegation-model", "provider": "openrouter",
+            "base_url": None, "api_key": None, "api_mode": None,
+        }
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {"status": "completed", "summary": "ok"}
+            delegate_task(goal="test task", parent_agent=parent)
+        _, kwargs = mock_build.call_args
+        self.assertEqual(kwargs["model"], "delegation-model")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_per_task_model_with_provider(self, mock_creds, mock_cfg):
+        """Per-task model with provider resolves credentials independently."""
+        mock_creds.return_value = {
+            "model": None, "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None,
+        }
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_mode = "chat_completions"
+
+        def _fake_run(task_index, goal, child, parent_agent):
+            return {"task_index": task_index, "status": "completed", "summary": "ok", "_child_role": "leaf"}
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child", side_effect=_fake_run) as mock_run, \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
+            mock_build.return_value = MagicMock()
+            mock_resolve.return_value = {
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "ant-key",
+                "api_mode": "anthropic_messages",
+            }
+            delegate_task(
+                tasks=[
+                    {"goal": "reasoning task", "model": {"provider": "anthropic", "model": "claude-sonnet-4"}},
+                ],
+                parent_agent=parent,
+            )
+        _, kwargs = mock_build.call_args
+        self.assertEqual(kwargs["model"], "claude-sonnet-4")
+        self.assertEqual(kwargs["override_provider"], "anthropic")
+        self.assertEqual(kwargs["override_api_key"], "ant-key")
+
+
 if __name__ == "__main__":
     unittest.main()

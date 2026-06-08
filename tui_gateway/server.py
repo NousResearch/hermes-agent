@@ -5785,32 +5785,62 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "yolo":
-        # Per-session approval bypass — same scope as the TUI's Shift+Tab. This
-        # toggles ONLY this session's _session_yolo flag; it never writes the
-        # global approvals.mode, so it cannot change CLI / TUI / cron behavior.
+        # Approval bypass. Two scopes:
+        #   scope="session" (default) — same as the TUI's Shift+Tab. Toggles
+        #     ONLY this session's _session_yolo flag; never touches global
+        #     config, so CLI / TUI / cron behavior is unaffected.
+        #   scope="global" (Shift+click the zap) — flips the persistent global
+        #     approvals.mode in config.yaml between "off" (bypass on) and
+        #     "manual" (bypass off). This DOES affect every session, the CLI,
+        #     the TUI, and cron, and survives restarts.
+        scope = str(params.get("scope") or "session").strip().lower()
         try:
-            if session:
-                from tools.approval import (
-                    disable_session_yolo,
-                    enable_session_yolo,
-                    is_session_yolo_enabled,
-                )
+            from tools.approval import (
+                disable_session_yolo,
+                enable_session_yolo,
+                is_session_yolo_enabled,
+            )
 
-                raw = str(value or "").strip().lower()
+            raw = str(value or "").strip().lower()
+
+            def _resolve_toggle(current: bool) -> bool:
                 if raw in {"1", "on", "true", "yes"}:
+                    return True
+                if raw in {"0", "off", "false", "no"}:
+                    return False
+                return not current
+
+            if scope == "global":
+                from tools.approval import _normalize_approval_mode
+
+                cfg = _load_cfg()
+                appr = cfg.get("approvals") if isinstance(cfg, dict) else None
+                if not isinstance(appr, dict):
+                    appr = {}
+                current = _normalize_approval_mode(appr.get("mode", "manual")) == "off"
+                enable = _resolve_toggle(current)
+                # Toggle between full bypass and the default manual gate. We do
+                # not try to restore a prior "smart"/custom mode — the zap is a
+                # binary on/off affordance; users with bespoke modes set them in
+                # config.yaml.
+                _write_config_key("approvals.mode", "off" if enable else "manual")
+                nv = "1" if enable else "0"
+                # Reflect the global flip in every live session's indicator.
+                for sid, sess in list(_sessions.items()):
+                    agent = sess.get("agent")
+                    if agent is not None:
+                        _emit("session.info", sid, _session_info(agent, sess))
+                return _ok(rid, {"key": key, "value": nv, "scope": "global"})
+
+            if session:
+                current = is_session_yolo_enabled(session["session_key"])
+                enable = _resolve_toggle(current)
+                if enable:
                     enable_session_yolo(session["session_key"])
                     nv = "1"
-                elif raw in {"0", "off", "false", "no"}:
+                else:
                     disable_session_yolo(session["session_key"])
                     nv = "0"
-                else:
-                    current = is_session_yolo_enabled(session["session_key"])
-                    if current:
-                        disable_session_yolo(session["session_key"])
-                        nv = "0"
-                    else:
-                        enable_session_yolo(session["session_key"])
-                        nv = "1"
                 agent = session.get("agent")
                 if agent is not None:
                     _emit(
@@ -5820,13 +5850,14 @@ def _(rid, params: dict) -> dict:
                     )
             else:
                 current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
-                if current:
-                    os.environ.pop("HERMES_YOLO_MODE", None)
-                    nv = "0"
-                else:
+                enable = _resolve_toggle(current)
+                if enable:
                     os.environ["HERMES_YOLO_MODE"] = "1"
                     nv = "1"
-            return _ok(rid, {"key": key, "value": nv})
+                else:
+                    os.environ.pop("HERMES_YOLO_MODE", None)
+                    nv = "0"
+            return _ok(rid, {"key": key, "value": nv, "scope": "session"})
         except Exception as e:
             return _err(rid, 5001, str(e))
 

@@ -10,7 +10,8 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react'
 
 import { cn } from '@/lib/utils'
@@ -31,6 +32,12 @@ export interface PaneProps {
   defaultOpen?: boolean
   /** Forces the pane closed (track→0, aria-hidden) without writing to the store — for transient route gates. */
   disabled?: boolean
+  /** Like disabled, but keeps hoverReveal alive — collapses the track without writing to the store (e.g. narrow window). */
+  forceCollapsed?: boolean
+  /** When collapsed, float the contents over the main column on hover/focus instead of hiding them (track stays 0px). */
+  hoverReveal?: boolean
+  /** Called with true while the pane is a collapsed hover-reveal overlay, so the consumer can keep contents mounted (ready to slide). */
+  onOverlayActiveChange?: (overlayActive: boolean) => void
   id: string
   maxWidth?: WidthValue
   minWidth?: WidthValue
@@ -53,6 +60,7 @@ export interface PaneShellProps {
 interface CollectedPane {
   defaultOpen: boolean
   disabled: boolean
+  forceCollapsed: boolean
   id: string
   resizable: boolean
   side: PaneSide
@@ -61,6 +69,22 @@ interface CollectedPane {
 
 const DEFAULT_WIDTH = '16rem'
 const DEFAULT_RESIZE_MIN_WIDTH = 160
+
+// Hover-reveal slide. The enter delay is a pure-CSS hover-intent gate: a fast
+// pass-by doesn't dwell on the trigger long enough for the delay to elapse.
+const HOVER_REVEAL_SLIDE_MS = 220
+const HOVER_REVEAL_ENTER_DELAY_MS = 130
+const HOVER_REVEAL_EASE = 'cubic-bezier(0.32,0.72,0,1)'
+// Offset shadow lifting the revealed panel off the content (same both sides;
+// the mirror axis is offset-x, which is 0). Same color on light + dark.
+const HOVER_REVEAL_SHADOW = '0px -18px 18px -5px #00000012'
+// Edge trigger strip, inset past the OS window-resize grab area.
+const HOVER_REVEAL_TRIGGER_WIDTH = 14
+const HOVER_REVEAL_EDGE_GUTTER = 6
+
+// Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
+// from the keyboard, since its store-open toggle is a no-op while collapsed.
+export const PANE_TOGGLE_REVEAL_EVENT = 'hermes:pane-toggle-reveal'
 
 const widthToCss = (value: WidthValue | undefined, fallback: string) =>
   value === undefined ? fallback : typeof value === 'number' ? `${value}px` : value
@@ -110,6 +134,7 @@ function collectPanes(children: ReactNode) {
     const entry: CollectedPane = {
       defaultOpen: props.defaultOpen ?? true,
       disabled: props.disabled ?? false,
+      forceCollapsed: props.forceCollapsed ?? false,
       id: props.id,
       resizable: props.resizable ?? false,
       side: props.side,
@@ -124,7 +149,7 @@ function collectPanes(children: ReactNode) {
 
 function trackForPane(pane: CollectedPane, states: Record<string, { open: boolean; widthOverride?: number }>) {
   const stateOpen = states[pane.id]?.open ?? pane.defaultOpen
-  const open = !pane.disabled && stateOpen
+  const open = !pane.disabled && !pane.forceCollapsed && stateOpen
 
   if (!open) {
     return { open: false, track: '0px' }
@@ -193,14 +218,29 @@ export function Pane({
   className,
   defaultOpen = true,
   disabled = false,
+  hoverReveal = false,
   id,
   maxWidth,
   minWidth,
-  resizable = false
+  onOverlayActiveChange,
+  resizable = false,
+  width
 }: PaneProps) {
   const ctx = useContext(PaneShellContext)
+  const paneStates = useStore($paneStates)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
+  // Keyboard (mod+b / mod+j) pins the reveal open while collapsed; hover is CSS.
+  const [forced, setForced] = useState(false)
+
+  const slot = ctx?.paneById.get(id)
+  const open = Boolean(slot?.open && !disabled)
+  const side = slot?.side ?? 'left'
+  // Collapsed + hoverReveal: float the pane contents over the main column on
+  // hover/focus instead of hiding them. Honors any persisted resize width.
+  const overlayActive = !open && hoverReveal && !disabled
+  const override = resizable ? paneStates[id]?.widthOverride : undefined
+  const overlayWidth = override !== undefined ? `${override}px` : widthToCss(width, DEFAULT_WIDTH)
 
   useEffect(() => {
     if (registered.current) {
@@ -211,12 +251,34 @@ export function Pane({
     ensurePaneRegistered(id, { open: defaultOpen })
   }, [defaultOpen, id])
 
-  const slot = ctx?.paneById.get(id)
-  const open = Boolean(slot?.open && !disabled)
+  // Keyboard toggle pins/unpins the reveal while collapsed; clear when no longer
+  // a collapsed overlay (reopened / widened).
+  useEffect(() => {
+    if (typeof window === 'undefined' || !overlayActive) {
+      setForced(false)
+
+      return
+    }
+
+    const onToggle = (e: Event) => {
+      if ((e as CustomEvent<{ id: string }>).detail?.id === id) {
+        setForced(v => !v)
+      }
+    }
+
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
+
+    return () => window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
+  }, [id, overlayActive])
+
+  // Keep contents mounted while collapsed so reveal is a pure CSS transform.
+  useEffect(() => {
+    onOverlayActiveChange?.(overlayActive)
+  }, [onOverlayActiveChange, overlayActive])
+
   const canResize = open && resizable
   const lo = widthToPx(minWidth) ?? DEFAULT_RESIZE_MIN_WIDTH
   const hi = widthToPx(maxWidth) ?? Number.POSITIVE_INFINITY
-  const side = slot?.side ?? 'left'
 
   const startResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -271,6 +333,58 @@ export function Pane({
 
   if (!slot) {
     return null
+  }
+
+  // Collapsed hover-reveal track: a 0px, pointer-transparent grid cell holding a
+  // thin edge trigger + the floating panel (both absolute, escaping the zero
+  // box). group-hover (or data-forced from the keyboard) drives the slide; the
+  // enter-delay is the hover-intent gate. No JS pointer math.
+  if (overlayActive) {
+    const edge = side === 'left' ? 'left' : 'right'
+    const offscreen = side === 'left' ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
+
+    return (
+      <div
+        className={cn('group/reveal pointer-events-none relative row-start-1 min-w-0', className)}
+        data-forced={forced ? '' : undefined}
+        data-pane-hover-reveal={forced ? 'open' : 'closed'}
+        data-pane-id={id}
+        data-pane-open="false"
+        data-pane-side={side}
+        ref={paneRef}
+        style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
+      >
+        <div
+          aria-hidden="true"
+          className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
+          style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
+        />
+
+        {/* Keyed on side so flipping panes remounts off-screen on the new edge
+            instead of transitioning the transform across the viewport. */}
+        <div
+          className={cn(
+            'pointer-events-none absolute inset-y-0 z-30 overflow-hidden transition-transform delay-0',
+            offscreen,
+            'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
+            'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0 group-data-[forced]/reveal:shadow-[var(--reveal-shadow)]'
+          )}
+          key={edge}
+          style={
+            {
+              [edge]: 0,
+              width: overlayWidth,
+              '--reveal-shadow': HOVER_REVEAL_SHADOW,
+              transitionDuration: `${HOVER_REVEAL_SLIDE_MS}ms`,
+              transitionTimingFunction: HOVER_REVEAL_EASE,
+              '--reveal-enter-delay': `${HOVER_REVEAL_ENTER_DELAY_MS}ms`
+            } as CSSProperties
+          }
+        >
+          <div className="flex h-full w-full flex-col">{children}</div>
+        </div>
+      </div>
+    )
   }
 
   return (

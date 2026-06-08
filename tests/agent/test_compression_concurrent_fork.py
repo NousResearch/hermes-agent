@@ -238,3 +238,75 @@ def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> 
     )
     # Session rotated (compression succeeded end-to-end).
     assert agent.session_id != parent_sid
+
+
+def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None:
+    """The background-review fork must set ``compression_enabled = False``
+    so it can never compress the parent it shares a session_id with
+    (issue #38727).
+
+    The per-session compression lock only serialises a SAME-WINDOW concurrent
+    race. It does NOT stop a stale parent from being compressed again in a
+    LATER turn: if ``review_agent`` had won the race, its new child session is
+    never adopted by the gateway (the fork is single-lifecycle and dies right
+    after one ``run_conversation``), so the foreground path would start the
+    next turn from the stale parent and compress it AGAIN — leaving the same
+    parent with two sibling children.
+
+    The fix makes the review fork never trigger compression at all. Both
+    compression trigger sites in ``agent/conversation_loop.py`` gate on
+    ``agent.compression_enabled`` BEFORE calling ``_compress_context``:
+      • preflight (``if agent.compression_enabled and len(messages) > ...``)
+      • mid-loop  (``if agent.compression_enabled and _compressor.should_compress(...)``)
+    so a fork with the flag cleared never reaches the rotation path.
+
+    This test pins the contract at the source: ``_run_review_in_thread``
+    must set ``review_agent.compression_enabled = False`` on the fork it
+    builds. It calls the real worker synchronously with
+    ``AIAgent.run_conversation`` patched (so no LLM call happens) and
+    captures the constructed review agent to assert the flag.
+    """
+    import tempfile
+
+    import agent.background_review as br
+
+    captured = {}
+
+    def _fake_run_conversation(self, *_a, **_k):
+        captured["compression_enabled"] = self.compression_enabled
+        captured["session_id"] = self.session_id
+        return {"final_response": "", "messages": []}
+
+    parent_sid = "REVIEW_FORK_FLAG_TEST"
+
+    with tempfile.TemporaryDirectory() as td:
+        db = SessionDB(db_path=Path(td) / "state.db")
+        db.create_session(parent_sid, source="discord")
+        parent = _build_agent_with_db(db, parent_sid)
+
+        # The worker does a local ``from run_agent import AIAgent``; patching
+        # the class method covers that import path.
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
+            br._run_review_in_thread(
+                parent,
+                [{"role": "user", "content": "hi"}],
+                "review this conversation",
+            )
+
+    assert captured, (
+        "_run_review_in_thread never reached run_conversation — the spawn path "
+        "changed; update this test to capture the review AIAgent."
+    )
+    assert captured["session_id"] == parent_sid, (
+        "Review fork should inherit the parent's session_id (shared id is the "
+        "whole reason compression must be disabled)."
+    )
+    assert captured["compression_enabled"] is False, (
+        "FIX REGRESSION: background-review fork did NOT disable compression. "
+        "It shares the parent's session_id, so an enabled fork can rotate the "
+        "parent into an orphan child (issue #38727). The trigger gates in "
+        "conversation_loop.py only short-circuit when compression_enabled is "
+        "False — this flag MUST be cleared on the review fork."
+    )

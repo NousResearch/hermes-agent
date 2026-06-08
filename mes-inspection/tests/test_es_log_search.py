@@ -304,3 +304,18 @@ class TestEsLogSearcherSearch:
         assert "39qjmes-2026.06.05" in req.full_url
 
 
+# ── 配置默认值测试 ──────────────────────────────────────────────────────
+
+class TestEsLogSearchConfigFromThresholds:
+    """验证 ES 搜索器从 config 读取默认值。"""
+
+    def test_default_es_url_from_thresholds(self):
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        expected = DEFAULT_THRESHOLDS["elk"]["elasticsearch_url"]
+        assert expected == "http://localhost:9200"
+
+    def test_default_index_prefix_from_thresholds(self):
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        expected = DEFAULT_THRESHOLDS["debug"]["es_index_prefix"]
+        assert expected == "39qjmes"
+

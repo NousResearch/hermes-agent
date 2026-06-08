@@ -16,7 +16,8 @@ class EsLogSearcher:
 
     def _es_request(self, index: str, body: str) -> dict:
         """发送 ES 搜索请求。"""
-        base_url = self.config.get("elasticsearch_url", "http://localhost:9200")
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        base_url = self.config.get("elasticsearch_url") or DEFAULT_THRESHOLDS["elk"]["elasticsearch_url"]
         url = f"{base_url}/{index}/_search"
         data = body.encode("utf-8")
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
@@ -25,7 +26,8 @@ class EsLogSearcher:
 
     def _resolve_index_pattern(self, start_time: str, end_time: str) -> str:
         """根据时间范围生成索引列表，跨天查询用逗号分隔。"""
-        prefix = self.config.get("index_prefix", "39qjmes")
+        from config.default_thresholds import DEFAULT_THRESHOLDS
+        prefix = self.config.get("index_prefix") or DEFAULT_THRESHOLDS["debug"]["es_index_prefix"]
         start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
         end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
 

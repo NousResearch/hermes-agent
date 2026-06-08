@@ -352,6 +352,7 @@ export function ChatView({
             onCancel={onCancel}
             sessionId={activeSessionId}
             sessionKey={threadKey}
+            storedSessionId={selectedSessionId}
           />
           {showChatBar && (
             <Suspense fallback={<ChatBarFallback />}>

@@ -1279,6 +1279,11 @@ export const zh: Translations = {
     }
   },
 
+  chat: {
+    forkOriginNotice: '从对话中派生',
+    openSourceConversation: title => (title ? `打开来源对话:${title}` : '打开来源对话')
+  },
+
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -1876,11 +1881,15 @@ export const zh: Translations = {
     resumeFailed: '恢复失败',
     nothingToBranch: '没有可分支的内容',
     branchNeedsChat: '分支前请先开始或恢复一个对话。',
+    branchNoStoredMessage: '这个对话里还没有可用于分支的已存储消息。',
     sessionBusy: '会话忙碌中',
     branchStopCurrent: '分支此对话前请先停止当前回合。',
     branchNoText: '此消息没有可用于分支的文本。',
     branchTitle: '分支',
     branchFailed: '分支失败',
+    branchMessageUnavailable: '消息不可用',
+    branchMessageNotStored: '这条消息还没有进入已存储的对话记录。',
+    branchMessageNotMapped: '这条消息暂时还不能映射回已存储的历史记录。',
     deleteFailed: '删除失败',
     archived: '已归档',
     archiveFailed: '归档失败',

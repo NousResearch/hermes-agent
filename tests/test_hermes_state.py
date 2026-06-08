@@ -331,6 +331,56 @@ class TestSessionLifecycle:
             restored.close()
 
 
+class TestSessionFork:
+    def test_fork_session_copies_transcript_and_sets_lineage(self, db):
+        db.create_session(
+            session_id="parent",
+            source="cli",
+            model="sonnet",
+            model_config={"temperature": 0.2},
+        )
+        db.set_session_title("parent", "Investigate issue")
+        db.append_message("parent", "user", "first prompt")
+        db.append_message("parent", "assistant", "first answer")
+
+        forked = db.fork_session("parent", "child")
+
+        child = db.get_session("child")
+        assert child is not None
+        assert child["parent_session_id"] == "parent"
+        assert child["model"] == "sonnet"
+        assert forked["id"] == "child"
+        assert forked["title"] == "Investigate issue #2"
+        assert db.get_session("parent")["ended_at"] is None
+
+        cfg = db._decode_model_config_blob(child["model_config"])
+        assert cfg["temperature"] == 0.2
+        assert cfg["_branched_from"] == "parent"
+
+        parent_messages = db.get_messages("parent")
+        child_messages = db.get_messages("child")
+        assert [m["content"] for m in child_messages] == [m["content"] for m in parent_messages]
+        assert child["message_count"] == len(child_messages)
+
+    def test_fork_session_can_copy_prefix_until_message_id(self, db):
+        db.create_session(session_id="parent", source="cli")
+        db.append_message("parent", "user", "one")
+        second_id = db.append_message("parent", "assistant", "two")
+        db.append_message("parent", "user", "three")
+
+        db.fork_session("parent", "child", until_message_id=second_id)
+
+        child_messages = db.get_messages("child")
+        assert [m["content"] for m in child_messages] == ["one", "two"]
+
+    def test_fork_session_rejects_unknown_until_message_id(self, db):
+        db.create_session(session_id="parent", source="cli")
+        db.append_message("parent", "user", "hello")
+
+        with pytest.raises(ValueError, match="until_message_id"):
+            db.fork_session("parent", "child", until_message_id=999999)
+
+
 # =========================================================================
 # Message storage
 # =========================================================================

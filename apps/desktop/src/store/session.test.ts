@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { $attentionSessionIds, mergeSessionPage, sessionPinId, setSessionAttention } from './session'
+import {
+  $attentionSessionIds,
+  $forkOriginNotices,
+  clearForkOriginNotice,
+  mergeSessionPage,
+  sessionPinId,
+  setForkOriginNotice,
+  setSessionAttention
+} from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -127,5 +135,40 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+})
+
+describe('fork origin notices', () => {
+  it('tracks a child session notice in memory only', () => {
+    $forkOriginNotices.set({})
+
+    setForkOriginNotice('child-1', 'parent-1', 2)
+
+    expect($forkOriginNotices.get()['child-1']).toMatchObject({
+      branchMessageOrdinal: 2,
+      parentSessionId: 'parent-1'
+    })
+    expect(typeof $forkOriginNotices.get()['child-1']?.createdAt).toBe('number')
+  })
+
+  it('removes one child notice without disturbing the rest', () => {
+    $forkOriginNotices.set({})
+
+    setForkOriginNotice('child-1', 'parent-1', 0)
+    setForkOriginNotice('child-2', 'parent-2', 1)
+    clearForkOriginNotice('child-1')
+
+    expect($forkOriginNotices.get()).toEqual({
+      'child-2': expect.objectContaining({ branchMessageOrdinal: 1, parentSessionId: 'parent-2' })
+    })
+  })
+
+  it('ignores invalid ordinals', () => {
+    $forkOriginNotices.set({})
+
+    setForkOriginNotice('child-1', 'parent-1', -1)
+    setForkOriginNotice('child-2', 'parent-2', null)
+
+    expect($forkOriginNotices.get()).toEqual({})
   })
 })

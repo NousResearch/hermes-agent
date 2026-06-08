@@ -5428,6 +5428,25 @@ def _open_session_db_for_profile(profile: Optional[str]):
     return SessionDB(db_path=Path(home) / "state.db")
 
 
+def _new_stored_session_key() -> str:
+    import uuid as _uuid
+
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+
+
+def _decorate_session_row(session: Dict[str, Any], profile: Optional[str] = None) -> Dict[str, Any]:
+    row = dict(session)
+    now = time.time()
+    row["is_active"] = (
+        row.get("ended_at") is None
+        and (now - row.get("last_active", row.get("started_at", 0))) < 300
+    )
+    row["archived"] = bool(row.get("archived"))
+    if profile:
+        row["profile"] = _cron_profile_home(profile)[0]
+    return row
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile)
@@ -5465,6 +5484,37 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
             raise HTTPException(status_code=404, detail="Session not found")
         messages = db.get_messages(sid)
         return {"session_id": sid, "messages": messages}
+    finally:
+        db.close()
+
+
+class SessionFork(BaseModel):
+    id: Optional[str] = None
+    profile: Optional[str] = None
+    title: Optional[str] = None
+    until_message_id: Optional[int] = None
+
+
+@app.post("/api/sessions/{session_id}/fork")
+async def fork_session_endpoint(session_id: str, body: SessionFork):
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        fork_id = (body.id or "").strip() or _new_stored_session_key()
+        try:
+            forked = db.fork_session(
+                sid,
+                fork_id,
+                title=body.title,
+                until_message_id=body.until_message_id,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        return _decorate_session_row(forked, body.profile)
     finally:
         db.close()
 

@@ -1092,6 +1092,11 @@ export const en: Translations = {
     }
   },
 
+  chat: {
+    forkOriginNotice: 'Forked from conversation',
+    openSourceConversation: title => (title ? `Open source conversation: ${title}` : 'Open source conversation')
+  },
+
   composer: {
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,
@@ -1697,11 +1702,15 @@ export const en: Translations = {
     resumeFailed: 'Resume failed',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',
+    branchNoStoredMessage: 'This chat has no stored message to branch from yet.',
     sessionBusy: 'Session busy',
     branchStopCurrent: 'Stop the current turn before branching this chat.',
     branchNoText: 'This message has no text to branch from.',
     branchTitle: 'Branch',
     branchFailed: 'Branch failed',
+    branchMessageUnavailable: 'Message unavailable',
+    branchMessageNotStored: 'That message is not in the stored transcript yet.',
+    branchMessageNotMapped: 'That message cannot be mapped to stored history yet.',
     deleteFailed: 'Delete failed',
     archived: 'Archived',
     archiveFailed: 'Archive failed',

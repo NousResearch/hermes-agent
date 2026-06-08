@@ -32,6 +32,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  SessionForkRequest,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
@@ -88,6 +89,7 @@ export type {
   ProfilesResponse,
   RpcEvent,
   SessionCreateResponse,
+  SessionForkRequest,
   SessionInfo,
   SessionMessage,
   SessionMessagesResponse,
@@ -217,6 +219,21 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
+  })
+}
+
+export function forkSession(
+  id: string,
+  body: SessionForkRequest,
+  profile?: string | null
+): Promise<SessionInfo> {
+  const payload = profile ? { ...body, profile } : body
+
+  return window.hermesDesktop.api<SessionInfo>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}/fork`,
+    method: 'POST',
+    body: payload
   })
 }
 

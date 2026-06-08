@@ -7,6 +7,7 @@ import {
   preserveLocalAssistantErrors,
   renderMediaTags,
   toChatMessages,
+  toChatMessagesWithSourceMap,
   upsertToolPart
 } from './chat-messages'
 
@@ -121,6 +122,58 @@ describe('toChatMessages', () => {
     ])
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
+  })
+})
+
+describe('toChatMessagesWithSourceMap', () => {
+  it('tracks the final assistant row that contributes to a merged tool bubble', () => {
+    const built = toChatMessagesWithSourceMap([
+      { id: 1, role: 'assistant', content: 'Planning.', timestamp: 1 },
+      {
+        id: 2,
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        tool_calls: [{ id: 'tc-1', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      {
+        id: 3,
+        role: 'tool',
+        tool_call_id: 'tc-1',
+        tool_name: 'terminal',
+        content: '{"output":"ok"}',
+        timestamp: 3
+      },
+      { id: 4, role: 'assistant', content: 'Done.', timestamp: 4 }
+    ])
+
+    expect(built.messages).toHaveLength(1)
+    expect(built.lastSourceMessageIdByChatId.get(built.messages[0]!.id)).toBe(4)
+  })
+
+  it('tracks tool results that flush into a standalone assistant bubble', () => {
+    const built = toChatMessagesWithSourceMap([
+      {
+        id: 11,
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc-2', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      {
+        id: 12,
+        role: 'tool',
+        tool_call_id: 'tc-2',
+        tool_name: 'terminal',
+        content: '{"output":"ok"}',
+        timestamp: 2
+      },
+      { id: 13, role: 'user', content: 'next', timestamp: 3 }
+    ])
+
+    expect(built.messages.map(message => message.role)).toEqual(['assistant', 'user'])
+    expect(built.lastSourceMessageIdByChatId.get(built.messages[0]!.id)).toBe(12)
+    expect(built.lastSourceMessageIdByChatId.get(built.messages[1]!.id)).toBe(13)
   })
 })
 

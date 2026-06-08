@@ -306,6 +306,7 @@ export interface SessionInfo {
 }
 
 export interface SessionMessage {
+  id?: number
   codex_reasoning_items?: unknown
   content: unknown
   context?: unknown
@@ -324,6 +325,13 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   messages: SessionMessage[]
   session_id: string
+}
+
+export interface SessionForkRequest {
+  id?: string
+  profile?: string
+  title?: null | string
+  until_message_id?: number
 }
 
 export interface SessionResumeResponse {

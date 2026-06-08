@@ -17,6 +17,15 @@ interface AppAtom<T> {
   set: (value: T) => void
 }
 
+export interface ForkOriginNotice {
+  createdAt: number
+  parentSessionId: string
+  // Forked children get fresh SQLite message ids, so the only stable way to
+  // re-find the fork point in the copied child transcript is its ordinal among
+  // branchable user/assistant messages.
+  branchMessageOrdinal: number
+}
+
 function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
   store.set(typeof next === 'function' ? (next as (current: T) => T)(store.get()) : next)
 }
@@ -94,6 +103,9 @@ export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
+// Intentionally renderer-memory only: this is transient fork chrome, not
+// durable session metadata, so it must disappear when the desktop app restarts.
+export const $forkOriginNotices = atom<Record<string, ForkOriginNotice>>({})
 export const $messages = atom<ChatMessage[]>([])
 export const $freshDraftReady = atom(false)
 export const $busy = atom(false)
@@ -135,6 +147,7 @@ export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessio
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
+export const setForkOriginNotices = (next: Updater<Record<string, ForkOriginNotice>>) => updateAtom($forkOriginNotices, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
@@ -163,6 +176,53 @@ export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
+
+export function setForkOriginNotice(
+  childSessionId: string | null | undefined,
+  parentSessionId: string | null | undefined,
+  branchMessageOrdinal: number | null | undefined
+) {
+  const child = childSessionId?.trim()
+  const parent = parentSessionId?.trim()
+
+  if (
+    !child ||
+    !parent ||
+    typeof branchMessageOrdinal !== 'number' ||
+    !Number.isInteger(branchMessageOrdinal) ||
+    branchMessageOrdinal < 0
+  ) {
+    return
+  }
+
+  setForkOriginNotices(current => ({
+    ...current,
+    [child]: {
+      branchMessageOrdinal,
+      createdAt: Date.now(),
+      parentSessionId: parent
+    }
+  }))
+}
+
+export function clearForkOriginNotice(childSessionId: string | null | undefined) {
+  const child = childSessionId?.trim()
+
+  if (!child) {
+    return
+  }
+
+  setForkOriginNotices(current => {
+    if (!(child in current)) {
+      return current
+    }
+
+    const next = { ...current }
+    delete next[child]
+
+    return next
+  })
+}
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)

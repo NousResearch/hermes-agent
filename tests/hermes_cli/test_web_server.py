@@ -495,6 +495,82 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
 
+    def test_fork_session_endpoint_copies_transcript_and_lineage(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="fork-source", source="cli")
+            db.set_session_title("fork-source", "Fork Source")
+            db.append_message(session_id="fork-source", role="user", content="hello")
+            db.append_message(session_id="fork-source", role="assistant", content="hi there")
+        finally:
+            db.close()
+
+        resp = self.client.post("/api/sessions/fork-source/fork", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] != "fork-source"
+        assert data["message_count"] == 2
+        assert data["title"].startswith("Fork Source")
+
+        db = SessionDB()
+        try:
+            forked = db.get_session(data["id"])
+            assert forked is not None
+            assert forked["parent_session_id"] == "fork-source"
+            assert json.loads(forked["model_config"])["_branched_from"] == "fork-source"
+
+            forked_messages = db.get_messages(data["id"])
+            assert [message["content"] for message in forked_messages] == ["hello", "hi there"]
+        finally:
+            db.close()
+
+    def test_fork_session_endpoint_honors_until_message_id(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="fork-cutoff", source="cli")
+            db.append_message(session_id="fork-cutoff", role="user", content="one")
+            db.append_message(session_id="fork-cutoff", role="assistant", content="two")
+            db.append_message(session_id="fork-cutoff", role="user", content="three")
+            source_messages = db.get_messages("fork-cutoff")
+        finally:
+            db.close()
+
+        resp = self.client.post(
+            "/api/sessions/fork-cutoff/fork",
+            json={"id": "forked-cutoff", "until_message_id": source_messages[1]["id"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "forked-cutoff"
+
+        db = SessionDB()
+        try:
+            forked_messages = db.get_messages("forked-cutoff")
+            assert [message["content"] for message in forked_messages] == ["one", "two"]
+        finally:
+            db.close()
+
+    def test_fork_session_endpoint_returns_404_for_missing_source(self):
+        resp = self.client.post("/api/sessions/does-not-exist/fork", json={})
+        assert resp.status_code == 404
+
+    def test_fork_session_endpoint_rejects_unknown_until_message_id(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="fork-invalid", source="cli")
+            db.append_message(session_id="fork-invalid", role="user", content="hello")
+        finally:
+            db.close()
+
+        resp = self.client.post("/api/sessions/fork-invalid/fork", json={"until_message_id": 999999})
+        assert resp.status_code == 400
+        assert "until_message_id" in resp.json()["detail"]
+
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""

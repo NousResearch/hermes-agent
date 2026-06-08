@@ -2,9 +2,15 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { deleteSession, forkSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  toChatMessages,
+  toChatMessagesWithSourceMap
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -33,6 +39,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setForkOriginNotice,
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
@@ -119,6 +126,16 @@ function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolea
   return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
+function visibleBranchableMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter(message => (message.role === 'assistant' || message.role === 'user') && !message.hidden)
+}
+
+function lastVisibleMessageIsUser(messages: ChatMessage[]): boolean {
+  const lastVisible = [...messages].reverse().find(message => !message.hidden)
+
+  return lastVisible?.role === 'user'
+}
+
 function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
@@ -200,6 +217,10 @@ function upsertOptimisticSession(
   }
 
   setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+}
+
+function upsertSessionRow(session: SessionInfo) {
+  setSessions(prev => [session, ...prev.filter(existing => existing.id !== session.id)])
 }
 
 function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
@@ -289,6 +310,7 @@ export function useSessionActions({
   const { t } = useI18n()
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
+  const resumeInFlightRef = useRef<{ promise: Promise<void>; requestId: number; storedSessionId: string } | null>(null)
 
   const startFreshSessionDraft = useCallback(
     (replaceRoute = false) => {
@@ -337,11 +359,13 @@ export function useSessionActions({
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (
@@ -436,182 +460,225 @@ export function useSessionActions({
     async (storedSessionId: string, replaceRoute = false) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
+      let settleResume: () => void = () => undefined
+
+      const resumePromise = new Promise<void>(resolve => {
+        settleResume = resolve
+      })
+
+      resumeInFlightRef.current = { promise: resumePromise, requestId, storedSessionId }
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
 
-      // Swap the single live gateway to this session's profile before any
-      // gateway call (no-op when it's already on that profile / single-profile).
-      const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
-      const sessionProfile = storedForProfile?.profile
-      await ensureGatewayProfile(sessionProfile)
+      let finalBusy = false
+      let finalAwaitingResponse = false
 
-      const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-      const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
+      try {
+        // Swap the single live gateway to this session's profile before any
+        // gateway call (no-op when it's already on that profile / single-profile).
+        const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
+        const sessionProfile = storedForProfile?.profile
+        await ensureGatewayProfile(sessionProfile)
+        const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
-      if (cachedRuntimeId && cachedState) {
+        if (cachedRuntimeId && cachedState) {
+          finalBusy = cachedState.busy
+          finalAwaitingResponse = cachedState.awaitingResponse
+          setFreshDraftReady(false)
+          clearNotifications()
+          setSelectedStoredSessionId(storedSessionId)
+          selectedStoredSessionIdRef.current = storedSessionId
+          setActiveSessionId(cachedRuntimeId)
+          activeSessionIdRef.current = cachedRuntimeId
+          syncSessionStateToView(cachedRuntimeId, cachedState)
+          setCurrentCwd(cachedState.cwd)
+          setCurrentBranch(cachedState.branch)
+          setSessionStartedAt(Date.now())
+          clearComposerDraft()
+          clearComposerAttachments()
+
+          try {
+            const latest = await getSessionMessages(storedSessionId, sessionProfile)
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            updateSessionState(
+              cachedRuntimeId,
+              state => ({
+                ...state,
+                messages: preserveLocalAssistantErrors(toChatMessages(latest.messages), state.messages)
+              }),
+              storedSessionId
+            )
+          } catch {
+            // Best-effort rehydrate only. Keep the warm runtime cache when the
+            // stored snapshot is temporarily unavailable.
+          }
+
+          try {
+            const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (usage) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+
+            return
+          } catch {
+            // The cached runtime id was minted by a prior backend instance. A
+            // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+            // and respawned across a profile swap mints fresh ids, so this mapping
+            // now 404s ("session not found"). Drop it and fall through to a full
+            // resume that rebinds a live runtime id.
+            if (!isCurrentResume()) {
+              return
+            }
+
+            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+            sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+          }
+        }
+
         setFreshDraftReady(false)
+        setActiveSessionId(null)
+        activeSessionIdRef.current = null
+        busyRef.current = true
+        setBusy(true)
+        setAwaitingResponse(false)
         clearNotifications()
         setSelectedStoredSessionId(storedSessionId)
         selectedStoredSessionIdRef.current = storedSessionId
-        setActiveSessionId(cachedRuntimeId)
-        activeSessionIdRef.current = cachedRuntimeId
-        syncSessionStateToView(cachedRuntimeId, cachedState)
-        setCurrentCwd(cachedState.cwd)
-        setCurrentBranch(cachedState.branch)
         setSessionStartedAt(Date.now())
-        clearComposerDraft()
-        clearComposerAttachments()
+        const stored = $sessions.get().find(session => session.id === storedSessionId)
 
-        try {
-          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
-
-          if (!isCurrentResume()) {
-            return
-          }
-
-          if (usage) {
-            setCurrentUsage(current => ({ ...current, ...usage }))
-          }
-
-          return
-        } catch {
-          // The cached runtime id was minted by a prior backend instance. A
-          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
-          // and respawned across a profile swap mints fresh ids, so this mapping
-          // now 404s ("session not found"). Drop it and fall through to a full
-          // resume that rebinds a live runtime id.
-          if (!isCurrentResume()) {
-            return
-          }
-
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+        if (stored) {
+          setCurrentUsage(current => ({
+            ...current,
+            input: stored.input_tokens || 0,
+            output: stored.output_tokens || 0,
+            total: (stored.input_tokens || 0) + (stored.output_tokens || 0)
+          }))
         }
-      }
-
-      setFreshDraftReady(false)
-      setActiveSessionId(null)
-      activeSessionIdRef.current = null
-      busyRef.current = true
-      setBusy(true)
-      setAwaitingResponse(false)
-      clearNotifications()
-      setSelectedStoredSessionId(storedSessionId)
-      selectedStoredSessionIdRef.current = storedSessionId
-      setSessionStartedAt(Date.now())
-      const stored = $sessions.get().find(session => session.id === storedSessionId)
-
-      if (stored) {
-        setCurrentUsage(current => ({
-          ...current,
-          input: stored.input_tokens || 0,
-          output: stored.output_tokens || 0,
-          total: (stored.input_tokens || 0) + (stored.output_tokens || 0)
-        }))
-      }
-
-      try {
-        // Load the local snapshot first, then ask the gateway to resume.
-        // Previously these raced:
-        //   1. clear messages to []
-        //   2. local getSessionMessages -> 45 msgs
-        //   3. a second resume path cleared [] again
-        //   4. gateway resume -> 43 msgs
-        // That is the ctrl+R flash chain. Avoid showing an empty thread
-        // while we already have a route-scoped session id, and don't race the
-        // local snapshot against gateway resume.
-        let localSnapshot = $messages.get()
 
         try {
-          const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
+          // Load the local snapshot first, then ask the gateway to resume.
+          // Previously these raced:
+          //   1. clear messages to []
+          //   2. local getSessionMessages -> 45 msgs
+          //   3. a second resume path cleared [] again
+          //   4. gateway resume -> 43 msgs
+          // That is the ctrl+R flash chain. Avoid showing an empty thread
+          // while we already have a route-scoped session id, and don't race the
+          // local snapshot against gateway resume.
+          let localSnapshot = $messages.get()
 
-          if (isCurrentResume()) {
-            localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+          try {
+            const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
-            if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
-              setMessages(localSnapshot)
+            if (isCurrentResume()) {
+              localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+
+              if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+                setMessages(localSnapshot)
+              }
             }
+          } catch {
+            // Non-fatal: gateway resume below can still hydrate the session.
           }
-        } catch {
-          // Non-fatal: gateway resume below can still hydrate the session.
+
+          const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
+            session_id: storedSessionId,
+            cols: 96,
+            // Owning profile: in app-global remote mode one backend serves every
+            // profile, so the gateway opens this profile's state.db + home to
+            // resume + persist the right session (no-op for single/launch profile).
+            ...(sessionProfile ? { profile: sessionProfile } : {})
+          })
+
+          if (!isCurrentResume()) {
+            return
+          }
+
+          const currentMessages = $messages.get()
+
+          const resumedMessages = preserveLocalAssistantErrors(
+            reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
+            currentMessages
+          )
+          // Avoid a second visible transcript rebuild on resume/switch.
+          // `getSessionMessages()` is the stable stored transcript snapshot and
+          // paints first; `session.resume` can return a slightly different
+          // runtime-shaped projection (e.g. tool/system coalescing), which was
+          // causing a second full message-list replacement a second later.
+          // Keep the already-painted local snapshot for the view/cache when it
+          // exists; use gateway messages only as a fallback when no local
+          // snapshot was available.
+
+          const preferredMessages =
+            localSnapshot.length > 0
+              ? localSnapshot
+              : chatMessageArraysEquivalent(currentMessages, resumedMessages)
+                ? currentMessages
+                : resumedMessages
+
+          const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
+          const runtimeBusy = Boolean(resumed.info?.running)
+          const runtimeAwaitingResponse = runtimeBusy && lastVisibleMessageIsUser(messagesForView)
+
+          finalBusy = runtimeBusy
+          finalAwaitingResponse = runtimeAwaitingResponse
+          setActiveSessionId(resumed.session_id)
+          activeSessionIdRef.current = resumed.session_id
+          const runtimeInfo = applyRuntimeInfo(resumed.info)
+
+          patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
+
+          updateSessionState(
+            resumed.session_id,
+            state => ({
+              ...state,
+              ...(runtimeInfo ?? {}),
+              messages: messagesForView,
+              busy: runtimeBusy,
+              awaitingResponse: runtimeAwaitingResponse
+            }),
+            storedSessionId
+          )
+          clearComposerDraft()
+          clearComposerAttachments()
+        } catch (err) {
+          if (!isCurrentResume()) {
+            return
+          }
+
+          const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+
+          if (!isCurrentResume()) {
+            return
+          }
+
+          setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+          notifyError(err, copy.resumeFailed)
+        } finally {
+          if (isCurrentResume()) {
+            busyRef.current = finalBusy
+            setBusy(finalBusy)
+            setAwaitingResponse(finalAwaitingResponse)
+          }
         }
-
-        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
-          session_id: storedSessionId,
-          cols: 96,
-          // Owning profile: in app-global remote mode one backend serves every
-          // profile, so the gateway opens this profile's state.db + home to
-          // resume + persist the right session (no-op for single/launch profile).
-          ...(sessionProfile ? { profile: sessionProfile } : {})
-        })
-
-        if (!isCurrentResume()) {
-          return
-        }
-
-        const currentMessages = $messages.get()
-
-        const resumedMessages = preserveLocalAssistantErrors(
-          reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
-          currentMessages
-        )
-        // Avoid a second visible transcript rebuild on resume/switch.
-        // `getSessionMessages()` is the stable stored transcript snapshot and
-        // paints first; `session.resume` can return a slightly different
-        // runtime-shaped projection (e.g. tool/system coalescing), which was
-        // causing a second full message-list replacement a second later.
-        // Keep the already-painted local snapshot for the view/cache when it
-        // exists; use gateway messages only as a fallback when no local
-        // snapshot was available.
-
-        const preferredMessages =
-          localSnapshot.length > 0
-            ? localSnapshot
-            : chatMessageArraysEquivalent(currentMessages, resumedMessages)
-              ? currentMessages
-              : resumedMessages
-
-        const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
-
-        setActiveSessionId(resumed.session_id)
-        activeSessionIdRef.current = resumed.session_id
-        const runtimeInfo = applyRuntimeInfo(resumed.info)
-
-        patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
-
-        updateSessionState(
-          resumed.session_id,
-          state => ({
-            ...state,
-            ...(runtimeInfo ?? {}),
-            messages: messagesForView,
-            busy: false,
-            awaitingResponse: false
-          }),
-          storedSessionId
-        )
-        clearComposerDraft()
-        clearComposerAttachments()
-      } catch (err) {
-        if (!isCurrentResume()) {
-          return
-        }
-
-        const fallback = await getSessionMessages(storedSessionId, sessionProfile)
-
-        if (!isCurrentResume()) {
-          return
-        }
-
-        setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
-        notifyError(err, copy.resumeFailed)
       } finally {
-        if (isCurrentResume()) {
-          busyRef.current = false
-          setBusy(false)
-          setAwaitingResponse(false)
+        if (resumeInFlightRef.current?.requestId === requestId) {
+          resumeInFlightRef.current = null
         }
+
+        settleResume()
       }
     },
     [
@@ -619,6 +686,7 @@ export function useSessionActions({
       busyRef,
       copy,
       requestGateway,
+      resumeInFlightRef,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,
@@ -629,7 +697,7 @@ export function useSessionActions({
 
   const branchCurrentSession = useCallback(
     async (messageId?: string): Promise<boolean> => {
-      const sourceSessionId = activeSessionIdRef.current
+      const sourceSessionId = selectedStoredSessionIdRef.current
 
       if (!sourceSessionId) {
         notify({
@@ -638,6 +706,18 @@ export function useSessionActions({
           message: copy.branchNeedsChat
         })
 
+        return false
+      }
+
+      if (busyRef.current) {
+        const pendingResume = resumeInFlightRef.current
+
+        if (pendingResume?.storedSessionId === sourceSessionId) {
+          await pendingResume.promise
+        }
+      }
+
+      if (selectedStoredSessionIdRef.current !== sourceSessionId) {
         return false
       }
 
@@ -654,29 +734,69 @@ export function useSessionActions({
       creatingSessionRef.current = true
 
       try {
-        const currentMessages = $messages.get()
+        const sourceSession = $sessions.get().find(session => session.id === sourceSessionId)
+        const sessionProfile = sourceSession?.profile
+        await ensureGatewayProfile(sessionProfile)
 
-        const targetIndex = messageId
-          ? currentMessages.findIndex(message => message.id === messageId)
-          : currentMessages.findLastIndex(message => message.role === 'assistant' || message.role === 'user')
+        const stored = await getSessionMessages(sourceSessionId, sessionProfile)
+        const { lastSourceMessageIdByChatId, messages } = toChatMessagesWithSourceMap(stored.messages)
 
-        const branchStart = targetIndex >= 0 ? targetIndex : Math.max(currentMessages.length - 1, 0)
-        const branchEnd = targetIndex >= 0 ? targetIndex + 1 : currentMessages.length
+        const branchableMessages = visibleBranchableMessages(messages).filter(message =>
+          lastSourceMessageIdByChatId.has(message.id)
+        )
 
-        const branchMessages = currentMessages
-          .slice(branchStart, branchEnd)
-          .map(message => ({
-            content: chatMessageText(message),
-            source: message,
-            role: message.role
-          }))
-          .filter(message => message.content.trim() && ['assistant', 'user'].includes(message.role))
-
-        if (!branchMessages.length) {
+        if (!branchableMessages.length) {
           notify({
             kind: 'warning',
             title: copy.nothingToBranch,
-            message: copy.branchNoText
+            message: copy.branchNoStoredMessage
+          })
+
+          return false
+        }
+
+        let branchMessageOrdinal = messageId
+          ? branchableMessages.findIndex(message => message.id === messageId)
+          : branchableMessages.length - 1
+
+        if (messageId && branchMessageOrdinal < 0) {
+          const runtimeSessionId =
+            runtimeIdByStoredSessionIdRef.current.get(sourceSessionId) ?? activeSessionIdRef.current ?? null
+
+          const runtimeMessages = runtimeSessionId ? ensureSessionState(runtimeSessionId, sourceSessionId).messages : []
+
+          // New Desktop sessions can still be showing runtime/optimistic
+          // message ids when the stored transcript has already normalized into
+          // fresh rebuilt ids. If the clicked bubble no longer matches by id,
+          // fall back to visible message order so the same bubble still maps to
+          // the equivalent stored transcript boundary.
+          branchMessageOrdinal = visibleBranchableMessages(runtimeMessages).findIndex(
+            message => message.id === messageId
+          )
+        }
+
+        const targetMessage =
+          branchMessageOrdinal >= 0 && branchMessageOrdinal < branchableMessages.length
+            ? branchableMessages[branchMessageOrdinal]
+            : undefined
+
+        if (!targetMessage) {
+          notify({
+            kind: 'warning',
+            title: copy.branchMessageUnavailable,
+            message: copy.branchMessageNotStored
+          })
+
+          return false
+        }
+
+        const untilMessageId = lastSourceMessageIdByChatId.get(targetMessage.id)
+
+        if (untilMessageId === undefined || branchMessageOrdinal < 0) {
+          notify({
+            kind: 'warning',
+            title: copy.branchMessageUnavailable,
+            message: copy.branchMessageNotMapped
           })
 
           return false
@@ -684,46 +804,16 @@ export function useSessionActions({
 
         clearNotifications()
 
-        const cwd = $currentCwd.get().trim()
-
-        const branched = await requestGateway<SessionCreateResponse>('session.create', {
-          cols: 96,
-          ...(cwd && { cwd }),
-          messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          title: copy.branchTitle
-        })
-
-        const routedSessionId = branched.stored_session_id ?? branched.session_id
-        const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
-
         setFreshDraftReady(false)
-        upsertOptimisticSession(branched, routedSessionId, copy.branchTitle, preview)
-        ensureSessionState(branched.session_id, routedSessionId)
-        setActiveSessionId(branched.session_id)
-        activeSessionIdRef.current = branched.session_id
-        updateSessionState(
-          branched.session_id,
-          state => ({
-            ...state,
-            messages: branchMessages.map(({ source }) => source),
-            busy: false,
-            awaitingResponse: false
-          }),
-          routedSessionId
-        )
-        setSelectedStoredSessionId(routedSessionId)
-        selectedStoredSessionIdRef.current = routedSessionId
-        navigate(sessionRoute(routedSessionId))
-
+        const forked = await forkSession(sourceSessionId, { until_message_id: untilMessageId }, sessionProfile)
+        upsertSessionRow(forked)
+        setForkOriginNotice(forked.id, sourceSessionId, branchMessageOrdinal)
+        setSelectedStoredSessionId(forked.id)
+        selectedStoredSessionIdRef.current = forked.id
+        navigate(sessionRoute(forked.id))
         clearComposerDraft()
         clearComposerAttachments()
-        const runtimeInfo = applyRuntimeInfo(branched.info)
-
-        patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
-
-        if (runtimeInfo) {
-          updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
-        }
+        await resumeSession(forked.id)
 
         return true
       } catch (err) {
@@ -743,9 +833,10 @@ export function useSessionActions({
       creatingSessionRef,
       ensureSessionState,
       navigate,
-      requestGateway,
-      selectedStoredSessionIdRef,
-      updateSessionState
+      resumeSession,
+      resumeInFlightRef,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef
     ]
   )
 

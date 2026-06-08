@@ -47,6 +47,7 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
+import { SessionForkOriginNotice } from '@/app/chat/fork-origin-banner'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
@@ -128,6 +129,7 @@ export const Thread: FC<{
   onCancel?: () => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
+  storedSessionId?: string | null
 }> = ({
   clampToComposer = false,
   cwd = null,
@@ -137,16 +139,19 @@ export const Thread: FC<{
   onBranchInNewChat,
   onCancel,
   sessionId = null,
-  sessionKey
+  sessionKey,
+  storedSessionId = null
 }) => {
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
+      AssistantMessage: () => (
+        <AssistantMessage onBranchInNewChat={onBranchInNewChat} storedSessionId={storedSessionId} />
+      ),
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
-      UserMessage: () => <UserMessage onCancel={onCancel} />
+      UserMessage: () => <UserMessage onCancel={onCancel} storedSessionId={storedSessionId} />
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, sessionId]
+    [cwd, gateway, onBranchInNewChat, onCancel, sessionId, storedSessionId]
   )
 
   const emptyPlaceholder = intro ? (
@@ -205,7 +210,10 @@ const CenteredThreadSpinner: FC = () => {
   )
 }
 
-const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
+const AssistantMessage: FC<{
+  onBranchInNewChat?: (messageId: string) => void
+  storedSessionId?: string | null
+}> = ({ onBranchInNewChat, storedSessionId = null }) => {
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -261,6 +269,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       {messageText.trim().length > 0 && (
         <AssistantFooter messageId={messageId} messageText={messageText} onBranchInNewChat={onBranchInNewChat} />
       )}
+      <SessionForkOriginNotice className="px-(--message-text-indent)" messageId={messageId} storedSessionId={storedSessionId} />
     </MessagePrimitive.Root>
   )
 }
@@ -470,9 +479,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     s =>
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
-      s.message.parts
-        .slice(Math.max(0, startIndex))
-        .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
+      s.message.parts.slice(Math.max(0, startIndex)).some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 
   // A reasoning group with no actual text is pure noise — drop the whole
@@ -726,7 +733,8 @@ const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -transla
 
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
-}> = ({ onCancel }) => {
+  storedSessionId?: string | null
+}> = ({ onCancel, storedSessionId = null }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const messageId = useAuiState(s => s.message.id)
@@ -879,6 +887,7 @@ const UserMessage: FC<{
                 {copy.goForward}
               </BranchPickerPrimitive.Next>
             </BranchPickerPrimitive.Root>
+            <SessionForkOriginNotice className="px-1.5 pt-1" messageId={messageId} storedSessionId={storedSessionId} />
           </div>
         </ActionBarPrimitive.Root>
       </StickyHumanMessageContainer>

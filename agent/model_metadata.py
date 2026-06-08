@@ -1684,6 +1684,26 @@ def get_model_context_length(
                 "in config.yaml to override.",
                 model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
             )
+            # 3b. Before falling back to the hard 256K default, consult the
+            # hardcoded catalog as a last resort.  A proxied/custom Anthropic
+            # gateway (e.g. corporate proxy) fails the Ollama/local probes
+            # above, but the model name may still match an entry in
+            # DEFAULT_CONTEXT_LENGTHS (e.g. "claude-opus-4-8" → 1M).
+            # Without this, the early return here short-circuits the catalog
+            # lookup at step 8 and silently caps context at 256K.
+            model_lower = model.lower()
+            for default_model, length in sorted(
+                DEFAULT_CONTEXT_LENGTHS.items(),
+                key=lambda x: len(x[0]),
+                reverse=True,
+            ):
+                if default_model in model_lower:
+                    logger.info(
+                        "Using hardcoded context length %s for model %r "
+                        "(custom endpoint, catalog match on %r)",
+                        f"{length:,}", model, default_model,
+                    )
+                    return length
             return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)

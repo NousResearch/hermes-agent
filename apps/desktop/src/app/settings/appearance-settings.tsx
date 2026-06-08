@@ -6,6 +6,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
@@ -57,7 +58,16 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const profiles = useStore($profiles)
+  const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
+
+  // Themes save per profile. Surface that only when the user actually has more
+  // than one profile (single-profile installs never see the distinction).
+  const showProfileNote = profiles.length > 1
+
+  const activeProfileName =
+    profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
 
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
 
@@ -98,43 +108,50 @@ export function AppearanceSettings() {
 
           <ListRow
             below={
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {availableThemes.map(theme => {
-                  const active = themeName === theme.name
+              <>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {availableThemes.map(theme => {
+                    const active = themeName === theme.name
 
-                  return (
-                    <button
-                      className={cn(
-                        'rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2 text-left transition hover:bg-(--chrome-action-hover)',
-                        active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                      )}
-                      key={theme.name}
-                      onClick={() => {
-                        triggerHaptic('crisp')
-                        setTheme(theme.name)
-                      }}
-                      type="button"
-                    >
-                      <ThemePreview name={theme.name} />
-                      <div className="mt-3 flex items-start justify-between gap-3 px-1">
-                        <div className="min-w-0">
-                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
-                            {theme.label}
-                          </div>
-                          <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                            {theme.description}
-                          </div>
-                        </div>
-                        {active && (
-                          <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
-                            <Check className="size-3.5" />
-                          </span>
+                    return (
+                      <button
+                        className={cn(
+                          'rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2 text-left transition hover:bg-(--chrome-action-hover)',
+                          active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
                         )}
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
+                        key={theme.name}
+                        onClick={() => {
+                          triggerHaptic('crisp')
+                          setTheme(theme.name)
+                        }}
+                        type="button"
+                      >
+                        <ThemePreview name={theme.name} />
+                        <div className="mt-3 flex items-start justify-between gap-3 px-1">
+                          <div className="min-w-0">
+                            <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
+                              {theme.label}
+                            </div>
+                            <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                              {theme.description}
+                            </div>
+                          </div>
+                          {active && (
+                            <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
+                              <Check className="size-3.5" />
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+                {showProfileNote && (
+                  <p className="mt-3 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                    {a.themeProfileNote(activeProfileName)}
+                  </p>
+                )}
+              </>
             }
             description={a.themeDesc}
             title={a.themeTitle}

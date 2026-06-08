@@ -5788,9 +5788,35 @@ class TestStreamingApiCall:
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
 
-    def test_truncated_tool_call_args_upgrade_finish_reason_to_length(self, agent):
+    def test_truncated_tool_call_args_no_finish_reason_routes_to_stub(self, agent):
+        # Stream delivers a tool call with incomplete JSON args and then ENDS
+        # with no finish_reason (the SSE just stops — no terminator, no
+        # [DONE]).  This is an upstream mid-tool-call drop, NOT an output cap.
+        # The builder must route it through the partial-stream-stub path
+        # (id=PARTIAL_STREAM_STUB_ID, tool_calls=None so it can't execute,
+        # finish_reason=length so the loop's continuation machinery fires with
+        # chunking guidance) rather than stamping a normal 'length' truncation.
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.id == PARTIAL_STREAM_STUB_ID
+        assert resp.choices[0].finish_reason == "length"
+        assert resp.choices[0].message.tool_calls is None
+        assert getattr(resp, "_dropped_tool_names", None) == ["write_file"]
+
+    def test_truncated_tool_call_args_with_length_finish_reason_upgrades(self, agent):
+        # Control: when the provider explicitly reports finish_reason='length'
+        # alongside incomplete tool args, it IS a genuine output cap.  Keep the
+        # existing behaviour — tool_calls preserved, finish_reason 'length' —
+        # so the max_tokens-boost truncation retry path still applies.
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
+            _make_chunk(finish_reason="length"),
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
@@ -6393,18 +6419,16 @@ class TestMemoryNudgeCounterPersistence:
         assert a._iters_since_skill == 0
 
     def test_counters_not_reset_in_preamble(self):
-        """The run_conversation preamble must not zero the nudge counters."""
+        """The turn preamble must not zero the nudge counters."""
         import inspect
-        from agent.conversation_loop import run_conversation as _rc
-        src = inspect.getsource(_rc)
-        # The preamble resets many fields (retry counts, budget, etc.)
-        # before the main loop. Find that reset block and verify our
-        # counters aren't in it. The reset block ends at iteration_budget.
-        # The extracted body uses ``agent.X`` (not ``self.X``).  Anchor
-        # exactly on ``agent.iteration_budget = IterationBudget`` so an
-        # unrelated identifier ending in ``iteration_budget`` (e.g.
-        # ``_iteration_budget`` or ``shared_iteration_budget``) can't
-        # match the boundary.
+        from agent.turn_context import build_turn_context as _btc
+        src = inspect.getsource(_btc)
+        # The preamble (now in build_turn_context) resets many fields (retry
+        # counts, budget, etc.) before returning. Find that reset block and
+        # verify our counters aren't in it. The reset block ends at
+        # iteration_budget. Anchor exactly on
+        # ``agent.iteration_budget = IterationBudget`` so an unrelated
+        # identifier ending in ``iteration_budget`` can't match the boundary.
         preamble_end = src.index("agent.iteration_budget = IterationBudget")
         preamble = src[:preamble_end]
         assert "agent._turns_since_memory = 0" not in preamble
@@ -6490,23 +6514,23 @@ class TestMemoryProviderTurnStart:
     """
 
     def test_on_turn_start_called_before_prefetch(self):
-        """Source-level check: on_turn_start appears before prefetch_all in run_conversation."""
+        """Source-level check: on_turn_start appears before prefetch_all in the prologue."""
         import inspect
-        from agent.conversation_loop import run_conversation as _rc
-        src = inspect.getsource(_rc)
+        from agent.turn_context import build_turn_context as _btc
+        src = inspect.getsource(_btc)
         # Find the actual method calls, not comments
         idx_turn_start = src.index(".on_turn_start(")
         idx_prefetch = src.index(".prefetch_all(")
         assert idx_turn_start < idx_prefetch, (
-            "on_turn_start() must be called before prefetch_all() in run_conversation "
+            "on_turn_start() must be called before prefetch_all() in the turn prologue "
             "so that memory providers have the correct turn count for cadence checks"
         )
 
     def test_on_turn_start_uses_user_turn_count(self):
         """Source-level check: on_turn_start receives the user_turn_count."""
         import inspect
-        from agent.conversation_loop import run_conversation as _rc
-        src = inspect.getsource(_rc)
+        from agent.turn_context import build_turn_context as _btc
+        src = inspect.getsource(_btc)
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src

@@ -307,17 +307,39 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 const BACKEND_RETURN_POLL_MS = 1500
 const BACKEND_RETURN_MAX_ATTEMPTS = 40
 
-async function waitForBackendReturn(): Promise<void> {
+async function waitForBackendReturn(): Promise<boolean> {
   for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
     await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
     try {
       await checkHermesUpdate()
 
-      return
+      return true
     } catch {
       continue
     }
   }
+
+  return false
+}
+
+function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
+  if (returned) {
+    $backendUpdateApply.set(IDLE)
+    setUpdateOverlayOpen(false)
+    void checkBackendUpdates()
+
+    return { ok: true, message: 'Backend update applied.' }
+  }
+
+  $backendUpdateApply.set({
+    ...$backendUpdateApply.get(),
+    applying: false,
+    stage: 'error',
+    error: 'apply-failed',
+    message: 'Backend updated but did not come back online. Check the backend host.'
+  })
+
+  return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
 }
 
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
@@ -350,11 +372,8 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
           stage: 'restart',
           message: 'Backend restarting to load the update…'
         })
-        await waitForBackendReturn()
-        $backendUpdateApply.set(IDLE)
-        void checkBackendUpdates()
 
-        return { ok: true, message: 'Backend update applied; backend is back online.' }
+        return finishBackendApply(await waitForBackendReturn())
       }
 
       if (last && !last.running) {
@@ -365,11 +384,8 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     const ok = !!last && (last.exit_code ?? 1) === 0
     if (ok) {
       $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: 'Backend restarting to load the update…' })
-      await waitForBackendReturn()
-      $backendUpdateApply.set(IDLE)
-      void checkBackendUpdates()
 
-      return { ok: true, message: 'Backend update applied.' }
+      return finishBackendApply(await waitForBackendReturn())
     }
 
     $backendUpdateApply.set({

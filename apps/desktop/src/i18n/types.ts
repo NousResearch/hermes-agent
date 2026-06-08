@@ -937,6 +937,7 @@ export interface Translations {
     unsupportedMessage: string
     connectionRetry: string
     latestBody: string
+    latestBodyBackend: string
     allSetTitle: string
     availableTitle: string
     availableBody: string

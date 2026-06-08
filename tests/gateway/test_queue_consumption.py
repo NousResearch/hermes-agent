@@ -23,6 +23,7 @@ from gateway.platforms.base import (
 # Minimal adapter for testing pending message storage
 # ---------------------------------------------------------------------------
 
+
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
@@ -35,6 +36,7 @@ class _StubAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         from gateway.platforms.base import SendResult
+
         return SendResult(success=True, message_id="msg-1")
 
     async def get_chat_info(self, chat_id):
@@ -44,6 +46,7 @@ class _StubAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestQueueMessageStorage:
     """Verify /queue stores messages correctly in adapter._pending_messages."""
@@ -196,7 +199,10 @@ class TestQueueConsumptionAfterCompletion:
 
         # Slot holds head; overflow holds the tail in order.
         assert adapter._pending_messages[session_key].text == "first"
-        assert [e.text for e in runner._queued_events[session_key]] == ["second", "third"]
+        assert [e.text for e in runner._queued_events[session_key]] == [
+            "second",
+            "third",
+        ]
         assert runner._queue_depth(session_key, adapter=adapter) == 3
 
     def test_promote_advances_queue_fifo(self):
@@ -222,28 +228,36 @@ class TestQueueConsumptionAfterCompletion:
 
         # Simulate turn 1 drain: consume slot, promote next.
         pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
+        pending_event = runner._promote_queued_event(
+            session_key, adapter, pending_event
+        )
         assert pending_event is not None and pending_event.text == "A"
         assert adapter._pending_messages[session_key].text == "B"
         assert runner._queue_depth(session_key, adapter=adapter) == 2
 
         # Simulate turn 2 drain.
         pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
+        pending_event = runner._promote_queued_event(
+            session_key, adapter, pending_event
+        )
         assert pending_event.text == "B"
         assert adapter._pending_messages[session_key].text == "C"
         assert session_key not in runner._queued_events  # overflow emptied
 
         # Simulate turn 3 drain.
         pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
+        pending_event = runner._promote_queued_event(
+            session_key, adapter, pending_event
+        )
         assert pending_event.text == "C"
         assert session_key not in adapter._pending_messages
         assert runner._queue_depth(session_key, adapter=adapter) == 0
 
         # Turn 4: nothing pending.
         pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
+        pending_event = runner._promote_queued_event(
+            session_key, adapter, pending_event
+        )
         assert pending_event is None
 
     def test_promote_stages_overflow_when_slot_already_populated(self):
@@ -288,7 +302,9 @@ class TestQueueConsumptionAfterCompletion:
         # follow-up's turn runs — so here, the slot keeps the interrupt
         # and Q2 stays queued.  Verify we return the interrupt event and
         # Q2 is positioned to run next.
-        returned = runner._promote_queued_event(session_key, adapter, interrupt_follow_up)
+        returned = runner._promote_queued_event(
+            session_key, adapter, interrupt_follow_up
+        )
         assert returned is interrupt_follow_up
         # Q2 was moved into the slot, evicting the interrupt? No —
         # current implementation puts Q2 in the slot unconditionally,
@@ -360,3 +376,98 @@ class TestQueueConsumptionAfterCompletion:
             e.text for e in runner._queued_events[session_key]
         ]
         assert collected == texts
+
+
+class TestBusyInputModeQueueFifo:
+    """Regression coverage for issue #28503.
+
+    ``busy_input_mode: queue`` rapid follow-ups used to silently overwrite
+    a single pending slot, losing every message except the last. The
+    runner's busy/queue/steer-fallback entry point now routes through
+    the same FIFO infrastructure as ``/queue``, so each follow-up gets
+    its own turn in arrival order.
+    """
+
+    def _make_runner_and_adapter(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        return runner, adapter
+
+    def _text_event(self, text: str) -> MessageEvent:
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM)
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"m-{text}",
+        )
+
+    def test_rapid_text_followups_are_queued_in_fifo_order(self):
+        """Five rapid texts in queue mode must all survive (none silently dropped)."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:fifo"
+
+        texts = ["one", "two", "three", "four", "five"]
+        for text in texts:
+            runner._queue_or_replace_pending_event(session_key, self._text_event(text))
+
+        # Head slot keeps the first; overflow keeps the rest in order.
+        assert adapter._pending_messages[session_key].text == "one"
+        assert [e.text for e in runner._queued_events[session_key]] == [
+            "two",
+            "three",
+            "four",
+            "five",
+        ]
+        assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
+
+    def test_queue_respects_bounded_cap(self):
+        """Beyond the per-session cap, follow-ups are dropped (with a warning)."""
+        from gateway.run import GatewayRunner
+
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:cap"
+
+        cap = GatewayRunner._BUSY_QUEUE_MAX_PENDING
+        for i in range(cap + 5):
+            runner._queue_or_replace_pending_event(
+                session_key, self._text_event(f"msg-{i:03d}")
+            )
+
+        # Exactly ``cap`` follow-ups retained (head + cap-1 in overflow).
+        assert runner._queue_depth(session_key, adapter=adapter) == cap
+        assert adapter._pending_messages[session_key].text == "msg-000"
+        # The last accepted overflow item is msg-{cap-1}.
+        assert runner._queued_events[session_key][-1].text == f"msg-{cap - 1:03d}"
+
+    def test_photo_burst_still_merges_in_head_slot(self):
+        """Photo bursts must keep album-merge semantics, not split into N turns."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:burst"
+
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM)
+        for i in range(3):
+            runner._queue_or_replace_pending_event(
+                session_key,
+                MessageEvent(
+                    text="",
+                    message_type=MessageType.PHOTO,
+                    source=source,
+                    message_id=f"p-{i}",
+                    media_urls=[f"http://example.com/{i}.jpg"],
+                    media_types=["image/jpeg"],
+                ),
+            )
+
+        # Single merged head event with all three media URLs.
+        assert (
+            session_key not in runner._queued_events
+            or not runner._queued_events[session_key]
+        )
+        head = adapter._pending_messages[session_key]
+        assert head.message_type == MessageType.PHOTO
+        assert len(head.media_urls) == 3

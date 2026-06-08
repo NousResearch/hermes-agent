@@ -93,6 +93,7 @@ class WSTransport:
 
         try:
             from agent.async_utils import safe_schedule_threadsafe
+
             fut = safe_schedule_threadsafe(self._safe_send(line), self._loop)
             if fut is None:
                 self._closed = True
@@ -103,7 +104,9 @@ class WSTransport:
             self._closed = True
             _log.warning(
                 "ws write failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
+                self._peer,
+                type(exc).__name__,
+                exc,
             )
             return False
 
@@ -121,7 +124,9 @@ class WSTransport:
             self._closed = True
             _log.warning(
                 "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
+                self._peer,
+                type(exc).__name__,
+                exc,
             )
 
     def close(self) -> None:
@@ -148,7 +153,9 @@ def _disable_nagle(ws: Any) -> None:
     """
     try:
         scope = getattr(ws, "scope", None) or {}
-        transport = (scope.get("extensions") or {}).get("transport") or getattr(ws, "transport", None)
+        transport = (scope.get("extensions") or {}).get("transport") or getattr(
+            ws, "transport", None
+        )
         sock = transport.get_extra_info("socket") if transport is not None else None
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -176,16 +183,14 @@ async def handle_ws(ws: Any) -> None:
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
-        ready_ok = await transport.write_async(
-            {
-                "jsonrpc": "2.0",
-                "method": "event",
-                "params": {
-                    "type": "gateway.ready",
-                    "payload": {"skin": server.resolve_skin()},
-                },
-            }
-        )
+        ready_ok = await transport.write_async({
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "gateway.ready",
+                "payload": {"skin": server.resolve_skin()},
+            },
+        })
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -223,13 +228,11 @@ async def handle_ws(ws: Any) -> None:
                     exc,
                     line[:_WS_LOG_PAYLOAD_PREVIEW],
                 )
-                ok = await transport.write_async(
-                    {
-                        "jsonrpc": "2.0",
-                        "error": {"code": -32700, "message": "parse error"},
-                        "id": None,
-                    }
-                )
+                ok = await transport.write_async({
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32700, "message": "parse error"},
+                    "id": None,
+                })
                 if not ok:
                     disconnect_reason = "send_failed_after_parse_error"
                     send_failures += 1
@@ -254,13 +257,11 @@ async def handle_ws(ws: Any) -> None:
                     req_id,
                     req_method,
                 )
-                ok = await transport.write_async(
-                    {
-                        "jsonrpc": "2.0",
-                        "error": {"code": -32603, "message": "internal error"},
-                        "id": req_id if req_id is not None else None,
-                    }
-                )
+                ok = await transport.write_async({
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32603, "message": "internal error"},
+                    "id": req_id if req_id is not None else None,
+                })
                 if not ok:
                     disconnect_reason = "send_failed_after_dispatch_crash"
                     send_failures += 1
@@ -283,45 +284,44 @@ async def handle_ws(ws: Any) -> None:
                 )
                 break
     finally:
+        reaped_sessions = 0
         detached_sessions = 0
-        reaped_scheduled = 0
         if transport is not None:
             transport.close()
 
-            # Detach the transport from any sessions it owned so later emits
-            # fall back to stdio instead of crashing into a closed socket.
+            # Reap sessions this transport owned (close_on_disconnect sidecar
+            # sessions) or detach the rest to the drop sentinel so later emits
+            # don't crash into a closed socket or fall through to desktop stdout
+            # logs. Detached sessions are handed to the grace-windowed WS-orphan
+            # reaper inside _close_sessions_for_transport (a quick reconnect /
+            # session.resume cancels it). This is the single WS-disconnect
+            # teardown path.
             #
-            # In the dashboard's in-process gateway that stdio fallback has no
-            # real reader, so a detached session would otherwise sit forever
-            # holding its _SlashWorker subprocess open (one leaked python proc
-            # per browser refresh — #38591 fallout). Schedule a grace-delayed
-            # reap; a quick reconnect / session.resume re-binds a live
-            # transport and cancels it (see _ws_session_is_orphaned).
-            for _sid, sess in list(server._sessions.items()):
-                if sess.get("transport") is transport:
-                    sess["transport"] = server._stdio_transport
-                    detached_sessions += 1
-                    try:
-                        server._schedule_ws_orphan_reap(_sid)
-                        reaped_scheduled += 1
-                    except Exception:
-                        _log.exception(
-                            "ws orphan-reap schedule failed peer=%s sid=%s",
-                            peer,
-                            _sid,
-                        )
+            # Offloaded: _close_session_by_id does a blocking worker.close()
+            # (terminate + waits) plus a synchronous DB write — inline that
+            # would freeze the uvicorn event loop for every other live
+            # connection.
+            try:
+                reaped_sessions, detached_sessions = await asyncio.to_thread(
+                    server._close_sessions_for_transport,
+                    transport,
+                    end_reason="ws_disconnect",
+                )
+            except Exception:
+                _log.exception("ws transport teardown failed peer=%s", peer)
         try:
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d detached_sessions=%d",
+            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
             peer,
             disconnect_reason,
             messages,
             parse_errors,
             dispatch_crashes,
             send_failures,
+            reaped_sessions,
             detached_sessions,
         )

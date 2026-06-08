@@ -78,7 +78,9 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monkeypatch):
+async def test_restart_command_uses_service_restart_under_systemd(
+    tmp_path, monkeypatch
+):
     """Under systemd (INVOCATION_ID set), /restart uses via_service=True."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("INVOCATION_ID", "abc123")
@@ -145,7 +147,9 @@ async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path, monkeypatch):
+async def test_restart_command_uses_atomic_json_writes_for_marker_files(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     calls = []
@@ -153,6 +157,11 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     def _fake_atomic_json_write(path, payload, **kwargs):
         calls.append((Path(path).name, payload, kwargs))
 
+    # _handle_restart_command lives in gateway/slash_commands.py (extracted from
+    # run.py); it uses that module's top-level atomic_json_write import.
+    import gateway.slash_commands as gateway_slash
+
+    monkeypatch.setattr(gateway_slash, "atomic_json_write", _fake_atomic_json_write)
     monkeypatch.setattr(gateway_run, "atomic_json_write", _fake_atomic_json_write)
 
     runner, _adapter = make_restart_runner()
@@ -175,7 +184,9 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_sethome_updates_running_config_for_same_process_restart(tmp_path, monkeypatch):
+async def test_sethome_updates_running_config_for_same_process_restart(
+    tmp_path, monkeypatch
+):
     """/sethome persists to env and updates in-memory config before restart."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
@@ -207,7 +218,9 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path, monkeypatch):
+async def test_sethome_preserves_thread_target_for_same_process_restart(
+    tmp_path, monkeypatch
+):
     """/sethome from a topic/thread stores the thread-aware home target."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
@@ -243,7 +256,9 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_send_home_channel_startup_notification_to_configured_home(tmp_path, monkeypatch):
+async def test_send_home_channel_startup_notification_to_configured_home(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
@@ -276,6 +291,7 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
         name="Ops Topic",
         thread_id="777",
     )
+
     # Declare the DM-topic lookup on the adapter CLASS, not the instance.
     # _is_telegram_dm_topic_target resolves _get_dm_topic_info via type(adapter)
     # so a MagicMock auto-attribute (instance-level) is intentionally ignored;
@@ -358,7 +374,9 @@ async def test_send_home_channel_startup_notification_ignores_false_send_result(
         chat_id="home-42",
         name="Ops Home",
     )
-    adapter.send = AsyncMock(return_value=SendResult(success=False, error="network down"))
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=False, error="network down")
+    )
 
     delivered = await runner._send_home_channel_startup_notifications()
 
@@ -375,10 +393,12 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "telegram",
-        "chat_id": "42",
-    }))
+    notify_path.write_text(
+        json.dumps({
+            "platform": "telegram",
+            "chat_id": "42",
+        })
+    )
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock()
@@ -400,13 +420,15 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "telegram",
-        "chat_id": "99",
-        "chat_type": "dm",
-        "thread_id": "777",
-        "message_id": "m2",
-    }))
+    notify_path.write_text(
+        json.dumps({
+            "platform": "telegram",
+            "chat_id": "99",
+            "chat_type": "dm",
+            "thread_id": "777",
+            "message_id": "m2",
+        })
+    )
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock()
@@ -438,15 +460,19 @@ async def test_send_restart_notification_noop_when_no_file(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, monkeypatch):
+async def test_send_restart_notification_skips_when_adapter_missing(
+    tmp_path, monkeypatch
+):
     """If the requester's platform isn't connected, clean up without crashing."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "discord",  # runner only has telegram adapter
-        "chat_id": "42",
-    }))
+    notify_path.write_text(
+        json.dumps({
+            "platform": "discord",  # runner only has telegram adapter
+            "chat_id": "42",
+        })
+    )
 
     runner, _adapter = make_restart_runner()
 
@@ -464,10 +490,12 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "telegram",
-        "chat_id": "42",
-    }))
+    notify_path.write_text(
+        json.dumps({
+            "platform": "telegram",
+            "chat_id": "42",
+        })
+    )
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock(side_effect=RuntimeError("network down"))
@@ -496,10 +524,12 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "telegram",
-        "chat_id": "42",
-    }))
+    notify_path.write_text(
+        json.dumps({
+            "platform": "telegram",
+            "chat_id": "42",
+        })
+    )
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock(
@@ -510,11 +540,13 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
         delivered_target = await runner._send_restart_notification()
 
     success_lines = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelname == "INFO" and "Sent restart notification" in r.getMessage()
     ]
     warning_lines = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelname == "WARNING"
         and "was not delivered" in r.getMessage()
         and "Chat not found" in r.getMessage()
@@ -564,7 +596,9 @@ async def test_send_home_channel_startup_notification_default_flag_true(
     runner, adapter = make_restart_runner()
     # Sanity-check the dataclass default — guards against future refactors
     # silently flipping the default to False.
-    assert runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification is True
+    assert (
+        runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification is True
+    )
 
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM,
@@ -592,10 +626,12 @@ async def test_send_restart_notification_skipped_when_flag_disabled(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "telegram",
-        "chat_id": "42",
-    }))
+    notify_path.write_text(
+        json.dumps({
+            "platform": "telegram",
+            "chat_id": "42",
+        })
+    )
 
     runner, adapter = make_restart_runner()
     runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
@@ -618,10 +654,12 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "telegram",
-        "chat_id": "42",
-    }))
+    notify_path.write_text(
+        json.dumps({
+            "platform": "telegram",
+            "chat_id": "42",
+        })
+    )
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
@@ -630,7 +668,8 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
         delivered_target = await runner._send_restart_notification()
 
     success_lines = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelname == "INFO" and "Sent restart notification" in r.getMessage()
     ]
     assert delivered_target == ("telegram", "42", None)
@@ -644,13 +683,17 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
 @pytest.mark.asyncio
 async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_missing():
     runner, adapter = make_restart_runner()
-    source = make_restart_source(chat_id="parent-42", chat_type="group", thread_id="topic-7")
+    source = make_restart_source(
+        chat_id="parent-42", chat_type="group", thread_id="topic-7"
+    )
     session_key = build_session_key(source)
 
     runner._running_agents[session_key] = object()
     runner.session_store._entries[session_key] = MagicMock(origin=None)
     runner._cache_session_source(session_key, source)
-    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="shutdown")
+    )
 
     await runner._notify_active_sessions_of_shutdown()
 
@@ -671,7 +714,9 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
 
     runner._running_agents[session_key] = object()
     runner.session_store._entries[session_key] = MagicMock(origin=source)
-    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="shutdown")
+    )
 
     await runner._notify_active_sessions_of_shutdown()
 

@@ -44,10 +44,14 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
-    app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
+    app.router.add_get(
+        "/api/sessions/{session_id}/messages", adapter._handle_session_messages
+    )
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
-    app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post(
+        "/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream
+    )
     return app
 
 
@@ -79,7 +83,9 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
-        create_resp = await cli.post("/api/sessions", json={"title": "Mobile chat", "model": "test-model"})
+        create_resp = await cli.post(
+            "/api/sessions", json={"title": "Mobile chat", "model": "test-model"}
+        )
         assert create_resp.status == 201
         created = await create_resp.json()
         session_id = created["session"]["id"]
@@ -109,7 +115,9 @@ async def test_session_crud_and_message_history(adapter, session_db):
         assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
         assert messages["data"][0]["content"] == "hello from phone"
 
-        patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
+        patch_resp = await cli.patch(
+            f"/api/sessions/{session_id}", json={"title": "Renamed"}
+        )
         assert patch_resp.status == 200
         patched = await patch_resp.json()
         assert patched["session"]["title"] == "Renamed"
@@ -117,20 +125,50 @@ async def test_session_crud_and_message_history(adapter, session_db):
         delete_resp = await cli.delete(f"/api/sessions/{session_id}")
         assert delete_resp.status == 200
         deleted = await delete_resp.json()
-        assert deleted == {"object": "hermes.session.deleted", "id": session_id, "deleted": True}
+        assert deleted == {
+            "object": "hermes.session.deleted",
+            "id": session_id,
+            "deleted": True,
+        }
         assert session_db.get_session(session_id) is None
 
 
 @pytest.mark.asyncio
-async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
-    source_id = session_db.create_session("source-session", "api_server", model="test-model")
+async def test_session_messages_follow_compression_tip(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server")
+    session_db.append_message(source_id, "user", "before compression")
+    session_db.end_session(source_id, "compression")
+    session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
+    session_db.replace_messages(source_id, [])
+    session_db.append_message("tip-session", "user", "after compression")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        messages_resp = await cli.get(f"/api/sessions/{source_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+
+    assert messages["object"] == "list"
+    assert messages["session_id"] == "tip-session"
+    assert [m["content"] for m in messages["data"]] == ["after compression"]
+
+
+@pytest.mark.asyncio
+async def test_session_fork_uses_current_sessiondb_branch_primitives(
+    adapter, session_db
+):
+    source_id = session_db.create_session(
+        "source-session", "api_server", model="test-model"
+    )
     session_db.set_session_title(source_id, "Original")
     session_db.append_message(source_id, "user", "first path")
     session_db.append_message(source_id, "assistant", "answer")
 
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
-        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"title": "Alternative"})
+        resp = await cli.post(
+            f"/api/sessions/{source_id}/fork", json={"title": "Alternative"}
+        )
         assert resp.status == 201
         payload = await resp.json()
 
@@ -139,25 +177,38 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert fork["id"] != source_id
     assert fork["parent_session_id"] == source_id
     assert fork["title"] == "Alternative"
-    assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
+    assert [m["content"] for m in session_db.get_messages(fork["id"])] == [
+        "first path",
+        "answer",
+    ]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
 
 
 @pytest.mark.asyncio
-async def test_session_chat_loads_history_and_preserves_session_headers(auth_adapter, session_db):
+async def test_session_chat_loads_history_and_preserves_session_headers(
+    auth_adapter, session_db
+):
     session_id = session_db.create_session("chat-session", "api_server")
     session_db.set_session_title(session_id, "Chat")
     session_db.append_message(session_id, "user", "earlier")
     session_db.append_message(session_id, "assistant", "prior answer")
 
-    mock_run = AsyncMock(return_value=({"final_response": "fresh answer", "session_id": session_id}, {"total_tokens": 3}))
+    mock_run = AsyncMock(
+        return_value=(
+            {"final_response": "fresh answer", "session_id": session_id},
+            {"total_tokens": 3},
+        )
+    )
     app = _create_session_app(auth_adapter)
     with patch.object(auth_adapter, "_run_agent", mock_run):
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 f"/api/sessions/{session_id}/chat",
                 json={"message": "next", "system_message": "stay focused"},
-                headers={"Authorization": "Bearer sk-test", "X-Hermes-Session-Key": "client-42"},
+                headers={
+                    "Authorization": "Bearer sk-test",
+                    "X-Hermes-Session-Key": "client-42",
+                },
             )
             assert resp.status == 200
             payload = await resp.json()
@@ -191,7 +242,12 @@ async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db)
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
     ]
 
-    mock_run = AsyncMock(return_value=({"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}))
+    mock_run = AsyncMock(
+        return_value=(
+            {"final_response": "A cat.", "session_id": session_id},
+            {"total_tokens": 4},
+        )
+    )
     app = _create_session_app(auth_adapter)
     with patch.object(auth_adapter, "_run_agent", mock_run):
         async with TestClient(TestServer(app)) as cli:
@@ -222,7 +278,9 @@ async def test_session_chat_stream_accepts_multimodal_message(adapter, session_d
     async def fake_run(**kwargs):
         captured_kwargs.update(kwargs)
         kwargs["stream_delta_callback"]("A cat.")
-        return {"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}
+        return {"final_response": "A cat.", "session_id": session_id}, {
+            "total_tokens": 4
+        }
 
     app = _create_session_app(adapter)
     with patch.object(adapter, "_run_agent", side_effect=fake_run):
@@ -240,20 +298,29 @@ async def test_session_chat_stream_accepts_multimodal_message(adapter, session_d
 
 
 @pytest.mark.asyncio
-async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(adapter, session_db):
+async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(
+    adapter, session_db
+):
     session_id = session_db.create_session("stream-session", "api_server")
     session_db.set_session_title(session_id, "Stream")
 
     async def fake_run(**kwargs):
         kwargs["stream_delta_callback"]("Hello")
         kwargs["stream_delta_callback"](" world")
-        kwargs["tool_progress_callback"]("reasoning.available", tool_name="_thinking", preview="thinking")
-        return {"final_response": "Hello world", "session_id": session_id}, {"total_tokens": 2}
+        kwargs["tool_progress_callback"](
+            "reasoning.available", tool_name="_thinking", preview="thinking"
+        )
+        return {"final_response": "Hello world", "session_id": session_id}, {
+            "total_tokens": 2
+        }
 
     app = _create_session_app(adapter)
     with patch.object(adapter, "_run_agent", side_effect=fake_run):
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "stream please"})
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "stream please"},
+            )
             assert resp.status == 200
             assert resp.headers["Content-Type"].startswith("text/event-stream")
             body = await resp.text()
@@ -269,7 +336,9 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
 
 
 @pytest.mark.asyncio
-async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
+async def test_session_chat_stream_run_completed_carries_turn_transcript(
+    adapter, session_db
+):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live
     delta stream can reconcile without a separate /messages fetch. Refs #34703.
@@ -298,7 +367,12 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
                         }
                     ],
                 },
-                {"role": "tool", "content": "results", "tool_call_id": "call_1", "tool_name": "web_search"},
+                {
+                    "role": "tool",
+                    "content": "results",
+                    "tool_call_id": "call_1",
+                    "tool_name": "web_search",
+                },
                 {"role": "assistant", "content": "Here is the summary."},
             ],
         }
@@ -320,7 +394,7 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
         if "event: run.completed" in block:
             for line in block.splitlines():
                 if line.startswith("data: "):
-                    run_completed_payload = _json.loads(line[len("data: "):])
+                    run_completed_payload = _json.loads(line[len("data: ") :])
             break
     assert run_completed_payload is not None, body
     messages = run_completed_payload.get("messages")
@@ -334,7 +408,6 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert all(m.get("role") in ("assistant", "tool") for m in messages)
     # The tool call is preserved alongside the intermediate text.
     assert any(m.get("tool_calls") for m in messages)
-
 
 
 @pytest.mark.asyncio

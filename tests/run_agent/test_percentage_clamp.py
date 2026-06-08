@@ -7,6 +7,7 @@ compression fires), users see >100% in /stats, gateway status, and
 memory tool output.
 """
 
+
 class TestMemoryToolPercentClamp:
     """tools/memory_tool.py — _success_response and _render_block pct"""
 
@@ -60,13 +61,17 @@ class TestGatewayStatsPercentClamp:
     def test_over_context_clamped_at_100(self):
         last_prompt_tokens = 210_000
         context_length = 200_000
-        pct = min(100, last_prompt_tokens / context_length * 100) if context_length else 0
+        pct = (
+            min(100, last_prompt_tokens / context_length * 100) if context_length else 0
+        )
         assert pct == 100
 
     def test_normal_context(self):
         last_prompt_tokens = 150_000
         context_length = 200_000
-        pct = min(100, last_prompt_tokens / context_length * 100) if context_length else 0
+        pct = (
+            min(100, last_prompt_tokens / context_length * 100) if context_length else 0
+        )
         assert pct == 75.0
 
 
@@ -76,15 +81,18 @@ class TestSourceLinesAreClamped:
     @staticmethod
     def _read_file(rel_path: str) -> str:
         import os
+
         base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         with open(os.path.join(base, rel_path)) as f:
             return f.read()
 
     def test_gateway_run_clamped(self):
-        src = self._read_file("gateway/run.py")
+        # The /usage stats handler was extracted from gateway/run.py into
+        # gateway/slash_commands.py (god-file decomposition Phase 3b).
+        src = self._read_file("gateway/slash_commands.py")
         # Check that the stats handler has min(100, ...)
         assert "min(100, ctx.last_prompt_tokens" in src, (
-            "gateway/run.py stats pct is not clamped with min(100, ...)"
+            "gateway/slash_commands.py stats pct is not clamped with min(100, ...)"
         )
 
     def test_cli_clamped(self):

@@ -32,15 +32,15 @@ Usage:
 import json
 import logging
 import os
-import platform
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field

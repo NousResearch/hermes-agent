@@ -15,7 +15,6 @@ This module provides:
 import copy
 import logging
 import os
-import platform
 import re
 import shutil
 import stat
@@ -136,7 +135,7 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
     except Exception:
         pass
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Env var names that influence how the next subprocess executes —

@@ -3,6 +3,7 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
+
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,6 +28,7 @@ sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    Platform,
     SessionSource,
     build_session_key,
 )
@@ -35,6 +37,7 @@ from gateway.platforms.base import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_event(text="hello", chat_id="123", platform_val="telegram"):
     """Build a minimal MessageEvent."""
@@ -66,6 +69,8 @@ def _make_runner():
     runner._busy_text_mode = "interrupt"
     runner.adapters = {}
     runner.config = MagicMock()
+    runner.config.group_sessions_per_user = True
+    runner.config.thread_sessions_per_user = False
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
@@ -91,6 +96,7 @@ def _make_adapter(platform_val="telegram"):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
@@ -118,6 +124,55 @@ class TestBusySessionAck:
         assert adapter._pending_messages[sk] is event
         assert sk not in runner._pending_messages
         running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
+        """Rapid Telegram text follow-ups in queue mode must not merge."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "seconds_since_activity": 0.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        events = [
+            MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"m-{idx}",
+            )
+            for idx, text in enumerate(("first", "second", "third"), start=1)
+        ]
+
+        for event in events:
+            result = await GatewayRunner._handle_message(runner, event)
+            assert result is None
+
+        assert adapter._pending_messages[sk].text == "first"
+        assert [event.text for event in runner._queued_events[sk]] == [
+            "second",
+            "third",
+        ]
+        agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
@@ -523,9 +578,12 @@ class TestBusySessionOnboardingHint:
 
         agent = MagicMock()
         agent.get_activity_summary.return_value = {
-            "api_call_count": 3, "max_iterations": 60,
-            "current_tool": None, "last_activity_ts": time.time(),
-            "last_activity_desc": "api", "seconds_since_activity": 0.1,
+            "api_call_count": 3,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "api",
+            "seconds_since_activity": 0.1,
         }
         runner._running_agents[sk] = agent
         runner._running_agents_ts[sk] = time.time() - 5
@@ -544,6 +602,7 @@ class TestBusySessionOnboardingHint:
 
         # The flag is now persisted to tmp_path/config.yaml
         import yaml
+
         cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
@@ -555,11 +614,14 @@ class TestBusySessionOnboardingHint:
 
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
         # Pre-populate the config so is_seen() returns True from the start.
-        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
-            "onboarding": {"seen": {"busy_input_prompt": True}},
-        }))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({
+                "onboarding": {"seen": {"busy_input_prompt": True}},
+            })
+        )
         monkeypatch.setattr(
-            _gr, "_load_gateway_config",
+            _gr,
+            "_load_gateway_config",
             lambda: yaml.safe_load((tmp_path / "config.yaml").read_text()),
         )
 
@@ -572,9 +634,12 @@ class TestBusySessionOnboardingHint:
 
         agent = MagicMock()
         agent.get_activity_summary.return_value = {
-            "api_call_count": 3, "max_iterations": 60,
-            "current_tool": None, "last_activity_ts": time.time(),
-            "last_activity_desc": "api", "seconds_since_activity": 0.1,
+            "api_call_count": 3,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "api",
+            "seconds_since_activity": 0.1,
         }
         runner._running_agents[sk] = agent
         runner._running_agents_ts[sk] = time.time() - 5

@@ -19,13 +19,13 @@ import asyncio
 import json
 import logging
 import os
-import platform
 import re
 import shutil
 import signal
 import subprocess
+import sys
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 from pathlib import Path
 from typing import Dict, Optional, Any
 

@@ -7,7 +7,6 @@ state in initialize() (Hindsight, and any plugin that stores session_id
 for scoped writes) keep writing into the old session's record.
 """
 
-
 import pytest
 
 from agent.memory_manager import MemoryManager
@@ -38,9 +37,11 @@ class _RecordingProvider(MemoryProvider):
         return []
 
     def sync_turn(self, user_content, assistant_content, *, session_id=""):
-        self.sync_calls.append(
-            {"user": user_content, "asst": assistant_content, "session_id": session_id}
-        )
+        self.sync_calls.append({
+            "user": user_content,
+            "asst": assistant_content,
+            "session_id": session_id,
+        })
 
     def queue_prefetch(self, query, *, session_id=""):
         self.queue_calls.append({"query": query, "session_id": session_id})
@@ -53,14 +54,12 @@ class _RecordingProvider(MemoryProvider):
         reset=False,
         **kwargs,
     ):
-        self.switch_calls.append(
-            {
-                "new": new_session_id,
-                "parent": parent_session_id,
-                "reset": reset,
-                "extra": kwargs,
-            }
-        )
+        self.switch_calls.append({
+            "new": new_session_id,
+            "parent": parent_session_id,
+            "reset": reset,
+            "extra": kwargs,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +91,9 @@ def test_abc_default_on_session_switch_is_noop():
     p.on_session_switch("new-id")
     p.on_session_switch("new-id", parent_session_id="old-id")
     p.on_session_switch("new-id", parent_session_id="old-id", reset=True)
-    p.on_session_switch("new-id", parent_session_id="old-id", reset=True, reason="new_session")
+    p.on_session_switch(
+        "new-id", parent_session_id="old-id", reset=True, reason="new_session"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +109,9 @@ def test_manager_fans_out_to_all_providers():
     mm.add_provider(p1)
     mm.add_provider(p2)
 
-    mm.on_session_switch("new-sid", parent_session_id="old-sid", reset=False, reason="resume")
+    mm.on_session_switch(
+        "new-sid", parent_session_id="old-sid", reset=False, reason="resume"
+    )
 
     assert len(p1.switch_calls) == 1
     assert len(p2.switch_calls) == 1
@@ -179,9 +182,8 @@ def test_sync_all_propagates_session_id_to_providers():
     p = _RecordingProvider()
     mm.add_provider(p)
     mm.sync_all("hello", "world", session_id="sess-42")
-    assert p.sync_calls == [
-        {"user": "hello", "asst": "world", "session_id": "sess-42"}
-    ]
+    mm.flush_pending(timeout=5)
+    assert p.sync_calls == [{"user": "hello", "asst": "world", "session_id": "sess-42"}]
 
 
 def test_queue_prefetch_all_propagates_session_id_to_providers():
@@ -189,6 +191,7 @@ def test_queue_prefetch_all_propagates_session_id_to_providers():
     p = _RecordingProvider()
     mm.add_provider(p)
     mm.queue_prefetch_all("next query", session_id="sess-42")
+    mm.flush_pending(timeout=5)
     assert p.queue_calls == [{"query": "next query", "session_id": "sess-42"}]
 
 
@@ -205,6 +208,7 @@ def _make_hindsight_provider():
     reads/writes. This keeps the test hermetic.
     """
     import threading
+
     hindsight_mod = pytest.importorskip("plugins.memory.hindsight")
     provider = object.__new__(hindsight_mod.HindsightMemoryProvider)
     provider._session_id = "old-sid"
@@ -242,6 +246,7 @@ def _make_hindsight_provider():
     # tests/plugins/memory/test_hindsight_provider.py where the full
     # writer-queue wiring is in place.
     import queue as _queue
+
     provider._retain_queue = _queue.Queue()
     provider._shutting_down = threading.Event()
     provider._atexit_registered = True

@@ -14,13 +14,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import {
-  createProfile,
   deleteProfile,
   getProfiles,
   getProfileSetupCommand,
   getProfileSoul,
   type ProfileInfo,
-  renameProfile,
   updateProfileSoul
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -31,12 +29,9 @@ import { notify, notifyError } from '@/store/notifications'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import { CreateProfileDialog } from './create-profile-dialog'
+import { RenameProfileDialog } from './rename-profile-dialog'
 
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-function isValidProfileName(name: string): boolean {
-  return PROFILE_NAME_RE.test(name.trim())
-}
 // Three-state affordance shared by every save/create/rename/delete button:
 // spinner while pending, a check on success, then back to the idle icon+label.
 interface ProfilesViewProps {
@@ -81,42 +76,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
     return profiles.find(p => p.name === selectedName) ?? profiles[0] ?? null
   }, [profiles, selectedName])
-
-  const handleCreate = useCallback(
-    async (name: string, cloneFromDefault: boolean) => {
-      const trimmed = name.trim()
-
-      if (!isValidProfileName(trimmed)) {
-        throw new Error(p.nameHint)
-      }
-
-      await createProfile({ name: trimmed, clone_from_default: cloneFromDefault })
-      notify({ kind: 'success', title: p.created, message: trimmed })
-      setSelectedName(trimmed)
-      await refresh()
-    },
-    [p, refresh]
-  )
-
-  const handleRename = useCallback(
-    async (from: string, to: string): Promise<void> => {
-      const target = to.trim()
-
-      if (target === from) {
-        return
-      }
-
-      if (!isValidProfileName(target)) {
-        throw new Error(p.nameHint)
-      }
-
-      await renameProfile(from, target)
-      notify({ kind: 'success', title: p.renamed, message: `${from} → ${target}` })
-      setSelectedName(target)
-      await refresh()
-    },
-    [p, refresh]
-  )
 
   const handleConfirmDelete = useCallback(async () => {
     if (!pendingDelete) {
@@ -164,7 +123,10 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
               <ProfileDetail
                 key={selected.name}
                 onDelete={() => setPendingDelete(selected)}
-                onRename={newName => handleRename(selected.name, newName)}
+                onRenamed={async newName => {
+                  setSelectedName(newName)
+                  await refresh()
+                }}
                 profile={selected}
               />
             ) : (
@@ -181,7 +143,10 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
       <CreateProfileDialog
           onClose={() => setCreateOpen(false)}
-          onCreate={async (name, cloneFromDefault) => handleCreate(name, cloneFromDefault)}
+          onCreated={async name => {
+            setSelectedName(name)
+            await refresh()
+          }}
           open={createOpen}
         />
 
@@ -242,11 +207,11 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
 
 function ProfileDetail({
   onDelete,
-  onRename,
+  onRenamed,
   profile
 }: {
   onDelete: () => void
-  onRename: (newName: string) => Promise<void>
+  onRenamed: (newName: string) => Promise<void>
   profile: ProfileInfo
 }) {
   const { t } = useI18n()
@@ -339,8 +304,8 @@ function ProfileDetail({
       <RenameProfileDialog
         currentName={profile.name}
         onClose={() => setRenameOpen(false)}
-        onRename={async newName => {
-          await onRename(newName)
+        onRenamed={async newName => {
+          await onRenamed(newName)
           setRenameOpen(false)
         }}
         open={renameOpen}

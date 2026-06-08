@@ -32,6 +32,7 @@ from hermes_state import SessionDB
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+
 def _build_agent_with_db(db: SessionDB, session_id: str):
     """Construct an AIAgent wired to *db* and pinned to *session_id*.
 
@@ -81,6 +82,7 @@ _MESSAGES = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_concurrent_compressions_do_not_alias_sessions(tmp_path: Path) -> None:
     """Five distinct sessions compressing in parallel must each produce a unique
     post-compression session_id; no two agents must end up sharing an id.
@@ -106,7 +108,10 @@ def test_concurrent_compressions_do_not_alias_sessions(tmp_path: Path) -> None:
         except Exception as exc:
             errors.append(exc)
 
-    threads = [threading.Thread(target=run, args=(a,), name=f"session-{i}") for i, a in enumerate(agents)]
+    threads = [
+        threading.Thread(target=run, args=(a,), name=f"session-{i}")
+        for i, a in enumerate(agents)
+    ]
     for t in threads:
         t.start()
     for t in threads:
@@ -146,12 +151,38 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     agent_a = _build_agent_with_db(db, shared_sid)
     agent_b = _build_agent_with_db(db, shared_sid)
 
+    # Force genuine simultaneous lock contention instead of relying on a
+    # ``time.sleep`` inside the compressor stub to make the threads overlap.
+    # Under CI CPU starvation that sleep is not enough: one thread could
+    # acquire → compress → rotate → RELEASE the lock before the other even
+    # reaches ``try_acquire``, so both would acquire on the shared id and
+    # both would compress (the historical "got 2" flake). A two-party
+    # barrier in front of the real acquire guarantees both threads are
+    # contending for the lock at the same instant, which is exactly the
+    # condition this test means to assert — with zero timing dependency.
+    barrier = threading.Barrier(2, timeout=15)
+    _real_acquire = db.try_acquire_compression_lock
+
+    def _barriered_acquire(*args, **kwargs):
+        # Rendezvous both callers, then let the real (atomic) acquire decide
+        # the single winner. Tolerate a broken barrier so a test-side timeout
+        # never masquerades as a lock-logic failure.
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return _real_acquire(*args, **kwargs)
+
+    db.try_acquire_compression_lock = _barriered_acquire
+
     results: dict[str, list | None] = {"a": None, "b": None}
     errors: list[Exception] = []
 
     def run(key, agent):
         try:
-            compressed, _sp = agent._compress_context(_MESSAGES, "sys", approx_tokens=120_000)
+            compressed, _sp = agent._compress_context(
+                _MESSAGES, "sys", approx_tokens=120_000
+            )
             results[key] = compressed
         except Exception as exc:
             errors.append(exc)
@@ -163,15 +194,21 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     t_a.join(timeout=15)
     t_b.join(timeout=15)
 
+    # Restore the real method so the post-join lock-leak assertion below
+    # (and any future call) hits the unwrapped implementation.
+    db.try_acquire_compression_lock = _real_acquire
+
     assert not errors, f"Compression raised exceptions: {errors}"
 
     # Count which agents actually compressed (returned fewer messages than input)
     compressed_count = sum(
-        1 for msgs in results.values()
+        1
+        for msgs in results.values()
         if msgs is not None and len(msgs) < len(_MESSAGES)
     )
     unchanged_count = sum(
-        1 for msgs in results.values()
+        1
+        for msgs in results.values()
         if msgs is not None and len(msgs) == len(_MESSAGES)
     )
 
@@ -186,9 +223,7 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     )
 
     # Exactly one session_id rotation must have occurred.
-    rotated = sum(
-        1 for a in (agent_a, agent_b) if a.session_id != shared_sid
-    )
+    rotated = sum(1 for a in (agent_a, agent_b) if a.session_id != shared_sid)
     assert rotated == 1, (
         f"Expected exactly one agent to rotate session_id, got {rotated}. "
         "Both agents rotating produces a session fork (Damien's incident shape)."

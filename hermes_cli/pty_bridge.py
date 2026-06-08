@@ -41,6 +41,7 @@ from typing import Optional, Sequence
 
 try:
     import ptyprocess  # type: ignore
+
     _PTY_AVAILABLE = not sys.platform.startswith("win")
 except ImportError:  # pragma: no cover - dev env without ptyprocess
     ptyprocess = None  # type: ignore
@@ -143,7 +144,7 @@ class PtyBridge:
         # simple terminal probes like `tput cols` fail before winsize reads.
         # Preserve explicit caller overrides, but backfill a sensible default
         # when TERM is missing or blank.
-        spawn_env = (os.environ.copy() if env is None else env.copy())
+        spawn_env = os.environ.copy() if env is None else env.copy()
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"
         proc = ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]
@@ -250,13 +251,31 @@ class PtyBridge:
             return
         self._closed = True
 
+        try:
+            pgid = os.getpgid(
+                self._proc.pid
+            )  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        except Exception:
+            pgid = None
+
         # SIGHUP is the conventional "your terminal went away" signal.
-        # We escalate if the child ignores it.
-        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        # Send it to the whole foreground process group, not just the PTY
+        # leader: the dashboard TUI starts helper children such as the Python
+        # slash worker, and killing only the leader can strand those helpers.
+        for sig in (
+            signal.SIGHUP,
+            signal.SIGTERM,
+            signal.SIGKILL,
+        ):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
             if not self._proc.isalive():
                 break
             try:
-                self._proc.kill(sig)
+                if pgid is not None:
+                    os.killpg(
+                        pgid, sig
+                    )  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                else:
+                    self._proc.kill(sig)
             except Exception:
                 pass
             deadline = time.monotonic() + 0.5

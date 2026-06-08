@@ -209,7 +209,8 @@ export const zhHant = defineLocale({
       technical: '技術',
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
-      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
+      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -1344,9 +1345,13 @@ export const zhHant = defineLocale({
     unsupportedMessage: '此版本的 Hermes 無法在應用程式內自行更新。',
     connectionRetry: '請檢查網路連線後重試。',
     latestBody: '您正在執行最新版本。',
+    latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安裝。',
+    availableTitleBackend: '後端有可用更新',
+    availableBodyBackend: '已連接的 Hermes 後端有新版本可安裝。',
+    availableBodyNoChangelog: '已有新版本可用。此安裝方式無法顯示更新日誌。',
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
@@ -1357,10 +1362,19 @@ export const zhHant = defineLocale({
     copied: '已複製',
     done: '完成',
     applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後重新開啟 Hermes。',
+    applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
     applyingClose: 'Hermes 將關閉以套用更新。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
-    notNow: '暫不'
+    notNow: '暫不',
+    applyStatus: {
+      preparing: '正在更新後端…',
+      pulling: '後端更新中…',
+      restarting: '後端正在重新啟動以載入更新…',
+      notAvailable: '此後端無法更新。',
+      failed: '後端更新失敗。',
+      noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
+    }
   },
 
   install: {
@@ -1543,6 +1557,9 @@ export const zhHant = defineLocale({
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `落後 ${branch} ${count} 個提交`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `後端 v${version}`,
+      clientLabel: version => `用戶端 v${version}`,
+      backendLabel: version => `後端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '關閉命令中心',

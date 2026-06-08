@@ -31,13 +31,12 @@ def test_matrix_extra_not_in_all():
     """
     optional_dependencies = _load_optional_dependencies()
 
-    assert "matrix" in optional_dependencies, "[matrix] extra must still exist for explicit `pip install hermes-agent[matrix]`"
+    assert "matrix" in optional_dependencies, (
+        "[matrix] extra must still exist for explicit `pip install hermes-agent[matrix]`"
+    )
     # Must NOT appear in [all] in any form — neither unconditional nor
     # platform-gated. Lazy-install handles it.
-    matrix_in_all = [
-        dep for dep in optional_dependencies["all"]
-        if "matrix" in dep
-    ]
+    matrix_in_all = [dep for dep in optional_dependencies["all"] if "matrix" in dep]
     assert not matrix_in_all, (
         "matrix must not appear in [all] — it's lazy-installed via "
         "tools/lazy_deps.py LAZY_DEPS['platform.matrix']. Found: "
@@ -65,21 +64,30 @@ def test_lazy_installable_extras_excluded_from_all():
     # someone adds a new lazy-install backend, they have to update
     # this list AND verify [all] doesn't contain it.
     lazy_covered_extras = {
-        "anthropic", "bedrock",
-        "exa", "firecrawl", "parallel-web",
+        "anthropic",
+        "bedrock",
+        "exa",
+        "firecrawl",
+        "parallel-web",
         "fal",
-        "edge-tts", "tts-premium",
+        "edge-tts",
+        "tts-premium",
         "voice",  # faster-whisper / sounddevice / numpy
-        "modal", "daytona",
-        "messaging", "slack", "matrix", "dingtalk", "feishu",
-        "honcho", "hindsight",
+        "modal",
+        "daytona",
+        "messaging",
+        "slack",
+        "matrix",
+        "dingtalk",
+        "feishu",
+        "honcho",
+        "hindsight",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]
     for extra in lazy_covered_extras:
         offending = [
-            spec for spec in all_extra_specs
-            if f"hermes-agent[{extra}]" in spec
+            spec for spec in all_extra_specs if f"hermes-agent[{extra}]" in spec
         ]
         assert not offending, (
             f"[{extra}] is in [all] but also in LAZY_DEPS. "
@@ -88,15 +96,60 @@ def test_lazy_installable_extras_excluded_from_all():
         )
 
 
+def _exact_pins(specs):
+    pins = {}
+    for spec in specs:
+        requirement = spec.split(";", 1)[0].strip()
+        if "==" not in requirement:
+            continue
+        package, version = requirement.split("==", 1)
+        package = package.split("[", 1)[0].lower().replace("_", "-")
+        pins[package] = version
+    return pins
+
+
+def test_pyproject_aiohttp_pins_match_lazy_slack_pin():
+    """Avoid update/lazy-install churn from conflicting aiohttp pins.
+
+    pyproject extras (messaging/slack/homeassistant/sms) exact-pin aiohttp.
+    The Slack lazy-install deps (LAZY_DEPS['platform.slack']) also pin it.
+    If the two drift, `hermes update` resolves the pyproject pin and
+    downgrades aiohttp, reopening the CVEs the lazy pin fixed (#31817) —
+    only for Slack's lazy refresh to upgrade it again on next use.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    lazy_aiohttp = _exact_pins(LAZY_DEPS["platform.slack"])["aiohttp"]
+
+    pyproject_aiohttp_pins = {
+        extra: pins["aiohttp"]
+        for extra, specs in optional_dependencies.items()
+        if "aiohttp" in (pins := _exact_pins(specs))
+    }
+
+    assert pyproject_aiohttp_pins, (
+        "expected at least one pyproject extra to pin aiohttp"
+    )
+    mismatches = {
+        extra: pin
+        for extra, pin in pyproject_aiohttp_pins.items()
+        if pin != lazy_aiohttp
+    }
+    assert not mismatches, (
+        "pyproject.toml aiohttp pins must match "
+        "LAZY_DEPS['platform.slack'] to avoid hermes update downgrading "
+        "aiohttp before Slack's lazy refresh upgrades it again. "
+        f"lazy aiohttp=={lazy_aiohttp}; mismatched extras: {mismatches}"
+    )
+
+
 def test_dev_extra_excluded_from_all():
     """End-user installs should not pull test/lint/debug tooling."""
     optional_dependencies = _load_optional_dependencies()
 
     assert "dev" in optional_dependencies
-    assert not any(
-        spec == "hermes-agent[dev]"
-        for spec in optional_dependencies["all"]
-    )
+    assert not any(spec == "hermes-agent[dev]" for spec in optional_dependencies["all"])
 
 
 def test_messaging_extra_includes_qrcode_for_weixin_setup():
@@ -129,8 +182,7 @@ def test_nemo_relay_extra_uses_official_0_3_distribution():
 
     assert optional_dependencies["nemo-relay"] == ["nemo-relay==0.3"]
     assert not any(
-        spec == "hermes-agent[nemo-relay]"
-        for spec in optional_dependencies["all"]
+        spec == "hermes-agent[nemo-relay]" for spec in optional_dependencies["all"]
     )
 
 

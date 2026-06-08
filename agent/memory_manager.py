@@ -29,7 +29,9 @@ import json
 import logging
 import re
 import inspect
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -37,27 +39,33 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# How long shutdown_all() waits for in-flight background sync/prefetch work
+# to drain before abandoning it. A wedged provider must never block process
+# teardown indefinitely — the worker threads are daemon, so anything still
+# running past this window dies with the interpreter.
+_SYNC_DRAIN_TIMEOUT_S = 5.0
+
 
 # ---------------------------------------------------------------------------
 # Context fencing helpers
 # ---------------------------------------------------------------------------
 
-_FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+_FENCE_TAG_RE = re.compile(r"</?\s*memory-context\s*>", re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
-    r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
+    r"<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>",
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
+    r"\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*",
     re.IGNORECASE,
 )
 
 
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
-    text = _INTERNAL_CONTEXT_RE.sub('', text)
-    text = _INTERNAL_NOTE_RE.sub('', text)
-    text = _FENCE_TAG_RE.sub('', text)
+    text = _INTERNAL_CONTEXT_RE.sub("", text)
+    text = _INTERNAL_NOTE_RE.sub("", text)
+    text = _FENCE_TAG_RE.sub("", text)
     return text
 
 
@@ -122,16 +130,15 @@ class StreamingContextScrubber:
                     self._buf = buf[-held:] if held else ""
                     return "".join(out)
                 # Found close — skip span content + tag, continue
-                buf = buf[idx + len(self._CLOSE_TAG):]
+                buf = buf[idx + len(self._CLOSE_TAG) :]
                 self._in_span = False
             else:
                 idx = self._find_boundary_open_tag(buf)
                 if idx == -1:
                     # No open tag — hold back a potential partial open tag
-                    held = (
-                        self._max_pending_open_suffix(buf)
-                        or self._max_partial_suffix(buf, self._OPEN_TAG)
-                    )
+                    held = self._max_pending_open_suffix(
+                        buf
+                    ) or self._max_partial_suffix(buf, self._OPEN_TAG)
                     if held:
                         self._append_visible(out, buf[:-held])
                         self._buf = buf[-held:]
@@ -141,7 +148,7 @@ class StreamingContextScrubber:
                 # Emit text before the tag, enter span
                 if idx > 0:
                     self._append_visible(out, buf[:idx])
-                buf = buf[idx + len(self._OPEN_TAG):]
+                buf = buf[idx + len(self._OPEN_TAG) :]
                 self._in_span = True
 
         return "".join(out)
@@ -184,7 +191,9 @@ class StreamingContextScrubber:
             idx = buf_lower.find(self._OPEN_TAG, search_start)
             if idx == -1:
                 return -1
-            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
+            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(
+                buf, idx
+            ):
                 return idx
             search_start = idx + 1
 
@@ -210,7 +219,7 @@ class StreamingContextScrubber:
         last_newline = preceding.rfind("\n")
         if last_newline == -1:
             return self._at_block_boundary and preceding.strip() == ""
-        return preceding[last_newline + 1:].strip() == ""
+        return preceding[last_newline + 1 :].strip() == ""
 
     def _append_visible(self, out: list[str], text: str) -> None:
         if not text:
@@ -221,7 +230,7 @@ class StreamingContextScrubber:
     def _update_block_boundary(self, text: str) -> None:
         last_newline = text.rfind("\n")
         if last_newline != -1:
-            self._at_block_boundary = text[last_newline + 1:].strip() == ""
+            self._at_block_boundary = text[last_newline + 1 :].strip() == ""
         else:
             self._at_block_boundary = self._at_block_boundary and text.strip() == ""
 
@@ -261,10 +270,14 @@ class MemoryManager:
         self._wake_greeting_pending: bool = False
         self._last_activity_at: float = time.monotonic()
         self._last_sleep_at: float = 0.0
+        self._sync_executor: Optional[ThreadPoolExecutor] = None
+        self._sync_executor_lock = threading.Lock()
 
     # -- Idle sleep ----------------------------------------------------------
 
-    def configure_idle_sleep(self, config: Optional[Dict[str, Any]], *, now: Optional[float] = None) -> None:
+    def configure_idle_sleep(
+        self, config: Optional[Dict[str, Any]], *, now: Optional[float] = None
+    ) -> None:
         """Configure lazy idle-triggered memory sleep.
 
         The sleep pass is intentionally lazy: callers invoke
@@ -276,7 +289,9 @@ class MemoryManager:
         cfg = config or {}
         self._idle_sleep_enabled = bool(cfg.get("enabled", False))
         try:
-            self._idle_after_seconds = max(0.0, float(cfg.get("idle_after_seconds", 0) or 0))
+            self._idle_after_seconds = max(
+                0.0, float(cfg.get("idle_after_seconds", 0) or 0)
+            )
         except (TypeError, ValueError):
             self._idle_after_seconds = 0.0
         self._wake_greeting = str(cfg.get("wake_greeting") or "おはよう！")
@@ -301,7 +316,9 @@ class MemoryManager:
         slept = False
         for provider in self._providers:
             try:
-                tool_names = {schema.get("name", "") for schema in provider.get_tool_schemas()}
+                tool_names = {
+                    schema.get("name", "") for schema in provider.get_tool_schemas()
+                }
                 if "ebbinghaus_memory" not in tool_names:
                     continue
                 raw = provider.handle_tool_call("ebbinghaus_memory", args)
@@ -312,7 +329,9 @@ class MemoryManager:
                 results.append({"provider": provider.name, "result": parsed})
                 slept = True
             except Exception as e:
-                logger.debug("Memory provider '%s' idle sleep failed: %s", provider.name, e)
+                logger.debug(
+                    "Memory provider '%s' idle sleep failed: %s", provider.name, e
+                )
                 results.append({"provider": provider.name, "error": str(e)})
 
         self._last_activity_at = current
@@ -353,7 +372,8 @@ class MemoryManager:
                     "already registered. Only one external memory provider is "
                     "allowed at a time. Configure which one via memory.provider "
                     "in config.yaml.",
-                    provider.name, existing,
+                    provider.name,
+                    existing,
                 )
                 return
             self._has_external = True
@@ -379,7 +399,8 @@ class MemoryManager:
                     "Memory provider '%s' tool '%s' shadows a reserved core "
                     "tool name; registration ignored. Core tools always win — "
                     "rename the provider's tool to something unique.",
-                    provider.name, tool_name,
+                    provider.name,
+                    tool_name,
                 )
                 continue
             if tool_name and tool_name not in self._tool_to_provider:
@@ -428,7 +449,8 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' system_prompt_block() failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
         return "\n\n".join(blocks)
 
@@ -449,20 +471,34 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
-        """Queue background prefetch on all providers for the next turn."""
-        for provider in self._providers:
-            try:
-                provider.queue_prefetch(query, session_id=session_id)
-            except Exception as e:
-                logger.debug(
-                    "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
-                    provider.name, e,
-                )
+        """Queue background prefetch on all providers for the next turn.
+
+        Provider work is dispatched to a background worker so a slow or
+        wedged provider can never block the caller. See ``sync_all`` for
+        the full rationale (agent stuck "running" minutes after a turn).
+        """
+        providers = list(self._providers)
+        if not providers:
+            return
+
+        def _run() -> None:
+            for provider in providers:
+                try:
+                    provider.queue_prefetch(query, session_id=session_id)
+                except Exception as e:
+                    logger.debug(
+                        "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
+                        provider.name,
+                        e,
+                    )
+
+        self._submit_background(_run)
 
     # -- Sync ----------------------------------------------------------------
 
@@ -486,27 +522,123 @@ class MemoryManager:
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Sync a completed turn to all providers."""
-        for provider in self._providers:
+        """Sync a completed turn to all providers.
+
+        Runs on a background worker thread, NOT inline on the
+        turn-completion path. A provider's ``sync_turn`` may make a
+        blocking network/daemon call (a misconfigured Hindsight daemon
+        was observed blocking ~298s before failing); doing that inline
+        held ``run_conversation`` open long after the user saw their
+        response, so every interface (CLI, TUI, gateway) kept the agent
+        marked "running" for minutes and any follow-up message triggered
+        an aggressive interrupt. Dispatching off-thread means a slow or
+        broken provider can never stall the turn — the sync simply
+        completes (or fails, logged) in the background.
+
+        Writes are serialized through a single worker so turn N lands
+        before turn N+1; provider implementations don't need their own
+        ordering guarantees.
+        """
+        providers = list(self._providers)
+        if not providers:
+            return
+
+        def _run() -> None:
+            for provider in providers:
+                try:
+                    if messages is not None and self._provider_sync_accepts_messages(
+                        provider
+                    ):
+                        provider.sync_turn(
+                            user_content,
+                            assistant_content,
+                            session_id=session_id,
+                            messages=messages,
+                        )
+                    else:
+                        provider.sync_turn(
+                            user_content,
+                            assistant_content,
+                            session_id=session_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Memory provider '%s' sync_turn failed: %s",
+                        provider.name,
+                        e,
+                    )
+
+        self._submit_background(_run)
+
+    # -- Background dispatch -------------------------------------------------
+
+    def _submit_background(self, fn) -> None:
+        """Run ``fn`` on the manager's background worker.
+
+        The executor is created lazily and shared across calls. If the
+        executor can't be created or has already been shut down, ``fn``
+        runs inline as a last-resort fallback — losing the async benefit
+        but never losing the write itself. ``fn`` must do its own
+        per-provider error handling; this wrapper only guards executor
+        plumbing.
+        """
+        executor = self._get_sync_executor()
+        if executor is None:
+            # Executor unavailable (shut down / creation failed) — run
+            # inline rather than drop the work. Slow, but correct.
             try:
-                if messages is not None and self._provider_sync_accepts_messages(provider):
-                    provider.sync_turn(
-                        user_content,
-                        assistant_content,
-                        session_id=session_id,
-                        messages=messages,
+                fn()
+            except Exception as e:  # pragma: no cover - fn guards internally
+                logger.debug("Inline memory background task failed: %s", e)
+            return
+        try:
+            executor.submit(fn)
+        except RuntimeError:
+            # Executor was shut down between the get and the submit
+            # (teardown race). Fall back to inline.
+            try:
+                fn()
+            except Exception as e:  # pragma: no cover - fn guards internally
+                logger.debug("Inline memory background task failed: %s", e)
+
+    def _get_sync_executor(self) -> Optional[ThreadPoolExecutor]:
+        """Lazily create the single-worker background executor."""
+        if self._sync_executor is not None:
+            return self._sync_executor
+        with self._sync_executor_lock:
+            if self._sync_executor is None:
+                try:
+                    self._sync_executor = ThreadPoolExecutor(
+                        max_workers=1,
+                        thread_name_prefix="mem-sync",
                     )
-                else:
-                    provider.sync_turn(
-                        user_content,
-                        assistant_content,
-                        session_id=session_id,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "Memory provider '%s' sync_turn failed: %s",
-                    provider.name, e,
-                )
+                except Exception as e:  # pragma: no cover - resource exhaustion
+                    logger.warning("Failed to create memory sync executor: %s", e)
+                    return None
+            return self._sync_executor
+
+    def flush_pending(self, timeout: Optional[float] = None) -> bool:
+        """Block until queued sync/prefetch work has drained.
+
+        Single-worker executor means submitting a sentinel and waiting on
+        it guarantees every previously-submitted task has run. Returns
+        True if the barrier completed within ``timeout`` (or no executor
+        exists), False on timeout. Used at real session boundaries and by
+        tests that need to assert provider state deterministically.
+        """
+        executor = self._sync_executor
+        if executor is None:
+            return True
+        try:
+            fut = executor.submit(lambda: None)
+        except RuntimeError:
+            # Executor already shut down — nothing pending.
+            return True
+        try:
+            fut.result(timeout=timeout)
+            return True
+        except Exception:
+            return False
 
     # -- Tools ---------------------------------------------------------------
 
@@ -535,7 +667,8 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' get_tool_schemas() failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
         return schemas
 
@@ -547,9 +680,7 @@ class MemoryManager:
         """Check if any provider handles this tool."""
         return tool_name in self._tool_to_provider
 
-    def handle_tool_call(
-        self, tool_name: str, args: Dict[str, Any], **kwargs
-    ) -> str:
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         """Route a tool call to the correct provider.
 
         Returns JSON string result. Raises ValueError if no provider
@@ -563,7 +694,9 @@ class MemoryManager:
         except Exception as e:
             logger.error(
                 "Memory provider '%s' handle_tool_call(%s) failed: %s",
-                provider.name, tool_name, e,
+                provider.name,
+                tool_name,
+                e,
             )
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
@@ -580,7 +713,8 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_turn_start failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
@@ -591,7 +725,8 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_session_end failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
 
     def on_session_switch(
@@ -639,7 +774,8 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_session_switch failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
@@ -657,7 +793,8 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_pre_compress failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
         return "\n\n".join(parts)
 
@@ -676,8 +813,10 @@ class MemoryManager:
             return "keyword"
 
         accepted = [
-            p for p in params
-            if p.kind in {
+            p
+            for p in params
+            if p.kind
+            in {
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 inspect.Parameter.KEYWORD_ONLY,
@@ -708,17 +847,21 @@ class MemoryManager:
                         action, target, content, metadata=dict(metadata or {})
                     )
                 elif metadata_mode == "positional":
-                    provider.on_memory_write(action, target, content, dict(metadata or {}))
+                    provider.on_memory_write(
+                        action, target, content, dict(metadata or {})
+                    )
                 else:
                     provider.on_memory_write(action, target, content)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_memory_write failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
 
-    def on_delegation(self, task: str, result: str, *,
-                      child_session_id: str = "", **kwargs) -> None:
+    def on_delegation(
+        self, task: str, result: str, *, child_session_id: str = "", **kwargs
+    ) -> None:
         """Notify all providers that a subagent completed."""
         for provider in self._providers:
             try:
@@ -728,19 +871,75 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_delegation failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
 
     def shutdown_all(self) -> None:
-        """Shut down all providers (reverse order for clean teardown)."""
+        """Shut down all providers (reverse order for clean teardown).
+
+        Drains the background sync/prefetch executor first (bounded by
+        ``_SYNC_DRAIN_TIMEOUT_S``) so a turn's final sync has a chance to
+        land before providers are torn down. The worker threads are
+        daemon, so anything still wedged past the drain window dies with
+        the interpreter rather than blocking exit.
+        """
+        self._drain_sync_executor()
         for provider in reversed(self._providers):
             try:
                 provider.shutdown()
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' shutdown failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )
+
+    def _drain_sync_executor(self) -> None:
+        """Shut down the background executor, waiting briefly for drain.
+
+        Bounded by ``_SYNC_DRAIN_TIMEOUT_S``: a wedged provider must never
+        hang process/session teardown. We stop accepting new work and
+        cancel anything still queued, then wait at most the drain timeout
+        for the currently-running task on a watcher thread. The worker is
+        daemon, so an over-running task dies with the interpreter.
+        """
+        with self._sync_executor_lock:
+            executor = self._sync_executor
+            self._sync_executor = None
+        if executor is None:
+            return
+        try:
+            # Stop accepting new work and drop anything still queued, but
+            # do NOT block here — cancel_futures cancels not-yet-started
+            # tasks; the in-flight one keeps running on its daemon thread.
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Older Python without cancel_futures kwarg.
+            try:
+                executor.shutdown(wait=False)
+            except Exception as e:  # pragma: no cover
+                logger.debug("Memory sync executor shutdown failed: %s", e)
+            return
+        except Exception as e:  # pragma: no cover
+            logger.debug("Memory sync executor shutdown failed: %s", e)
+            return
+        # Give an in-flight sync a bounded chance to finish on a watcher
+        # thread so we don't block the caller past the drain timeout.
+        drainer = threading.Thread(
+            target=lambda: self._bounded_executor_wait(executor),
+            daemon=True,
+            name="mem-sync-drain",
+        )
+        drainer.start()
+        drainer.join(timeout=_SYNC_DRAIN_TIMEOUT_S)
+
+    @staticmethod
+    def _bounded_executor_wait(executor: ThreadPoolExecutor) -> None:
+        try:
+            executor.shutdown(wait=True)
+        except Exception as e:  # pragma: no cover
+            logger.debug("Memory sync executor drain wait failed: %s", e)
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers.
@@ -751,6 +950,7 @@ class MemoryManager:
         """
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
+
             kwargs["hermes_home"] = str(get_hermes_home())
         for provider in self._providers:
             try:
@@ -758,5 +958,6 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' initialize failed: %s",
-                    provider.name, e,
+                    provider.name,
+                    e,
                 )

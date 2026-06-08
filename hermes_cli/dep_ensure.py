@@ -16,13 +16,12 @@ browser tool needs agent-browser).
 from __future__ import annotations
 
 import os
-import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 
 _DEP_CHECKS = {
     "node": lambda: shutil.which("node") is not None,

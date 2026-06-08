@@ -215,7 +215,8 @@ export const ja = defineLocale({
       technical: 'テクニカル',
       technicalDesc: '生のツール引数、結果、低レベルの詳細を含めます。',
       themeTitle: 'テーマ',
-      themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。'
+      themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
+      themeProfileNote: profile => `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -1378,9 +1379,13 @@ export const ja = defineLocale({
     unsupportedMessage: 'このバージョンの Hermes はアプリ内から自分を更新できません。',
     connectionRetry: '接続を確認してもう一度試してください。',
     latestBody: '最新バージョンを実行しています。',
+    latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',
     availableTitle: '新しい更新が利用可能',
     availableBody: '新しいバージョンの Hermes をインストールする準備ができています。',
+    availableTitleBackend: 'バックエンドの更新があります',
+    availableBodyBackend: '接続中の Hermes バックエンドの新しいバージョンをインストールできます。',
+    availableBodyNoChangelog: '新しいバージョンを利用できます。このインストール形式ではリリースノートは表示できません。',
     updateNow: '今すぐ更新',
     maybeLater: '後で',
     moreChanges: count => `さらに ${count} 件の変更が含まれています。`,
@@ -1392,10 +1397,19 @@ export const ja = defineLocale({
     copied: 'コピーしました',
     done: '完了',
     applyingBody: 'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に Hermes を再度開きます。',
+    applyingBodyBackend: 'リモートバックエンドが更新を適用して再起動します。復帰すると Hermes が自動的に再接続します。',
     applyingClose: 'Hermes は更新を適用するために閉じます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
-    notNow: '今は後で'
+    notNow: '今は後で',
+    applyStatus: {
+      preparing: 'バックエンドを更新しています…',
+      pulling: 'バックエンドを更新中…',
+      restarting: 'バックエンドが更新を読み込むため再起動しています…',
+      notAvailable: 'このバックエンドでは更新を利用できません。',
+      failed: 'バックエンドの更新に失敗しました。',
+      noReturn: 'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
+    }
   },
 
   install: {
@@ -1582,6 +1596,9 @@ export const ja = defineLocale({
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `${branch} より ${count} コミット遅れています`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `バックエンド v${version}`,
+      clientLabel: version => `クライアント v${version}`,
+      backendLabel: version => `バックエンド v${version}`,
       commit: sha => `コミット ${sha}`,
       branch: branch => `ブランチ ${branch}`,
       closeCommandCenter: 'コマンドセンターを閉じる',

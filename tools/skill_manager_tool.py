@@ -410,9 +410,18 @@ def _validate_file_path(file_path: str) -> Optional[str]:
 
     normalized = Path(file_path)
 
-    # Prevent path traversal
+    # Prevent path traversal (checked before any allow-listing so the SKILL.md
+    # exception below can never be reached by a traversal-laden path).
     if has_traversal_component(file_path):
         return "Path traversal ('..') is not allowed."
+
+    # SKILL.md is the canonical skill file and lives at the skill root, not
+    # under an allowed subdirectory. Accept its two natural spellings —
+    # 'SKILL.md' and '<skill-name>/SKILL.md' — so callers can target the main
+    # file. The traversal guard above still applies, so this can't escape.
+    if normalized.parts and normalized.name == "SKILL.md":
+        if len(normalized.parts) == 1 or len(normalized.parts) == 2:
+            return None
 
     # Must be under an allowed subdirectory
     if not normalized.parts or normalized.parts[0] not in ALLOWED_SUBDIRS:

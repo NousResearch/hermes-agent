@@ -12,7 +12,6 @@ import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
-import { NotificationStack } from '@/components/notifications'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -23,6 +22,7 @@ import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-s
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $gatewaySwapTarget } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -46,9 +46,10 @@ import { routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
+import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
-import { requestComposerInsert } from './composer/focus'
-import { droppedFileInlineRef } from './composer/inline-refs'
+import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
+import { droppedFileInlineRef, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
 import type { ChatBarState } from './composer/types'
 import type { DroppedFile } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
@@ -71,6 +72,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickFolders: () => void
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
+  onSteer: (text: string) => Promise<boolean> | boolean
   onSubmit: (
     text: string,
     options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
@@ -163,6 +165,7 @@ export function ChatView({
   onPickFolders,
   onPickImages,
   onRemoveAttachment,
+  onSteer,
   onSubmit,
   onThreadMessagesChange,
   onEdit,
@@ -179,6 +182,7 @@ export function ChatView({
   const currentProvider = useStore($currentProvider)
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
+  const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -307,7 +311,13 @@ export function ChatView({
     [currentCwd]
   )
 
-  const { dragActive, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles })
+  // Dropping a sidebar session inserts an @session link the agent can resolve
+  // via session_search (carries the source profile, so cross-profile works).
+  const onDropSession = useCallback((session: SessionDragPayload) => {
+    requestComposerInsertRefs([sessionInlineRef(session)], { target: 'main' })
+  }, [])
+
+  const { dragKind, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles, onDropSession })
 
   return (
     <div
@@ -325,7 +335,6 @@ export function ChatView({
         selectedSessionId={selectedSessionId}
       />
 
-      <NotificationStack />
       <PromptOverlays />
 
       <div
@@ -363,6 +372,7 @@ export function ChatView({
                 onPickFolders={onPickFolders}
                 onPickImages={onPickImages}
                 onRemoveAttachment={onRemoveAttachment}
+                onSteer={onSteer}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
                 queueSessionKey={selectedSessionId || activeSessionId}
@@ -372,7 +382,8 @@ export function ChatView({
             </Suspense>
           )}
         </AssistantRuntimeProvider>
-        <ChatDropOverlay active={dragActive} />
+        <ChatDropOverlay kind={dragKind} />
+        <ChatSwapOverlay profile={gatewaySwapTarget} />
       </div>
     </div>
   )

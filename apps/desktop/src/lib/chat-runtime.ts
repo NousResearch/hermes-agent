@@ -7,7 +7,6 @@ import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } fro
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
-export const INTERRUPTED_MARKER = '\n\n_[interrupted]_'
 export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
 export const BUILTIN_PERSONALITIES = [
   'helpful',
@@ -47,7 +46,8 @@ export function createClientSessionState(
     sawAssistantPayload: false,
     pendingBranchGroup: null,
     interrupted: false,
-    needsInput: false
+    needsInput: false,
+    turnStartedAt: null
   }
 }
 

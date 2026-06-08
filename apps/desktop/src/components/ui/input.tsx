@@ -4,12 +4,7 @@ import { cn } from '@/lib/utils'
 
 import { type ControlVariantProps, controlVariants } from './control'
 
-function Input({
-  className,
-  type,
-  size,
-  ...props
-}: Omit<React.ComponentProps<'input'>, 'size'> & ControlVariantProps) {
+function Input({ className, type, size, ...props }: Omit<React.ComponentProps<'input'>, 'size'> & ControlVariantProps) {
   return (
     <input
       className={cn(

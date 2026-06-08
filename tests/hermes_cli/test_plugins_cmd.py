@@ -698,3 +698,153 @@ class TestNoAutoActivation:
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source
+
+
+# ── Category layout discovery tests (regression for #42033) ─────────────────
+
+class TestDiscoverAllPluginsCategoryLayout:
+    """Verify _discover_all_plugins handles both flat and category layouts."""
+
+    @staticmethod
+    def _make_plugin_yaml(plugin_dir: Path, name: str, version: str = "1.0.0") -> None:
+        """Write a minimal plugin.yaml into *plugin_dir*."""
+        import textwrap
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            textwrap.dedent(f"""\
+                name: {name}
+                version: "{version}"
+                description: "Test plugin {name}"
+            """),
+            encoding="utf-8",
+        )
+
+    def test_category_layout_discovered(self, tmp_path):
+        """Plugins under <category>/<name>/plugin.yaml must be found."""
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        self._make_plugin_yaml(
+            tmp_path / "observability" / "langfuse", "langfuse"
+        )
+        self._make_plugin_yaml(tmp_path / "disk-cleanup", "disk-cleanup")
+
+        with patch(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            return_value=tmp_path,
+        ), patch(
+            "hermes_cli.plugins_cmd._plugins_dir",
+            return_value=MagicMock(is_dir=lambda: False),
+        ):
+            plugins = _discover_all_plugins()
+
+        names = {p[0] for p in plugins}
+        assert "observability/langfuse" in names
+        assert "disk-cleanup" in names
+
+    def test_category_key_uses_directory_name(self, tmp_path):
+        """The plugin key must use the directory name, not the manifest name."""
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+        import textwrap
+
+        cat_dir = tmp_path / "browser" / "browser_use"
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        (cat_dir / "plugin.yaml").write_text(
+            textwrap.dedent("""\
+                name: browser-browser-use
+                version: "1.0.0"
+                description: "Browser Use plugin"
+            """),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            return_value=tmp_path,
+        ), patch(
+            "hermes_cli.plugins_cmd._plugins_dir",
+            return_value=MagicMock(is_dir=lambda: False),
+        ):
+            plugins = _discover_all_plugins()
+
+        names = {p[0] for p in plugins}
+        assert "browser/browser_use" in names
+
+    def test_user_plugins_override_bundled_category(self, tmp_path):
+        """User category plugin overrides bundled with same key."""
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        bundled_dir = tmp_path / "bundled"
+        user_dir = tmp_path / "user"
+
+        self._make_plugin_yaml(
+            bundled_dir / "observability" / "langfuse", "langfuse", "1.0.0"
+        )
+        self._make_plugin_yaml(
+            user_dir / "observability" / "langfuse", "langfuse", "2.0.0"
+        )
+
+        with patch(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            return_value=bundled_dir,
+        ), patch(
+            "hermes_cli.plugins_cmd._plugins_dir",
+            return_value=user_dir,
+        ):
+            plugins = _discover_all_plugins()
+
+        langfuse = [p for p in plugins if p[0] == "observability/langfuse"]
+        assert len(langfuse) == 1
+        assert langfuse[0][1] == "2.0.0"
+        assert langfuse[0][3] == "user"
+
+    def test_memory_context_engine_excluded_for_bundled(self, tmp_path):
+        """memory/ and context_engine/ categories excluded for bundled."""
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        self._make_plugin_yaml(tmp_path / "memory" / "honcho", "honcho")
+        self._make_plugin_yaml(
+            tmp_path / "context_engine" / "test-engine", "test-engine"
+        )
+        self._make_plugin_yaml(
+            tmp_path / "observability" / "langfuse", "langfuse"
+        )
+
+        with patch(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            return_value=tmp_path,
+        ), patch(
+            "hermes_cli.plugins_cmd._plugins_dir",
+            return_value=MagicMock(is_dir=lambda: False),
+        ):
+            plugins = _discover_all_plugins()
+
+        names = {p[0] for p in plugins}
+        assert "memory/honcho" not in names
+        assert "context_engine/test-engine" not in names
+        assert "observability/langfuse" in names
+
+    def test_deeply_nested_ignored(self, tmp_path):
+        """Plugins nested >2 levels deep must be ignored."""
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+        import textwrap
+
+        deep_dir = tmp_path / "a" / "b" / "c"
+        deep_dir.mkdir(parents=True, exist_ok=True)
+        (deep_dir / "plugin.yaml").write_text(
+            'name: deep\nversion: "1.0.0"\ndescription: deep\n',
+            encoding="utf-8",
+        )
+        self._make_plugin_yaml(tmp_path / "a" / "d", "d-plugin")
+
+        with patch(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            return_value=tmp_path,
+        ), patch(
+            "hermes_cli.plugins_cmd._plugins_dir",
+            return_value=MagicMock(is_dir=lambda: False),
+        ):
+            plugins = _discover_all_plugins()
+
+        names = {p[0] for p in plugins}
+        assert "a/b/c" not in names
+        assert "a/d" in names

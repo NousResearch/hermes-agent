@@ -734,7 +734,9 @@ def _discover_all_plugins() -> list:
 
     Matches the ordering/dedup of ``PluginManager.discover_and_load``:
     bundled first, then user, then project; user overrides bundled on
-    name collision.
+    name collision.  Supports both flat (``<root>/<name>/plugin.yaml``)
+    and category (``<root>/<category>/<name>/plugin.yaml``) layouts,
+    consistent with :meth:`PluginManager._scan_directory`.
     """
     try:
         import yaml
@@ -743,41 +745,62 @@ def _discover_all_plugins() -> list:
 
     seen: dict = {}  # name -> (name, version, description, source, path)
 
+    def _read_manifest_info(manifest_path: Path):
+        """Return (name, version, description) from a plugin.yaml."""
+        name = version = description = ""
+        if yaml:
+            try:
+                with open(manifest_path, encoding="utf-8") as mf:
+                    manifest = yaml.safe_load(mf) or {}
+                name = manifest.get("name", "")
+                version = manifest.get("version", "")
+                description = manifest.get("description", "")
+            except Exception:
+                pass
+        return name, version, description
+
+    def _is_git_plugin(plugin_dir: Path) -> bool:
+        return (plugin_dir / ".git").exists()
+
+    def _scan_level(
+        base: Path, source: str, *, prefix: str = "", depth: int = 0
+    ) -> None:
+        """Recursively scan *base* for plugin manifests (max depth 2)."""
+        if depth > 1 or not base.is_dir():
+            return
+        for child in sorted(base.iterdir()):
+            if not child.is_dir():
+                continue
+            if depth == 0 and source == "bundled" and child.name in {
+                "memory", "context_engine"
+            }:
+                continue
+            manifest_file = child / "plugin.yaml"
+            if not manifest_file.exists():
+                manifest_file = child / "plugin.yml"
+            if manifest_file.exists():
+                p_name, p_version, p_desc = _read_manifest_info(manifest_file)
+                if not p_name:
+                    p_name = child.name
+                key = f"{prefix}{child.name}" if prefix else p_name
+                # User plugins override bundled on name collision.
+                if key in seen and source == "bundled":
+                    continue
+                src_label = source
+                if source == "user" and _is_git_plugin(child):
+                    src_label = "git"
+                seen[key] = (key, p_version, p_desc, src_label, child)
+            else:
+                # Category directory — recurse one level.
+                _scan_level(
+                    child, source, prefix=f"{child.name}/", depth=depth + 1
+                )
+
     # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
-        if not base.is_dir():
-            continue
-        for d in sorted(base.iterdir()):
-            if not d.is_dir():
-                continue
-            if source == "bundled" and d.name in {"memory", "context_engine"}:
-                continue
-            manifest_file = d / "plugin.yaml"
-            if not manifest_file.exists():
-                manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
-                continue
-            name = d.name
-            version = ""
-            description = ""
-            if yaml:
-                try:
-                    with open(manifest_file, encoding="utf-8") as f:
-                        manifest = yaml.safe_load(f) or {}
-                    name = manifest.get("name", d.name)
-                    version = manifest.get("version", "")
-                    description = manifest.get("description", "")
-                except Exception:
-                    pass
-            # User plugins override bundled on name collision.
-            if name in seen and source == "bundled":
-                continue
-            src_label = source
-            if source == "user" and (d / ".git").exists():
-                src_label = "git"
-            seen[name] = (name, version, description, src_label, d)
+        _scan_level(base, source)
     return list(seen.values())
 
 

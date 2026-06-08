@@ -5,7 +5,7 @@
 # Uses uv for fast Python provisioning and package management.
 #
 # Usage:
-#   iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+#   iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 #
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
@@ -185,6 +185,35 @@ function Write-Err {
     Write-Host "[X] $Message" -ForegroundColor Red
 }
 
+# Inspect npm output for a TLS-trust failure and, if found, print actionable
+# remediation. npm/Node surface corporate MITM proxies and missing root CAs as
+# "unable to get local issuer certificate" / "self-signed certificate in
+# certificate chain" / UNABLE_TO_GET_ISSUER_CERT_LOCALLY -- most commonly while
+# Electron's install.js postinstall downloads the Electron binary. The reporter
+# usually misreads this as an admin-rights or generic install failure (see
+# issue #38016), so detect it once here and route every npm stage through this
+# hint. Returns $true when a cert error was detected (caller may adjust its own
+# messaging), $false otherwise.
+function Show-NpmCertHint {
+    param([string]$NpmOutput)
+    if (-not $NpmOutput) { return $false }
+    $isCertError = $NpmOutput -match "unable to get local issuer certificate" `
+        -or $NpmOutput -match "self.signed certificate" `
+        -or $NpmOutput -match "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" `
+        -or $NpmOutput -match "SELF_SIGNED_CERT_IN_CHAIN" `
+        -or $NpmOutput -match "CERT_HAS_EXPIRED"
+    if (-not $isCertError) { return $false }
+    Write-Warn "This looks like a TLS certificate-trust failure, not a permissions problem."
+    Write-Info "  A corporate proxy or antivirus is likely intercepting HTTPS and presenting a"
+    Write-Info "  certificate Node.js doesn't trust. To fix, point Node at your org's root CA:"
+    Write-Info "    1. Get the corporate root CA as a .pem/.crt from your IT team."
+    Write-Info "    2. setx NODE_EXTRA_CA_CERTS `"C:\path\to\corp-ca.pem`""
+    Write-Info "    3. Open a NEW terminal (so the env var takes effect) and re-run the installer."
+    Write-Info "  Quick (less secure) alternative -- disable TLS verification just for the install:"
+    Write-Info "    npm config set strict-ssl false   (re-enable afterwards: npm config set strict-ssl true)"
+    return $true
+}
+
 # --- Ensure-mode helpers ---
 
 function Resolve-NpmCmd {
@@ -252,6 +281,7 @@ function Install-AgentBrowser {
         $npmDetail = Get-Content $npmLog -Raw -ErrorAction SilentlyContinue
         Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
         Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
+        Show-NpmCertHint $npmDetail | Out-Null
         throw "npm install failed"
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
@@ -1063,6 +1093,7 @@ function Install-Repository {
             # EAP=Stop.  We rely on $LASTEXITCODE for actual failures.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
+            $autostashRef = ""
             try {
                 # This is a MANAGED checkout, not a repo the user edits. Git for
                 # Windows defaults to core.autocrlf=true, which renormalizes the
@@ -1071,12 +1102,23 @@ function Install-Repository {
                 # show as locally modified even though nobody touched them. A
                 # bare `git checkout` then aborts with "Your local changes would
                 # be overwritten by checkout", which is exactly the failure GUI
-                # users hit on update. Two-part fix: (1) stop creating the dirt
-                # by pinning autocrlf=false on this clone, (2) discard any
-                # pre-existing dirt with a hard reset before the checkout. Safe
-                # because nothing here is user-authored.
+                # users hit on update. Pin autocrlf=false so the dirt is never
+                # created in the first place.
                 git -c windows.appendAtomically=false config core.autocrlf false 2>$null
-                git -c windows.appendAtomically=false reset --hard HEAD 2>$null
+                # Preserve any real local changes before the checkout instead of
+                # discarding them with `reset --hard HEAD`. The old hard reset
+                # silently destroyed agent-edited source on managed clones (the
+                # #38542 data-loss class). Stash + restore mirrors install.sh:
+                # nothing is lost, and a failed restore leaves the work in a
+                # git stash for manual recovery. Untracked files are included so
+                # agent-created dirs (e.g. tinker-atropos/) survive too.
+                $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
+                if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
+                    $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+                    Write-Info "Local changes detected, stashing before update..."
+                    git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
+                    if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
+                }
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check
@@ -1095,10 +1137,62 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    git -c windows.appendAtomically=false pull origin $Branch
+                    git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
                 }
+
+                if ($autostashRef) {
+                    # Default to restoring so work is never silently dropped.
+                    # Only prompt when we're certain a human can answer: an
+                    # interactive session AND a real, non-redirected console on
+                    # both stdin and stdout. The desktop "Update" button and
+                    # bootstrap run the installer without a usable console -- in
+                    # those cases Read-Host would hang or return empty, so we
+                    # skip the prompt and just restore (the safe default).
+                    $restoreNow = $true
+                    $hasConsole = $false
+                    try {
+                        $hasConsole = (
+                            [Environment]::UserInteractive `
+                            -and (-not [Console]::IsInputRedirected) `
+                            -and (-not [Console]::IsOutputRedirected) `
+                            -and ($Host.Name -eq "ConsoleHost")
+                        )
+                    } catch { $hasConsole = $false }
+                    if ($hasConsole) {
+                        Write-Warn "Local changes were stashed before updating."
+                        Write-Warn "Restoring them may reapply local customizations onto the updated codebase."
+                        $restoreAnswer = Read-Host "Restore local changes now? [Y/n]"
+                        if ($restoreAnswer -match '^(n|no)$') { $restoreNow = $false }
+                    }
+
+                    if ($restoreNow) {
+                        Write-Info "Restoring local changes..."
+                        git -c windows.appendAtomically=false stash apply $autostashRef
+                        if ($LASTEXITCODE -eq 0) {
+                            git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                            Write-Warn "Local changes were restored on top of the updated codebase."
+                            Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
+                        } else {
+                            Write-Err "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                            Write-Info "Resolve manually with: git stash apply $autostashRef"
+                            throw "git stash apply failed after update"
+                        }
+                    } else {
+                        Write-Info "Skipped restoring local changes."
+                        Write-Info "Your changes are still preserved in git stash."
+                        Write-Info "Restore manually with: git stash apply $autostashRef"
+                    }
+                    $autostashRef = ""
+                }
             } finally {
+                if ($autostashRef) {
+                    # We stashed but never reached the restore block (a fetch/
+                    # checkout/pull failure threw). Leave the stash in place and
+                    # tell the user how to recover it -- never silently drop it.
+                    Write-Warn "Update did not complete. Your local changes are preserved in git stash."
+                    Write-Info "Restore manually with: git stash apply $autostashRef"
+                }
                 $ErrorActionPreference = $prevEAP
                 Pop-Location
             }
@@ -1138,7 +1232,7 @@ function Install-Repository {
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlSsh $InstallDir
+            git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
@@ -1147,7 +1241,7 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             try {
-                git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlHttps $InstallDir
+                git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1809,6 +1903,7 @@ function Install-NodeDeps {
                         Write-Host "    $line" -ForegroundColor DarkGray
                     }
                     Write-Info "  Full log: $logPath"
+                    Show-NpmCertHint $errText | Out-Null
                 }
             }
             Write-Info "Run manually later: cd `"$installDir`"; npm install"
@@ -1934,6 +2029,55 @@ function Install-NodeDeps {
     }
 }
 
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache - most often a partial download resumed
+# into the same file, leaving concatenated junk - makes electron-builder's
+# `app-builder unpack-electron` extract a tree MISSING the electron binary, so
+# the final `electron` -> `Hermes` rename dies with ENOENT and every re-run
+# repeats the broken extraction forever.
+#
+# We deliberately do not validate the zip ourselves: the common
+# prepended/concatenated-junk corruption slips past naive checks, so a
+# self-rolled gate would skip the real-world case. We unconditionally drop the
+# cached electron-*.zip (loose copy and any @electron/get hash-subdir copy) plus
+# the stale unpacked dir, then let the caller retry once - @electron/get
+# re-downloads with its own SHASUM verification, the real source of truth.
+#
+# Returns the removed paths. Best-effort: never throws.
+function Clear-ElectronBuildCache {
+    param([string]$DesktopDir)
+    $removed = @()
+
+    # Per-user Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the Windows default (%LOCALAPPDATA%\electron\Cache).
+    $cacheDirs = @()
+    if ($env:electron_config_cache) { $cacheDirs += $env:electron_config_cache }
+    if ($env:ELECTRON_CACHE)        { $cacheDirs += $env:ELECTRON_CACHE }
+    if ($env:LOCALAPPDATA)          { $cacheDirs += (Join-Path $env:LOCALAPPDATA 'electron\Cache') }
+    $cacheDirs += (Join-Path $HOME 'AppData\Local\electron\Cache')
+
+    foreach ($dir in $cacheDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        # Recurse: the bad copy may be the top-level zip OR a copy inside an
+        # @electron/get hash subdir.
+        $removed += @(Get-ChildItem -LiteralPath $dir -Recurse -Filter 'electron-*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop; $_.FullName } catch { }
+        })
+    }
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed (win-unpacked / win-arm64-unpacked).
+    $releaseDir = Join-Path $DesktopDir 'release'
+    if (Test-Path -LiteralPath $releaseDir) {
+        $removed += @(Get-ChildItem -LiteralPath $releaseDir -Directory -Filter '*-unpacked' -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop; $_.FullName } catch { }
+        })
+    }
+
+    return $removed
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -2014,15 +2158,22 @@ function Install-Desktop {
         # tsc/typescript unresolved so `npm run pack`'s `tsc -b` dies with
         # no obvious cause. Fall back to `npm install` only if `npm ci`
         # fails (lockfile out of sync / very old npm without ci).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" }
+        #
+        # Tee the merged output into $npmOut while still emitting every line
+        # live. We don't need a side log file (the bootstrap streaming sink
+        # is the artifact), but on failure we scan $npmOut for the TLS-trust
+        # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
+        # instead of an opaque "exit 1" (issue #38016).
+        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" }
+            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
             $code = $LASTEXITCODE
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
+            Show-NpmCertHint ($npmOut -join "`n") | Out-Null
             throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
         }
         Write-Success "Desktop workspace dependencies installed"
@@ -2067,6 +2218,22 @@ function Install-Desktop {
         $env:WIN_CSC_KEY_PASSWORD = ""
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
+        if ($code -ne 0) {
+            # A corrupt cached Electron zip makes `pack` fail with an opaque
+            # ENOENT on the final `electron` -> `Hermes` rename: app-builder's
+            # unpack-electron extracted a partial tree (missing the binary) from
+            # the bad zip, and re-running reuses the poisoned cache forever.
+            # Purge the cached download + any stale unpacked output and retry
+            # once; @electron/get re-downloads with its own SHASUM check. Without
+            # this a corrupt download hard-fails the whole installer.
+            $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
+            if ($purged.Count -gt 0) {
+                Write-Warn "Desktop build failed - cleared cached Electron download, retrying once:"
+                foreach ($p in $purged) { Write-Info "  - $p" }
+                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                $code = $LASTEXITCODE
+            }
+        }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
             $errText = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue
@@ -2844,7 +3011,7 @@ try {
     Write-Err "Installation failed: $_"
     Write-Host ""
     Write-Info "If the error is unclear, try downloading and running the script directly:"
-    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
+    Write-Host "  Invoke-WebRequest -Uri 'https://hermes-agent.nousresearch.com/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
     Write-Host "  .\install.ps1" -ForegroundColor Yellow
     Write-Host ""
 }

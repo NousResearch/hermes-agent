@@ -4,8 +4,16 @@ import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AlertTriangle, ChevronDown, KeyRound, Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
@@ -218,6 +226,8 @@ function ApprovalOverlay() {
 }
 
 function SudoDialog() {
+  const { t } = useI18n()
+  const copy = t.prompts
   const request = useStore($sudoRequest)
   const gateway = useStore($gateway)
   const [password, setPassword] = useState('')
@@ -235,7 +245,7 @@ function SudoDialog() {
       }
 
       if (!gateway) {
-        notifyError(new Error('Hermes gateway is not connected'), 'Could not send sudo password')
+        notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed)
 
         return
       }
@@ -248,13 +258,13 @@ function SudoDialog() {
           request_id: request.requestId
         })
         triggerHaptic('submit')
-        clearSudoRequest(request.requestId)
+        clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
-        notifyError(error, 'Could not send sudo password')
+        notifyError(error, copy.sudoSendFailed)
         setSubmitting(false)
       }
     },
-    [gateway, request]
+    [copy.gatewayDisconnected, copy.sudoSendFailed, gateway, request]
   )
 
   // Cancel → empty password. The backend treats an empty sudo response as a
@@ -284,13 +294,8 @@ function SudoDialog() {
     <Dialog onOpenChange={onOpenChange} open>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Lock className="size-4 text-primary" />
-            Administrator password
-          </DialogTitle>
-          <DialogDescription>
-            Hermes needs your sudo password to run a privileged command. It is sent only to your local agent.
-          </DialogDescription>
+          <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
+          <DialogDescription>{copy.sudoDesc}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-3" onSubmit={onSubmit}>
@@ -298,16 +303,16 @@ function SudoDialog() {
             autoFocus
             disabled={submitting}
             onChange={event => setPassword(event.target.value)}
-            placeholder="sudo password"
+            placeholder={copy.sudoPlaceholder}
             type="password"
             value={password}
           />
           <DialogFooter>
             <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={submitting} type="submit">
-              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : 'Send'}
+              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : t.common.send}
             </Button>
           </DialogFooter>
         </form>
@@ -317,6 +322,8 @@ function SudoDialog() {
 }
 
 function SecretDialog() {
+  const { t } = useI18n()
+  const copy = t.prompts
   const request = useStore($secretRequest)
   const gateway = useStore($gateway)
   const [value, setValue] = useState('')
@@ -334,7 +341,7 @@ function SecretDialog() {
       }
 
       if (!gateway) {
-        notifyError(new Error('Hermes gateway is not connected'), 'Could not send secret')
+        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed)
 
         return
       }
@@ -347,13 +354,13 @@ function SecretDialog() {
           value: secret
         })
         triggerHaptic('submit')
-        clearSecretRequest(request.requestId)
+        clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
-        notifyError(error, 'Could not send secret')
+        notifyError(error, copy.secretSendFailed)
         setSubmitting(false)
       }
     },
-    [gateway, request]
+    [copy.gatewayDisconnected, copy.secretSendFailed, gateway, request]
   )
 
   const onOpenChange = useCallback(
@@ -381,11 +388,8 @@ function SecretDialog() {
     <Dialog onOpenChange={onOpenChange} open>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <KeyRound className="size-4 text-primary" />
-            {request.envVar || 'Secret required'}
-          </DialogTitle>
-          <DialogDescription>{request.prompt || 'Hermes needs a credential to continue.'}</DialogDescription>
+          <DialogTitle icon={KeyRound}>{request.envVar || copy.secretTitle}</DialogTitle>
+          <DialogDescription>{request.prompt || copy.secretDesc}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-3" onSubmit={onSubmit}>
@@ -393,16 +397,16 @@ function SecretDialog() {
             autoFocus
             disabled={submitting}
             onChange={event => setValue(event.target.value)}
-            placeholder={request.envVar || 'secret value'}
+            placeholder={request.envVar || copy.secretPlaceholder}
             type="password"
             value={value}
           />
           <DialogFooter>
             <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={submitting || !value} type="submit">
-              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : 'Send'}
+              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : t.common.send}
             </Button>
           </DialogFooter>
         </form>

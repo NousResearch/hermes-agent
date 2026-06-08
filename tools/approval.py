@@ -443,6 +443,15 @@ DANGEROUS_PATTERNS = [
     # the terminal side is not an open door. See #14639.
     (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
     (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    # perl -i and ruby -i perform the same in-place mutation as sed -i but are
+    # not caught by the -e/-c script-execution pattern above (which targets code
+    # evaluation, not file mutation). Pairs the sed -i coverage from #14639.
+    # The -i flag can appear as its own token after other flags
+    # (`perl -p -i -e ... config.yaml`), combined (`perl -pi -e`), or with a
+    # backup suffix (`perl -i.bak`). Match any flag token containing `i`
+    # anywhere in the args, not just the first token — `perl -e '...'` (code
+    # eval, no -i) does not trip because it has no `-...i` flag token.
+    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
@@ -528,6 +537,10 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
+    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Strip empty-string literals that split tokens: r''m → rm, r""m → rm.
+    command = re.sub(r"''|\"\"", '', command)
     return command
 
 
@@ -1575,6 +1588,12 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
+    # Check session/permanent approval — same gate as check_all_command_guards.
+    # Without this, "Approve session" / "Always" choices are stored but never
+    # consulted, so every execute_code call re-prompts the user (#39275).
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()
     # guards (restored by context propagation) still run independently.
@@ -1665,9 +1684,15 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "user_consent": False,
         }
 
-    # Approved — one-shot only. Deliberately NO approve_session/approve_permanent:
-    # each execute_code script is distinct arbitrary code, so approval never
-    # persists to future scripts.
+    # Approved — persist based on scope (same logic as check_all_command_guards).
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+    # choice == "once": no persistence — approval lasts this single call only.
+
     return {"approved": True, "message": None,
             "user_approved": True, "description": description}
 

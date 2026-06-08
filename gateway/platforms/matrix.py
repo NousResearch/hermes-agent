@@ -420,6 +420,8 @@ class _CryptoStateStore:
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
+    supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
+
     # Threshold for detecting Matrix client-side message splits.
     # When a chunk is near the ~4000-char practical limit, a continuation
     # is almost certain.
@@ -2799,11 +2801,11 @@ class MatrixAdapter(BasePlatformAdapter):
     def _markdown_to_html(self, text: str) -> str:
         """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
-        Uses the ``markdown`` library when available (installed with the
-        ``matrix`` extra).  Falls back to a comprehensive regex converter
-        that handles fenced code blocks, inline code, headers, bold,
-        italic, strikethrough, links, blockquotes, lists, and horizontal
-        rules — everything the Matrix HTML spec allows.
+        Uses the ``markdown`` library (a core dependency) when available.
+        Falls back to a comprehensive regex converter that handles fenced
+        code blocks, inline code, headers, bold, italic, strikethrough,
+        links, blockquotes, lists, and horizontal rules — everything the
+        Matrix HTML spec allows.
         """
         try:
             import markdown as _md

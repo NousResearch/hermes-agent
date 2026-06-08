@@ -15,7 +15,8 @@ export const TITLEBAR_EDGE_INSET = 14
 // Titlebar palette only. All sizing/radius/cursor/centering come from the
 // shared <Button size="icon-titlebar"> (used polymorphically via asChild) —
 // Button is the single source of button styling.
-export const titlebarButtonClass = 'text-muted-foreground/85 hover:bg-(--ui-control-hover-background) hover:text-foreground'
+export const titlebarButtonClass =
+  'text-muted-foreground/85 hover:bg-(--ui-control-hover-background) hover:text-foreground'
 
 export const titlebarHeaderBaseClass =
   'pointer-events-none relative z-3 flex h-(--titlebar-height) shrink-0 items-center justify-start gap-3 border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-[max(0.75rem,var(--titlebar-content-inset,0rem))]'

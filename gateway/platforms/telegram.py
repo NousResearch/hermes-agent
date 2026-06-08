@@ -5163,17 +5163,40 @@ class TelegramAdapter(BasePlatformAdapter):
     def _is_user_auth_early(self, message: Message) -> bool:
         """Check user authorization before building a MessageEvent.
 
-        This rejects messages from removed users at the adapter level,
-        before text batching or event construction can leak prompt content
-        into the agent context (fixes #40863).
+        This rejects messages from removed users and unauthorized channel
+        posts at the adapter level, before text batching or event
+        construction can leak prompt content into the agent context
+        (fixes #40863).
         """
         user = getattr(message, "from_user", None)
-        if user is None:
-            # Service messages / anonymous admins — let the cold path decide.
-            return True
-        user_id = str(getattr(user, "id", "")).strip()
-        if not user_id:
-            return True
+        chat = getattr(message, "chat", None)
+        raw_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        chat_type = "dm"
+        if raw_type in {"group", "supergroup"}:
+            chat_type = "group"
+        elif raw_type == "channel":
+            chat_type = "channel"
+
+        # Resolve the identity to authorize: from_user for normal
+        # messages, sender_chat for channel posts, or None for service
+        # messages (which are always allowed through).
+        auth_id: str | None = None
+        auth_name: str | None = None
+        if user is not None:
+            auth_id = str(getattr(user, "id", "")).strip() or None
+            auth_name = getattr(user, "username", None) or getattr(user, "first_name", None)
+        if not auth_id:
+            sender_chat = getattr(message, "sender_chat", None)
+            if sender_chat is not None:
+                auth_id = str(getattr(sender_chat, "id", "")).strip() or None
+                auth_name = getattr(sender_chat, "title", None)
+            # Still no identity — genuine service message (pin, delete,
+            # new_chat_members, etc.).  Let the cold path decide.
+            if not auth_id:
+                return True
+
+        chat_id = str(getattr(chat, "id", auth_id))
+        thread_id = getattr(message, "message_thread_id", None)
 
         # Try runner auth first (authoritative).
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
@@ -5183,29 +5206,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 from gateway.session import SessionSource
                 from gateway.config import Platform
 
-                chat = getattr(message, "chat", None)
-                chat_id = str(getattr(chat, "id", user_id))
-                raw_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
-                chat_type = "dm"
-                if raw_type in {"group", "supergroup"}:
-                    chat_type = "group"
-                elif raw_type == "channel":
-                    chat_type = "channel"
-                thread_id = getattr(message, "message_thread_id", None)
-                user_name = getattr(user, "username", None) or getattr(user, "first_name", None)
-
                 source = SessionSource(
                     platform=Platform.TELEGRAM,
                     chat_id=chat_id,
                     chat_type=chat_type,
-                    user_id=user_id,
-                    user_name=str(user_name).strip() if user_name else None,
+                    user_id=auth_id,
+                    user_name=str(auth_name).strip() if auth_name else None,
                     thread_id=str(thread_id) if thread_id is not None else None,
                 )
                 if not auth_fn(source):
                     logger.debug(
-                        "[Telegram] Rejected message from unauthorized user %s before event construction",
-                        user_id,
+                        "[Telegram] Rejected message from unauthorized %s %s before event construction",
+                        "channel" if chat_type == "channel" else "user",
+                        auth_id,
                     )
                     return False
                 return True
@@ -5217,7 +5230,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not allowed_csv:
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or user_id in allowed_ids
+        return "*" in allowed_ids or auth_id in allowed_ids
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.

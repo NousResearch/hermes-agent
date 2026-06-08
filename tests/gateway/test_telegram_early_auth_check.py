@@ -236,14 +236,13 @@ class TestCallbackQueryAuthIntegration:
 
         assert adapter._is_callback_user_authorized("99999") is True
 
-    def test_early_auth_check_passes_for_channel_post(self, monkeypatch):
-        """Channel posts (no from_user) must pass the early auth gate."""
+    def test_early_auth_check_service_message_defers(self, monkeypatch):
+        """Service messages with no from_user and no sender_chat → defer."""
         monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
         monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
         adapter = _make_adapter()
 
-        msg = SimpleNamespace(from_user=None, text="broadcast")
-        # Channel posts have no from_user → _is_user_auth_early returns True
+        msg = SimpleNamespace(from_user=None, text="")
         assert adapter._is_user_auth_early(msg) is True
 
     def test_early_auth_check_rejects_unauthorized_user(self, monkeypatch):
@@ -263,3 +262,109 @@ class TestCallbackQueryAuthIntegration:
         user = SimpleNamespace(id=99999, first_name="Good", username="good")
         msg = SimpleNamespace(from_user=user, text="hello")
         assert adapter._is_user_auth_early(msg) is True
+
+
+def _make_channel_post(channel_id=-100, channel_title="TestChannel"):
+    """Create a mock Telegram channel post (no from_user, has sender_chat)."""
+    chat = SimpleNamespace(id=channel_id, type="channel", title=channel_title)
+    sender_chat = SimpleNamespace(id=channel_id, title=channel_title)
+    return SimpleNamespace(
+        from_user=None,
+        chat=chat,
+        sender_chat=sender_chat,
+        message_thread_id=None,
+        text="broadcast",
+    )
+
+
+class TestChannelPostEarlyAuth:
+    """Channel posts with sender_chat must be auth-checked, not blindly allowed."""
+
+    def test_channel_post_no_runner_no_env_denied(self, monkeypatch):
+        """Channel post with no runner + no env → fail-closed."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+        adapter._message_handler = None
+        msg = _make_channel_post()
+        assert adapter._is_user_auth_early(msg) is False
+
+    def test_channel_post_no_runner_allow_all_permits(self, monkeypatch):
+        """Channel post with GATEWAY_ALLOW_ALL_USERS=true → allowed."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        adapter = _make_adapter()
+        adapter._message_handler = None
+        msg = _make_channel_post()
+        assert adapter._is_user_auth_early(msg) is True
+
+    def test_channel_post_no_runner_channel_in_allowlist(self, monkeypatch):
+        """Channel post with channel ID in TELEGRAM_ALLOWED_USERS → allowed."""
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "-100")
+        adapter = _make_adapter()
+        adapter._message_handler = None
+        msg = _make_channel_post(channel_id=-100)
+        assert adapter._is_user_auth_early(msg) is True
+
+    def test_channel_post_no_runner_channel_not_in_allowlist(self, monkeypatch):
+        """Channel post with channel ID NOT in allowlist → denied."""
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "99999")
+        adapter = _make_adapter()
+        adapter._message_handler = None
+        msg = _make_channel_post(channel_id=-100)
+        assert adapter._is_user_auth_early(msg) is False
+
+    def test_channel_post_runner_authorized(self, monkeypatch):
+        """Channel post authorized by runner → allowed."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+
+        class MockRunner:
+            def _is_user_authorized(self, source):
+                return source.chat_type == "channel"
+
+        handler = lambda self_ref, *a, **kw: None
+        handler.__self__ = MockRunner()
+        adapter._message_handler = handler
+
+        msg = _make_channel_post()
+        assert adapter._is_user_auth_early(msg) is True
+
+    def test_channel_post_runner_unauthorized(self, monkeypatch):
+        """Channel post unauthorized by runner → denied (no env fallback)."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+
+        class MockRunner:
+            def _is_user_authorized(self, source):
+                return False
+
+        handler = lambda self_ref, *a, **kw: None
+        handler.__self__ = MockRunner()
+        adapter._message_handler = handler
+
+        msg = _make_channel_post()
+        assert adapter._is_user_auth_early(msg) is False
+
+    def test_channel_post_runner_auth_uses_sender_chat_id(self, monkeypatch):
+        """Channel post passes sender_chat.id as user_id to runner auth."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+        captured = {}
+
+        class CaptureRunner:
+            def _is_user_authorized(self, source):
+                captured.update(user_id=source.user_id, chat_type=source.chat_type)
+                return True
+
+        handler = lambda self_ref, *a, **kw: None
+        handler.__self__ = CaptureRunner()
+        adapter._message_handler = handler
+
+        msg = _make_channel_post(channel_id=-200)
+        assert adapter._is_user_auth_early(msg) is True
+        assert captured["user_id"] == "-200"
+        assert captured["chat_type"] == "channel"

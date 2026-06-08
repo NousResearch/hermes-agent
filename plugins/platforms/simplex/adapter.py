@@ -23,8 +23,11 @@ Optional environment variables:
     SIMPLEX_ALLOWED_USERS      Comma-separated allowlist. Each entry may be
                                either a numeric contactId (stable across
                                renames; visible via `/contacts` in the CLI)
-                               or a contact display name (what the SimpleX
-                               UI shows). Both forms are accepted.
+                               or the contact's *local* display name (the
+                               alias the CLI assigns locally, e.g. alice /
+                               alice_1). The remote-controlled profile name is
+                               not matched, so a contact cannot authorize
+                               themselves by renaming their profile.
     SIMPLEX_ALLOW_ALL_USERS    Set 'true' to allow all contacts
     SIMPLEX_HOME_CHANNEL       Default contact/group ID for cron delivery
     SIMPLEX_HOME_CHANNEL_NAME  Human label for the home channel
@@ -349,9 +352,15 @@ class SimplexAdapter(BasePlatformAdapter):
         else:
             contact_info = chat_info.get("contact") or {}
             contact_id = str(contact_info.get("contactId") or contact_info.get("id") or "")
+            # localDisplayName is the alias the SimpleX CLI assigns and
+            # deduplicates locally (alice, alice_1, ...). Unlike the profile
+            # displayName it is NOT controlled by the remote contact, so it is
+            # the only name form safe to authorize against (see build_source's
+            # user_id_alt below).
+            contact_local_name = contact_info.get("localDisplayName") or ""
             contact_name = (
                 contact_info.get("displayName")
-                or contact_info.get("localDisplayName")
+                or contact_local_name
                 or contact_id
             )
             # Replies must be routed by SimpleX CLI display name, while
@@ -367,14 +376,16 @@ class SimplexAdapter(BasePlatformAdapter):
         member = chat_item.get("chatItemMember") or {}
         if is_group and member:
             sender_id = str(member.get("memberId") or member.get("id") or chat_id)
+            sender_local_name = member.get("localDisplayName") or ""
             sender_name = (
                 member.get("displayName")
-                or member.get("localDisplayName")
+                or sender_local_name
                 or sender_id
             )
         else:
             sender_id = contact_id if not is_group else chat_id
             sender_name = chat_name
+            sender_local_name = contact_local_name if not is_group else ""
 
         # Extract text
         text = msg_content.get("text") or ""
@@ -415,6 +426,9 @@ class SimplexAdapter(BasePlatformAdapter):
             chat_type="group" if is_group else "dm",
             user_id=sender_id,
             user_name=sender_name,
+            # Stable local alias used for allowlist matching — never the
+            # self-asserted profile display name carried in user_name.
+            user_id_alt=sender_local_name or None,
         )
 
         # Message type
@@ -710,7 +724,7 @@ def interactive_setup() -> None:
             save_env_value(var, value)
 
     _prompt("SIMPLEX_WS_URL", "Daemon WebSocket URL (default ws://127.0.0.1:5225)")
-    _prompt("SIMPLEX_ALLOWED_USERS", "Allowed contactIds or display names (comma-separated; blank=skip)")
+    _prompt("SIMPLEX_ALLOWED_USERS", "Allowed contactIds or local display names (comma-separated; blank=skip)")
     _prompt("SIMPLEX_HOME_CHANNEL", "Home channel contact/group ID (or empty)")
     print("Done. Make sure the simplex-chat daemon is running before starting the gateway.")
 

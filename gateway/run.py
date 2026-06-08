@@ -6357,19 +6357,24 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                 check_ids.add(normalized_user_id)
 
         # SimpleX: SIMPLEX_ALLOWED_USERS accepts either the numeric contactId
-        # or the contact's display name. The adapter sets user_id=contactId for
-        # stability across renames, but the SimpleX UI never surfaces the
-        # numeric id — operators only see display names, so that's what they
-        # naturally put in the env var. Match both so the allowlist works
-        # regardless of which form was chosen.
+        # or the contact's *local* display name — the alias the SimpleX CLI
+        # assigns and deduplicates locally, which the adapter carries in
+        # user_id_alt. We deliberately do NOT match source.user_name here:
+        # that field is the contact's self-asserted profile display name, which
+        # is fully attacker-controlled and non-unique. Matching it would let
+        # any contact authorize themselves simply by renaming their profile to
+        # an allowlisted value. The local alias cannot be forced to collide
+        # with an existing contact's, so it is the only name form safe to
+        # authorize against (the numeric contactId via user_id stays the most
+        # robust option).
         # Plugin platform: compare by value since Platform.SIMPLEX is not a
         # hardcoded enum member (it's a dynamic plugin platform).
         if (
             source.platform is not None
             and source.platform.value == "simplex"
-            and source.user_name
+            and source.user_id_alt
         ):
-            check_ids.add(source.user_name)
+            check_ids.add(source.user_id_alt)
 
         return bool(check_ids & allowed_ids)
 

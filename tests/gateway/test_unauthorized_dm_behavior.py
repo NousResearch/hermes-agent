@@ -100,11 +100,12 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypat
     assert runner._is_user_authorized(source) is True
 
 
-def test_simplex_allowlist_accepts_display_name(monkeypatch):
-    """SIMPLEX_ALLOWED_USERS should match the contact's display name as well
-    as the numeric contactId. The SimpleX UI surfaces only display names, so
-    operators naturally put those in the env var — and the adapter sets
-    user_id=contactId for stability. Both forms must work. (#TBD)"""
+def test_simplex_allowlist_accepts_local_display_name(monkeypatch):
+    """SIMPLEX_ALLOWED_USERS should match the contact's *local* display name
+    (the alias the SimpleX CLI assigns and shows the operator) as well as the
+    numeric contactId. The adapter carries that stable alias in user_id_alt,
+    while user_name holds the remote-controlled profile name. The allowlist
+    must match the local alias, not the spoofable profile name."""
     _clear_auth_env(monkeypatch)
     monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
     monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "hujikuji")
@@ -127,15 +128,58 @@ def test_simplex_allowlist_accepts_display_name(monkeypatch):
     )
 
     # contactId in the allowlist would still work — but the operator chose
-    # the display name. Verify the gateway honors it.
+    # the local display name they see in the CLI. Verify the gateway honors
+    # it via the stable alias even when the profile name differs.
     source = SessionSource(
         platform=simplex,
-        user_id="4",            # adapter sets this to the numeric contactId
+        user_id="4",                 # adapter sets this to the numeric contactId
         chat_id="hujikuji",
-        user_name="hujikuji",   # adapter sets this to displayName
+        user_name="Totally Legit",   # remote-controlled profile displayName
+        user_id_alt="hujikuji",      # local CLI alias — the stable handle
         chat_type="dm",
     )
     assert runner._is_user_authorized(source) is True
+
+
+def test_simplex_allowlist_rejects_spoofed_profile_name(monkeypatch):
+    """A contact must NOT be authorized just because their self-asserted
+    profile display name (user_name) equals an allowlisted entry. SimpleX
+    profile names are attacker-controlled and non-unique, so the gateway
+    matches only the stable local alias (user_id_alt) and the numeric
+    contactId (user_id). Regression for the SIMPLEX_ALLOWED_USERS spoofing
+    bypass."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "hujikuji")
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="simplex",
+        label="SimpleX Chat",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="SIMPLEX_ALLOWED_USERS",
+        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
+    ))
+
+    simplex = Platform("simplex")
+    runner, _adapter = _make_runner(
+        simplex,
+        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
+    )
+
+    # Attacker renames their profile to the allowlisted "hujikuji", but the
+    # SimpleX CLI assigned them a distinct local alias ("hujikuji_1") because
+    # the trusted contact already holds "hujikuji". They must be denied.
+    source = SessionSource(
+        platform=simplex,
+        user_id="9",                 # a different, untrusted contactId
+        chat_id="hujikuji_1",
+        user_name="hujikuji",        # spoofed profile displayName
+        user_id_alt="hujikuji_1",    # real, deduplicated local alias
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is False
 
 
 def test_simplex_allowlist_accepts_numeric_contact_id(monkeypatch):

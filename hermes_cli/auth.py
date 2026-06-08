@@ -596,7 +596,9 @@ def _resolve_api_key_provider_secret(
                 if has_usable_secret(key):
                     return key, f"credential_pool:{provider_id}"
     except Exception:
-        pass
+        logger.debug(
+            "credential pool lookup failed for provider %r", provider_id, exc_info=True
+        )
 
     return "", ""
 
@@ -5944,6 +5946,26 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
+    # When the key came from the credential pool, also propagate the pool
+    # entry's base_url so callers use the URL that was stored alongside the
+    # key, not just pconfig.inference_base_url (which may differ, e.g. for
+    # a custom DeepSeek-compatible endpoint).
+    pool_base_url = ""
+    if key_source.startswith("credential_pool:"):
+        try:
+            from agent.credential_pool import load_pool
+            _pool_entry = load_pool(provider_id).peek()
+            if _pool_entry:
+                pool_base_url = (
+                    str(getattr(_pool_entry, "runtime_base_url", "") or "")
+                    .strip()
+                    .rstrip("/")
+                )
+        except Exception:
+            logger.debug(
+                "credential pool base_url lookup failed for %r", provider_id, exc_info=True
+            )
+
     # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
     # see the local server as configured. doctor still reports unconfigured
     # because get_api_key_provider_status uses the raw secret resolver.
@@ -5961,6 +5983,10 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
+    elif pool_base_url:
+        # Key came from the credential pool — prefer the URL stored alongside it
+        # over the provider's static default.
+        base_url = pool_base_url
     else:
         base_url = pconfig.inference_base_url
 

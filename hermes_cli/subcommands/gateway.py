@@ -139,26 +139,26 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         dest="start_now",
         action="store_true",
         default=None,
-        help=argparse.SUPPRESS,
+        help="Start the gateway service immediately after installing",
     )
     gateway_install.add_argument(
         "--no-start-now",
         dest="start_now",
         action="store_false",
-        help=argparse.SUPPRESS,
+        help="Do not start the gateway service after installing",
     )
     gateway_install.add_argument(
         "--start-on-login",
         dest="start_on_login",
         action="store_true",
         default=None,
-        help=argparse.SUPPRESS,
+        help="Enable the service to start automatically on login/boot",
     )
     gateway_install.add_argument(
         "--no-start-on-login",
         dest="start_on_login",
         action="store_false",
-        help=argparse.SUPPRESS,
+        help="Do not enable the service to start on login/boot",
     )
     gateway_install.add_argument(
         "--elevated-handoff",

@@ -1344,6 +1344,7 @@ export const zhHant = defineLocale({
     unsupportedMessage: '此版本的 Hermes 無法在應用程式內自行更新。',
     connectionRetry: '請檢查網路連線後重試。',
     latestBody: '您正在執行最新版本。',
+    latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安裝。',

@@ -155,7 +155,8 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Table content is converted to an interactive card; post-type 'md' elements
+# cannot render tables.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -558,6 +559,123 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+_TABLE_MAX_ROWS = 50
+
+
+def _build_table_card_payload(content: str) -> Optional[str]:
+    """Convert markdown-table content into a Feishu interactive card JSON string.
+
+    Returns ``None`` when the content cannot be parsed (caller should fall back
+    to plain text).
+    """
+    try:
+        segments = _parse_table_segments(content)
+    except Exception:
+        return None
+
+    if not segments:
+        return None
+
+    # Determine card title from first table's first column value.
+    title = "📊 数据"
+    for seg in segments:
+        if seg["type"] == "table":
+            title = f"📊 {seg['header'][0]}" if seg["header"] else "📊 数据"
+            break
+
+    elements = []  # type: List[Dict[str, Any]]
+    for seg in segments:
+        if seg["type"] == "text":
+            text = seg["content"].strip()
+            if text:
+                elements.append({"tag": "markdown", "content": text})
+        else:
+            md = _format_table_md(seg)
+            if md:
+                elements.append({"tag": "markdown", "content": md})
+
+    if not elements:
+        return None
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": "blue",
+        },
+        "elements": elements,
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _parse_table_segments(content: str) -> List[Dict[str, Any]]:
+    """Split *content* into alternating text/table segments.
+
+    Each segment is ``{"type": "text", "content": str}`` or
+    ``{"type": "table", "header": [...], "rows": [[...], ...]}``.
+    Raises ``ValueError`` on malformed tables so the caller can fall back.
+    """
+    lines = content.split("\n")
+    segments = []  # type: List[Dict[str, Any]]
+    buf = []  # type: List[str]
+    i = 0
+
+    def _flush_buf() -> None:
+        text = "\n".join(buf)
+        buf.clear()
+        if text.strip():
+            segments.append({"type": "text", "content": text})
+
+    while i < len(lines):
+        line = lines[i]
+        # Look for the start of a table: data row followed by separator row.
+        if (
+            line.startswith("|")
+            and i + 1 < len(lines)
+            and re.match(r"^\|[-|: ]+\|$", lines[i + 1].strip())
+        ):
+            _flush_buf()
+            header = [c.strip() for c in line.strip().strip("|").split("|")]
+            i += 2  # skip header + separator
+
+            rows = []  # type: List[List[str]]
+            while i < len(lines) and lines[i].startswith("|") and "|" in lines[i][1:]:
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                rows.append(cells)
+                i += 1
+
+            if len(rows) > _TABLE_MAX_ROWS:
+                rows = rows[:_TABLE_MAX_ROWS]
+                # Append a truncation note as a following text segment.
+                segments.append({"type": "table", "header": header, "rows": rows})
+                segments.append({
+                    "type": "text",
+                    "content": f"⚠️ 表格过长，已截断至前 {_TABLE_MAX_ROWS} 行",
+                })
+            else:
+                segments.append({"type": "table", "header": header, "rows": rows})
+            continue
+
+        buf.append(line)
+        i += 1
+
+    _flush_buf()
+    return segments
+
+
+def _format_table_md(seg: Dict[str, Any]) -> str:
+    """Render a table segment dict back to markdown table syntax."""
+    header = seg["header"]
+    rows = seg["rows"]
+    parts = ["| " + " | ".join(header) + " |"]
+    parts.append("| " + " | ".join("---" for _ in header) + " |")
+    for row in rows:
+        # Pad/truncate row to match header column count.
+        padded = (row + [""] * len(header))[: len(header)]
+        parts.append("| " + " | ".join(padded) + " |")
+    return "\n".join(parts)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -4319,10 +4437,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
         if _MARKDOWN_TABLE_RE.search(content):
+            card_json = _build_table_card_payload(content)
+            if card_json is not None:
+                return "interactive", card_json
+            # Card building failed – fall back to plain text.
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):

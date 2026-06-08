@@ -496,6 +496,26 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
 
+    # Sender attribution
+    #
+    # When enabled (default), every inbound message is prefixed with
+    # "[from NAME (uid:USER_ID)] ..." before reaching the agent.  This gives
+    # the model an authoritative, immutable identifier for the speaker — the
+    # platform-assigned user_id — alongside a human-readable name.  Without
+    # this, group chats shared by multiple humans become ambiguous: the agent
+    # has no reliable way to tell participants apart, which breaks
+    # personalization, identity-sensitive instructions, and any reasoning
+    # that depends on "who is asking".
+    #
+    # Name resolution precedence when building the prefix:
+    #   1. Environment variable ``HERMES_USER_NAME_<user_id>`` (operator override)
+    #   2. Platform-provided display name (``source.user_name``)
+    #   3. Literal "unknown" (never omit the prefix if ``user_id`` is known)
+    #
+    # Set to False to restore the legacy behaviour: no prefix in DMs, and a
+    # best-effort ``[display_name]`` prefix only in shared multi-user sessions.
+    attribute_sender: bool = True
+
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -600,6 +620,7 @@ class GatewayConfig:
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "attribute_sender": self.attribute_sender,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -645,6 +666,7 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        attribute_sender = data.get("attribute_sender")
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -671,6 +693,7 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            attribute_sender=_coerce_bool(attribute_sender, True),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
@@ -760,6 +783,9 @@ def load_gateway_config() -> GatewayConfig:
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+
+            if "attribute_sender" in yaml_cfg:
+                gw_data["attribute_sender"] = yaml_cfg["attribute_sender"]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):

@@ -914,6 +914,12 @@ def _reload_runtime_env_preserving_config_authority() -> None:
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
+# Leading "[from NAME (uid:ID)]" sender attribution header.  Stripped from
+# inbound text before re-prepending the canonical prefix, to prevent trivial
+# impersonation by pasting a fake header into a message body.  Both ``uid``
+# numbers and free-form ids are tolerated.
+_SENDER_PREFIX_RE = re.compile(r"^\s*\[from\s+[^\]]*\(uid:[^)]+\)\]\s*")
+
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
@@ -8644,13 +8650,45 @@ class GatewayRunner:
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
 
-        _is_shared_multi_user = is_shared_multi_user_session(
-            source,
-            group_sessions_per_user=_group_sessions_per_user,
-            thread_sessions_per_user=_thread_sessions_per_user,
-        )
-        if _is_shared_multi_user and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
+        # Sender attribution.
+        #
+        # When enabled (default) every inbound message is prefixed with
+        # ``[from NAME (uid:USER_ID)] <text>`` before it reaches the agent.
+        # The platform ``user_id`` is the authoritative identifier; the name
+        # is best-effort and resolved in this order:
+        #
+        #   1. ``HERMES_USER_NAME_<user_id>`` env var (operator override)
+        #   2. ``source.user_name`` (platform display name)
+        #   3. literal ``unknown``
+        #
+        # Rationale: group chats, channels, and threads shared by multiple
+        # humans are ambiguous to the agent without attribution — two users
+        # with the same first name, or a rename mid-conversation, become
+        # indistinguishable.  DMs are also attributed so the prefix format
+        # is invariant across contexts and downstream tooling can parse it
+        # unconditionally.
+        #
+        # Set ``attribute_sender: false`` in gateway config to restore the
+        # legacy behaviour (display-name-only prefix, shared sessions only).
+        if getattr(self.config, "attribute_sender", True) and source.user_id:
+            # Strip any user-supplied text that mimics our own prefix, to
+            # prevent trivial impersonation by pasting a fake ``[from … ]``
+            # header into the message body.
+            message_text = _SENDER_PREFIX_RE.sub("", message_text, count=1)
+            _env_name = os.environ.get(f"HERMES_USER_NAME_{source.user_id}")
+            _display_name = _env_name or source.user_name or "unknown"
+            message_text = f"[from {_display_name} (uid:{source.user_id})] {message_text}"
+        else:
+            # Legacy fallback: best-effort attribution only when the session
+            # is known to be shared across multiple humans and a display name
+            # is available.  No-op in DMs and in per-user isolated sessions.
+            _is_shared_multi_user = is_shared_multi_user_session(
+                source,
+                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            )
+            if _is_shared_multi_user and source.user_name:
+                message_text = f"[{source.user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the

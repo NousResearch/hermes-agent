@@ -318,7 +318,10 @@ async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
 
     raw = await web_extract_tool([url], format="markdown", use_llm_processing=True)
-    payload = json.loads(raw)
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return ""
     docs = payload.get("data", {}).get("documents", [])
     if not docs:
         return ""

@@ -110,6 +110,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
         capture_output=True,
         text=True,
         env=_gws_env(),
+        timeout=120,
     )
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "Unknown gws error"

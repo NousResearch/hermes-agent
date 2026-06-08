@@ -89,7 +89,10 @@ def upload(excalidraw_json: str) -> str:
     with urllib.request.urlopen(req, timeout=30) as resp:
         if resp.status != 200:
             raise RuntimeError(f"Upload failed with HTTP {resp.status}")
-        result = json.loads(resp.read().decode("utf-8"))
+        try:
+            result = json.loads(resp.read().decode("utf-8"))
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError(f"Upload returned non-JSON response: {exc}") from exc
 
     file_id = result.get("id")
     if not file_id:

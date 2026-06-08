@@ -935,6 +935,7 @@ class ProcessRegistry:
                     text=True,
                     timeout=10,
                     creationflags=windows_hide_flags(),
+                    stdin=subprocess.DEVNULL,
                 )
                 if completed.returncode != 0:
                     detail = completed.stderr or completed.stdout or f"taskkill exited {completed.returncode}"

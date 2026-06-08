@@ -5934,6 +5934,32 @@ class GatewayRunner:
                         max_in_progress_per_profile,
                     )
 
+        # Singleton guard — prevent two gateway instances from running
+        # concurrent dispatchers for the same profile.  Uses an exclusive
+        # fcntl.flock (msvcrt on Windows) on a dedicated lock file so the
+        # OS auto-releases on crash; no stale-lock cleanup needed.
+        try:
+            from gateway.status import (
+                acquire_dispatcher_lock as _acquire_dispatcher_lock,
+                release_dispatcher_lock as _release_dispatcher_lock,
+            )
+        except Exception:
+            logger.warning(
+                "kanban dispatcher: cannot import lock helpers; "
+                "running without singleton guard"
+            )
+            _acquire_dispatcher_lock = None  # type: ignore[assignment]
+            _release_dispatcher_lock = None  # type: ignore[assignment]
+
+        if _acquire_dispatcher_lock is not None:
+            if not _acquire_dispatcher_lock():
+                logger.warning(
+                    "kanban dispatcher: another gateway instance already "
+                    "holds the dispatcher lock; skipping embedded dispatcher"
+                )
+                return
+            logger.debug("kanban dispatcher: acquired singleton lock")
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -6213,70 +6239,75 @@ class GatewayRunner:
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
-        while self._running:
-            try:
-                # Reap zombie children before per-board work so a board DB
-                # failure cannot block cleanup of unrelated workers.
-                pids = await asyncio.to_thread(_kb.reap_worker_zombies)
-                if pids:
-                    logger.info(
-                        "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
-                        len(pids),
-                        pids,
-                    )
-            except Exception:
-                logger.exception("kanban dispatcher: zombie reaper failed")
-
-            try:
-                if auto_decompose_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick)
-                results = await asyncio.to_thread(_tick_once)
-                any_spawned = False
-                for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
-                        any_spawned = True
-                        # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
+        try:
+            while self._running:
+                try:
+                    # Reap zombie children before per-board work so a board DB
+                    # failure cannot block cleanup of unrelated workers.
+                    pids = await asyncio.to_thread(_kb.reap_worker_zombies)
+                    if pids:
                         logger.info(
-                            "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                            slug,
-                            len(res.spawned),
-                            res.reclaimed,
-                            len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
-                            len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
-                            res.promoted,
-                            len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
+                            len(pids),
+                            pids,
                         )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
-                    bad_ticks += 1
-                else:
-                    bad_ticks = 0
-                if bad_ticks >= HEALTH_WINDOW:
-                    now = int(time.time())
-                    if now - last_warn_at >= 300:
-                        logger.warning(
-                            "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
-                            bad_ticks,
-                        )
-                        last_warn_at = now
-            except asyncio.CancelledError:
-                logger.debug("kanban dispatcher: cancelled")
-                raise
-            except Exception:
-                logger.exception("kanban dispatcher: unexpected watcher error")
+                except Exception:
+                    logger.exception("kanban dispatcher: zombie reaper failed")
 
-            # Sleep in 1s slices so shutdown is snappy — otherwise a stop()
-            # waits up to `interval` seconds for the current sleep to finish.
-            slept = 0.0
-            while slept < interval and self._running:
-                await asyncio.sleep(min(1.0, interval - slept))
-                slept += 1.0
+                try:
+                    if auto_decompose_enabled:
+                        await asyncio.to_thread(_auto_decompose_tick)
+                    results = await asyncio.to_thread(_tick_once)
+                    any_spawned = False
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            # Quiet by default — only log when something actually
+                            # happened, so an idle gateway stays silent.
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    # Health telemetry (aggregate across boards)
+                    ready_pending = await asyncio.to_thread(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
+                    if bad_ticks >= HEALTH_WINDOW:
+                        now = int(time.time())
+                        if now - last_warn_at >= 300:
+                            logger.warning(
+                                "kanban dispatcher stuck: ready queue non-empty for "
+                                "%d consecutive ticks but 0 workers spawned. Check "
+                                "profile health (venv, PATH, credentials) and "
+                                "`hermes kanban list --status ready`.",
+                                bad_ticks,
+                            )
+                            last_warn_at = now
+                except asyncio.CancelledError:
+                    logger.debug("kanban dispatcher: cancelled")
+                    raise
+                except Exception:
+                    logger.exception("kanban dispatcher: unexpected watcher error")
+
+                # Sleep in 1s slices so shutdown is snappy — otherwise a stop()
+                # waits up to `interval` seconds for the current sleep to finish.
+                slept = 0.0
+                while slept < interval and self._running:
+                    await asyncio.sleep(min(1.0, interval - slept))
+                    slept += 1.0
+        finally:
+            if _release_dispatcher_lock is not None:
+                _release_dispatcher_lock()
+                logger.debug("kanban dispatcher: released singleton lock")
 
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.

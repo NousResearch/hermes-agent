@@ -34,7 +34,9 @@ _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
+_DISPATCHER_LOCK_FILENAME = "dispatcher.lock"
 _gateway_lock_handle = None
+_dispatcher_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
@@ -478,6 +480,61 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
             handle.close()
         except OSError:
             pass
+
+
+def _get_dispatcher_lock_path() -> Path:
+    """Return the path to the kanban dispatcher singleton lock file."""
+    home = get_hermes_home()
+    return home / _DISPATCHER_LOCK_FILENAME
+
+
+def acquire_dispatcher_lock() -> bool:
+    """Acquire an exclusive lock for the kanban dispatcher singleton.
+
+    Returns True if this process now owns the dispatcher lock.  Returns
+    False if another process already holds it — the caller should skip
+    starting the dispatcher loop.
+
+    The lock is advisory (fcntl.flock on POSIX, msvcrt on Windows) and
+    is released automatically by the OS when the process exits, so a
+    crashed gateway cannot leave a permanently-stuck lock.
+    """
+    global _dispatcher_lock_handle
+    if _dispatcher_lock_handle is not None:
+        return True
+
+    path = _get_dispatcher_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return False
+    # Write PID metadata for diagnostics (non-authoritative — the flock
+    # is the actual guard).
+    handle.seek(0)
+    handle.truncate()
+    json.dump(_build_pid_record(), handle)
+    handle.flush()
+    try:
+        os.fsync(handle.fileno())
+    except OSError:
+        pass
+    _dispatcher_lock_handle = handle
+    return True
+
+
+def release_dispatcher_lock() -> None:
+    """Release the kanban dispatcher lock when owned by this process."""
+    global _dispatcher_lock_handle
+    handle = _dispatcher_lock_handle
+    if handle is None:
+        return
+    _dispatcher_lock_handle = None
+    _release_file_lock(handle)
+    try:
+        handle.close()
+    except OSError:
+        pass
 
 
 def write_pid_file() -> None:

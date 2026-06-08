@@ -494,9 +494,12 @@ class TestLaunchdServiceRecovery:
 
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
+        legacy_domain = f"gui/{os.getuid()}"
         assert "--replace" in plist_path.read_text(encoding="utf-8")
-        assert calls[:2] == [
+        assert calls[:4] == [
+            ["launchctl", "print", f"{domain}/{label}"],
             ["launchctl", "bootout", f"{domain}/{label}"],
+            ["launchctl", "bootout", f"{legacy_domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
@@ -504,6 +507,7 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
+        legacy_domain = f"gui/{os.getuid()}"
 
         calls = []
         domain = gateway_cli._launchd_domain()
@@ -522,7 +526,10 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
+            ["launchctl", "print", target],
             ["launchctl", "kickstart", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootout", f"{legacy_domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
         ]
@@ -532,6 +539,7 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
+        legacy_domain = f"gui/{os.getuid()}"
 
         calls = []
         domain = gateway_cli._launchd_domain()
@@ -550,7 +558,10 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
+            ["launchctl", "print", target],
             ["launchctl", "kickstart", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootout", f"{legacy_domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
         ]
@@ -621,7 +632,7 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_stop()
 
-        assert calls == [["launchctl", "bootout", target]]
+        assert calls == [["launchctl", "print", target], ["launchctl", "bootout", target]]
 
     def test_launchd_stop_tolerates_already_unloaded(self, monkeypatch, capsys):
         """launchd_stop silently handles exit codes 3/113 (job not loaded)."""
@@ -684,6 +695,43 @@ class TestLaunchdServiceRecovery:
         # non-Aqua/background sessions on macOS 26+ (issue #23387).
         assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
 
+    def test_launchd_start_reuses_gui_domain_when_user_domain_is_empty(self, tmp_path, monkeypatch):
+        """If the service is still loaded in gui/<uid>, start() should reuse it.
+
+        This reproduces the host-specific regression where `launchctl print`
+        against user/<uid> fails with "Could not find service" even though the
+        gateway is alive in gui/<uid>.
+        """
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        user_target = f"user/{os.getuid()}/{label}"
+        gui_target = f"gui/{os.getuid()}/{label}"
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "print", user_target]:
+                return SimpleNamespace(returncode=113, stdout="", stderr='Could not find service "ai.hermes.gateway" in domain for uid: 501')
+            if cmd == ["launchctl", "print", gui_target]:
+                return SimpleNamespace(returncode=0, stdout="service = {...}", stderr="")
+            if cmd == ["launchctl", "kickstart", gui_target]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"Unexpected launchctl invocation: {cmd}")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "print", user_target],
+            ["launchctl", "print", gui_target],
+            ["launchctl", "kickstart", gui_target],
+        ]
+
     def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
         # Codes that persist after a fresh bootstrap → launchd truly unavailable.
         assert gateway_cli._launchctl_domain_unsupported(5) is True
@@ -697,6 +745,7 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
+        legacy_domain = f"gui/{os.getuid()}"
 
         calls = []
         domain = gateway_cli._launchd_domain()
@@ -717,7 +766,10 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
+            ["launchctl", "print", target],
             ["launchctl", "kickstart", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootout", f"{legacy_domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
         ]

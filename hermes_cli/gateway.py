@@ -6268,8 +6268,24 @@ def _gateway_command_inner(args):
                     "  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'"
                 )
                 print()
-            start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
-            start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
+            # Honor CLI flags (--start-now / --no-start-now, --start-on-login /
+            # --no-start-on-login).  When not provided, prompt interactively or
+            # fall back to True for non-TTY / headless contexts (SSH, CI, pipes).
+            _sn = getattr(args, "start_now", None)
+            if _sn is not None:
+                start_now = _sn
+            elif sys.stdin.isatty():
+                start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
+            else:
+                start_now = True
+
+            _sol = getattr(args, "start_on_login", None)
+            if _sol is not None:
+                start_on_login = _sol
+            elif sys.stdin.isatty():
+                start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
+            else:
+                start_on_login = True
             systemd_install(
                 force=force,
                 system=system,

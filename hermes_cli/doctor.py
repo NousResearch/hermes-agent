@@ -78,6 +78,19 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _gh_authenticated() -> bool:
+    """Check if gh CLI is authenticated via token file or device flow."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status", "--json", "authenticated"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1866,17 +1879,6 @@ def run_doctor(args):
         check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
 
     from hermes_cli.config import get_env_value
-
-    def _gh_authenticated() -> bool:
-        """Check if gh CLI is authenticated via token file or device flow."""
-        try:
-            result = subprocess.run(
-                ["gh", "auth", "status", "--json", "authenticated"],
-                capture_output=True, timeout=10,
-            )
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
 
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:

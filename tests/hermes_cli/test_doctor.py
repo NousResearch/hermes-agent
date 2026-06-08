@@ -102,6 +102,16 @@ class TestDoctorEnvFileEncoding:
             doctor_mod.run_doctor(Namespace(fix=False))
 
 
+class TestDoctorGithubAuth:
+    def test_gh_authenticated_returns_false_when_gh_cannot_execute(self, monkeypatch):
+        def raise_permission_error(*args, **kwargs):
+            raise PermissionError("permission denied: 'gh'")
+
+        monkeypatch.setattr(doctor.subprocess, "run", raise_permission_error)
+
+        assert doctor._gh_authenticated() is False
+
+
 class TestDoctorToolAvailabilityOverrides:
     def test_marks_honcho_available_when_configured(self, monkeypatch):
         monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)

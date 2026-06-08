@@ -2801,6 +2801,12 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
     return message, deduped
 
 
+# Strip OSC escape sequences (e.g. OSC-8 hyperlinks) that prompt_toolkit's
+# ANSI parser can't handle — it strips \x1b but passes the payload through
+# as literal text, garbling the TUI output.
+_OSC_ESCAPE_RE = re.compile(r"\x1b\][\s\S]*?(?:\x07|\x1b\\)")
+
+
 class ChatConsole:
     """Rich Console adapter for prompt_toolkit's patch_stdout context.
 
@@ -2827,6 +2833,10 @@ class ChatConsole:
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
+        # Strip OSC escape sequences (e.g. OSC-8 hyperlinks) before
+        # routing through prompt_toolkit's ANSI parser, which only
+        # handles CSI/SGR and passes OSC payload through as literal text.
+        output = _OSC_ESCAPE_RE.sub("", output)
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
@@ -7659,6 +7669,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if self.agent:
             self.agent.reasoning_callback = self._current_reasoning_callback()
+            # Keep the live agent's tool_progress_mode in sync so the
+            # tool_executor rendering path reflects the new mode this turn,
+            # without waiting for an agent rebuild.
+            self.agent.tool_progress_mode = self.tool_progress_mode
 
         # Use raw ANSI codes via _cprint so the output is routed through
         # prompt_toolkit's renderer.  self.console.print() with Rich markup

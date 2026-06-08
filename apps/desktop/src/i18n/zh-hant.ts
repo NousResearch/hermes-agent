@@ -209,7 +209,8 @@ export const zhHant = defineLocale({
       technical: '技術',
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
-      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
+      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',

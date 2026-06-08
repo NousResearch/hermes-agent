@@ -658,3 +658,140 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+def test_save_codex_tokens_syncs_label_to_pool(tmp_path, monkeypatch):
+    """Re-auth with --label must update the label on pool entries.
+
+    Regression for #42102: ``hermes auth add openai-codex --label foo``
+    saved the label to providers state but _sync_codex_pool_entries did not
+    propagate it to credential_pool entries, so the pool entry kept its
+    stale label.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+                "last_refresh": "2026-01-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+                "label": "openai-codex-oauth-1",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "abc123",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                    "label": "openai-codex-oauth-1",
+                },
+            ],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens(
+        {"access_token": "new-at", "refresh_token": "new-rt"},
+        last_refresh="2026-06-08T00:00:00Z",
+        label="openai-codex-oauth-2",
+    )
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    pool = auth["credential_pool"]["openai-codex"]
+    entry = next(e for e in pool if e["source"] == "device_code")
+    assert entry["label"] == "openai-codex-oauth-2"
+    assert entry["access_token"] == "new-at"
+
+    # Provider state also has the new label.
+    assert auth["providers"]["openai-codex"]["label"] == "openai-codex-oauth-2"
+
+
+def test_save_codex_tokens_syncs_custom_label(tmp_path, monkeypatch):
+    """Custom --label is propagated to pool entries on re-auth."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "abc123",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                    "label": "device_code",
+                },
+            ],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens(
+        {"access_token": "new-at", "refresh_token": "new-rt"},
+        label="my-custom-label",
+    )
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    pool = auth["credential_pool"]["openai-codex"]
+    entry = next(e for e in pool if e["source"] == "device_code")
+    assert entry["label"] == "my-custom-label"
+
+
+def test_upsert_entry_updates_label_when_different():
+    """_upsert_entry must update the label when the new value differs."""
+    from agent.credential_pool import _upsert_entry, PooledCredential
+
+    existing = PooledCredential(
+        provider="openai-codex",
+        id="abc123",
+        label="openai-codex-oauth-1",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token="old-at",
+    )
+    entries = [existing]
+    changed = _upsert_entry(
+        entries, "openai-codex", "device_code",
+        {"source": "device_code", "auth_type": "oauth",
+         "access_token": "new-at", "label": "openai-codex-oauth-2"},
+    )
+    assert changed is True
+    assert entries[0].label == "openai-codex-oauth-2"
+    assert entries[0].access_token == "new-at"
+
+
+def test_upsert_entry_preserves_label_when_same():
+    """_upsert_entry is a no-op when the label hasn't changed."""
+    from agent.credential_pool import _upsert_entry, PooledCredential
+
+    existing = PooledCredential(
+        provider="openai-codex",
+        id="abc123",
+        label="openai-codex-oauth-1",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token="same-at",
+    )
+    entries = [existing]
+    changed = _upsert_entry(
+        entries, "openai-codex", "device_code",
+        {"source": "device_code", "auth_type": "oauth",
+         "access_token": "same-at", "label": "openai-codex-oauth-1"},
+    )
+    # Only the label+token are same → no change
+    assert changed is False
+    assert entries[0].label == "openai-codex-oauth-1"

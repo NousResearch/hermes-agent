@@ -1567,7 +1567,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None:
             continue
-        if key == "label" and existing.label:
+        if key == "label" and existing.label and value == existing.label:
             continue
         if key in _field_names:
             if getattr(existing, key) != value:

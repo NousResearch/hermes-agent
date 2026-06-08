@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -248,6 +249,19 @@ def spawn_async_diagnostic(
     except OSError:
         return None
 
+    # Wrap the snapshot in timeout(1) so a wedged ``ps`` still self-cleans.
+    # GNU coreutils ships ``timeout`` on Linux; stock macOS has neither
+    # ``timeout`` nor ``gtimeout`` (the latter arrives with Homebrew
+    # coreutils).  When no timeout binary exists, run bash directly — the
+    # script's own commands are individually bounded (``head``/``tail``) and
+    # we detach via ``start_new_session``, so a best-effort snapshot without
+    # the hard cap is acceptable rather than skipping diagnostics entirely.
+    timeout_bin = shutil.which("timeout") or shutil.which("gtimeout")
+    if timeout_bin:
+        argv = [timeout_bin, f"{timeout_seconds:.0f}", "bash", "-c", script]
+    else:
+        argv = ["bash", "-c", script]
+
     try:
         # Detach from our process group so the subprocess survives even
         # if systemd kills our cgroup with KillMode=control-group (which
@@ -255,7 +269,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            argv,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

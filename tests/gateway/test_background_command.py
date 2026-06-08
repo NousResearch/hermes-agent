@@ -298,7 +298,12 @@ class TestRunBackgroundTask:
         # (default mode requires the file to exist as a regular file).
         import os as _os
         import tempfile as _tempfile
-        _tmpdir = _tempfile.mkdtemp(prefix="bg_media_")
+        # realpath() so the expected paths match what the media-delivery
+        # validator returns: it resolves symlinks before the denylist check
+        # (gateway/platforms/base.py validate_media_delivery_path), and on
+        # macOS the tempdir lives under /var → /private/var. Without this the
+        # assertions below compare /var/... against the resolved /private/var/...
+        _tmpdir = _os.path.realpath(_tempfile.mkdtemp(prefix="bg_media_"))
         _ogg = _os.path.join(_tmpdir, "clip.ogg")
         _mp4 = _os.path.join(_tmpdir, "render.mp4")
         _png = _os.path.join(_tmpdir, "chart.png")

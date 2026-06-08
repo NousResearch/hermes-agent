@@ -219,6 +219,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeProfileNote: (profile: string) => string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>

@@ -155,16 +155,24 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         while time.monotonic() < deadline:
             # Walk our children and grand-children to find one running 'sleep 30'
             try:
-                import psutil  # optional — fall back if absent
-                for p in psutil.Process(os.getpid()).children(recursive=True):
-                    try:
-                        if "sleep 30" in " ".join(p.cmdline()):
-                            target_pid = p.pid
-                            break
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
+                import psutil  # optional — fall back if absent or /proc is restricted
+                try:
+                    children = psutil.Process(os.getpid()).children(recursive=True)
+                except (psutil.AccessDenied, PermissionError, OSError):
+                    children = None
+                if children is not None:
+                    for p in children:
+                        try:
+                            if "sleep 30" in " ".join(p.cmdline()):
+                                target_pid = p.pid
+                                break
+                        except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError):
+                            continue
             except ImportError:
-                # Fall back to ps
+                children = None
+            if target_pid is None:
+                # Fall back to ps. Android/Termux may deny psutil's /proc/stat
+                # read even when `ps` can list our subprocess tree.
                 ps = subprocess.run(
                     ["ps", "-eo", "pid,ppid,pgid,cmd"], capture_output=True, text=True,
                 )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,9 @@ def _isolated_home(tmp_path, monkeypatch):
 
 def _hook_script(tmp_path: Path, body: str, name: str = "hook.sh") -> Path:
     p = tmp_path / name
+    bash = shutil.which("bash")
+    if bash and body.startswith("#!/usr/bin/env bash\n") and not Path("/usr/bin/env").exists():
+        body = body.replace("#!/usr/bin/env bash\n", f"#!{bash}\n", 1)
     p.write_text(body)
     p.chmod(0o755)
     return p

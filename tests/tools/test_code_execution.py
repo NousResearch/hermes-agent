@@ -46,6 +46,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _kill_process_group,
 )
 
 
@@ -67,6 +68,25 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
     if function_name == "web_extract":
         return json.dumps("# Extracted content\nSome text from the page.")
     return json.dumps({"error": f"Unknown tool in mock: {function_name}"})
+
+
+def test_kill_process_group_falls_back_when_psutil_access_denied():
+    import psutil
+
+    class DummyProc:
+        pid = 123456
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    proc = DummyProc()
+    with patch("psutil.Process", side_effect=psutil.AccessDenied(pid=proc.pid)):
+        _kill_process_group(proc)
+
+    assert proc.killed
 
 
 class TestSandboxRequirements(unittest.TestCase):

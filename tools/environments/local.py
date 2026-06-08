@@ -1056,7 +1056,13 @@ class LocalEnvironment(BaseEnvironment):
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError, OSError):
+                # Android/Termux can deny process-group lookup even for a
+                # just-spawned child (or for mocked Popen objects in tests).
+                # The cached pgid is a best-effort cleanup optimization, not a
+                # precondition for running the command; _kill_process falls
+                # back to proc.kill() if process-group signalling is not
+                # available.
                 pass
 
         if stdin_data is not None:

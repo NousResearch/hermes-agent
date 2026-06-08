@@ -9,6 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,9 @@ from agent import shell_hooks
 
 def _write_script(tmp_path: Path, name: str, body: str) -> Path:
     path = tmp_path / name
+    bash = shutil.which("bash")
+    if bash and body.startswith("#!/usr/bin/env bash\n") and not Path("/usr/bin/env").exists():
+        body = body.replace("#!/usr/bin/env bash\n", f"#!{bash}\n", 1)
     path.write_text(body)
     path.chmod(0o755)
     return path

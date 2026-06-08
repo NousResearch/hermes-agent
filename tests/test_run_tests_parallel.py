@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -32,10 +33,27 @@ import pytest
 
 
 # Both tests share the same handoff file: the leaker writes here, the
-# verifier reads here. We park it in $TMPDIR with a unique-per-run name
-# so concurrent invocations of the suite don't clobber each other.
-_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
-_HANDOFF_DIR.mkdir(exist_ok=True)
+# verifier reads here. Use a writable temp base even on Android/Termux where
+# ``/tmp`` may be absent or blocked; do not fail during pytest collection.
+def _make_handoff_dir() -> Path:
+    candidates = []
+    if os.environ.get("TMPDIR"):
+        candidates.append(Path(os.environ["TMPDIR"]))
+    candidates.extend([
+        Path(tempfile.gettempdir()),
+        Path(__file__).resolve().parent.parent / ".hermes" / "tmp",
+    ])
+    for base in candidates:
+        try:
+            path = base / "hermes-isolation-probe"
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError:
+            continue
+    raise RuntimeError("could not create writable hermes-isolation-probe temp dir")
+
+
+_HANDOFF_DIR = _make_handoff_dir()
 
 
 def _handoff_path_for(nonce: str) -> Path:

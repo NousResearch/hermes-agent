@@ -953,6 +953,7 @@ export interface Translations {
     copied: string
     done: string
     applyingBody: string
+    applyingBodyBackend: string
     applyingClose: string
     errorTitle: string
     errorBody: string

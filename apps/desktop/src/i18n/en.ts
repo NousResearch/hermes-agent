@@ -1253,6 +1253,7 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
+    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',

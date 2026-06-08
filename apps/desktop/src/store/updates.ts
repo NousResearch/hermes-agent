@@ -304,6 +304,22 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 }
 
+const BACKEND_RETURN_POLL_MS = 1500
+const BACKEND_RETURN_MAX_ATTEMPTS = 40
+
+async function waitForBackendReturn(): Promise<void> {
+  for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
+    await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
+    try {
+      await checkHermesUpdate()
+
+      return
+    } catch {
+      continue
+    }
+  }
+}
+
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Updating backend…' })
@@ -323,19 +339,22 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise(resolve => window.setTimeout(resolve, 1500))
+      await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
       try {
         last = await getActionStatus(started.name, 200)
       } catch {
         // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
         $backendUpdateApply.set({
           ...$backendUpdateApply.get(),
-          applying: false,
+          applying: true,
           stage: 'restart',
           message: 'Backend restarting to load the update…'
         })
+        await waitForBackendReturn()
+        $backendUpdateApply.set(IDLE)
+        void checkBackendUpdates()
 
-        return { ok: true, message: 'Backend update applied; backend is restarting.' }
+        return { ok: true, message: 'Backend update applied; backend is back online.' }
       }
 
       if (last && !last.running) {
@@ -344,17 +363,24 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     }
 
     const ok = !!last && (last.exit_code ?? 1) === 0
+    if (ok) {
+      $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: 'Backend restarting to load the update…' })
+      await waitForBackendReturn()
+      $backendUpdateApply.set(IDLE)
+      void checkBackendUpdates()
+
+      return { ok: true, message: 'Backend update applied.' }
+    }
+
     $backendUpdateApply.set({
       ...$backendUpdateApply.get(),
       applying: false,
-      stage: ok ? 'restart' : 'error',
-      error: ok ? null : 'apply-failed',
-      message: ok ? 'Backend updated. Restart it to load the new code.' : 'Backend update failed.'
+      stage: 'error',
+      error: 'apply-failed',
+      message: 'Backend update failed.'
     })
 
-    return ok
-      ? { ok: true, message: 'Backend update applied.' }
-      : { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
+    return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })

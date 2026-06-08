@@ -53,6 +53,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.message_modes import GatewayMessageMode, resolve_gateway_message_mode
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -66,6 +67,131 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_WHAT_DID_YOU_DO_TRIGGERS = frozenset(
+    {
+        "你做了什么",
+        "刚才你干嘛了",
+        "你到底改了啥",
+        "哪些是你做的",
+    }
+)
+
+
+def _is_what_did_you_do_trigger(text: str | None) -> bool:
+    """Return True for Chinese plain-text aliases of /what-did-you-do."""
+    normalized = re.sub(r"[\s，。！？!?、,.`'\"“”‘’：:；;（）()【】\[\]]+", "", str(text or ""))
+    return normalized in _WHAT_DID_YOU_DO_TRIGGERS
+
+
+def _route_gateway_message_mode(
+    event: "MessageEvent",
+    *,
+    active_mode: Optional[str] = None,
+) -> tuple["MessageEvent", GatewayMessageMode]:
+    """Apply gateway message-mode routing to an event."""
+    route = resolve_gateway_message_mode(getattr(event, "text", None), active_mode=active_mode)
+    if route.name == "dev" and not route.sticky_mode:
+        return event, route
+
+    source = getattr(event, "source", None)
+    if source is not None:
+        source = dataclasses.replace(source, session_scope=route.session_scope)
+    routed_event = dataclasses.replace(event, text=route.message, source=source)
+    return routed_event, route
+
+
+def _prepare_route_required_skills(
+    enabled_toolsets: List[str],
+    combined_ephemeral: str,
+    mode_route: GatewayMessageMode,
+    *,
+    task_id: Optional[str] = None,
+) -> tuple[List[str], str]:
+    """Preload skills required by a gateway route into the agent prompt."""
+    required_skills = tuple(getattr(mode_route, "required_skills", ()) or ())
+    if not required_skills:
+        return list(enabled_toolsets or []), combined_ephemeral or ""
+
+    prepared_toolsets = list(enabled_toolsets or [])
+    if getattr(mode_route, "expose_skill_tools", True) and "skills" not in prepared_toolsets:
+        prepared_toolsets.append("skills")
+    blocks: List[str] = []
+    missing: List[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for skill_name in required_skills:
+        skill_name = str(skill_name or "").strip()
+        if not skill_name or skill_name in seen:
+            continue
+        seen.add(skill_name)
+        try:
+            from tools.skills_tool import skill_view
+
+            raw = skill_view(skill_name, task_id=task_id, preprocess=False)
+            data = json.loads(raw)
+        except Exception as exc:
+            reason = str(exc) or "unknown error"
+            logger.warning(
+                "Failed to preload required route skill %s for mode %s: %s",
+                skill_name,
+                getattr(mode_route, "name", ""),
+                reason,
+            )
+            missing.append((skill_name, reason))
+            continue
+
+        if not data.get("success"):
+            reason = str(data.get("error") or "unknown error")
+            logger.warning(
+                "Required route skill %s for mode %s was not loaded: %s",
+                skill_name,
+                getattr(mode_route, "name", ""),
+                reason,
+            )
+            missing.append((skill_name, reason))
+            continue
+
+        content = str(data.get("content") or "").strip()
+        if not content:
+            reason = "empty skill content"
+            logger.warning(
+                "Required route skill %s for mode %s had no content",
+                skill_name,
+                getattr(mode_route, "name", ""),
+            )
+            missing.append((skill_name, reason))
+            continue
+
+        resolved_name = str(data.get("name") or skill_name).strip() or skill_name
+        blocks.append(f'### skill_view(name="{skill_name}") → {resolved_name}\n{content}')
+
+    prompt_parts: List[str] = []
+    if blocks:
+        prompt_parts.append(
+            "## Required route skills\n"
+            "The gateway preloaded these skills for this route. Treat them as if "
+            "you had just called skill_view yourself before replying. Follow them "
+            "unless they conflict with higher-priority user or project instructions.\n\n"
+            + "\n\n".join(blocks)
+        )
+    if missing:
+        missing_lines = []
+        for skill_name, reason in missing:
+            safe_reason = " ".join(str(reason or "unknown error").split())[:240]
+            missing_lines.append(f"- {skill_name}: {safe_reason}")
+        prompt_parts.append(
+            "## Required route skill preload warning\n"
+            "The gateway could not preload all skills required by this route. "
+            "先简短告诉用户：部分路由技能未能加载，当前回复会降级处理；不要假装这些技能已加载。\n"
+            + "\n".join(missing_lines)
+        )
+    if not prompt_parts:
+        return prepared_toolsets, combined_ephemeral or ""
+
+    required_prompt = "\n\n".join(prompt_parts)
+    combined = (combined_ephemeral or "").strip()
+    combined = (combined + "\n\n" + required_prompt).strip() if combined else required_prompt
+    return prepared_toolsets, combined
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -138,6 +264,84 @@ _GATEWAY_SECRET_PATTERNS = (
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
     return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _gateway_prefers_chinese(platform: Any) -> bool:
+    """Return True for chat platforms whose Hermes system copy should be Chinese."""
+    return _gateway_platform_value(platform) == "qqbot"
+
+
+def _localize_status_detail_zh(detail: str) -> str:
+    """Translate common runtime-detail fragments while preserving tool names."""
+    text = str(detail or "")
+    text = re.sub(r"(?P<n>\d+) min elapsed", r"已用 \g<n> 分钟", text)
+    text = re.sub(r"(?P<n>\d+) min", r"\g<n> 分钟", text)
+    text = re.sub(r"iteration (?P<cur>\d+)/(?:\s*)?(?P<max>\d+)", r"第 \g<cur>/\g<max> 轮", text)
+    text = text.replace("running: ", "正在运行：")
+    text = text.replace("receiving stream response", "正在接收流式响应")
+    return text
+
+
+def _localize_gateway_status_zh(text: str) -> str:
+    """Translate common Hermes runtime status chatter for Chinese QQ chats.
+
+    Only Hermes-owned status envelopes are translated.  Tool names, commands,
+    paths, model names, and provider identifiers remain untouched.
+    """
+    body = str(text or "").strip()
+
+    preflight = re.match(
+        r"^📦\s*Preflight compression: ~(?P<tokens>[\d,]+) tokens >= "
+        r"(?P<threshold>[\d,]+) threshold\. This may take a moment\.?$",
+        body,
+        re.IGNORECASE,
+    )
+    if preflight:
+        return (
+            f"📦 预先压缩 context：约 {preflight.group('tokens')} tokens "
+            f">= {preflight.group('threshold')} threshold，可能需要一点时间。"
+        )
+
+    working = re.match(
+        r"^⏳\s*Working\s+—\s+(?P<mins>\d+) min(?P<detail>.*)$",
+        body,
+        re.IGNORECASE,
+    )
+    if working:
+        detail = _localize_status_detail_zh(working.group("detail") or "")
+        return f"⏳ 正在处理 — {working.group('mins')} 分钟{detail}"
+
+    interrupt = re.match(
+        r"^⚡\s*Interrupting current task(?P<detail>.*?)\.\s*"
+        r"I'll respond to your message shortly\.?$",
+        body,
+        re.IGNORECASE,
+    )
+    if interrupt:
+        detail = _localize_status_detail_zh(interrupt.group("detail") or "")
+        return f"⚡ 正在中断当前任务{detail}。马上处理你的消息。"
+
+    queued = re.match(
+        r"^⏳\s*Queued for the next turn(?P<detail>.*?)\.\s*"
+        r"I'll respond once the current task finishes\.?$",
+        body,
+        re.IGNORECASE,
+    )
+    if queued:
+        detail = _localize_status_detail_zh(queued.group("detail") or "")
+        return f"⏳ 已排队到下一轮{detail}。当前任务结束后我会回复。"
+
+    steered = re.match(
+        r"^⏩\s*Steered into current run(?P<detail>.*?)\.\s*"
+        r"Your message arrives after the next tool call\.?$",
+        body,
+        re.IGNORECASE,
+    )
+    if steered:
+        detail = _localize_status_detail_zh(steered.group("detail") or "")
+        return f"⏩ 已插入当前任务{detail}。你的消息会在下一个工具调用后进入。"
+
+    return body
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -308,6 +512,11 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
+    if _gateway_prefers_chinese(platform):
+        text = _redact_gateway_user_facing_secrets(text)
+        if _looks_like_gateway_provider_error(text):
+            return _gateway_provider_error_reply(text)
+        return _localize_gateway_status_zh(text)
     if _gateway_platform_value(platform) != "telegram":
         return text
 
@@ -1976,6 +2185,12 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
 
+        # Per-chat sticky gateway route overrides set by phrases like
+        # `切到日常聊天路由`.  Keyed by the unscoped base session key so follow-up
+        # messages without a prefix stay in the lightweight/ops lane until the
+        # user switches back to the default/dev route.
+        self._gateway_message_mode_overrides: Dict[str, str] = {}
+
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
@@ -2428,6 +2643,71 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
+
+    def _scoped_session_key_for_command(
+        self,
+        base_session_key: str,
+        *,
+        state_maps: tuple[dict, ...] = (),
+        prefer_active_mode: bool = True,
+    ) -> str:
+        """Resolve a slash/control command from a base chat key to its scoped lane.
+
+        Gateway slash commands bypass normal message-mode routing, so a plain
+        `/stop` or `/yolo` sent while the chat is sticky-routed to `ops` starts
+        with the unscoped base key.  Prefer exact state, then the sticky active
+        mode key, then any live scoped state under the same base chat.
+        """
+        session_key = str(base_session_key or "")
+        if not session_key or ":mode:" in session_key:
+            return session_key
+
+        candidates = [session_key]
+        active_mode = str(
+            (getattr(self, "_gateway_message_mode_overrides", {}) or {}).get(session_key)
+            or ""
+        ).strip()
+        if active_mode and active_mode != "dev":
+            candidates.append(f"{session_key}:mode:{active_mode}")
+
+        for mapping in state_maps or ():
+            if not isinstance(mapping, dict):
+                continue
+            for candidate in candidates:
+                if candidate in mapping:
+                    return candidate
+
+        scoped_prefix = f"{session_key}:mode:"
+        for mapping in state_maps or ():
+            if not isinstance(mapping, dict):
+                continue
+            for key in mapping.keys():
+                key_s = str(key or "")
+                if key_s.startswith(scoped_prefix):
+                    return key_s
+
+        if prefer_active_mode and len(candidates) > 1:
+            return candidates[1]
+        return session_key
+
+    def _source_for_session_key(self, source: SessionSource, session_key: str) -> SessionSource:
+        """Return a source carrying the mode scope implied by session_key."""
+        try:
+            base_key = self._session_key_for_source(source)
+        except Exception:
+            base_key = ""
+        if not session_key or not base_key or session_key == base_key:
+            return source
+        prefix = f"{base_key}:mode:"
+        if not str(session_key).startswith(prefix):
+            return source
+        scope = str(session_key)[len(prefix):].split(":", 1)[0]
+        if not scope:
+            return source
+        try:
+            return dataclasses.replace(source, session_scope=scope)
+        except Exception:
+            return source
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -3610,7 +3890,29 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
+        if _gateway_prefers_chinese(event.source.platform):
+            status_detail = _localize_status_detail_zh(status_detail)
+            if is_steer_mode:
+                message = (
+                    f"⏩ 已插入当前任务{status_detail}。"
+                    f"你的消息会在下一个工具调用后进入。"
+                )
+            elif is_queue_mode and demoted_for_subagents:
+                message = (
+                    f"⏳ 子任务仍在运行{status_detail}，你的消息已排队"
+                    f"到它完成后处理（用 /stop 可取消全部任务）。"
+                )
+            elif is_queue_mode:
+                message = (
+                    f"⏳ 已排队到下一轮{status_detail}。"
+                    f"当前任务结束后我会回复。"
+                )
+            else:
+                message = (
+                    f"⚡ 正在中断当前任务{status_detail}。"
+                    f"马上处理你的消息。"
+                )
+        elif is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
@@ -6005,11 +6307,14 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
             return BlueBubblesAdapter(config)
 
         elif platform == Platform.QQBOT:
-            from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+            from gateway.platforms.qqbot import QQMultiAdapter, check_qq_requirements, has_any_qq_credentials
             if not check_qq_requirements():
-                logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")
+                logger.warning("QQBot: aiohttp/httpx missing")
                 return None
-            return QQAdapter(config)
+            if not has_any_qq_credentials(config):
+                logger.warning("QQBot: QQ_APP_ID/QQ_CLIENT_SECRET or QQ_APP_ID_N/QQ_CLIENT_SECRET_N not configured")
+                return None
+            return QQMultiAdapter(config)
 
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
@@ -6559,6 +6864,43 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
+        # Route Chinese QQ/gateway text prefixes into logical lanes before
+        # computing the scoped session key.  This keeps `日常聊天 ...` and
+        # `运维 ...` out of the default development transcript/cache while
+        # preserving the same delivery chat_id for replies.  Explicit switch
+        # phrases such as `切到日常聊天路由` set a sticky base-chat default so
+        # follow-up messages without the prefix do not fall back to dev context.
+        _base_mode_key = self._session_key_for_source(source)
+        if not is_internal:
+            _mode_overrides = getattr(self, "_gateway_message_mode_overrides", None)
+            if not isinstance(_mode_overrides, dict):
+                _mode_overrides = {}
+                self._gateway_message_mode_overrides = _mode_overrides
+            _active_mode = _mode_overrides.get(_base_mode_key)
+            event, _gateway_message_mode = _route_gateway_message_mode(
+                event,
+                active_mode=_active_mode,
+            )
+            source = event.source
+            if _gateway_message_mode.sticky_mode:
+                if _gateway_message_mode.sticky_mode == "dev":
+                    _mode_overrides.pop(_base_mode_key, None)
+                else:
+                    _mode_overrides[_base_mode_key] = _gateway_message_mode.sticky_mode
+                if _gateway_message_mode.control_response:
+                    return _gateway_message_mode.control_response
+            if _gateway_message_mode.name != "dev":
+                logger.info(
+                    "gateway message mode routed: mode=%s prefix=%s active=%s platform=%s chat=%s",
+                    _gateway_message_mode.name,
+                    _gateway_message_mode.prefix,
+                    _active_mode or "",
+                    source.platform.value if source and source.platform else "unknown",
+                    source.chat_id if source else "unknown",
+                )
+        else:
+            _gateway_message_mode = GatewayMessageMode(name="dev", message=event.text or "")
+
         _quick_key = self._session_key_for_source(source)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
@@ -7570,7 +7912,13 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_result = await self._handle_message_with_agent(
+                event,
+                source,
+                _quick_key,
+                _run_generation,
+                message_mode=_gateway_message_mode,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -7889,8 +8237,18 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(
+        self,
+        event,
+        source,
+        _quick_key: str,
+        run_generation: int,
+        *,
+        message_mode: Optional[GatewayMessageMode] = None,
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        if message_mode is None:
+            message_mode = GatewayMessageMode(name="dev", message=event.text or "")
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
@@ -8568,6 +8926,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                message_mode=message_mode,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9744,7 +10103,12 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
+        base_session_key = session_entry.session_key
+        session_key = self._scoped_session_key_for_command(
+            base_session_key,
+            state_maps=(getattr(self, "_running_agents", {}) or {},),
+        )
+        source = self._source_for_session_key(source, session_key)
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
@@ -12092,7 +12456,16 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
             is_session_yolo_enabled,
         )
 
-        session_key = self._session_key_for_source(event.source)
+        session_key = self._scoped_session_key_for_command(
+            self._session_key_for_source(event.source),
+            state_maps=(
+                getattr(self, "_pending_approvals", {}),
+                getattr(self, "_running_agents", {}),
+                getattr(self, "_session_model_overrides", {}),
+                getattr(self, "_session_reasoning_overrides", {}),
+                getattr(self, "_pending_model_notes", {}),
+            ),
+        )
         current = is_session_yolo_enabled(session_key)
         if current:
             disable_session_yolo(session_key)
@@ -13189,7 +13562,16 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         available whenever the user asks, not only while the agent is running.
         """
         source = event.source
-        session_key = self._session_key_for_source(source)
+        base_session_key = self._session_key_for_source(source)
+        _cache = getattr(self, "_agent_cache", None)
+        session_key = self._scoped_session_key_for_command(
+            base_session_key,
+            state_maps=(
+                getattr(self, "_running_agents", {}) or {},
+                _cache if isinstance(_cache, dict) else {},
+            ),
+        )
+        source = self._source_for_session_key(source, session_key)
 
         # Try running agent first (mid-turn), then cached agent (between turns)
         agent = self._running_agents.get(session_key)
@@ -13997,14 +14379,16 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, find_blocking_approval_session_key,
         )
 
-        if not has_blocking_approval(session_key):
+        approval_session_key = find_blocking_approval_session_key(session_key)
+        if approval_session_key is None:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
+        session_key = approval_session_key
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
@@ -14043,14 +14427,16 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, find_blocking_approval_session_key,
         )
 
-        if not has_blocking_approval(session_key):
+        approval_session_key = find_blocking_approval_session_key(session_key)
+        if approval_session_key is None:
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
+        session_key = approval_session_key
 
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args
@@ -16118,6 +16504,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        message_mode: Optional[GatewayMessageMode] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16157,6 +16544,9 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        mode_route = message_mode if isinstance(message_mode, GatewayMessageMode) else GatewayMessageMode(name="dev", message=message)
+        if mode_route.enabled_toolsets is not None:
+            enabled_toolsets = sorted(mode_route.enabled_toolsets)
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -16865,11 +17255,12 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         def run_sync():
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
-            # local variable in the entire function.  `nonlocal` lets us
-            # read *and* reassign the outer `_run_agent` parameter without
-            # triggering an UnboundLocalError on the earlier read at
-            # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            # local variable in the entire function. Route-required skill
+            # preparation also rebinds `enabled_toolsets`, and the disabled
+            # toolset cleanup may rebind `disabled_toolsets`.  `nonlocal`
+            # lets us read *and* reassign the outer `_run_agent` locals
+            # without triggering UnboundLocalError on the earlier reads.
+            nonlocal message, enabled_toolsets, disabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -16885,11 +17276,25 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
             combined_ephemeral = context_prompt or ""
+            if mode_route.system_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + mode_route.system_prompt).strip()
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+
+            enabled_toolsets, combined_ephemeral = _prepare_route_required_skills(
+                enabled_toolsets,
+                combined_ephemeral,
+                mode_route,
+                task_id=session_id,
+            )
+            if getattr(mode_route, "required_skills", None) and disabled_toolsets:
+                if isinstance(disabled_toolsets, str):
+                    disabled_toolsets = [disabled_toolsets]
+                if isinstance(disabled_toolsets, list) and "skills" in disabled_toolsets:
+                    disabled_toolsets = [t for t in disabled_toolsets if t != "skills"]
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart). Keep config.yaml authoritative for
@@ -17088,6 +17493,9 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    skip_context_files=mode_route.skip_context_files,
+                    load_soul_identity=mode_route.load_soul_identity,
+                    skip_memory=mode_route.skip_memory,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -17908,7 +18316,11 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                if _gateway_prefers_chinese(source.platform):
+                    _heartbeat_detail = _localize_status_detail_zh(_status_detail)
+                    _heartbeat_text = f"⏳ 正在处理 — {_elapsed_mins} 分钟{_heartbeat_detail}"
+                else:
+                    _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:

@@ -651,6 +651,27 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def find_blocking_approval_session_key(session_key: str) -> Optional[str]:
+    """Return the session key that owns a pending gateway approval.
+
+    Gateway slash commands such as ``/approve`` bypass normal message-mode
+    routing.  In a mode-routed QQ session, the command may resolve to the base
+    chat key while the blocked agent turn is scoped (for example
+    ``...:mode:ops``).  Prefer an exact match, then fall back to the first
+    scoped pending approval for the same base chat.
+    """
+    if not session_key:
+        return None
+    scoped_prefix = f"{session_key}:mode:"
+    with _lock:
+        if _gateway_queues.get(session_key):
+            return session_key
+        for queued_key, queue in _gateway_queues.items():
+            if queue and queued_key.startswith(scoped_prefix):
+                return queued_key
+    return None
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

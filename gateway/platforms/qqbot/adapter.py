@@ -33,12 +33,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html as html_lib
+import io
 import json
 import logging
 import mimetypes
 import os
+import re
 import time
 import uuid
+import zipfile
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -63,16 +68,107 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageAttachment,
     MessageEvent,
     MessageType,
     SendResult,
+    _looks_like_image,
     _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    get_document_cache_dir,
 )
 from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
+
+_MB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class QQInboundAttachmentRule:
+    """Inbound QQ file policy for non-image attachments."""
+
+    kind: str
+    max_bytes: int
+    preview_bytes: int = 0
+    extract_max_total_bytes: int = 0
+    extract_max_files: int = 0
+    extract_max_single_file_bytes: int = 0
+    extract_max_depth: int = 0
+
+
+class QQInboundAttachmentPolicy:
+    """Classify inbound QQ files and expose safe size limits."""
+
+    _BLOCKED_EXTENSIONS = {
+        ".exe", ".dll", ".so", ".bin", ".app", ".apk", ".dmg", ".msi",
+        ".bat", ".cmd", ".scr", ".com", ".pif",
+        ".env", ".pem", ".key", ".p12", ".pfx",
+    }
+    _TEXT_EXTENSIONS = {
+        ".txt", ".md", ".markdown", ".log", ".csv", ".tsv", ".json",
+        ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".sql",
+        ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".sh", ".bash",
+        ".zsh", ".java", ".kt", ".go", ".rs", ".c", ".cpp", ".h", ".hpp",
+        ".cs", ".php", ".rb", ".lua", ".dockerfile",
+    }
+    _HTML_EXTENSIONS = {".html", ".htm"}
+    _DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls"}
+    _ARCHIVE_EXTENSIONS = {".zip", ".tar", ".gz", ".tgz", ".7z", ".rar"}
+    _AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+    _VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+
+    REGULAR = QQInboundAttachmentRule("file", 20 * _MB, preview_bytes=64 * 1024)
+    IMAGE = QQInboundAttachmentRule("image", 25 * _MB)
+    DOCUMENT = QQInboundAttachmentRule("document", 50 * _MB, preview_bytes=64 * 1024)
+    ARCHIVE = QQInboundAttachmentRule(
+        "archive",
+        200 * _MB,
+        extract_max_total_bytes=1024 * _MB,
+        extract_max_files=10000,
+        extract_max_single_file_bytes=100 * _MB,
+        extract_max_depth=10,
+    )
+    MEDIA = QQInboundAttachmentRule("media", 100 * _MB)
+
+    def is_blocked_filename(self, filename: str) -> bool:
+        name = Path(filename or "").name.strip()
+        lower = name.lower()
+        suffix = Path(lower).suffix
+        return lower in {".env", "env"} or suffix in self._BLOCKED_EXTENSIONS
+
+    def classify(self, filename: str, content_type: str) -> Optional[QQInboundAttachmentRule]:
+        name = Path(filename or "").name.strip()
+        lower = name.lower()
+        suffix = Path(lower).suffix
+        content_type = (content_type or "").strip().lower()
+        if self.is_blocked_filename(name):
+            return None
+        if lower == "dockerfile":
+            return self.REGULAR
+        if content_type.startswith("image/"):
+            return self.IMAGE
+        if suffix in self._TEXT_EXTENSIONS:
+            return self.REGULAR
+        if suffix in self._HTML_EXTENSIONS:
+            return self.REGULAR
+        if suffix in self._DOCUMENT_EXTENSIONS:
+            return self.DOCUMENT
+        if suffix in self._ARCHIVE_EXTENSIONS or lower.endswith(".tar.gz"):
+            return self.ARCHIVE
+        if suffix in self._AUDIO_EXTENSIONS or suffix in self._VIDEO_EXTENSIONS:
+            return self.MEDIA
+        if content_type.startswith("audio/") or content_type.startswith("video/"):
+            return self.MEDIA
+        if content_type in {"text/plain", "text/markdown", "text/csv", "text/html"}:
+            return self.REGULAR
+        if content_type in {"application/pdf", "application/zip"}:
+            return self.DOCUMENT if content_type == "application/pdf" else self.ARCHIVE
+        return None
+
+
+QQ_INBOUND_ATTACHMENT_POLICY = QQInboundAttachmentPolicy()
 
 
 class QQCloseError(Exception):
@@ -1243,11 +1339,12 @@ class QQAdapter(BasePlatformAdapter):
                     )
 
         # Process all attachments uniformly (images, voice, files)
-        att_result = await self._process_attachments(attachments_raw)
+        att_result = await self._process_attachments(attachments_raw, message_id=msg_id)
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        structured_attachments = att_result.get("attachments") or []
 
         # Append voice transcripts to the text body
         if voice_transcripts:
@@ -1293,6 +1390,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
+            attachments=structured_attachments,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -1316,11 +1414,12 @@ class QQAdapter(BasePlatformAdapter):
 
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
-        att_result = await self._process_attachments(d.get("attachments"))
+        att_result = await self._process_attachments(d.get("attachments"), message_id=msg_id)
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        structured_attachments = att_result.get("attachments") or []
 
         # Append voice transcripts
         if voice_transcripts:
@@ -1358,6 +1457,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
+            attachments=structured_attachments,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -1391,11 +1491,12 @@ class QQAdapter(BasePlatformAdapter):
         nick = str(member.get("nick", "")) or str(author.get("username", ""))
 
         text = content
-        att_result = await self._process_attachments(d.get("attachments"))
+        att_result = await self._process_attachments(d.get("attachments"), message_id=msg_id)
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        structured_attachments = att_result.get("attachments") or []
 
         if voice_transcripts:
             voice_block = "\n".join(voice_transcripts)
@@ -1433,6 +1534,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
+            attachments=structured_attachments,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -1462,11 +1564,12 @@ class QQAdapter(BasePlatformAdapter):
             return
 
         text = content
-        att_result = await self._process_attachments(d.get("attachments"))
+        att_result = await self._process_attachments(d.get("attachments"), message_id=msg_id)
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        structured_attachments = att_result.get("attachments") or []
 
         if voice_transcripts:
             voice_block = "\n".join(voice_transcripts)
@@ -1503,6 +1606,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
+            attachments=structured_attachments,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -1638,9 +1742,130 @@ class QQAdapter(BasePlatformAdapter):
         )
         return MessageType.TEXT
 
+    @staticmethod
+    def _safe_cache_component(value: Optional[str], default: str) -> str:
+        raw = str(value or "").replace("\x00", "").strip()
+        raw = Path(raw).name if raw else ""
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._-")
+        return safe[:120] or default
+
+    @classmethod
+    def _inbound_message_cache_dir(cls, message_id: Optional[str]) -> Path:
+        safe_id = cls._safe_cache_component(message_id, f"unknown_{uuid.uuid4().hex[:12]}")
+        cache_dir = get_document_cache_dir() / "qqbot" / safe_id
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    @classmethod
+    def _cache_inbound_attachment(
+            cls,
+            *,
+            data: bytes,
+            filename: str,
+            content_type: str,
+            kind: str,
+            message_id: Optional[str],
+            source_url: str,
+            index: int,
+    ) -> MessageAttachment:
+        cache_dir = cls._inbound_message_cache_dir(message_id)
+        safe_name = cls._safe_cache_component(filename, f"attachment_{index}")
+        candidate = cache_dir / f"{index:02d}_{safe_name}"
+        if candidate.exists():
+            candidate = cache_dir / f"{index:02d}_{uuid.uuid4().hex[:8]}_{safe_name}"
+        if not candidate.resolve().is_relative_to(cache_dir.resolve()):
+            raise ValueError(f"Path traversal rejected: {filename!r}")
+        candidate.write_bytes(data)
+        return MessageAttachment(
+            kind=kind,
+            local_path=str(candidate),
+            filename=safe_name,
+            content_type=content_type or None,
+            size=len(data),
+            message_id=message_id,
+            source_url=source_url or None,
+        )
+
+    @staticmethod
+    def _write_inbound_meta(
+            cache_dir: Path,
+            message_id: Optional[str],
+            attachments: List[MessageAttachment],
+    ) -> None:
+        if not attachments:
+            return
+        payload = {
+            "platform": "qqbot",
+            "message_id": message_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "attachments": [asdict(att) for att in attachments],
+        }
+        (cache_dir / "meta.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def extract_archive_to_isolated_dir(
+            cls,
+            archive_path: str,
+            *,
+            message_id: Optional[str] = None,
+    ) -> Path:
+        """Extract a saved QQ ZIP attachment into an isolated per-message directory."""
+        archive = Path(archive_path).expanduser().resolve()
+        if archive.suffix.lower() != ".zip":
+            raise ValueError("Only ZIP archive extraction is supported")
+        if not archive.exists() or not archive.is_file():
+            raise FileNotFoundError(f"Archive not found: {archive}")
+
+        rule = QQ_INBOUND_ATTACHMENT_POLICY.ARCHIVE
+        base_dir = archive.parent if archive.parent.exists() else cls._inbound_message_cache_dir(message_id)
+        dest = base_dir / f"extracted_{uuid.uuid4().hex[:12]}"
+        dest.mkdir(parents=True, exist_ok=False)
+        dest_resolved = dest.resolve()
+
+        with zipfile.ZipFile(archive) as zf:
+            infos = zf.infolist()
+            if len(infos) > rule.extract_max_files:
+                raise ValueError(f"Archive exceeds file count limit: {rule.extract_max_files}")
+            total = 0
+            for info in infos:
+                name = info.filename.replace("\\", "/")
+                parts = [part for part in name.split("/") if part]
+                if name.startswith("/") or ".." in parts:
+                    raise ValueError(f"Unsafe archive path: {info.filename}")
+                if len(parts) > rule.extract_max_depth:
+                    raise ValueError(f"Archive exceeds directory depth limit: {rule.extract_max_depth}")
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ValueError(f"Unsafe archive symlink: {info.filename}")
+                total += int(info.file_size or 0)
+                if info.file_size > rule.extract_max_single_file_bytes:
+                    raise ValueError(
+                        f"Archive member exceeds single-file limit: {info.filename}"
+                    )
+                if total > rule.extract_max_total_bytes:
+                    raise ValueError(
+                        f"Archive exceeds total extracted size limit: {cls._format_bytes(rule.extract_max_total_bytes)}"
+                    )
+
+            for info in infos:
+                if info.is_dir():
+                    continue
+                target = dest / info.filename
+                target_resolved = target.resolve()
+                if not target_resolved.is_relative_to(dest_resolved):
+                    raise ValueError(f"Unsafe archive path: {info.filename}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src, open(target, "wb") as out:
+                    out.write(src.read())
+        return dest
+
     async def _process_attachments(
             self,
             attachments: Any,
+            *,
+            message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process inbound attachments (all message types).
 
@@ -1659,20 +1884,24 @@ class QQAdapter(BasePlatformAdapter):
                 "image_media_types": [],
                 "voice_transcripts": [],
                 "attachment_info": "",
+                "attachments": [],
             }
 
+        effective_message_id = message_id or f"unknown_{uuid.uuid4().hex[:12]}"
         image_urls: List[str] = []
         image_media_types: List[str] = []
         voice_transcripts: List[str] = []
         other_attachments: List[str] = []
+        structured_attachments: List[MessageAttachment] = []
 
-        for att in attachments:
+        for index, att in enumerate(attachments):
             if not isinstance(att, dict):
                 continue
 
             ct = str(att.get("content_type", "")).strip().lower()
             url_raw = str(att.get("url", "")).strip()
             filename = str(att.get("filename", ""))
+            display_name = Path(filename or Path(urlparse(url_raw).path).name or f"attachment_{index}").name
             if url_raw.startswith("//"):
                 url = f"https:{url_raw}"
             elif url_raw:
@@ -1689,96 +1918,338 @@ class QQAdapter(BasePlatformAdapter):
                 filename,
             )
 
-            if self._is_voice_content_type(ct, filename):
-                # Voice: use QQ's asr_refer_text first, then voice_wav_url, then STT.
+            if self._is_voice_message_attachment(att, ct, filename):
                 asr_refer = (
                     str(att.get("asr_refer_text", "")).strip()
                     if isinstance(att.get("asr_refer_text"), str)
                     else ""
                 )
+                if asr_refer:
+                    voice_transcripts.append(f"[Voice] {asr_refer}")
+                    structured_attachments.append(
+                        MessageAttachment(
+                            kind="voice",
+                            filename=display_name,
+                            content_type=ct or None,
+                            size=0,
+                            message_id=effective_message_id,
+                            source_url=url,
+                            metadata={"transcript_source": "asr_refer_text"},
+                        )
+                    )
+                    continue
+
                 voice_wav_url = (
                     str(att.get("voice_wav_url", "")).strip()
                     if isinstance(att.get("voice_wav_url"), str)
                     else ""
                 )
+                is_pre_wav = False
+                download_url = url
+                if voice_wav_url:
+                    download_url = f"https:{voice_wav_url}" if voice_wav_url.startswith("//") else voice_wav_url
+                    is_pre_wav = True
+                    display_name = Path(display_name).with_suffix(".wav").name
 
-                transcript = await self._stt_voice_attachment(
-                    url,
-                    ct,
-                    filename,
-                    asr_refer_text=asr_refer or None,
-                    voice_wav_url=voice_wav_url or None,
-                )
-                if transcript:
-                    voice_transcripts.append(f"[Voice] {transcript}")
-                    logger.debug("[%s] Voice transcript: %s", self._log_tag, transcript)
-                else:
-                    logger.warning("[%s] Voice STT failed for %s", self._log_tag, url[:60])
-                    voice_transcripts.append("[Voice] [语音识别失败]")
-            elif ct.startswith("image/"):
-                # Image: download and cache locally.
                 try:
-                    cached_path = await self._download_and_cache(url, ct, filename)
-                    if cached_path and os.path.isfile(cached_path):
-                        image_urls.append(cached_path)
-                        image_media_types.append(ct or "image/jpeg")
-                    elif cached_path:
-                        logger.warning(
-                            "[%s] Cached image path does not exist: %s",
-                            self._log_tag,
-                            cached_path,
+                    data = await self._download_attachment_bytes(
+                        download_url,
+                        QQ_INBOUND_ATTACHMENT_POLICY.MEDIA.max_bytes,
+                        follow_redirects=True,
+                    )
+                    if data is None:
+                        voice_transcripts.append("[Voice] [语音识别失败]")
+                        other_attachments.append(
+                            f"[Voice: {display_name}] 语音超过大小限制 ({self._format_bytes(QQ_INBOUND_ATTACHMENT_POLICY.MEDIA.max_bytes)})，未下载识别。"
                         )
+                        continue
+
+                    att_obj = self._cache_inbound_attachment(
+                        data=data,
+                        filename=display_name,
+                        content_type=ct or "voice",
+                        kind="voice",
+                        message_id=effective_message_id,
+                        source_url=download_url,
+                        index=index,
+                    )
+                    structured_attachments.append(att_obj)
+                    transcript = await self._stt_audio_bytes(data, display_name, is_pre_wav=is_pre_wav)
+                    if transcript:
+                        voice_transcripts.append(f"[Voice] {transcript}")
+                        logger.debug("[%s] Voice transcript: %s", self._log_tag, transcript)
+                    else:
+                        logger.warning("[%s] Voice STT failed for %s", self._log_tag, download_url[:60])
+                        voice_transcripts.append("[Voice] [语音识别失败]")
+                except (httpx.HTTPStatusError, httpx.TransportError, IOError, ValueError) as exc:
+                    logger.warning(
+                        "[%s] Voice download/STT failed for %s: %s: %s",
+                        self._log_tag,
+                        download_url[:60],
+                        type(exc).__name__,
+                        exc,
+                    )
+                    voice_transcripts.append("[Voice] [语音识别失败]")
+                    other_attachments.append(
+                        f"[Voice: {display_name}] 语音下载或识别失败，未下载识别。"
+                    )
+            elif ct.startswith("image/"):
+                try:
+                    data = await self._download_attachment_bytes(url, QQ_INBOUND_ATTACHMENT_POLICY.IMAGE.max_bytes)
+                    if data is None:
+                        other_attachments.append(
+                            f"[图片: {display_name}] 下载失败或超过大小限制 ({self._format_bytes(QQ_INBOUND_ATTACHMENT_POLICY.IMAGE.max_bytes)})。"
+                        )
+                        continue
+                    if not _looks_like_image(data):
+                        other_attachments.append(f"[图片: {display_name}] 下载失败：内容不是有效图片。")
+                        continue
+                    ext = Path(display_name).suffix or mimetypes.guess_extension(ct) or ".jpg"
+                    image_name = display_name if Path(display_name).suffix else f"{display_name}{ext}"
+                    att_obj = self._cache_inbound_attachment(
+                        data=data,
+                        filename=image_name,
+                        content_type=ct,
+                        kind="image",
+                        message_id=effective_message_id,
+                        source_url=url,
+                        index=index,
+                    )
+                    structured_attachments.append(att_obj)
+                    if att_obj.local_path and os.path.isfile(att_obj.local_path):
+                        image_urls.append(att_obj.local_path)
+                        image_media_types.append(ct or "image/jpeg")
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache image: %s", self._log_tag, exc)
             else:
-                # Other attachments (video, file, etc.): download and record with path.
                 try:
-                    cached_path = await self._download_and_cache(url, ct, filename)
-                    if cached_path:
-                        name = filename or ct
-                        if ct.startswith("video/"):
-                            other_attachments.append(f"[video: {name} ({cached_path})]")
-                        else:
-                            other_attachments.append(f"[file: {name} ({cached_path})]")
+                    info, att_obj = await self._download_and_describe_file_attachment(
+                        url=url,
+                        content_type=ct,
+                        filename=filename,
+                        message_id=effective_message_id,
+                        index=index,
+                    )
+                    if att_obj:
+                        structured_attachments.append(att_obj)
+                    if info:
+                        other_attachments.append(info)
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 
+        if structured_attachments:
+            self._write_inbound_meta(
+                self._inbound_message_cache_dir(effective_message_id),
+                effective_message_id,
+                structured_attachments,
+            )
         attachment_info = "\n".join(other_attachments) if other_attachments else ""
         return {
             "image_urls": image_urls,
             "image_media_types": image_media_types,
             "voice_transcripts": voice_transcripts,
             "attachment_info": attachment_info,
+            "attachments": structured_attachments,
         }
 
-    async def _download_and_cache(
-            self, url: str, content_type: str, original_name: str = "",
-    ) -> Optional[str]:
-        """Download a URL and cache it locally.
+    async def _download_and_describe_file_attachment(
+            self,
+            *,
+            url: str,
+            content_type: str,
+            filename: str,
+            message_id: Optional[str],
+            index: int,
+    ) -> Tuple[str, Optional[MessageAttachment]]:
+        """Download a supported non-image QQ attachment and return agent-visible info."""
+        display_name = Path(filename or Path(urlparse(url).path).name or "qq_attachment").name
+        rule = QQ_INBOUND_ATTACHMENT_POLICY.classify(display_name, content_type)
+        if rule is None:
+            return f"[文件: {display_name}] 不支持或敏感类型，未下载。", None
 
-        :param original_name: Preferred filename from attachment metadata.
-            Falls back to the URL path basename if empty.
-        """
+        data = await self._download_attachment_bytes(url, rule.max_bytes)
+        if data is None:
+            return f"[文件: {display_name}] 下载失败或超过大小限制 ({self._format_bytes(rule.max_bytes)})。", None
+
+        att_obj = self._cache_inbound_attachment(
+            data=data,
+            filename=display_name,
+            content_type=content_type,
+            kind=rule.kind,
+            message_id=message_id,
+            source_url=url,
+            index=index,
+        )
+        cached_path = att_obj.local_path or ""
+
+        lines = [
+            f"[文件: {display_name}]",
+            f"类型: {content_type or 'unknown'}",
+            f"大小: {self._format_bytes(len(data))}",
+            f"本地路径: {cached_path}",
+        ]
+
+        lower = display_name.lower()
+        if lower.endswith(('.html', '.htm')) or content_type == "text/html":
+            preview = self._html_text_preview(data, rule.preview_bytes)
+            if preview:
+                lines.append("HTML 文本预览:\n" + preview)
+        elif rule.kind == "archive":
+            lines.extend(self._archive_summary_lines(display_name, data, rule))
+        elif self._is_previewable_text(display_name, content_type):
+            preview = self._text_preview(data, rule.preview_bytes)
+            if preview:
+                lines.append("文本预览:\n" + preview)
+        elif lower.endswith(".pdf"):
+            lines.append("PDF 已保存。需要内容时可用文档/OCR 工具读取。")
+        elif lower.endswith((".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls")):
+            lines.append("Office 文档已保存。需要内容时可用文档工具转换/读取。")
+        elif rule.kind == "media":
+            lines.append("媒体文件已保存，不按语音消息自动转写。")
+        return "\n".join(lines), att_obj
+
+    async def _download_attachment_bytes(
+            self,
+            url: str,
+            max_bytes: int,
+            *,
+            follow_redirects: bool = False,
+    ) -> Optional[bytes]:
+        """Download attachment bytes with SSRF and streaming size guards."""
+        from tools.url_safety import is_safe_url
+
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe URL: {url[:80]}")
+        if not self._http_client:
+            return None
+
+        chunks: list[bytes] = []
+        total = 0
+        async with self._http_client.stream(
+            "GET",
+            url,
+            timeout=30.0,
+            headers=self._qq_media_headers(),
+            follow_redirects=follow_redirects,
+        ) as resp:
+            resp.raise_for_status()
+            content_length = None
+            try:
+                content_length = int(resp.headers.get("content-length", "") or 0)
+            except Exception:
+                content_length = None
+            if content_length and content_length > max_bytes:
+                return None
+            async for chunk in resp.aiter_bytes():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    return None
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _format_bytes(size: int) -> str:
+        if size >= _MB:
+            return f"{size / _MB:.0f}MB"
+        if size >= 1024:
+            return f"{size / 1024:.0f}KB"
+        return f"{size}B"
+
+    @staticmethod
+    def _is_previewable_text(filename: str, content_type: str) -> bool:
+        suffix = Path(filename.lower()).suffix
+        return content_type.startswith("text/") or suffix in QQInboundAttachmentPolicy._TEXT_EXTENSIONS
+
+    @staticmethod
+    def _decode_text_bytes(data: bytes, limit: int) -> str:
+        sample = data[:limit]
+        for encoding in ("utf-8", "utf-8-sig", "gb18030", "latin-1"):
+            try:
+                return sample.decode(encoding, errors="replace")
+            except Exception:
+                continue
+        return sample.decode("utf-8", errors="replace")
+
+    @classmethod
+    def _text_preview(cls, data: bytes, limit: int) -> str:
+        text = cls._decode_text_bytes(data, limit).replace("\x00", "")
+        if len(data) > limit:
+            text += "\n...[已截断预览]"
+        return text.strip()
+
+    @classmethod
+    def _html_text_preview(cls, data: bytes, limit: int) -> str:
+        raw = cls._decode_text_bytes(data, limit)
+        raw = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw)
+        raw = re.sub(r"(?s)<!--.*?-->", " ", raw)
+        raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+        text = html_lib.unescape(raw)
+        text = re.sub(r"[ \t\r\f\v]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n", text)
+        if len(data) > limit:
+            text += "\n...[已截断预览]"
+        return text.strip()
+
+    @staticmethod
+    def _archive_summary_lines(filename: str, data: bytes, rule: QQInboundAttachmentRule) -> List[str]:
+        lines = ["压缩包已保存，未自动解压。"]
+        lower = filename.lower()
+        if lower.endswith(".zip"):
+            try:
+                total = 0
+                max_depth = 0
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    infos = zf.infolist()
+                    for info in infos:
+                        name = info.filename.replace("\\", "/")
+                        if name.startswith("/") or ".." in Path(name).parts:
+                            lines.append("警告: 检测到不安全路径，解压时会拒绝。")
+                            break
+                        max_depth = max(max_depth, len([p for p in name.split("/") if p]))
+                        total += int(info.file_size or 0)
+                    lines.append(f"文件数: {len(infos)}")
+                    lines.append(f"解压后估算: {QQAdapter._format_bytes(total)}")
+                    if len(infos) > rule.extract_max_files:
+                        lines.append(f"警告: 超过文件数限制 {rule.extract_max_files}")
+                    if total > rule.extract_max_total_bytes:
+                        lines.append(f"警告: 超过解压总大小限制 {QQAdapter._format_bytes(rule.extract_max_total_bytes)}")
+                    if max_depth > rule.extract_max_depth:
+                        lines.append(f"警告: 超过目录深度限制 {rule.extract_max_depth}")
+            except zipfile.BadZipFile:
+                lines.append("警告: ZIP 结构无法读取。")
+        else:
+            lines.append("需要你明确说“解压看看”才会进入隔离目录解压。")
+        return lines
+
+    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
+        """Download a URL and cache it locally."""
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL: {url[:80]}")
 
-        if not self._http_client:
-            return None
+        filename = Path(urlparse(url).path).name or "qq_attachment"
+        if content_type.startswith("image/"):
+            max_bytes = QQ_INBOUND_ATTACHMENT_POLICY.IMAGE.max_bytes
+        elif content_type == "voice" or content_type.startswith("audio/"):
+            max_bytes = QQ_INBOUND_ATTACHMENT_POLICY.MEDIA.max_bytes
+        else:
+            rule = QQ_INBOUND_ATTACHMENT_POLICY.classify(filename, content_type)
+            if rule is None:
+                return None
+            max_bytes = rule.max_bytes
 
         try:
-            resp = await self._http_client.get(
-                url,
-                timeout=30.0,
-                headers=self._qq_media_headers(),
-            )
-            resp.raise_for_status()
-            data = resp.content
+            data = await self._download_attachment_bytes(url, max_bytes)
         except Exception as exc:
             logger.debug(
                 "[%s] Download failed for %s: %s", self._log_tag, url[:80], exc
             )
+            return None
+
+        if data is None:
             return None
 
         if content_type.startswith("image/"):
@@ -1789,34 +2260,30 @@ class QQAdapter(BasePlatformAdapter):
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
         else:
-            filename = (
-                original_name
-                or Path(urlparse(url).path).name
-                or "qq_attachment"
-            )
+            filename = Path(urlparse(url).path).name or "qq_attachment"
             return cache_document_from_bytes(data, filename)
 
     @staticmethod
     def _is_voice_content_type(content_type: str, filename: str) -> bool:
-        """Check if an attachment is a voice/audio message."""
+        """Return true for QQ voice-message formats, not ordinary audio files."""
         ct = content_type.strip().lower()
         fn = filename.strip().lower()
-        if ct == "voice" or ct.startswith("audio/"):
+        if ct == "voice" or ct.startswith("voice/"):
             return True
-        _VOICE_EXTENSIONS = (
-            ".silk",
-            ".amr",
-            ".mp3",
-            ".wav",
-            ".ogg",
-            ".m4a",
-            ".aac",
-            ".speex",
-            ".flac",
-        )
-        if any(fn.endswith(ext) for ext in _VOICE_EXTENSIONS):
+        if "silk" in ct or ct in {"audio/amr", "audio/x-amr", "audio/speex"}:
             return True
-        return False
+        return fn.endswith((".silk", ".amr", ".speex"))
+
+    @classmethod
+    def _is_voice_message_attachment(
+            cls,
+            attachment: Dict[str, Any],
+            content_type: str,
+            filename: str,
+    ) -> bool:
+        if attachment.get("asr_refer_text") or attachment.get("voice_wav_url"):
+            return True
+        return cls._is_voice_content_type(content_type, filename)
 
     def _qq_media_headers(self) -> Dict[str, str]:
         """Return Authorization headers for QQ multimedia CDN downloads.
@@ -1838,66 +2305,54 @@ class QQAdapter(BasePlatformAdapter):
             asr_refer_text: Optional[str] = None,
             voice_wav_url: Optional[str] = None,
     ) -> Optional[str]:
-        """Download a voice attachment, convert to wav, and transcribe.
-
-        Priority:
-        1. QQ's built-in ``asr_refer_text`` (Tencent's own ASR — free, no API call).
-        2. Self-hosted STT on ``voice_wav_url`` (pre-converted WAV from QQ, avoids SILK decoding).
-        3. Self-hosted STT on the original attachment URL (requires SILK→WAV conversion).
-
-        Returns the transcript text, or None on failure.
-        """
-        # 1. Use QQ's built-in ASR text if available
+        """Download a voice attachment with hard size limits, then transcribe it."""
+        del content_type
         if asr_refer_text:
             logger.debug(
                 "[%s] STT: using QQ asr_refer_text: %r", self._log_tag, asr_refer_text[:100]
             )
             return asr_refer_text
 
-        # Determine which URL to download (prefer voice_wav_url — already WAV)
         download_url = url
         is_pre_wav = False
         if voice_wav_url:
-            if voice_wav_url.startswith("//"):
-                voice_wav_url = f"https:{voice_wav_url}"
-            download_url = voice_wav_url
+            download_url = f"https:{voice_wav_url}" if voice_wav_url.startswith("//") else voice_wav_url
             is_pre_wav = True
             logger.debug("[%s] STT: using voice_wav_url (pre-converted WAV)", self._log_tag)
 
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(download_url):
-            logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
-            return None
-
         try:
-            # 2. Download audio (QQ CDN requires Authorization header)
-            if not self._http_client:
-                logger.warning("[%s] STT: no HTTP client", self._log_tag)
-                return None
-
-            download_headers = self._qq_media_headers()
-            logger.debug(
-                "[%s] STT: downloading voice from %s (pre_wav=%s, headers=%s)",
-                self._log_tag,
-                download_url[:80],
-                is_pre_wav,
-                bool(download_headers),
-            )
-            resp = await self._http_client.get(
+            audio_data = await self._download_attachment_bytes(
                 download_url,
-                timeout=30.0,
-                headers=download_headers,
+                QQ_INBOUND_ATTACHMENT_POLICY.MEDIA.max_bytes,
                 follow_redirects=True,
             )
-            resp.raise_for_status()
-            audio_data = resp.content
-            logger.debug(
-                "[%s] STT: downloaded %d bytes, content_type=%s",
+            if audio_data is None:
+                logger.warning(
+                    "[%s] STT: voice download failed or exceeded %s",
+                    self._log_tag,
+                    self._format_bytes(QQ_INBOUND_ATTACHMENT_POLICY.MEDIA.max_bytes),
+                )
+                return None
+            return await self._stt_audio_bytes(audio_data, filename, is_pre_wav=is_pre_wav)
+        except (httpx.HTTPStatusError, httpx.TransportError, IOError, ValueError) as exc:
+            logger.warning(
+                "[%s] STT failed for voice attachment: %s: %s",
                 self._log_tag,
-                len(audio_data),
-                resp.headers.get("content-type", "unknown"),
+                type(exc).__name__,
+                exc,
             )
+            return None
 
+    async def _stt_audio_bytes(
+            self,
+            audio_data: bytes,
+            filename: str,
+            *,
+            is_pre_wav: bool = False,
+    ) -> Optional[str]:
+        """Convert already-downloaded voice bytes to WAV and call the configured STT provider."""
+        try:
+            logger.debug("[%s] STT: downloaded %d bytes", self._log_tag, len(audio_data))
             if len(audio_data) < 10:
                 logger.warning(
                     "[%s] STT: downloaded data too small (%d bytes), skipping",
@@ -1906,7 +2361,6 @@ class QQAdapter(BasePlatformAdapter):
                 )
                 return None
 
-            # 3. Convert to wav (skip if we already have a pre-converted WAV)
             if is_pre_wav:
                 import tempfile
 
@@ -1925,15 +2379,13 @@ class QQAdapter(BasePlatformAdapter):
                 wav_path = await self._convert_audio_to_wav_file(audio_data, filename)
                 if not wav_path or not Path(wav_path).exists():
                     logger.warning(
-                        "[%s] STT: ffmpeg conversion produced no output", self._log_tag
+                        "[%s] STT: conversion produced no output", self._log_tag
                     )
                     return None
 
-            # 4. Call STT API
             logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
             transcript = await self._call_stt(wav_path)
 
-            # 5. Cleanup temp file
             try:
                 os.unlink(wav_path)
             except OSError:
@@ -1946,7 +2398,7 @@ class QQAdapter(BasePlatformAdapter):
             return transcript
         except (httpx.HTTPStatusError, httpx.TransportError, IOError) as exc:
             logger.warning(
-                "[%s] STT failed for voice attachment: %s: %s",
+                "[%s] STT failed for voice bytes: %s: %s",
                 self._log_tag,
                 type(exc).__name__,
                 exc,
@@ -2827,6 +3279,13 @@ class QQAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a file/document natively."""
         del kwargs
+        display_name = file_name or Path(urlparse(file_path).path if self._is_url(file_path) else file_path).name
+        if QQ_INBOUND_ATTACHMENT_POLICY.is_blocked_filename(display_name):
+            return SendResult(
+                success=False,
+                error=f"危险扩展或敏感文件名，已在本地拦截: {display_name}",
+                retryable=False,
+            )
         return await self._send_media(
             chat_id,
             file_path,

@@ -1409,6 +1409,20 @@ class ProcessingOutcome(Enum):
 
 
 @dataclass
+class MessageAttachment:
+    """Structured metadata for a platform attachment cached for an inbound message."""
+
+    kind: str
+    local_path: Optional[str] = None
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+    size: Optional[int] = None
+    message_id: Optional[str] = None
+    source_url: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class MessageEvent:
     """
     Incoming message from a platform.
@@ -1439,6 +1453,7 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    attachments: List[MessageAttachment] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None

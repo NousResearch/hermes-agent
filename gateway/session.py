@@ -91,6 +91,7 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    session_scope: Optional[str] = None  # Optional logical lane within one chat (e.g. lite/ops/dev)
     
     @property
     def description(self) -> str:
@@ -134,6 +135,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.session_scope:
+            d["session_scope"] = self.session_scope
         return d
 
     @classmethod
@@ -152,6 +155,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            session_scope=data.get("session_scope"),
         )
     
 
@@ -610,7 +614,8 @@ def build_session_key(
       - DMs include chat_id when present, so each private conversation is isolated.
       - thread_id further differentiates threaded DMs within the same DM chat.
       - Without chat_id, thread_id is used as a best-effort fallback.
-      - Without thread_id or chat_id, DMs share a single session.
+      - Without thread_id or chat_id, user_id/user_id_alt isolates DMs when
+        available.  Only anonymous DMs share a single session.
 
     Group/channel rules:
       - chat_id identifies the parent group/channel.
@@ -626,34 +631,44 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
+    session_scope = str(getattr(source, "session_scope", None) or "").strip()
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
 
         if dm_chat_id:
+            base = f"agent:main:{platform}:dm:{dm_chat_id}"
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                base = f"{base}:{source.thread_id}"
+            if session_scope:
+                base = f"{base}:mode:{session_scope}"
+            return base
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
         # collapses into one shared "agent:main:<platform>:dm" session, and a
         # single cached agent ends up serving multiple people's conversations —
         # cross-user history bleed.  participant_id keeps DMs isolated per user.
-        dm_participant_id = source.user_id_alt or source.user_id
-        if dm_participant_id and source.platform == Platform.WHATSAPP:
-            dm_participant_id = (
-                canonical_whatsapp_identifier(str(dm_participant_id))
-                or dm_participant_id
-            )
-        if dm_participant_id:
+        participant_id = source.user_id_alt or source.user_id
+        if participant_id and source.platform == Platform.WHATSAPP:
+            participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
+        if participant_id:
+            base = f"agent:main:{platform}:dm:{participant_id}"
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_participant_id}"
+                base = f"{base}:{source.thread_id}"
+            if session_scope:
+                base = f"{base}:mode:{session_scope}"
+            return base
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            base = f"agent:main:{platform}:dm:{source.thread_id}"
+            if session_scope:
+                base = f"{base}:mode:{session_scope}"
+            return base
+        base = f"agent:main:{platform}:dm"
+        if session_scope:
+            base = f"{base}:mode:{session_scope}"
+        return base
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -677,6 +692,9 @@ def build_session_key(
 
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
+
+    if session_scope:
+        key_parts.extend(["mode", session_scope])
 
     return ":".join(key_parts)
 

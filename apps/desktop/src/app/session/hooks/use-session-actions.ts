@@ -866,6 +866,12 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
+        // A sidebar refresh can race the optimistic removal while the PATCH is
+        // in flight and briefly reinsert the still-unarchived backend row. Win
+        // that race after the mutation succeeds so right-click → Archive does
+        // not appear to do nothing until the next full refresh.
+        setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {

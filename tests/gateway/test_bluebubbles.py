@@ -1,6 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+import wave
 
 import pytest
 
@@ -705,7 +706,7 @@ class TestBlueBubblesVoiceSend:
 
         monkeypatch.setattr(
             "gateway.platforms.bluebubbles.shutil.which",
-            lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None,
+            lambda name: f"/usr/bin/{name}" if name in {"ffmpeg", "afconvert"} else None,
         )
 
         calls = []
@@ -729,9 +730,48 @@ class TestBlueBubblesVoiceSend:
         assert prepared.filename == "Audio Message.caf"
         assert prepared.content_type == "audio/x-caf"
         assert prepared.cleanup is True
-        assert calls
+        assert len(calls) == 2
+        assert calls[0][0].endswith("ffmpeg")
         assert "-ar" in calls[0]
         assert "24000" in calls[0]
+        assert calls[1][0].endswith("afconvert")
+        assert "opus@24000" in calls[1]
+
+    def test_prepare_voice_attachment_skips_ffmpeg_for_native_wav_source(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+        source = tmp_path / "voice.wav"
+        with wave.open(str(source), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(b"\x00\x00" * 240)
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name in {"ffmpeg", "afconvert"} else None,
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            output = cmd[-1]
+            with open(output, "wb") as f:
+                f.write(b"caffake")
+
+            class Completed:
+                returncode = 0
+
+            return Completed()
+
+        monkeypatch.setattr("gateway.platforms.bluebubbles.subprocess.run", fake_run)
+
+        prepared = adapter._prepare_voice_attachment(str(source), None)
+
+        assert prepared.path.endswith(".caf")
+        assert prepared.content_type == "audio/x-caf"
+        assert [call[0] for call in calls] == ["/usr/bin/afconvert"]
+        assert "opus@24000" in calls[0]
 
 
 # ---------------------------------------------------------------------------

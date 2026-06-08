@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import wave
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
@@ -593,62 +594,96 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Media sending (outbound)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_native_voice_wav_source(audio_path: str) -> bool:
+        """Return True for WAV input that can go straight to Opus CAF."""
+        if os.path.splitext(audio_path)[1].lower() != ".wav":
+            return False
+        try:
+            with wave.open(audio_path, "rb") as wf:
+                return wf.getnchannels() == 1 and wf.getframerate() == 24000
+        except (OSError, wave.Error, EOFError):
+            return False
+
     def _convert_audio_to_caf(self, audio_path: str) -> Optional[str]:
-        """Transcode audio to mono 24 kHz CAF for iMessage voice bubbles."""
+        """Transcode audio to Opus-in-CAF for iMessage voice bubbles.
+
+        iMessage native voice bubbles expect Opus at 24 kHz mono in a CAF
+        container.  Some source files play as ordinary attachments but render
+        as unusable native voice bubbles if uploaded as PCM/AAC CAF, so keep
+        the final BlueBubbles voice payload on the Opus CAF path.
+        """
+        afconvert = shutil.which("afconvert")
+        if not afconvert:
+            return None
+
         tmp = tempfile.NamedTemporaryFile(
             prefix="hermes-bluebubbles-voice-", suffix=".caf", delete=False
         )
         tmp_path = tmp.name
         tmp.close()
 
-        ffmpeg = shutil.which("ffmpeg")
-        afconvert = shutil.which("afconvert")
-        commands: List[List[str]] = []
-        if ffmpeg:
-            commands.append([
-                ffmpeg,
-                "-y",
-                "-i",
-                audio_path,
-                "-vn",
-                "-ac",
-                "1",
-                "-ar",
-                "24000",
-                "-c:a",
-                "opus",
-                "-f",
-                "caf",
-                tmp_path,
-            ])
-        if afconvert:
-            commands.append([
-                afconvert,
-                "-f",
-                "caff",
-                "-d",
-                "opus",
-                "-c",
-                "1",
-                "-r",
-                "24000",
-                audio_path,
-                tmp_path,
-            ])
-
-        for cmd in commands:
-            try:
+        normalized_path = audio_path
+        normalized_cleanup: Optional[str] = None
+        try:
+            if not self._is_native_voice_wav_source(audio_path):
+                ffmpeg = shutil.which("ffmpeg")
+                if not ffmpeg:
+                    return None
+                normalized = tempfile.NamedTemporaryFile(
+                    prefix="hermes-bluebubbles-voice-src-", suffix=".wav", delete=False
+                )
+                normalized_path = normalized.name
+                normalized.close()
+                normalized_cleanup = normalized_path
                 subprocess.run(
-                    cmd,
+                    [
+                        ffmpeg,
+                        "-y",
+                        "-i",
+                        audio_path,
+                        "-vn",
+                        "-ac",
+                        "1",
+                        "-ar",
+                        "24000",
+                        normalized_path,
+                    ],
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=60,
                 )
-                if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
-                    return tmp_path
-            except Exception as exc:
-                logger.debug("BlueBubbles CAF transcode failed with %s: %s", cmd[0], exc)
+                if not os.path.isfile(normalized_path) or os.path.getsize(normalized_path) == 0:
+                    return None
+
+            subprocess.run(
+                [
+                    afconvert,
+                    "-f",
+                    "caff",
+                    "-d",
+                    "opus@24000",
+                    "-c",
+                    "1",
+                    normalized_path,
+                    tmp_path,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+            )
+            if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                return tmp_path
+        except Exception as exc:
+            logger.debug("BlueBubbles Opus CAF transcode failed: %s", exc)
+        finally:
+            if normalized_cleanup:
+                try:
+                    os.unlink(normalized_cleanup)
+                except OSError:
+                    pass
 
         try:
             os.unlink(tmp_path)

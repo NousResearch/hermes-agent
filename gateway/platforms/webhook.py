@@ -92,6 +92,111 @@ def _is_loopback_host(host: str) -> bool:
     return host.strip().lower() in _LOOPBACK_HOSTS
 
 
+def _first_present(data: dict, keys: List[str], default: Any = None) -> Any:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return default
+
+
+def _format_bolig_value(label: str, value: Any) -> str:
+    if value in (None, "", [], {}):
+        return ""
+    return f"{label}: {value}"
+
+
+def _render_bolig_delta_notification(payload: dict) -> str:
+    """Deterministic fallback-free Discord text for Gustav's bolig alerts.
+
+    The bolig delta monitor already scores/ranks candidates. Running an LLM for
+    this tiny triage made alerts depend on the gateway's current chat model and
+    caused noisy provider-error messages in Discord when Codex failed locally.
+    Keep this renderer boring and direct: preserve the lead, explain why it
+    fired, and make the next action obvious.
+    """
+    events = payload.get("events") or []
+    if not isinstance(events, list):
+        events = []
+    summary = payload.get("event_summary") or []
+    if not events and isinstance(summary, list):
+        events = [item for item in summary if isinstance(item, dict)]
+
+    if not events:
+        run = payload.get("run") or {}
+        source = payload.get("source") or run.get("source") or "bolig monitor"
+        return f"⚠️ Bolig alert — ingen konkrete events i payload fra {source}. Tjek monitor-log hvis det gentager sig."
+
+    lines: List[str] = []
+    for event in events[:4]:
+        if not isinstance(event, dict):
+            continue
+        candidate = event.get("candidate") if isinstance(event.get("candidate"), dict) else {}
+        event_type = str(event.get("event_type") or event.get("type") or payload.get("event_type") or "bolig_delta")
+        source = str(event.get("source") or candidate.get("source") or "ukendt kilde")
+        priority = str(event.get("priority") or candidate.get("priority") or "medium").lower()
+        try:
+            score = int(event.get("score") or candidate.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+
+        title = str(_first_present(candidate, ["title", "address", "street", "name"], "Bolig lead"))
+        url = str(_first_present(candidate, ["url", "public_url", "app_url", "link"], ""))
+        city = _first_present(candidate, ["city", "area"])
+        street = _first_present(candidate, ["street", "address"])
+        total = _first_present(candidate, ["total_monthly_dkk", "monthly_rent_dkk", "rent_dkk", "price_dkk", "price"])
+        size = _first_present(candidate, ["size_m2", "m2", "sqm"])
+        rooms = _first_present(candidate, ["rooms", "room_count"])
+        tier = _first_present(candidate, ["tier", "classification"])
+        relation_required = candidate.get("relation_required")
+        reasons = event.get("reasons") if isinstance(event.get("reasons"), list) else []
+
+        if event_type == "source_failure":
+            verdict = "⚠️ KILDE FEJLEDE"
+            action = "Ingen bolig-handling; tjek kun hvis samme kilde bliver ved med at fejle."
+        elif priority == "high" or score >= 120:
+            verdict = "🏠 HANDLE NU"
+            action = "Åbn linket og skriv dig op / tag næste trin, hvis kravene passer."
+        elif priority in {"medium", "watch"} or score >= 80:
+            verdict = "🏠 LAV PRIORITET"
+            action = "Tjek linket når du har luft; sandsynligvis venteliste/signup-signal mere end konkret lejlighed."
+        else:
+            verdict = "🏠 IGNORER"
+            action = "Lavt match eller for lidt konkret data."
+
+        facts = [
+            _format_bolig_value("Kilde", source),
+            _format_bolig_value("Prioritet", priority),
+            _format_bolig_value("Score", score if score else None),
+            _format_bolig_value("Adresse", street),
+            _format_bolig_value("By", city),
+            _format_bolig_value("Total/md", f"{total} kr" if isinstance(total, (int, float)) else total),
+            _format_bolig_value("m²", size),
+            _format_bolig_value("Værelser", rooms),
+            _format_bolig_value("Tier", tier),
+        ]
+        facts = [fact for fact in facts if fact]
+        if relation_required is not None:
+            facts.append(f"Relation kræves: {'ja' if relation_required else 'nej'}")
+
+        reason_line = ", ".join(str(reason) for reason in reasons[:5])
+        body = [
+            f"{verdict}: {title}",
+            " · ".join(facts[:8]),
+        ]
+        if reason_line:
+            body.append(f"Hvorfor: {reason_line}")
+        body.append(f"Handling: {action}")
+        if url:
+            body.append(url)
+        lines.append("\n".join(part for part in body if part))
+
+    extra = len(events) - 4
+    if extra > 0:
+        lines.append(f"… plus {extra} ekstra bolig-event(s).")
+    return "\n\n".join(lines)[:1900]
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -462,6 +567,8 @@ class WebhookAdapter(BasePlatformAdapter):
         prompt = self._render_prompt(
             prompt_template, payload, event_type, route_name
         )
+        if route_config.get("renderer") == "bolig_delta":
+            prompt = _render_bolig_delta_notification(payload)
 
         # Inject skill content if configured.
         # We call build_skill_invocation_message() directly rather than

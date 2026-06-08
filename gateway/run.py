@@ -369,33 +369,136 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies before sending them to high-noise chats.
+_GATEWAY_DIAGNOSTIC_MESSAGE_RE = re.compile(
+    r"("
+    r"model returned no response"
+    r"|processing (?:completed but no response was generated|stopped:)"
+    r"|response remained (?:truncated|incomplete)"
+    r"|codex response remained incomplete"
+    r"|empty/malformed response"
+    r"|provider authentication failed"
+    r"|request failed:"
+    r"|encountered an error"
+    r")",
+    re.IGNORECASE,
+)
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
-    """
+
+def _looks_like_gateway_diagnostic_message(text: str) -> bool:
     if not text:
-        return text
-    if _gateway_platform_value(platform) != "telegram":
+        return False
+    body = str(text).strip()
+    return bool(
+        _GATEWAY_DIAGNOSTIC_MESSAGE_RE.search(body)
+        or _looks_like_gateway_provider_error(body)
+    )
+
+
+def _coerce_gateway_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return default
+    return is_truthy_value(value, default=default)
+
+
+def _gateway_platform_extra(config: Any, platform: Any) -> dict:
+    try:
+        platforms = getattr(config, "platforms", {}) or {}
+        platform_cfg = platforms.get(platform)
+        if platform_cfg is None:
+            platform_value = _gateway_platform_value(platform)
+            for key, candidate in platforms.items():
+                if _gateway_platform_value(key) == platform_value:
+                    platform_cfg = candidate
+                    break
+        extra = getattr(platform_cfg, "extra", {}) if platform_cfg is not None else {}
+        return extra if isinstance(extra, dict) else {}
+    except Exception:
+        return {}
+
+
+def _gateway_effective_allow_silent_response(config: Any, platform: Any) -> bool:
+    """Return whether empty model replies should be treated as intentional silence.
+
+    WhatsApp needs this by default: a no-reply model decision should not turn
+    into an alarming public group message. Other platforms retain the historical
+    default unless explicitly configured.
+    """
+    if _coerce_gateway_bool(getattr(config, "allow_silent_response", None), False):
+        return True
+    default = _gateway_platform_value(platform) == "whatsapp"
+    return _coerce_gateway_bool(
+        _gateway_platform_extra(config, platform).get("allow_silent_response"),
+        default,
+    )
+
+
+def _gateway_effective_suppress_provider_diagnostics(config: Any, platform: Any) -> bool:
+    """Return whether provider/internal diagnostics should stay out of chat.
+
+    WhatsApp group chats are not an operator console. Keep model retry/incomplete
+    diagnostics local by default there, while preserving existing behavior for
+    other platforms unless configured.
+    """
+    if _coerce_gateway_bool(
+        getattr(config, "suppress_provider_diagnostics_in_chat", None),
+        False,
+    ):
+        return True
+    default = _gateway_platform_value(platform) == "whatsapp"
+    return _coerce_gateway_bool(
+        _gateway_platform_extra(config, platform).get("suppress_diagnostics"),
+        default,
+    )
+
+
+def _sanitize_gateway_final_response(
+    platform: Any,
+    text: str,
+    *,
+    suppress_provider_diagnostics: bool = False,
+) -> str:
+    """Sanitize final gateway replies before sending them to chat."""
+    if not text:
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    if suppress_provider_diagnostics and _looks_like_gateway_diagnostic_message(redacted):
+        return ""
+
+    if _gateway_platform_value(platform) != "telegram":
+        return redacted
+
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    *,
+    suppress_provider_diagnostics: bool = False,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
         return None
+
+    text = _redact_gateway_user_facing_secrets(text)
+    if suppress_provider_diagnostics and _looks_like_gateway_diagnostic_message(text):
+        return None
+
     if _gateway_platform_value(platform) != "telegram":
         return text
 
-    text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
@@ -2343,11 +2446,26 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _agent_result_is_clean_silent_empty(agent_result: dict) -> bool:
+    """Return True only for empty turns that can safely mean "no chat reply"."""
+    if not isinstance(agent_result, dict):
+        return False
+    if agent_result.get("failed") or agent_result.get("partial") or agent_result.get("error"):
+        return False
+    if agent_result.get("interrupted"):
+        return False
+    if agent_result.get("completed") is False:
+        return False
+    return True
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
     *,
     history_len: int = 0,
+    allow_silent_response: bool = False,
+    suppress_provider_diagnostics: bool = False,
 ) -> str:
     """Normalize empty/None agent responses into user-facing messages.
 
@@ -2364,7 +2482,12 @@ def _normalize_empty_agent_response(
     if response:
         return response
 
+    if allow_silent_response and _agent_result_is_clean_silent_empty(agent_result):
+        return ""
+
     if agent_result.get("failed"):
+        if suppress_provider_diagnostics:
+            return ""
         error_detail = agent_result.get("error", "unknown error")
         error_str = str(error_detail).lower()
         is_context_failure = any(
@@ -2385,6 +2508,8 @@ def _normalize_empty_agent_response(
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
+            if suppress_provider_diagnostics:
+                return ""
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
         return (
@@ -10182,18 +10307,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 _intentional_silence = False
+            _allow_silent_response = _gateway_effective_allow_silent_response(
+                self.config,
+                source.platform,
+            )
+            _suppress_provider_diagnostics = _gateway_effective_suppress_provider_diagnostics(
+                self.config,
+                source.platform,
+            )
 
             # Convert the agent's internal "(empty)" sentinel into a
-            # user-friendly message.  "(empty)" means the model failed to
-            # produce visible content after exhausting all retries (nudge,
-            # prefill, empty-retry, fallback).  Sending the raw sentinel
-            # looks like a bug; a short explanation is more helpful.
+            # user-friendly message unless this platform treats a clean empty
+            # turn as intentional silence.
             if response == "(empty)" and not _intentional_silence:
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
+                if _allow_silent_response and _agent_result_is_clean_silent_empty(agent_result):
+                    response = ""
+                else:
+                    response = (
+                        "⚠️ The model returned no response after processing tool "
+                        "results. This can happen with some models — try again or "
+                        "rephrase your question."
+                    )
+
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -10238,11 +10373,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
-            if not _intentional_silence:
+            if _intentional_silence:
+                response = ""
+            else:
                 response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
+                    agent_result,
+                    response,
+                    history_len=len(history),
+                    allow_silent_response=_allow_silent_response,
+                    suppress_provider_diagnostics=_suppress_provider_diagnostics,
                 )
-                response = _sanitize_gateway_final_response(source.platform, response)
+                response = _sanitize_gateway_final_response(
+                    source.platform,
+                    response,
+                    suppress_provider_diagnostics=_suppress_provider_diagnostics,
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -15827,6 +15972,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.platform,
                 event_type,
                 message,
+                suppress_provider_diagnostics=_gateway_effective_suppress_provider_diagnostics(
+                    self.config,
+                    source.platform,
+                ),
             )
             if prepared_message is None:
                 logger.debug(

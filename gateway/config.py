@@ -525,6 +525,11 @@ class GatewayConfig:
     # raw passthrough.
     filter_silence_narration: bool = True
 
+    # Silent-response / diagnostics controls. Defaults preserve historical UX:
+    # empty/failed turns are surfaced unless explicitly opted into silent mode.
+    allow_silent_response: bool = False
+    suppress_provider_diagnostics_in_chat: bool = False
+
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
 
@@ -649,6 +654,8 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
+            "allow_silent_response": self.allow_silent_response,
+            "suppress_provider_diagnostics_in_chat": self.suppress_provider_diagnostics_in_chat,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
@@ -737,6 +744,12 @@ class GatewayConfig:
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
+            ),
+            allow_silent_response=_coerce_bool(
+                data.get("allow_silent_response"), False
+            ),
+            suppress_provider_diagnostics_in_chat=_coerce_bool(
+                data.get("suppress_provider_diagnostics_in_chat"), False
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
@@ -881,6 +894,21 @@ def load_gateway_config() -> GatewayConfig:
                     "filter_silence_narration"
                 ]
 
+            gateway_cfg = yaml_cfg.get("gateway")
+            if isinstance(gateway_cfg, dict):
+                for _gateway_policy_key in (
+                    "allow_silent_response",
+                    "suppress_provider_diagnostics_in_chat",
+                ):
+                    if _gateway_policy_key in gateway_cfg:
+                        gw_data[_gateway_policy_key] = gateway_cfg[_gateway_policy_key]
+            for _gateway_policy_key in (
+                "allow_silent_response",
+                "suppress_provider_diagnostics_in_chat",
+            ):
+                if _gateway_policy_key in yaml_cfg:
+                    gw_data[_gateway_policy_key] = yaml_cfg[_gateway_policy_key]
+
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                     yaml_cfg.get("unauthorized_dm_behavior"),
@@ -891,7 +919,6 @@ def load_gateway_config() -> GatewayConfig:
             # ``gateway.platforms`` are loaded the same way as top-level
             # ``platforms``. Merge nested first so top-level config keeps
             # precedence, matching the existing gateway.streaming fallback.
-            gateway_cfg = yaml_cfg.get("gateway")
             gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
@@ -1023,6 +1050,10 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "allow_silent_response" in platform_cfg:
+                    bridged["allow_silent_response"] = platform_cfg["allow_silent_response"]
+                if "suppress_diagnostics" in platform_cfg:
+                    bridged["suppress_diagnostics"] = platform_cfg["suppress_diagnostics"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

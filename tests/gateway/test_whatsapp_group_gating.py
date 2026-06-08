@@ -236,6 +236,19 @@ def test_group_policy_allowlist_allows_listed_group():
     assert adapter._should_process_message(_group_message("agus test")) is True
 
 
+def test_group_policy_allowlist_star_allows_all_groups():
+    adapter = _make_adapter(
+        group_policy="allowlist",
+        group_allow_from="*",
+        require_mention=True,
+    )
+
+    # ``*`` is useful for sandbox/testing configs: all groups pass the
+    # allowlist gate, while mention/wake-word gating still controls replies.
+    assert adapter._should_process_message(_group_message("hello")) is False
+    assert adapter._should_process_message(_group_message("/status")) is True
+
+
 def test_group_policy_open_allows_all_groups():
     adapter = _make_adapter(group_policy="open", require_mention=True)
 
@@ -272,6 +285,34 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "disabled"
     assert __import__("os").environ["WHATSAPP_GROUP_POLICY"] == "allowlist"
     assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
+
+
+def test_adapter_reads_group_allowlist_env_fallback(monkeypatch):
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "120363001234567890@g.us")
+    monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "false")
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+
+    assert adapter._group_policy == "allowlist"
+    assert adapter._group_allow_from == {"120363001234567890@g.us"}
+    assert adapter._should_process_message(_group_message("hello")) is True
+
+
+def test_adapter_reads_group_allowlist_env_star(monkeypatch):
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "*")
+    monkeypatch.setenv("WHATSAPP_REQUIRE_MENTION", "false")
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+
+    assert adapter._group_policy == "allowlist"
+    assert adapter._group_allow_from == {"*"}
+    assert adapter._should_process_message(_group_message("hello")) is True
 
 
 def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):

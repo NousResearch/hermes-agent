@@ -359,7 +359,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_allow_from = self._coerce_allow_list(
+            config.extra.get("group_allow_from")
+            or config.extra.get("groupAllowFrom")
+            or os.getenv("WHATSAPP_GROUP_ALLOWED_USERS")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -410,6 +414,220 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    def _effective_reply_prefix(self) -> str:
+        """Return the prefix the Node bridge will add in self-chat mode."""
+        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+        if whatsapp_mode != "self-chat":
+            return ""
+        if self._reply_prefix is not None:
+            return self._reply_prefix.replace("\\n", "\n")
+        env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
+        if env_prefix is not None:
+            return env_prefix.replace("\\n", "\n")
+        return self.DEFAULT_REPLY_PREFIX
+
+    def _outgoing_chunk_limit(self) -> int:
+        """Reserve room for the bridge-side prefix so final WhatsApp text fits."""
+        prefix_len = len(self._effective_reply_prefix())
+        # Keep enough space for truncate_message's pagination indicator and
+        # code-fence repair even if a user configures a very long prefix.
+        return max(1024, self.MAX_MESSAGE_LENGTH - prefix_len)
+
+    def _whatsapp_require_mention(self) -> bool:
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _whatsapp_free_response_chats(self) -> set[str]:
+        raw = self.config.extra.get("free_response_chats")
+        if raw is None:
+            raw = os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    @staticmethod
+    def _coerce_allow_list(raw) -> set[str]:
+        """Parse allow_from / group_allow_from from config or env var."""
+        if raw is None:
+            return set()
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    @staticmethod
+    def _is_broadcast_chat(chat_id: str) -> bool:
+        """True for WhatsApp pseudo-chats that aren't real conversations.
+
+        Covers Status updates (Stories) and Channel/Newsletter broadcasts.
+        These show up as inbound messages on Baileys but the agent should
+        never reply — answering a Story update spams the contact's status
+        feed, and Channel posts aren't addressable in the first place.
+        """
+        if not chat_id:
+            return False
+        cid = chat_id.strip().lower()
+        if cid == "status@broadcast":
+            return True
+        # @broadcast suffix covers status@broadcast plus any future
+        # broadcast-list variants. @newsletter is the Channel JID suffix.
+        if cid.endswith("@broadcast") or cid.endswith("@newsletter"):
+            return True
+        return False
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
+    def _is_dm_allowed(self, sender_id: str) -> bool:
+        """Check whether a DM from the given sender should be processed."""
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return sender_id in self._allow_from
+        # "open" — all DMs allowed
+        return True
+
+    def _is_group_allowed(self, chat_id: str) -> bool:
+        """Check whether a group chat should be processed."""
+        if self._group_policy == "disabled":
+            return False
+        if self._group_policy == "allowlist":
+            if "*" in self._group_allow_from:
+                return True
+            return chat_id in self._group_allow_from
+        # "open" — all groups allowed
+        return True
+
+    def _compile_mention_patterns(self):
+        patterns = self.config.extra.get("mention_patterns")
+        if patterns is None:
+            raw = os.getenv("WHATSAPP_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    patterns = json.loads(raw)
+                except Exception:
+                    patterns = [part.strip() for part in raw.splitlines() if part.strip()]
+                    if not patterns:
+                        patterns = [part.strip() for part in raw.split(",") if part.strip()]
+        if patterns is None:
+            return []
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        if not isinstance(patterns, list):
+            logger.warning("[%s] whatsapp mention_patterns must be a list or string; got %s", self.name, type(patterns).__name__)
+            return []
+
+        compiled = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as exc:
+                logger.warning("[%s] Invalid WhatsApp mention pattern %r: %s", self.name, pattern, exc)
+        if compiled:
+            logger.info("[%s] Loaded %d WhatsApp mention pattern(s)", self.name, len(compiled))
+        return compiled
+
+    @staticmethod
+    def _normalize_whatsapp_id(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        normalized = str(value).strip()
+        if ":" in normalized and "@" in normalized:
+            normalized = normalized.replace(":", "@", 1)
+        return normalized
+
+    def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
+        bot_ids = set()
+        for candidate in data.get("botIds") or []:
+            normalized = self._normalize_whatsapp_id(candidate)
+            if normalized:
+                bot_ids.add(normalized)
+        return bot_ids
+
+    def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:
+        quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))
+        if not quoted_participant:
+            return False
+        return quoted_participant in self._bot_ids_from_message(data)
+
+    def _message_mentions_bot(self, data: Dict[str, Any]) -> bool:
+        bot_ids = self._bot_ids_from_message(data)
+        if not bot_ids:
+            return False
+        mentioned_ids = {
+            nid
+            for candidate in (data.get("mentionedIds") or [])
+            if (nid := self._normalize_whatsapp_id(candidate))
+        }
+        if mentioned_ids & bot_ids:
+            return True
+
+        body = str(data.get("body") or "")
+        lower_body = body.lower()
+        for bot_id in bot_ids:
+            bare_id = bot_id.split("@", 1)[0].lower()
+            if bare_id and (f"@{bare_id}" in lower_body or bare_id in lower_body):
+                return True
+        return False
+
+    def _message_matches_mention_patterns(self, data: Dict[str, Any]) -> bool:
+        if not self._mention_patterns:
+            return False
+        body = str(data.get("body") or "")
+        return any(pattern.search(body) for pattern in self._mention_patterns)
+
+    def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
+        if not text:
+            return text
+        bot_ids = self._bot_ids_from_message(data)
+        cleaned = text
+        for bot_id in bot_ids:
+            bare_id = bot_id.split("@", 1)[0]
+            if bare_id:
+                cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
+        return cleaned.strip() or text
+
+    def _should_process_message(self, data: Dict[str, Any]) -> bool:
+        chat_id_raw = str(data.get("chatId") or "")
+        # WhatsApp uses pseudo-chats for Status updates (Stories) and
+        # Channel/Newsletter broadcasts. These are not real conversations
+        # and the agent should never reply to them — even in self-chat mode
+        # where the bridge may surface them as "fromMe" events.
+        if self._is_broadcast_chat(chat_id_raw):
+            return False
+        is_group = data.get("isGroup", False)
+        if is_group:
+            chat_id = chat_id_raw
+            if not self._is_group_allowed(chat_id):
+                return False
+        else:
+            sender_id = str(data.get("senderId") or data.get("from") or "")
+            if not self._is_dm_allowed(sender_id):
+                return False
+            # DMs that pass the policy gate are always processed
+            return True
+        # Group messages: check mention / free-response settings
+        chat_id = str(data.get("chatId") or "")
+        if chat_id in self._whatsapp_free_response_chats():
+            return True
+        if not self._whatsapp_require_mention():
+            return True
+        body = str(data.get("body") or "").strip()
+        if body.startswith("/"):
+            return True
+        if self._message_is_reply_to_bot(data):
+            return True
+        if self._message_mentions_bot(data):
+            return True
+        return self._message_matches_mention_patterns(data)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """

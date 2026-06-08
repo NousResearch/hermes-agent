@@ -350,8 +350,24 @@ def _build_skill_message(
         hint_dir = agent_skill_dir or skill_dir
         parts.append("")
         parts.append("[This skill has supporting files:]")
+        # When hint_dir is the backend-mapped POSIX path, a supporting-file
+        # entry carrying Windows separators (collected on a Windows host) would
+        # embed backslashes into the POSIX join (e.g.
+        # PurePosixPath("/root/.hermes") / "scripts\\foo.js"), yielding a
+        # mixed-separator path the backend cannot resolve.  Re-split each
+        # entry into platform-agnostic parts so the rendered hint is clean
+        # POSIX against a POSIX hint_dir (and unchanged against a host Path).
         for sf in supporting:
-            parts.append(f"- {sf}  ->  {hint_dir / sf}")
+            # ``sf`` may carry Windows separators when collected on a Windows
+            # host.  On a POSIX runner ``PurePath('scripts\\todo').parts`` does
+            # NOT split on the backslash, so normalize the separator explicitly
+            # before joining against a POSIX hint_dir.
+            sf_for_join: str | PurePosixPath
+            if isinstance(hint_dir, PurePosixPath):
+                sf_for_join = PurePosixPath(sf.replace("\\", "/"))
+            else:
+                sf_for_join = sf
+            parts.append(f"- {sf}  ->  {hint_dir / sf_for_join}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '

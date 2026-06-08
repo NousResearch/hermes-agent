@@ -81,9 +81,13 @@ def _hermes_base_for_env(env: Any) -> str | None:
         # (resolved at sandbox creation); without one we cannot translate.
         return None
     if backend == "ssh":
-        # SSH can use a shell-visible tilde path before the first environment is
-        # created; the first sync uploads the skills tree before any command runs.
-        return "~/.hermes"
+        # SSH's remote home is only known from a live environment instance
+        # (``_remote_home``, handled above).  A bare ``~/.hermes`` depends on
+        # shell tilde expansion and is invalid in the non-shell path contexts
+        # this value is rendered into (prompt hints, absolute-path script
+        # invocations), so fall back to the host path until a live environment
+        # resolves the concrete remote home, mirroring the Daytona branch.
+        return None
     return None
 
 

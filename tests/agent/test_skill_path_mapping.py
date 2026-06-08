@@ -190,3 +190,59 @@ def test_all_agent_visible_surfaces_preserve_host_path_locally(hermes_home, monk
 
     assert f"[Skill directory: {skill_dir}]" in msg
     assert f"{skill_dir}/scripts/todo" in msg
+
+
+# ── Copilot follow-ups (#41561 review) ─────────────────────────────────────
+
+
+def test_windows_supporting_file_renders_posix_against_container_hint(
+    hermes_home, monkeypatch
+):
+    """A linked_files entry collected with Windows separators must render as a
+    clean POSIX path when the backend hint_dir is a PurePosixPath; otherwise
+    PurePosixPath / "scripts\\todo" embeds backslashes into the POSIX join,
+    yielding a mixed-separator path the backend cannot resolve.
+    """
+    from agent import skill_commands
+
+    skill_dir = _make_skill(hermes_home)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setattr(
+        "agent.skill_path_mapping._active_terminal_env", lambda task_id: None
+    )
+
+    loaded_skill = {
+        "content": "body",
+        # Windows-host-collected relative path (backslash separator).
+        "linked_files": {"scripts": ["scripts\\todo"]},
+    }
+    msg = skill_commands._build_skill_message(
+        loaded_skill, skill_dir, activation_note="[activation]", session_id=None
+    )
+
+    container = "/root/.hermes/skills/todo-skill"
+    # The resolved backend path joins cleanly as POSIX...
+    assert f"{container}/scripts/todo" in msg
+    # ...with no mixed-separator backend path (the pre-fix bug embedded the
+    # backslash into the POSIX join: ``/root/.hermes/.../scripts\todo``).
+    assert f"{container}/scripts\\todo" not in msg
+    assert "\\todo" not in msg.split("  ->  ", 1)[1]
+
+
+def test_ssh_backend_without_live_env_no_longer_yields_tilde_path(
+    hermes_home, monkeypatch
+):
+    """The ssh backend used to return ``~/.hermes`` (shell-tilde dependent and
+    invalid in non-shell path contexts).  Without a live environment exposing
+    ``_remote_home`` it must now fall back to the host path, never a tilde.
+    """
+    from agent import skill_path_mapping
+
+    skill_dir = _make_skill(hermes_home)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setattr(skill_path_mapping, "_active_terminal_env", lambda task_id: None)
+
+    mapped = skill_path_mapping.map_skill_dir_for_backend(skill_dir)
+
+    assert mapped == str(skill_dir)
+    assert "~" not in mapped

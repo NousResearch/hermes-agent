@@ -88,6 +88,17 @@ def test_lazy_installable_extras_excluded_from_all():
         )
 
 
+def test_dev_extra_excluded_from_all():
+    """End-user installs should not pull test/lint/debug tooling."""
+    optional_dependencies = _load_optional_dependencies()
+
+    assert "dev" in optional_dependencies
+    assert not any(
+        spec == "hermes-agent[dev]"
+        for spec in optional_dependencies["all"]
+    )
+
+
 def test_messaging_extra_includes_qrcode_for_weixin_setup():
     optional_dependencies = _load_optional_dependencies()
 
@@ -113,6 +124,16 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
+def test_nemo_relay_extra_uses_official_0_3_distribution():
+    optional_dependencies = _load_optional_dependencies()
+
+    assert optional_dependencies["nemo-relay"] == ["nemo-relay==0.3"]
+    assert not any(
+        spec == "hermes-agent[nemo-relay]"
+        for spec in optional_dependencies["all"]
+    )
+
+
 def test_dashboard_plugin_manifests_and_assets_are_packaged():
     """Bundled dashboard plugins need their manifests and built assets in
     wheel installs so /api/dashboard/plugins can discover them outside a
@@ -123,3 +144,13 @@ def test_dashboard_plugin_manifests_and_assets_are_packaged():
     assert "*/dashboard/manifest.json" in plugin_data
     assert "*/dashboard/dist/*" in plugin_data
     assert "*/dashboard/dist/**/*" in plugin_data
+
+
+def test_nested_bundled_plugin_metadata_is_packaged():
+    """Nested opt-in plugins need manifests and READMEs in wheel installs."""
+    package_data = _load_package_data()
+    plugin_data = package_data["plugins"]
+
+    assert "**/plugin.yaml" in plugin_data
+    assert "**/plugin.yml" in plugin_data
+    assert "**/README.md" in plugin_data

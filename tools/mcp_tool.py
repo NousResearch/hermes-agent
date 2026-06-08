@@ -1800,7 +1800,12 @@ class MCPServerTask:
             # before surfacing an opaque CancelledError. Probing here — once,
             # outside the SDK task group — fails fast and non-retryably with
             # an actionable message, mirroring the URL-validation path above.
-            if config.get("transport") != "sse":
+            # Skip the probe when _ready is already set: that only happens
+            # after a prior successful connect, so this run() invocation is a
+            # reconnect (OAuth recovery / manual refresh). The endpoint was
+            # already validated once; re-probing burns a redundant network
+            # round-trip against a known-good server on every reconnect.
+            if config.get("transport") != "sse" and not self._ready.is_set():
                 try:
                     _probe_headers = dict(config.get("headers") or {})
                     await self._preflight_content_type(
@@ -3666,6 +3671,7 @@ def get_mcp_status() -> List[dict]:
 
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
+        enabled = _parse_boolish(cfg.get("enabled", True), default=True)
         server = active_servers.get(name)
         if server and server.session is not None:
             entry = {
@@ -3673,16 +3679,21 @@ def get_mcp_status() -> List[dict]:
                 "transport": transport,
                 "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
                 "connected": True,
+                "disabled": False,
             }
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
             result.append(entry)
         else:
+            # A server with enabled: false is intentionally not connected — it is
+            # disabled, not failed. Surface that distinction so consumers (banner,
+            # TUI) can render "disabled" rather than an alarming "failed".
             result.append({
                 "name": name,
                 "transport": transport,
                 "tools": 0,
                 "connected": False,
+                "disabled": not enabled,
             })
 
     return result
@@ -3794,7 +3805,7 @@ def shutdown_mcp_servers():
         if future is not None:
             try:
                 future.result(timeout=15)
-            except Exception as exc:
+            except BaseException as exc:
                 logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()

@@ -1,15 +1,26 @@
+# PEP 639 SPDX license expression (`license = "MIT"` below) requires
+# setuptools>=77. Keep this floor in lockstep with the `license` form in
+# [project]; an older build backend rejects the string form.
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0,<83"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.15.1"
+version = "0.16.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-requires-python = ">=3.11"
+# Upper bound is load-bearing, not cosmetic. uv resolves the project's
+# Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
+# fresh distro whose newest interpreter uv auto-picks) will otherwise select
+# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
+# wheel yet and fall back to a maturin source build that fails. Capping at
+# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
+# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
+requires-python = ">=3.11,<3.14"
 authors = [{ name = "Nous Research" }]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
   # Rationale: ranges allow PyPI to ship a fresh version of a transitive
@@ -50,6 +61,16 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  # Markdown -> HTML conversion for rich message delivery (Matrix
+  # `formatted_body`, and the `send_message` tool's HTML path). Now on the
+  # DEFAULT delivery path, not matrix-specific: without it both
+  # gateway/platforms/matrix.py and tools/send_message_tool.py silently fall
+  # back to plain text, so cron/agent deliveries render raw `##`/`**`/tables
+  # in clients like Element (see #32486). Pure-Python py3-none-any wheel
+  # (~108KB, no compiled extensions, no platform constraints), so unlike the
+  # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
+  # it out of the lazy-install path that exists only for the heavy matrix deps.
+  "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.12.1",  # CVE-2026-32597
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
@@ -70,6 +91,14 @@ dependencies = [
   "uvicorn[standard]>=0.24.0,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  # Image resize recovery for the vision tools. Pillow shrinks oversized images
+  # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
+  # shrink paths no-op, so an oversized image bakes into immutable history and
+  # bricks the session on Anthropic's non-retryable 400. Pure-wheel, no system
+  # libs required for the codecs we use, so it's safe to ship in the base
+  # install rather than gating it behind an extra + a mid-session lazy install
+  # (which deadlocked the CLI under prompt_toolkit — see #40490).
+  "Pillow==12.2.0",
 ]
 
 [project.optional-dependencies]
@@ -93,7 +122,7 @@ dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-time
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.3"]
-matrix = ["mautrix[encryption]==0.21.0", "Markdown==3.10.2", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
+matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -116,6 +145,12 @@ pty = [
   # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.0.1"]
+# Image resize recovery for the vision tools. Pillow is now a CORE dependency
+# (see the main `dependencies` list) since the byte/pixel shrink paths are on
+# the default vision-embed path and the mid-session lazy install deadlocked the
+# CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
+# alias so existing `pip install hermes-agent[vision]` invocations still resolve.
+vision = []
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
 # 1.0.1, a malformed Host header makes `request.url.path` desync from the path
@@ -124,6 +159,7 @@ honcho = ["honcho-ai==2.0.1"]
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.3"]
 sms = ["aiohttp==3.13.3"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
@@ -210,7 +246,6 @@ all = [
   # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
   "hermes-agent[cli]",
-  "hermes-agent[dev]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
@@ -229,6 +264,15 @@ hermes-acp = "acp_adapter.entry:main"
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
 
+[tool.setuptools.data-files]
+# i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is
+# neither a package (packages.find) nor package-data (which attaches to a
+# package). data-files ships it in the wheel; MANIFEST.in `graft locales`
+# ships it in the sdist. Without this, sealed installs (pip wheel, Nix store
+# venv) drop the catalogs and gateway/CLI commands surface raw i18n keys like
+# `gateway.reset.header_default` (#27632, #35374, #23943).
+locales = ["locales/*.yaml"]
+
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
@@ -244,6 +288,7 @@ plugins = [
   # <platform>" (#34034), web-search providers go missing (#28149), etc.
   "**/plugin.yaml",
   "**/plugin.yml",
+  "**/README.md",
 ]
 
 [tool.setuptools.packages.find]

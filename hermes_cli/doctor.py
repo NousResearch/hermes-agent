@@ -891,6 +891,63 @@ def run_doctor(args):
         except Exception:
             pass
 
+        # Detect stale HERMES_MAX_ITERATIONS ghost in .env shadowing
+        # agent.max_turns in config.yaml (issue #17534). The setup wizard
+        # used to dual-write the iteration budget to both stores; users who
+        # later edit only config.yaml are left with a .env ghost. The gateway
+        # bridge normally derives HERMES_MAX_ITERATIONS from agent.max_turns
+        # at startup, but if that bridge bails (any earlier config-parse
+        # error), the stale .env value silently wins and the agent runs at the
+        # wrong budget — e.g. config says 400 but the activity line reads N/90.
+        # Read the .env FILE directly (load_env), not get_env_value/os.environ,
+        # which the startup bridge may already have overridden.
+        try:
+            import yaml
+            from hermes_cli.config import load_env, remove_env_value
+            with open(config_path, encoding="utf-8") as f:
+                raw_config = yaml.safe_load(f) or {}
+            agent_cfg = raw_config.get("agent")
+            cfg_max_turns = (
+                agent_cfg.get("max_turns")
+                if isinstance(agent_cfg, dict)
+                else None
+            )
+            # Legacy root-level key counts too.
+            if cfg_max_turns is None:
+                cfg_max_turns = raw_config.get("max_turns")
+            env_ghost = load_env().get("HERMES_MAX_ITERATIONS")
+            drift = (
+                cfg_max_turns is not None
+                and env_ghost is not None
+                and str(cfg_max_turns).strip() != str(env_ghost).strip()
+            )
+            if drift:
+                check_warn(
+                    f"HERMES_MAX_ITERATIONS={env_ghost} in .env shadows "
+                    f"agent.max_turns={cfg_max_turns} in config.yaml",
+                    "(stale ghost from an earlier `hermes setup` run)",
+                )
+                if should_fix:
+                    if remove_env_value("HERMES_MAX_ITERATIONS"):
+                        check_ok(
+                            "Removed stale HERMES_MAX_ITERATIONS from .env "
+                            f"(config.yaml agent.max_turns={cfg_max_turns} is now authoritative)"
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn("Could not remove HERMES_MAX_ITERATIONS from .env")
+                        manual_issues.append(
+                            "Manually delete the HERMES_MAX_ITERATIONS line from "
+                            f"{_DHH}/.env — config.yaml agent.max_turns is authoritative."
+                        )
+                else:
+                    issues.append(
+                        "Stale HERMES_MAX_ITERATIONS in .env shadows config.yaml — "
+                        "run 'hermes doctor --fix'"
+                    )
+        except Exception:
+            pass
+
         # Validate config structure (catches malformed custom_providers, etc.)
         try:
             from hermes_cli.config import validate_config_structure
@@ -1397,18 +1454,29 @@ def run_doctor(args):
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")
     if _npm_bin:
-        npm_dirs = [
-            (PROJECT_ROOT, "Browser tools (agent-browser)"),
-            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
+        # Each entry: (cwd, label, extra_audit_args)
+        # PROJECT_ROOT is audited with --workspaces=false so that the apps/*
+        # glob (which pulls in Electron, node-pty, etc.) is never resolved
+        # for a routine security check. The web and ui-tui workspaces are
+        # audited separately via --workspace flags. See #38772.
+        npm_audit_targets = [
+            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+            (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
+            (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
+            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge", []),
         ]
-        for npm_dir, label in npm_dirs:
-            if not (npm_dir / "node_modules").exists():
+        for npm_dir, label, audit_extra in npm_audit_targets:
+            # For workspace-scoped audits run from PROJECT_ROOT the
+            # node_modules check must use the workspace root; standalone dirs
+            # (whatsapp-bridge) check their own node_modules.
+            check_dir = PROJECT_ROOT if audit_extra else npm_dir
+            if not (check_dir / "node_modules").exists():
                 continue
             try:
                 # Use resolved absolute path so Windows can execute
                 # npm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    [_npm_bin, "audit", "--json"],
+                    [_npm_bin, "audit", "--json", *audit_extra],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, timeout=30,
                 )
@@ -1419,12 +1487,20 @@ def run_doctor(args):
                 high = vuln_count.get("high", 0)
                 moderate = vuln_count.get("moderate", 0)
                 total = critical + high + moderate
+                # Determine a scoped fix command for the remediation hint.
+                if audit_extra and audit_extra[0] == "--workspace":
+                    fix_scope = " ".join(audit_extra)
+                    fix_cmd = f"cd {npm_dir} && npm audit fix {fix_scope}"
+                elif audit_extra == ["--workspaces=false"]:
+                    fix_cmd = f"cd {npm_dir} && npm audit fix --workspaces=false"
+                else:
+                    fix_cmd = f"cd {npm_dir} && npm audit fix"
                 if total == 0:
                     check_ok(f"{label} deps", "(no known vulnerabilities)")
                 elif critical > 0 or high > 0:
                     check_warn(
                         f"{label} deps",
-                        f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
+                        f"({critical} critical, {high} high, {moderate} moderate — run: {fix_cmd})"
                     )
                     issues.append(
                         f"{label} has {total} npm "
@@ -1964,7 +2040,15 @@ def run_doctor(args):
             _honcho_cfg_path = resolve_config_path()
 
             if not _honcho_cfg_path.exists():
-                check_warn("Honcho config not found", "run: hermes memory setup")
+                # Config file missing — but env var fallback may have resolved it.
+                # Only warn if the config didn't actually resolve from env vars.
+                if hcfg.api_key or hcfg.base_url:
+                    check_ok(
+                        "Honcho configured via environment variables",
+                        f"config file {_honcho_cfg_path} not found, using HONCHO_API_KEY env var",
+                    )
+                else:
+                    check_warn("Honcho config not found", "run: hermes memory setup")
             elif not hcfg.enabled:
                 check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
             elif not (hcfg.api_key or hcfg.base_url):

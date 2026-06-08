@@ -4,9 +4,32 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $busy, $messages, noteSessionActivity, setSessionWorking } from '@/store/session'
+import { setMutableRef } from '@/lib/mutable-ref'
+import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking, setTurnStartedAt } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
+
+// Shallow per-message identity check. When a flush carries no transcript
+// changes, `preserveLocalAssistantErrors` returns the same message objects in
+// the same order, so reference equality per slot is enough to detect "nothing
+// to publish" and avoid a needless `$messages` churn.
+function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
+  if (a === b) {
+    return true
+  }
+
+  if (a.length !== b.length) {
+    return false
+  }
+
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) {
+      return false
+    }
+  }
+
+  return true
+}
 
 interface SessionStateCacheOptions {
   activeSessionId: string | null
@@ -38,7 +61,7 @@ export function useSessionStateCache({
   }, [activeSessionId])
 
   useEffect(() => {
-    busyRef.current = busy
+    setMutableRef(busyRef, busy)
   }, [busy, busyRef])
 
   useEffect(() => {
@@ -87,14 +110,44 @@ export function useSessionStateCache({
       return
     }
 
-    setMessages(preserveLocalAssistantErrors(pending.state.messages, $messages.get()))
+    // `preserveLocalAssistantErrors` always returns a fresh array, so publishing
+    // it unconditionally puts a new `$messages` reference on the store every
+    // flush — including the periodic `session.info` heartbeats that don't touch
+    // the transcript. That churns ChatView → runtimeMessageRepository → the
+    // assistant-ui runtime → the virtualizer, which re-measures and visibly
+    // jerks the scroll position while the user is reading. Skip the publish when
+    // the merged result is content-identical to what's already on screen.
+    const currentMessages = $messages.get()
+    const nextMessages = preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+
+    if (!sameMessageList(nextMessages, currentMessages)) {
+      setMessages(nextMessages)
+    }
+
     setBusy(pending.state.busy)
-    busyRef.current = pending.state.busy
+    setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    // Mirror the focused session's per-session turn clock into the global
+    // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
+    // time intact on focus instead of zeroing it (the "timer restarts" bug).
+    setTurnStartedAt(pending.state.turnStartedAt)
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
+      // Only the currently-viewed session may stage into the shared `$messages`
+      // view. A background session (e.g. one still busy and emitting stream /
+      // error updates after the user toggled away) must update its own cache
+      // entry but never the view — otherwise its messages clobber the
+      // foreground transcript and appear to "bleed" into every other session.
+      // The flush below also re-checks the active id, but staging here is what
+      // prevents a background write from overwriting an already-pending
+      // foreground write within the same animation frame (only one RAF is
+      // scheduled, so the last `pendingViewStateRef` writer would otherwise win).
+      if (sessionId !== activeSessionIdRef.current) {
+        return
+      }
+
       pendingViewStateRef.current = { sessionId, state }
 
       if (viewSyncRafRef.current !== null) {
@@ -139,7 +192,13 @@ export function useSessionStateCache({
         setSessionWorking(previous.storedSessionId, false)
       }
 
+      if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
+        setSessionAttention(previous.storedSessionId, false)
+      }
+
       setSessionWorking(next.storedSessionId, next.busy)
+      setSessionAttention(next.storedSessionId, next.needsInput)
+
       // Every state update is effectively a "still alive" heartbeat for
       // streaming events. The session-store watchdog uses this to keep the
       // working flag alive during long-running turns and to clear it once
@@ -147,6 +206,7 @@ export function useSessionStateCache({
       if (next.busy) {
         noteSessionActivity(next.storedSessionId)
       }
+
       syncSessionStateToView(sessionId, next)
 
       return next

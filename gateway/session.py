@@ -635,6 +635,22 @@ def build_session_key(
             if source.thread_id:
                 return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
             return f"agent:main:{platform}:dm:{dm_chat_id}"
+        # No chat_id — fall back to the sender's own identifier before the
+        # bare per-platform sink.  Without this, every DM from every user that
+        # arrives without a chat_id (non-standard adapters / synthetic sources)
+        # collapses into one shared "agent:main:<platform>:dm" session, and a
+        # single cached agent ends up serving multiple people's conversations —
+        # cross-user history bleed.  participant_id keeps DMs isolated per user.
+        dm_participant_id = source.user_id_alt or source.user_id
+        if dm_participant_id and source.platform == Platform.WHATSAPP:
+            dm_participant_id = (
+                canonical_whatsapp_identifier(str(dm_participant_id))
+                or dm_participant_id
+            )
+        if dm_participant_id:
+            if source.thread_id:
+                return f"agent:main:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            return f"agent:main:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
         return f"agent:main:{platform}:dm"

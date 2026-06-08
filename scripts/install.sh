@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -451,7 +451,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
             exit 1
             ;;
         *)
@@ -702,26 +702,43 @@ check_git() {
     exit 1
 }
 
+# The desktop build runs Vite ^8, which refuses to start on Node outside
+# `^20.19 || >=22.12` — older Node lacks `node:util.styleText`, so `vite build`
+# crashes with a SyntaxError that surfaces only as the opaque "Build desktop
+# app … exit code 1" install failure. Returns 0 when the given `node --version`
+# string clears that floor; anything below it is replaced with the Hermes-
+# managed Node $NODE_VERSION LTS.
+node_satisfies_build() {
+    local ver="${1#v}"
+    local major="${ver%%.*}"
+    local minor="${ver#*.}"; minor="${minor%%.*}"
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+    if [ "$major" -eq 20 ] && [ "$minor" -ge 19 ]; then return 0; fi
+    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 12 ]; }; then return 0; fi
+    return 1
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
-    if command -v node &> /dev/null; then
-        local found_ver=$(node --version)
-        log_success "Node.js $found_ver found"
+    if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
+        log_success "Node.js $(node --version) found"
         HAS_NODE=true
         return 0
     fi
 
-    # Check our own managed install from a previous run
-    if [ -x "$HERMES_HOME/node/bin/node" ]; then
+    # Prefer a Hermes-managed Node from a previous run over a too-old system one.
+    if [ -x "$HERMES_HOME/node/bin/node" ] && node_satisfies_build "$("$HERMES_HOME/node/bin/node" --version)"; then
         export PATH="$HERMES_HOME/node/bin:$PATH"
-        local found_ver=$("$HERMES_HOME/node/bin/node" --version)
-        log_success "Node.js $found_ver found (Hermes-managed)"
+        log_success "Node.js $("$HERMES_HOME/node/bin/node" --version) found (Hermes-managed)"
         HAS_NODE=true
         return 0
     fi
 
-    if [ "$DISTRO" = "termux" ]; then
+    if command -v node &> /dev/null; then
+        log_warn "Node.js $(node --version) is too old for the desktop build (need ^20.19 or >=22.12) — installing Hermes-managed Node $NODE_VERSION LTS..."
+    elif [ "$DISTRO" = "termux" ]; then
         log_info "Node.js not found — installing Node.js via pkg..."
     else
         log_info "Node.js not found — installing Node.js $NODE_VERSION LTS..."
@@ -819,16 +836,20 @@ install_node() {
         return 0
     fi
 
-    # Place into ~/.hermes/node/ and symlink binaries to ~/.local/bin/
+    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
+    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
+    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
     rm -rf "$HERMES_HOME/node"
     mkdir -p "$HERMES_HOME"
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
 
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
+    local node_link_dir
+    node_link_dir="$(get_command_link_dir)"
+    mkdir -p "$node_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -1131,12 +1152,12 @@ clone_repo() {
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -1187,11 +1208,32 @@ setup_venv() {
     # uv creates the venv and pins the Python version in one step
     $UV_CMD venv venv --python "$PYTHON_VERSION"
 
+    # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
+    # user's shell env). uv honours UV_PYTHON over an existing venv for the
+    # later `uv sync` / `uv pip install` tiers, so without this it would
+    # silently delete this 3.11 venv and recreate it at the inherited
+    # version — building Rust transitives that have no wheel for that
+    # version from source via maturin, which fails. Pinning UV_PYTHON to the
+    # interpreter we just created forces every subsequent uv command onto it.
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
+
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
 install_deps() {
     log_info "Installing dependencies..."
+
+    # Re-pin UV_PYTHON to the venv interpreter. setup_venv already does this,
+    # but the bootstrap runs install stages (`venv`, `python-deps`) as separate
+    # processes, so an export from setup_venv does NOT survive into a separate
+    # python-deps invocation. Re-deriving it here covers that path. Without it,
+    # an inherited UV_PYTHON=3.14 makes the uv sync/pip tiers below recreate the
+    # venv at 3.14 and fail the maturin source build (no cp314 wheels yet).
+    if [ "$DISTRO" != "termux" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
 
     if [ "$DISTRO" = "termux" ]; then
         if [ "$USE_VENV" = true ]; then
@@ -2235,11 +2277,12 @@ install_desktop() {
     # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
     # failure, not a silent skip — a silent skip yields a "complete" install
     # with no app and a confusing "couldn't find a built desktop" at launch.
-    # Try the Hermes-managed Node first (check_node adds $HERMES_HOME/node/bin
-    # to PATH or installs it) before giving up.
-    if ! command -v npm >/dev/null 2>&1; then
-        check_node
-    fi
+    # Always re-resolve Node here. Stages run in separate processes, so we can't
+    # trust an earlier check; more importantly check_node now enforces the build
+    # floor (^20.19 || >=22.12) and prepends the Hermes-managed Node to PATH, so
+    # the build never runs on a too-old system Node — the cause of the opaque
+    # "Build desktop app … exit code 1" failure (Vite crashes on old Node).
+    check_node
     if ! command -v npm >/dev/null 2>&1; then
         log_error "Cannot build desktop app: Node.js / npm unavailable"
         log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
@@ -2253,9 +2296,27 @@ install_desktop() {
     # 1. Root workspace install so apps/desktop's deps (Electron, Vite,
     #    node-pty prebuilds) resolve. The browser-tools install runs in the
     #    repo-root package workspace, which does not pull apps/* deps.
+    #
+    #    Prefer `npm ci`: it deletes node_modules and reinstalls from the
+    #    lockfile, so it always produces a complete tree. Bare `npm install`
+    #    can report "up to date" against a stale node_modules/.package-lock.json
+    #    marker while node_modules is actually empty (Windows workspace-hoisting
+    #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
+    #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
+    #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    ( cd "$INSTALL_DIR" && npm install ) || {
+    ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
         log_error "Desktop workspace npm install failed"
+        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
+        # ~/.npm, so this non-root install can't write the shared cache. npm hides
+        # it behind a confusing EEXIST / "File exists" message while the real errno
+        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
+        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
+        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
+        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
+        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+        log_info "Then re-run this installer, or build manually:"
+        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
     }
     log_success "Desktop workspace dependencies installed"

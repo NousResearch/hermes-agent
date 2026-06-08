@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -57,6 +58,49 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
         assert resolve_agent_cwd() == project
     finally:
         server._clear_session_context(tokens)
+
+
+def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
+    """A local terminal backend must keep host-validated session cwd behaviour."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    assert server._terminal_task_cwd({"cwd": str(project)}) == str(project)
+
+
+def test_terminal_task_cwd_ssh_uses_remote_path_unvalidated(monkeypatch):
+    """SSH (non-local) backend: the configured remote cwd is used verbatim even
+    though it does not exist on the local host. This is the jonbohz fix — host
+    `isdir()` validation would otherwise discard the remote path and fall back
+    to os.getcwd(), running commands against the wrong machine."""
+    remote = "/home/jonboh/workspace/proj"  # does not exist on this host
+    assert not os.path.isdir(remote)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", remote)
+
+    assert server._terminal_task_cwd({"cwd": "/some/host/dir"}) == remote
+
+
+def test_terminal_task_cwd_ssh_falls_back_to_config(monkeypatch):
+    """When TERMINAL_CWD is unset, the SSH path reads terminal.cwd from config."""
+    remote = "/home/jonboh/workspace/from-config"
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": remote}})
+
+    assert server._terminal_task_cwd({"cwd": "/some/host/dir"}) == remote
+
+
+def test_terminal_task_cwd_ssh_sentinel_cwd_falls_back_to_session(monkeypatch):
+    """Sentinel/auto cwd values are not real remote paths, so the SSH branch
+    must defer to the session cwd rather than registering a meaningless dir."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", "auto")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": "."}})
+
+    assert server._terminal_task_cwd({"cwd": "/host/session/dir"}) == "/host/session/dir"
 
 
 class _ChunkyStdout:
@@ -131,6 +175,20 @@ def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
     assert capped.startswith("[showing verbose tail; omitted ")
     assert capped.endswith("three\nfour")
     assert "one" not in capped
+
+
+def test_tui_verbose_default_cap_stays_small(monkeypatch):
+    # Regression guard for #34095: the verbose tool text shipped to the TUI is
+    # rendered into a persisted, expanded-by-default trail block for the whole
+    # session. Raising this cap back toward the old 16KB re-introduces the Ink
+    # render-tree blowup that silently OOM-killed the TUI. Keep it small.
+    assert server._TUI_VERBOSE_TEXT_MAX_CHARS <= 2_000
+
+    huge = "x" * 40_000
+    capped = server._cap_tui_verbose_text(huge)
+
+    assert len(capped) < 2_000
+    assert capped.startswith("[showing verbose tail; omitted ")
 
 
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
@@ -861,6 +919,73 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
+    """A detached WS session past its grace window has its slash_worker closed.
+
+    Regression for #38591 fallout: every dashboard refresh spawned a fresh
+    session + _SlashWorker but never reaped the previous one, leaking one
+    python subprocess per refresh.
+    """
+    closed = {"worker": False}
+
+    class _FakeWorker:
+        def close(self):
+            closed["worker"] = True
+
+    server._sessions["orphan-sid"] = _session(
+        transport=server._stdio_transport,
+        slash_worker=_FakeWorker(),
+        running=False,
+    )
+    # Run the reap body synchronously (no real timer/grace) to assert behaviour.
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    try:
+        # Directly invoke the orphaned-check + teardown the timer would run.
+        assert server._ws_session_is_orphaned(server._sessions["orphan-sid"]) is True
+        session = server._sessions.pop("orphan-sid")
+        server._teardown_session(session)
+        assert closed["worker"] is True
+    finally:
+        server._sessions.pop("orphan-sid", None)
+
+
+def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
+    """A session that rebinds a live transport is NOT considered orphaned."""
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    # Reattached: transport is a live (non-stdio) transport.
+    reattached = _session(transport=_LiveTransport(), running=False)
+    assert server._ws_session_is_orphaned(reattached) is False
+
+    # Mid-turn sessions are also spared even if detached.
+    mid_turn = _session(transport=server._stdio_transport, running=True)
+    assert server._ws_session_is_orphaned(mid_turn) is False
+
+    # Already finalized sessions are spared (idempotency).
+    done = _session(transport=server._stdio_transport, running=False, _finalized=True)
+    assert server._ws_session_is_orphaned(done) is False
+
+
+def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
+    """Grace=0 disables the reaper entirely (pre-fix park-forever behaviour)."""
+    fired = {"timer": False}
+
+    class _Timer:
+        def __init__(self, *a, **k):
+            fired["timer"] = True
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    server._schedule_ws_orphan_reap("any-sid")
+    assert fired["timer"] is False
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 
@@ -1327,6 +1452,66 @@ def test_config_set_yolo_toggles_session_scope():
     finally:
         clear_session("session-key")
         server._sessions.clear()
+
+
+def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
+    """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp_on = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global"},
+        }
+    )
+    assert resp_on["result"]["value"] == "1"
+    assert resp_on["result"]["scope"] == "global"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+    resp_off = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global"},
+        }
+    )
+    assert resp_off["result"]["value"] == "0"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
+
+
+def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
+    """An explicit value pins global approvals.mode regardless of prior state."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global", "value": "1"},
+        }
+    )
+    assert resp["result"]["value"] == "1"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+
+    # Setting it on again is idempotent — stays off.
+    resp_again = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "yolo", "scope": "global", "value": "1"},
+        }
+    )
+    assert resp_again["result"]["value"] == "1"
+    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
 
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
@@ -2044,15 +2229,15 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
 
 
-def test_config_set_model_syncs_inference_provider_env(monkeypatch):
-    """After an explicit provider switch, HERMES_INFERENCE_PROVIDER must
-    reflect the user's choice so ambient re-resolution (credential pool
-    refresh, aux clients) picks up the new provider instead of the original
-    one persisted in config or shell env.
+def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
+    """A /model switch must NOT mutate process-global env vars. The desktop /
+    dashboard tui_gateway backend hosts every same-profile session in one
+    process; writing HERMES_INFERENCE_PROVIDER on a switch leaked the new
+    provider into every other live session's next agent rebuild. The switch
+    must instead record a per-session override and leave shared env untouched.
 
-    Regression: a TUI user switched openrouter → anthropic and the TUI kept
-    trying openrouter because the env-var-backed resolvers still saw the old
-    provider.
+    (Was test_config_set_model_syncs_inference_provider_env, which asserted the
+    leaky env-sync contract that caused the cross-session contamination bug.)
     """
 
     class _Agent:
@@ -2074,7 +2259,8 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
         warning_message="",
     )
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    session = _session(agent=_Agent())
+    server._sessions["sid"] = session
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
@@ -2082,27 +2268,36 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "claude-sonnet-4.6 --provider anthropic",
-            },
-        }
-    )
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic",
+                },
+            }
+        )
 
-    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "anthropic"
+        # Shared process env is UNCHANGED (the contamination vector is gone).
+        assert os.environ["HERMES_INFERENCE_PROVIDER"] == "openrouter"
+        # The switch was recorded as a per-session override instead.
+        assert session["model_override"]["provider"] == "anthropic"
+        assert session["model_override"]["model"] == "claude-sonnet-4.6"
+    finally:
+        server._sessions.clear()
 
 
-def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
-    """Regression for #16857: /model must set HERMES_TUI_PROVIDER even when
-    it wasn't pre-set on launch, so a later /new (which re-runs
-    _resolve_startup_runtime) honours the user's explicit provider choice
-    instead of falling through to static-catalog detection and picking a
-    coincidentally-matching native provider.
+def test_config_set_model_records_per_session_override_not_env(monkeypatch):
+    """Regression for #16857 via the per-session override (not env vars):
+    /model must record the user's explicit provider on the session so a later
+    /new (which rebuilds via _make_agent honoring model_override) honours that
+    choice — WITHOUT writing process-global env vars that would leak into
+    sibling sessions.
+
+    (Was test_config_set_model_syncs_tui_provider_unconditionally.)
     """
 
     class _Agent:
@@ -2124,7 +2319,8 @@ def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
         warning_message="",
     )
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    session = _session(agent=_Agent())
+    server._sessions["sid"] = session
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     monkeypatch.setattr(
@@ -2133,26 +2329,42 @@ def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "deepseek-v4-pro --provider custom:xuanji",
-            },
-        }
-    )
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "deepseek-v4-pro --provider custom:xuanji",
+                },
+            }
+        )
 
-    # Both env vars must reflect the user's choice. HERMES_TUI_PROVIDER is
-    # the canonical explicit-this-process carrier consumed by
-    # _resolve_startup_runtime() on /new.
-    assert os.environ["HERMES_TUI_PROVIDER"] == "custom:xuanji"
-    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "custom:xuanji"
+        # No process-global env mutation.
+        assert "HERMES_TUI_PROVIDER" not in os.environ
+        assert "HERMES_INFERENCE_PROVIDER" not in os.environ
+        # The user's explicit provider + resolved endpoint live on the session,
+        # carried into the next /new rebuild by _make_agent.
+        override = session["model_override"]
+        assert override["provider"] == "custom:xuanji"
+        assert override["model"] == "deepseek-v4-pro"
+        assert override["base_url"] == "https://xuanji.example/v1"
+        assert override["api_key"] == "sk-xuanji"
+        assert override["api_mode"] == "chat_completions"
+    finally:
+        server._sessions.clear()
 
 
-def test_config_set_model_syncs_tui_provider_env(monkeypatch):
+def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
+    """A /model switch mutates the target session's agent in place and records
+    a per-session override; it does NOT write HERMES_MODEL / HERMES_TUI_PROVIDER
+    etc. into the shared process environment.
+
+    (Was test_config_set_model_syncs_tui_provider_env.)
+    """
+
     class Agent:
         model = "gpt-5.3-codex"
         provider = "openai-codex"
@@ -2164,8 +2376,11 @@ def test_config_set_model_syncs_tui_provider_env(monkeypatch):
             self.provider = kwargs["new_provider"]
 
     agent = Agent()
-    server._sessions["sid"] = _session(agent=agent)
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
@@ -2196,9 +2411,16 @@ def test_config_set_model_syncs_tui_provider_env(monkeypatch):
         )
 
         assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
-        assert os.environ["HERMES_TUI_PROVIDER"] == "anthropic"
-        assert os.environ["HERMES_MODEL"] == "anthropic/claude-sonnet-4.6"
-        assert os.environ["HERMES_INFERENCE_MODEL"] == "anthropic/claude-sonnet-4.6"
+        # Agent switched in place...
+        assert agent.model == "anthropic/claude-sonnet-4.6"
+        assert agent.provider == "anthropic"
+        # ...override recorded on the session...
+        assert session["model_override"]["model"] == "anthropic/claude-sonnet-4.6"
+        assert session["model_override"]["provider"] == "anthropic"
+        # ...and the shared process env was NOT touched.
+        assert os.environ["HERMES_TUI_PROVIDER"] == "openai-codex"
+        assert "HERMES_MODEL" not in os.environ
+        assert "HERMES_INFERENCE_MODEL" not in os.environ
     finally:
         server._sessions.clear()
 
@@ -3495,7 +3717,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     release_build = threading.Event()
     build_entered = threading.Event()
 
-    def _slow_make_agent(sid, key, session_id=None):
+    def _slow_make_agent(sid, key, session_id=None, session_db=None):
         build_started.set()
         build_entered.set()
         release_build.wait(timeout=3.0)
@@ -3603,7 +3825,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
             self.base_url = ""
             self.api_key = ""
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key: _FakeAgent())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(
         server,
@@ -3687,7 +3909,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
 
     emits = []
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key: _FakeAgent())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -5459,3 +5681,368 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
+    """TUI /save (session.save RPC) must snapshot under the Hermes profile
+    home — not the project/workspace CWD — and include the system prompt,
+    mirroring the classic CLI /save and the dashboard save export.
+
+    Regression: the gateway handler wrote ``hermes_conversation_*.json`` to
+    ``os.path.abspath(...)`` (the workspace CWD) and only exported ``model``
+    and ``messages``, so ``system_prompt`` was missing.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    # Run from a different CWD to prove the snapshot does NOT leak there.
+    work = tmp_path / "workspace"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    sid = "save-sid"
+    agent = types.SimpleNamespace(
+        model="hermes-test",
+        session_id="20260101_120000_abc123",
+        session_start=datetime(2026, 1, 1, 12, 0, 0),
+        _cached_system_prompt="You are Hermes.",
+    )
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    server._sessions[sid] = {
+        "agent": agent,
+        "session_key": "save-key",
+        "history": history,
+        "history_lock": threading.Lock(),
+        "created_at": 1735732800.0,
+    }
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    saved_file = Path(resp["result"]["file"])
+
+    # Must NOT leak into the workspace/project CWD.
+    assert not list(work.glob("hermes_conversation_*.json"))
+
+    saved_dir = home / "sessions" / "saved"
+    assert saved_file.parent == saved_dir
+    assert saved_file.exists()
+
+    payload = json.loads(saved_file.read_text())
+    assert payload["model"] == "hermes-test"
+    assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
+    assert payload["system_prompt"] == "You are Hermes."
+    assert payload["messages"] == history
+
+
+def test_notification_event_dedup_key_preserves_distinct_watch_matches():
+    """Watch-match identity includes match content, not just session/type."""
+    base = {
+        "type": "watch_match",
+        "session_id": "proc_watch",
+        "command": "tail -f app.log",
+        "pattern": "READY",
+        "output": "READY on port 8000",
+        "suppressed": 0,
+    }
+
+    identical = dict(base)
+    distinct_output = {**base, "output": "READY on port 9000"}
+    distinct_pattern = {**base, "pattern": "MIGRATION_DONE"}
+
+    base_key = server._notification_event_dedup_key(base)
+    assert server._notification_event_dedup_key(identical) == base_key
+    assert server._notification_event_dedup_key(distinct_output) != base_key
+    assert server._notification_event_dedup_key(distinct_pattern) != base_key
+
+
+def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
+    """Distinct watch matches from one process emit; exact replay is deduped."""
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    def _fake_run_prompt_submit(rid, sid, session, text):
+        turns.append(text)
+        with session["history_lock"]:
+            session["running"] = False
+
+    sess = _session()
+    server._sessions["sid_watch_dedup"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "_run_prompt_submit", _fake_run_prompt_submit)
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    base = {
+        "type": "watch_match",
+        "session_id": "proc_watch_dedup",
+        "command": "tail -f app.log",
+        "pattern": "READY",
+        "output": "READY on port 8000",
+        "suppressed": 0,
+    }
+    process_registry.completion_queue.put(base)
+    process_registry.completion_queue.put({**base, "output": "READY on port 9000"})
+    process_registry.completion_queue.put(dict(base))
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_watch_dedup", sess)
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 2
+        status_text = "\n".join(call[2]["text"] for call in status_calls)
+        assert "READY on port 8000" in status_text
+        assert "READY on port 9000" in status_text
+        assert len(turns) == 3
+    finally:
+        server._sessions.pop("sid_watch_dedup", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_event_dedup_key_keeps_completions_one_shot():
+    """Completion identity remains process-session scoped to avoid floods."""
+    first = {
+        "type": "completion",
+        "session_id": "proc_done",
+        "command": "make build",
+        "exit_code": 0,
+        "output": "first output",
+    }
+    replay = {
+        "type": "completion",
+        "session_id": "proc_done",
+        "command": "make build --again",
+        "exit_code": 1,
+        "output": "different output should not change completion key",
+    }
+
+    assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
+        replay
+    )
+
+
+# --- image.attach_bytes / pdf.attach (remote-client byte upload) -------------
+
+# Smallest valid 1x1 PNG, base64-encoded.
+_PNG_1X1_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _attach_bytes_cli(monkeypatch):
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+
+def test_image_attach_bytes_writes_to_gateway_dir(monkeypatch, tmp_path):
+    """Remote client uploads base64 bytes; gateway writes them to its own disk."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "abx",
+                "content_base64": _PNG_1X1_B64,
+                "filename": "shot.png",
+            },
+        }
+    )
+
+    res = resp["result"]
+    assert res["attached"] is True
+    written = Path(res["path"])
+    assert written.is_file()
+    assert written.parent == tmp_path / "images"
+    assert written.read_bytes().startswith(b"\x89PNG")
+    assert len(server._sessions["abx"]["attached_images"]) == 1
+    assert res["bytes"] > 0
+
+
+def test_image_attach_bytes_accepts_data_url_prefix(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx2"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "abx2",
+                "content_base64": f"data:image/png;base64,{_PNG_1X1_B64}",
+            },
+        }
+    )
+    assert resp["result"]["attached"] is True
+
+
+def test_image_attach_bytes_data_alias_and_magic_sniff(monkeypatch, tmp_path):
+    """Older desktop builds send `data` (not content_base64); ext sniffed from bytes."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx3"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "abx3", "data": _PNG_1X1_B64},
+        }
+    )
+    res = resp["result"]
+    assert res["attached"] is True
+    assert Path(res["path"]).suffix == ".png"  # sniffed from magic bytes
+
+
+def test_image_attach_bytes_rejects_invalid_base64(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx4"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "abx4", "content_base64": "!!!not base64!!!"},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4017
+
+
+def test_image_attach_bytes_rejects_oversize(monkeypatch, tmp_path):
+    import base64 as _b64
+
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_ATTACH_BYTES_MAX_BYTES", 10)
+    server._sessions["abx5"] = _session()
+
+    big = _b64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 100).decode("ascii")
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "abx5", "content_base64": big},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+
+
+def test_image_attach_bytes_rejects_unsupported_extension(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._sessions["abx6"] = _session()
+
+    # filename hint forces a non-image extension; magic sniff is bypassed by hint
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "abx6",
+                "content_base64": _PNG_1X1_B64,
+                "filename": "evil.exe",
+            },
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4016
+
+
+def test_pdf_attach_requires_poppler(monkeypatch, tmp_path):
+    """Without pdftoppm on PATH, pdf.attach returns a clear 5028."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    server._sessions["pdf1"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdf1", "content_base64": "JVBERi0xLjQK"},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 5028
+
+
+def test_pdf_attach_rejects_non_pdf_bytes(monkeypatch, tmp_path):
+    import base64 as _b64
+
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdf2"] = _session()
+
+    not_pdf = _b64.b64encode(b"this is not a pdf").decode("ascii")
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdf2", "content_base64": not_pdf},
+        }
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4017
+
+
+def test_pdf_attach_requires_path_or_bytes(monkeypatch, tmp_path):
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdf3"] = _session()
+
+    resp = server.handle_request(
+        {"id": "1", "method": "pdf.attach", "params": {"session_id": "pdf3"}}
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4015
+
+
+def test_decode_attach_base64_helper():
+    import base64 as _b64
+
+    raw = _b64.b64encode(b"hello").decode("ascii")
+    assert server._decode_attach_base64(raw, mime_prefix="image/") == b"hello"
+    assert (
+        server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/")
+        == b"hello"
+    )
+    # whitespace inside payload is tolerated
+    assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/") == b"hello"
+    assert server._decode_attach_base64("@@@", mime_prefix="image/") is None
+
+
+def test_sniff_image_ext_magic_and_filename():
+    assert server._sniff_image_ext(b"\x89PNG\r\n\x1a\n") == ".png"
+    assert server._sniff_image_ext(b"\xff\xd8\xff\xe0") == ".jpg"
+    assert server._sniff_image_ext(b"GIF89a....") == ".gif"
+    assert server._sniff_image_ext(b"RIFF1234WEBPxxxx") == ".webp"
+    assert server._sniff_image_ext(b"BM......") == ".bmp"
+    assert server._sniff_image_ext(b"unknown") == ".png"  # fallback
+    # filename hint wins over magic bytes
+    assert server._sniff_image_ext(b"\x89PNG", "photo.jpeg") == ".jpeg"

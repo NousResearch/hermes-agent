@@ -8,35 +8,31 @@ export interface TriggerState {
 
 const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
 
-/**
- * Keys that the open-trigger keydown handler fully consumes to drive the
- * completion popover (move highlight, accept, dismiss). None of them mutate
- * the editor text, so re-running `refreshTrigger` on their *keyup* is both
- * useless and actively harmful: `refreshTrigger` re-detects the trigger and
- * resets `triggerActive` to 0 (snapping the highlight back to the top after
- * every ArrowDown/ArrowUp) and re-opens a trigger that Escape just closed.
- */
-const TRIGGER_NAV_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'])
+/** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
+export function blobDedupeKey(blob: Blob): string {
+  if (blob instanceof File) {
+    return `file:${blob.name}:${blob.size}:${blob.type}:${blob.lastModified}`
+  }
 
-/**
- * True when a keyup event should NOT trigger a completion-popover refresh.
- * Only applies while a trigger menu is open and the key is one the keydown
- * handler already handled — guarding against the highlight-reset / reopen race.
- */
-export function shouldSkipTriggerRefreshOnKeyUp(key: string, triggerOpen: boolean): boolean {
-  return triggerOpen && TRIGGER_NAV_KEYS.has(key)
+  return `blob:${blob.size}:${blob.type}`
 }
 
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
-  const seen = new Set<Blob>()
+  const seen = new Set<string>()
 
   const push = (blob: Blob | null) => {
-    if (!blob || blob.size === 0 || seen.has(blob)) {
+    if (!blob || blob.size === 0) {
       return
     }
 
-    seen.add(blob)
+    const key = blobDedupeKey(blob)
+
+    if (seen.has(key)) {
+      return
+    }
+
+    seen.add(key)
     blobs.push(blob)
   }
 
@@ -48,7 +44,8 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
     }
   }
 
-  if (clipboard.files?.length) {
+  // Chromium/Electron expose the same pasted image on both `items` and `files`.
+  if (blobs.length === 0 && clipboard.files?.length) {
     for (let i = 0; i < clipboard.files.length; i += 1) {
       const file = clipboard.files.item(i)
 

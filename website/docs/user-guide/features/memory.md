@@ -128,7 +128,7 @@ When you try to add an entry that would exceed the limit, the tool returns an er
 ```json
 {
   "success": false,
-  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Replace or remove existing entries first.",
+  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Consolidate now: use 'replace' to merge overlapping entries into shorter ones or 'remove' stale or less important entries (see current_entries below), then retry this add — all in this turn.",
   "current_entries": ["..."],
   "usage": "2,100/2,200"
 }

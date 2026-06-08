@@ -1,30 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectTrigger, shouldSkipTriggerRefreshOnKeyUp } from './text-utils'
-
-describe('shouldSkipTriggerRefreshOnKeyUp', () => {
-  it('skips the trigger refresh for nav/control keys while a menu is open', () => {
-    // These keys are fully handled by the open-trigger keydown branch and
-    // never edit text. Refreshing on their keyup resets the highlight to the
-    // top (breaking ArrowDown/ArrowUp cycling) and re-opens a menu Escape just
-    // closed — the exact bugs this guard prevents.
-    for (const key of ['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape']) {
-      expect(shouldSkipTriggerRefreshOnKeyUp(key, true)).toBe(true)
-    }
-  })
-
-  it('does not skip the refresh when no trigger menu is open', () => {
-    for (const key of ['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape']) {
-      expect(shouldSkipTriggerRefreshOnKeyUp(key, false)).toBe(false)
-    }
-  })
-
-  it('never skips ordinary text-editing keys, so completions still refresh', () => {
-    for (const key of ['a', '/', '@', ' ', 'Backspace', 'ArrowLeft', 'ArrowRight']) {
-      expect(shouldSkipTriggerRefreshOnKeyUp(key, true)).toBe(false)
-    }
-  })
-})
+import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -45,5 +21,57 @@ describe('detectTrigger', () => {
 
   it('returns null for plain text', () => {
     expect(detectTrigger('hello there')).toBeNull()
+  })
+})
+
+describe('extractClipboardImageBlobs', () => {
+  it('dedupes the same image exposed on both items and files', () => {
+    const image = new File([new Uint8Array([1, 2, 3])], 'paste.png', {
+      type: 'image/png',
+      lastModified: 1_700_000_000_000
+    })
+
+    const clipboard = {
+      files: {
+        length: 1,
+        item: (index: number) => (index === 0 ? image : null)
+      },
+      getData: () => '',
+      items: [
+        {
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => image
+        }
+      ]
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([image])
+  })
+
+  it('falls back to files when items has no image', () => {
+    const image = new File([new Uint8Array([4, 5])], 'shot.jpg', {
+      type: 'image/jpeg',
+      lastModified: 1_700_000_000_001
+    })
+
+    const clipboard = {
+      files: {
+        length: 1,
+        item: (index: number) => (index === 0 ? image : null)
+      },
+      getData: () => '',
+      items: []
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([image])
+  })
+})
+
+describe('blobDedupeKey', () => {
+  it('uses file metadata for File blobs', () => {
+    const file = new File([], 'a.png', { type: 'image/png', lastModified: 42 })
+
+    expect(blobDedupeKey(file)).toBe('file:a.png:0:image/png:42')
   })
 })

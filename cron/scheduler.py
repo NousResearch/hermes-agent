@@ -289,6 +289,15 @@ def _is_cron_silence_response(text: str) -> bool:
         return True
     return False
 
+
+# Sentinel: the tick was short-circuited before the agent was ever invoked —
+# a ``wakeAgent=false`` gate, empty no_agent script output, or a prompt that
+# resolved to nothing.  Like SILENT_MARKER it suppresses delivery, but it lets
+# the delivery loop log "agent not invoked" instead of the misleading "agent
+# returned [SILENT]" (issue #41923).  Kept distinct from SILENT_MARKER so the
+# genuine agent-returned-[SILENT] path keeps its own accurate log line.
+AGENT_NOT_INVOKED_MARKER = "[SILENT:agent-not-invoked]"
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -2650,7 +2659,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, AGENT_NOT_INVOKED_MARKER, None
 
         if not output.strip():
             logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
@@ -2661,7 +2670,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, AGENT_NOT_INVOKED_MARKER, None
 
         doc = (
             f"# Cron Job: {job_name}\n\n"
@@ -2768,7 +2777,7 @@ def run_job(
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, AGENT_NOT_INVOKED_MARKER, None
 
     try:
         prompt = _build_job_prompt(job, prerun_script=prerun_script)
@@ -2797,7 +2806,7 @@ def run_job(
         return False, blocked_doc, "", str(block_exc)
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return True, "", SILENT_MARKER, None
+        return True, "", AGENT_NOT_INVOKED_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -3622,13 +3631,23 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            # Short-circuited before the agent ran (wakeAgent=false gate, empty
+            # no_agent script output, or a prompt that resolved to nothing). The
+            # specific cause was already logged in run_job; suppress delivery but
+            # don't claim the agent replied [SILENT] — it was never invoked
+            # (#41923). Checked before _is_cron_silence_response because the
+            # ``[SILENT:agent-not-invoked]`` sentinel is intentionally not one of
+            # the recognized cron silence tokens.
+            if should_deliver and success and deliver_content.strip() == AGENT_NOT_INVOKED_MARKER:
+                logger.info("Job '%s': agent not invoked — skipping delivery", job["id"])
+                should_deliver = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
             # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
             # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
+            elif should_deliver and success and _is_cron_silence_response(deliver_content):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
 

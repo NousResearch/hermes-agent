@@ -2528,6 +2528,23 @@ class TestSilentDelivery:
         deliver_mock.assert_not_called()
         assert any(SILENT_MARKER in r.message for r in caplog.records)
 
+    def test_agent_not_invoked_marker_logs_distinct_message(self, caplog):
+        """A skipped tick (wakeAgent=false / no prompt) suppresses delivery but
+        must NOT be logged as 'agent returned [SILENT]' — the agent never ran
+        (issue #41923)."""
+        from cron.scheduler import AGENT_NOT_INVOKED_MARKER
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", AGENT_NOT_INVOKED_MARKER, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+                tick(verbose=False)
+        deliver_mock.assert_not_called()
+        assert any("agent not invoked" in r.message for r in caplog.records)
+        assert not any("agent returned" in r.message for r in caplog.records)
+
     def test_silent_with_note_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
@@ -2823,9 +2840,9 @@ class TestRunJobWakeGate:
 
     def test_wake_false_skips_agent_and_returns_silent(self, caplog):
         """When _run_job_script output ends with {wakeAgent: false}, the agent
-        is not invoked and run_job returns the SILENT marker so delivery is
-        suppressed."""
-        from cron.scheduler import SILENT_MARKER
+        is not invoked and run_job returns the agent-not-invoked marker so
+        delivery is suppressed."""
+        from cron.scheduler import AGENT_NOT_INVOKED_MARKER
         import cron.scheduler as scheduler
 
         with patch.object(scheduler, "_run_job_script",
@@ -2835,7 +2852,7 @@ class TestRunJobWakeGate:
 
         assert success is True
         assert err is None
-        assert final == SILENT_MARKER
+        assert final == AGENT_NOT_INVOKED_MARKER
         assert "Script gate returned `wakeAgent=false`" in doc
         agent_cls.assert_not_called()
 

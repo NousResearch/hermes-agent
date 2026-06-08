@@ -78,6 +78,26 @@ def test_run_one_job_silent_skips_delivery(monkeypatch):
     assert "deliver" not in kinds
 
 
+def test_run_one_job_agent_not_invoked_skips_delivery_with_distinct_log(monkeypatch, caplog):
+    """A tick short-circuited before the agent ran (wakeAgent=false gate, empty
+    no_agent output, or no prompt) returns AGENT_NOT_INVOKED_MARKER. Delivery is
+    suppressed like [SILENT], but the log must say 'agent not invoked' — not
+    'agent returned [SILENT]', which would falsely imply the model replied
+    (#41923). Covers the external-provider path (run_one_job called directly)."""
+    import logging
+
+    calls = _patch_pipeline(monkeypatch, silent_marker_in=s.AGENT_NOT_INVOKED_MARKER)
+
+    with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+        s.run_one_job({"id": "j3b", "name": "t"})
+
+    kinds = [c[0] for c in calls]
+    assert "run_job" in kinds and "save" in kinds and "mark" in kinds
+    assert "deliver" not in kinds  # suppressed, agent never ran
+    assert any("agent not invoked" in r.message for r in caplog.records)
+    assert not any("agent returned" in r.message for r in caplog.records)
+
+
 def test_run_one_job_empty_response_is_soft_failure(monkeypatch):
     """An empty final response marks the run as NOT ok (issue #8585)."""
     calls = _patch_pipeline(monkeypatch, final="   ")

@@ -255,6 +255,8 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     assert calls[0][0][0] == [
         "/bin/npm",
         "install",
+        "--workspace",
+        "ui-tui",
         "--silent",
         "--no-fund",
         "--no-audit",
@@ -390,3 +392,36 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
         "delete them and run `npm install` from the repo root instead: "
         + ", ".join(str(d / "package-lock.json") for d in stray)
     )
+
+
+def test_tui_launch_install_uses_workspace_scope(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """TUI launch npm install must pass --workspace ui-tui to avoid pulling apps/desktop."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "dist" / "entry.js").parent.mkdir(parents=True)
+    (tui_dir / "dist" / "entry.js").write_text("console.log('tui')")
+    # workspace root: parent has lockfile, tui_dir does not
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    npm_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0].endswith("npm"):
+            npm_calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert npm_calls, "expected npm install to be called"
+    install_cmd = npm_calls[0]
+    assert "--workspace" in install_cmd
+    assert "ui-tui" in install_cmd

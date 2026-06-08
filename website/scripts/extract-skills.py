@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract skill metadata into website/src/data/skills.json for the Skills Hub page.
+"""Extract skill metadata into website/static/api/skills.json for the Skills Hub page.
 
 Two data sources:
 
@@ -32,8 +32,12 @@ LOCAL_SKILL_DIRS = [
 ]
 UNIFIED_INDEX_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
-OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills.json")
-META_OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills-meta.json")
+# Output to static/api/ so the file is CDN-served at /api/skills.json
+# rather than bundled into the page's JS chunk. At 50k+ skills the
+# bundled payload was ~26 MB; lazy-fetch keeps the initial page load
+# fast and shrinks the JS chunk back to a few hundred KB.
+OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
+META_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-meta.json")
 
 CATEGORY_LABELS = {
     "apple": "Apple",
@@ -44,7 +48,7 @@ CATEGORY_LABELS = {
     "data-science": "Data Science",
     "devops": "DevOps",
     "dogfood": "Dogfood",
-    "domain": "Domain",
+    "domain": "Business & Finance",
     "email": "Email",
     "gaming": "Gaming",
     "gifs": "GIFs",
@@ -91,6 +95,7 @@ GITHUB_TAP_LABELS = {
     "openai/skills": "OpenAI",
     "anthropics/skills": "Anthropic",
     "huggingface/skills": "HuggingFace",
+    "NVIDIA/skills": "NVIDIA",
     "VoltAgent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "MiniMax-AI/cli": "MiniMax",
@@ -186,6 +191,60 @@ def _install_command(source: str, identifier: str, name: str) -> str:
     if src == "well-known":
         return f"hermes skills install {identifier}"
     return f"hermes skills install {identifier}"
+
+
+def _source_url(source: str, identifier: str, extra: dict) -> str:
+    """Best-effort clickable URL to the skill's origin (repo / detail page).
+
+    Community skills have no generated docs page, so without this the
+    expanded card on the Skills Hub gives users nowhere to go to read the
+    actual SKILL.md before installing. We prefer an explicit URL the source
+    adapter already collected (``extra.detail_url`` / ``extra.repo_url``),
+    then fall back to synthesizing one from the identifier shape.
+    """
+    extra = extra or {}
+    for key in ("detail_url", "source_url", "repo_url", "url", "index_url"):
+        val = extra.get(key)
+        if isinstance(val, str) and val.startswith("http"):
+            return val
+
+    if not identifier:
+        return ""
+    src = (source or "").lower()
+
+    # GitHub-backed taps (openai/anthropic/nvidia/hf/gstack/VoltAgent/...):
+    # identifier is "owner/repo/<path...>" — link to the directory on GitHub.
+    if src in {"github", "openai", "anthropic", "huggingface", "nvidia",
+               "gstack", "voltagent", "minimax", "claude marketplace",
+               "claude-marketplace"}:
+        parts = [p for p in identifier.split("/") if p]
+        if len(parts) >= 2:
+            owner, repo = parts[0], parts[1]
+            sub = "/".join(parts[2:])
+            base = f"https://github.com/{owner}/{repo}"
+            return f"{base}/tree/main/{sub}" if sub else base
+        return ""
+
+    if src == "clawhub":
+        # identifier is a bare slug (the "clawhub/" prefix is added at install time)
+        slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
+        return f"https://clawhub.ai/skills/{slug}"
+
+    if src in {"skills.sh", "skills-sh"}:
+        # "skills-sh/owner/repo/skill" -> the skills.sh detail page
+        rest = identifier[len("skills-sh/"):] if identifier.startswith("skills-sh/") else identifier
+        return f"https://skills.sh/skills/{rest}"
+
+    if src == "lobehub":
+        slug = identifier[len("lobehub/"):] if identifier.startswith("lobehub/") else identifier
+        return f"https://lobehub.com/agent/{slug}"
+
+    if src in {"browse.sh", "browse-sh"}:
+        # "browse-sh/<hostname>/<task-id>" -> browse.sh task page
+        rest = identifier[len("browse-sh/"):] if identifier.startswith("browse-sh/") else identifier
+        return f"https://browse.sh/skills/{rest}"
+
+    return ""
 
 
 def extract_local_skills():
@@ -338,6 +397,15 @@ def extract_unified_index_skills():
         category = _guess_category(tags)
         extra = entry.get("extra", {}) or {}
 
+        # A skills.sh.json grouping sidecar (if the tap ships one) gives us a
+        # real, human-readable category — prefer it over the tag heuristic.
+        # extra["category"] holds the grouping title, e.g. "Inference AI".
+        sidecar_category = extra.get("category") if isinstance(extra, dict) else None
+        category_label_override = ""
+        if isinstance(sidecar_category, str) and sidecar_category.strip():
+            category_label_override = sidecar_category.strip()
+            category = category_label_override.lower().replace(" ", "-")
+
         # Author hint from extras when available (skills.sh has installs;
         # clawhub doesn't expose author).
         author = ""
@@ -347,13 +415,15 @@ def extract_unified_index_skills():
                 author = repo.split("/")[0]
 
         install_cmd = _install_command(source_id, identifier, name)
+        source_url = _source_url(source_id, identifier, extra)
 
         out.append({
             "name": name,
             "description": description,
             "overview": "",
             "category": category,
-            "categoryLabel": "",  # filled in _consolidate_small_categories
+            "categoryLabel": category_label_override,  # set from sidecar, else filled in _consolidate_small_categories
+            "fixedCategory": bool(category_label_override),  # sidecar categories are exempt from small-cat collapse
             "source": source_label,
             "tags": tags,
             "platforms": [],
@@ -365,6 +435,7 @@ def extract_unified_index_skills():
             "docsPath": "",
             "identifier": identifier,
             "installCmd": install_cmd,
+            "sourceUrl": source_url,
         })
 
     return out, meta
@@ -445,26 +516,60 @@ for _cat, _tags in {
     "software-development": [
         "programming", "code", "coding", "software-development",
         "frontend-development", "backend-development", "web-development",
-        "react", "python", "typescript", "java", "rust",
+        "react", "python", "typescript", "java", "rust", "cli",
+        "developer-tools", "development", "api", "database", "debugging",
+        "documentation", "testing", "test", "architecture",
     ],
-    "creative": ["writing", "design", "creative", "art", "image-generation"],
-    "research": ["education", "academic", "research"],
-    "social-media": ["marketing", "seo", "social-media"],
-    "productivity": ["productivity", "business"],
-    "data-science": ["data", "data-science"],
-    "mlops": ["machine-learning", "deep-learning"],
-    "devops": ["devops"],
+    "autonomous-ai-agents": [
+        "ai", "agent", "agents", "ai-agent", "ai-agents", "agentic",
+        "agentic-ai", "ai-assistant", "assistant", "multi-agent",
+        "autonomous", "llm", "rag", "prompt", "prompts", "a2a", "acp",
+    ],
+    "creative": [
+        "writing", "design", "creative", "art", "image-generation",
+        "image", "content", "video-editing", "content-creation",
+    ],
+    "research": ["education", "academic", "academic-writing", "research", "knowledge"],
+    "social-media": ["marketing", "seo", "social-media", "advertising", "creator"],
+    "productivity": [
+        "productivity", "business", "automation", "calendar", "email",
+        "document", "documents", "office", "notes", "note-taking",
+        "collaboration", "workflow", "crm",
+    ],
+    "data-science": ["data", "data-science", "analytics", "analysis", "visualization"],
+    "mlops": ["machine-learning", "deep-learning", "mlops", "training", "fine-tuning"],
+    "devops": ["devops", "docker", "kubernetes", "infrastructure", "deployment", "monitoring", "ci-cd"],
     "gaming": ["gaming", "game", "game-development"],
-    "media": ["music", "media", "video"],
-    "health": ["health", "fitness"],
-    "translation": ["translation", "language-learning"],
-    "security": ["security", "cybersecurity"],
+    "media": ["music", "media", "video", "audio", "podcast", "youtube"],
+    "health": ["health", "fitness", "medical", "wellness"],
+    "translation": ["translation", "language-learning", "i18n", "localization"],
+    "security": ["security", "cybersecurity", "auth", "compliance", "audit", "privacy"],
+    "blockchain": [
+        "blockchain", "crypto", "cryptocurrency", "defi", "web3",
+        "bitcoin", "ethereum", "nft", "trading", "arbitrage",
+    ],
+    "communication": ["communication", "chat", "messaging", "slack", "discord"],
+    "domain": [
+        "finance", "accounting", "banking", "ecommerce", "e-commerce",
+        "shopping", "travel", "booking", "real-estate", "legal",
+        "government", "b2b", "b2b-sales", "entrepreneur", "budget",
+    ],
 }.items():
     for _t in _tags:
         TAG_TO_CATEGORY[_t] = _cat
 
 
 def _guess_category(tags: list) -> str:
+    """Map a skill's tags to a curated category, or 'uncategorized'.
+
+    Previously this fell back to ``tags[0]`` verbatim, which produced
+    hundreds of junk one-off "categories" in the sidebar (e.g.
+    "Doramagic Crystal", "0.10.7 Dev", "Ap2") — version strings, brand
+    names, and tag noise. We now ONLY accept categories that map to a
+    known curated bucket; everything else becomes "uncategorized", which
+    _consolidate_small_categories folds into "Other". Sidecar-declared
+    categories (skills.sh groupings) bypass this entirely via fixedCategory.
+    """
     if not tags:
         return "uncategorized"
     for tag in tags:
@@ -473,8 +578,12 @@ def _guess_category(tags: list) -> str:
         cat = TAG_TO_CATEGORY.get(tag.lower())
         if cat:
             return cat
-    first = tags[0] if isinstance(tags[0], str) else ""
-    return first.lower().replace(" ", "-") if first else "uncategorized"
+        # Also accept a tag that's already a known curated category key
+        # (e.g. a skill tagged literally "security" or "devops").
+        normalized = tag.lower().replace(" ", "-")
+        if normalized in CATEGORY_LABELS and normalized != "other":
+            return normalized
+    return "uncategorized"
 
 
 MIN_CATEGORY_SIZE = 4
@@ -486,10 +595,17 @@ def _consolidate_small_categories(skills: list) -> list:
             s["category"] = "other"
             s["categoryLabel"] = "Other"
 
-    counts = Counter(s["category"] for s in skills)
+    # Skills with a sidecar-declared category (skills.sh.json grouping) keep
+    # their category even if it's the only skill in it — the tap explicitly
+    # chose that label, so it's not a heuristic guess to collapse away.
+    counts = Counter(
+        s["category"] for s in skills if not s.get("fixedCategory")
+    )
     small_cats = {cat for cat, n in counts.items() if n < MIN_CATEGORY_SIZE}
 
     for s in skills:
+        if s.get("fixedCategory"):
+            continue
         if s["category"] in small_cats:
             s["category"] = "other"
             s["categoryLabel"] = "Other"
@@ -531,7 +647,9 @@ def main():
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
     with open(OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(all_skills, f, indent=2)
+        # Minified — file is served over the wire, not read by humans.
+        # At 50k+ skills the indented version was ~30% larger.
+        json.dump(all_skills, f, separators=(",", ":"), ensure_ascii=False)
 
     # Sidecar meta file so the page can render a "Last refreshed" badge
     # without changing the shape of skills.json.
@@ -547,7 +665,7 @@ def main():
     if index_meta:
         meta.update(index_meta)
     with open(META_OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+        json.dump(meta, f, separators=(",", ":"), ensure_ascii=False)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")
     print(f"  {len(local)} local ({sum(1 for s in local if s['source'] == 'built-in')} built-in, "

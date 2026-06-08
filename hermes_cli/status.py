@@ -7,7 +7,6 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
-import importlib.util
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -224,7 +223,7 @@ def show_status(args):
     elif nous_inference_present:
         nous_label = "not logged in (Nous inference key configured)"
     else:
-        nous_label = "not logged in (run: hermes auth add nous --type oauth)"
+        nous_label = "not logged in (run: hermes portal)"
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
         f"{nous_label}"

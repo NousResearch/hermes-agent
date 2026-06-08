@@ -39,29 +39,33 @@ Bring your own keys anytime — per-tool, whenever you want to. The gateway isn'
 
 ## Get started
 
-The fastest path for a fresh install:
+There are three ways in — pick whichever fits where you are:
 
 ```bash
-hermes setup --portal     # Nous OAuth, set Nous as provider, and turn on the Tool Gateway in one go
+hermes setup --portal     # Fresh install: Nous OAuth + set Nous as provider + turn on the Tool Gateway in one go
 ```
-
-Already have Hermes configured? Just switch your provider:
 
 ```bash
-hermes model              # Pick Nous Portal — Hermes will offer to turn on the Tool Gateway
+hermes model              # Switch your inference provider to Nous Portal — Hermes then offers to turn on the gateway for all tools
 ```
 
-When you select Nous Portal, Hermes offers to turn on the Tool Gateway. Accept, and you're done — every supported tool is live on the next run.
+```bash
+hermes tools              # Enable the gateway per-tool — pick "Nous Subscription" for any tool you want
+```
+
+`hermes setup --portal` and `hermes model` are the all-at-once paths: log in once, optionally flip every tool to the gateway. `hermes tools` is the à la carte path — turn on just the tools you want, one at a time.
+
+**You don't have to log in first.** With `hermes tools`, the Nous-managed backends (Web search, Image, Video, TTS, Browser) are always listed, even if you've never signed into Nous Portal. Select one and Hermes runs the Portal login right there if you aren't already authenticated — no need to run `hermes model` beforehand. If your Nous OAuth is already active, selecting the backend enables it immediately with no extra prompt. This path only logs you in and turns on the one tool you picked — it does **not** switch your inference provider, and it does **not** prompt you to enable the gateway for every other tool.
 
 Check what's active at any time:
 
 ```bash
-hermes portal status      # Portal auth + Tool Gateway routing summary
+hermes portal info        # Portal auth + Tool Gateway routing summary
 hermes portal tools       # Gateway catalog with current routing per tool
 hermes status             # Full system status (Tool Gateway is one section)
 ```
 
-`hermes portal status` shows a section like:
+`hermes portal info` shows a section like:
 
 ```
 ◆ Nous Tool Gateway
@@ -78,6 +82,8 @@ Tools marked "active via Nous subscription" are going through the gateway. Anyth
 
 The Tool Gateway is a **paid-subscription** feature. Free-tier Nous accounts can use Portal for inference but don't include managed tools — [upgrade your plan](https://portal.nousresearch.com/manage-subscription) to unlock the gateway.
 
+Some accounts are also entitled to a **free tool pool** — a small managed-tool allowance that covers gateway tool calls without a paid subscription. When a free pool is available, the gateway surfaces it and shows a setup prompt on first use, so you can opt in and start using managed tools right away.
+
 ## Mix and match
 
 The gateway is per-tool. Turn it on for just what you want:
@@ -92,7 +98,7 @@ Switch any tool at any time via:
 hermes tools          # Interactive picker for each tool category
 ```
 
-Select the tool, pick **Nous Subscription** as the provider (or any direct provider you prefer). No config editing required.
+Select the tool, pick **Nous Subscription** as the provider (or any direct provider you prefer). No config editing required. If you aren't logged into Nous Portal yet, picking **Nous Subscription** kicks off the Portal login inline — you don't need to authenticate through `hermes model` first.
 
 ## Using individual image models
 
@@ -101,13 +107,13 @@ Image generation defaults to FLUX 2 Klein 9B for speed. Override per-call by pas
 | Model | ID | Best for |
 |---|---|---|
 | FLUX 2 Klein 9B | `fal-ai/flux-2/klein/9b` | Fast, good default |
-| FLUX 2 Pro | `fal-ai/flux-2/pro` | Higher fidelity FLUX |
+| FLUX 2 Pro | `fal-ai/flux-2-pro` | Higher fidelity FLUX |
 | Z-Image Turbo | `fal-ai/z-image/turbo` | Stylized, fast |
-| Nano Banana Pro | `fal-ai/gemini-3-pro-image` | Google Gemini 3 Pro Image |
-| GPT Image 1.5 | `fal-ai/gpt-image-1/5` | OpenAI image gen, text+image |
+| Nano Banana Pro | `fal-ai/nano-banana-pro` | Google Gemini 3 Pro Image |
+| GPT Image 1.5 | `fal-ai/gpt-image-1.5` | OpenAI image gen, text+image |
 | GPT Image 2 | `fal-ai/gpt-image-2` | OpenAI latest |
 | Ideogram V3 | `fal-ai/ideogram/v3` | Strong prompt adherence + typography |
-| Recraft V4 Pro | `fal-ai/recraft/v4/pro` | Vector-style, graphic design |
+| Recraft V4 Pro | `fal-ai/recraft/v4/pro/text-to-image` | Vector-style, graphic design |
 | Qwen Image | `fal-ai/qwen-image` | Alibaba multimodal |
 
 The set evolves — `hermes tools` → Image Generation shows the current live list.

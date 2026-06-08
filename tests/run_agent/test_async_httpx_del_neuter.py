@@ -13,8 +13,6 @@ The three-layer defence:
 """
 
 import asyncio
-import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest

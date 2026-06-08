@@ -25,7 +25,7 @@
 
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card } from "@/components/ui/card";
+import { Card } from "@nous-research/ui/ui/components/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
@@ -120,7 +120,11 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         if (cancelled) {
           return;
         }
-        return gw.request<{ session_id: string }>("session.create", {});
+        // close_on_disconnect: the gateway reaps this sidecar session (and its
+        // slash_worker subprocess) when the WS drops, instead of leaking it.
+        return gw.request<{ session_id: string }>("session.create", {
+          close_on_disconnect: true,
+        });
       })
       .then((created) => {
         if (cancelled || !created?.session_id) {

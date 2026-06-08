@@ -2,7 +2,6 @@
 
 import os
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -91,7 +90,12 @@ class TestSSHBulkUpload:
         assert "/home/testuser/.hermes/credentials" in mkdir_str
 
     def test_staging_symlinks_mirror_remote_layout(self, mock_env, tmp_path):
-        """Symlinks in staging dir should mirror the .hermes-relative layout."""
+        """Staged file in staging dir should mirror the remote path structure.
+
+        On platforms where symlinks are available (Linux/macOS) the staged
+        entry is a symlink; on Windows it may be a regular copy.  Either way
+        the file must exist at the expected path and contain the right data.
+        """
         f1 = tmp_path / "local_a.txt"
         f1.write_text("content a")
 
@@ -106,11 +110,14 @@ class TestSSHBulkUpload:
                 # Capture the staging dir from -C argument
                 c_idx = cmd.index("-C")
                 staging_dir = cmd[c_idx + 1]
-                # Check the symlink exists
+                # Check the staged entry exists at the base-relative path
                 expected = os.path.join(staging_dir, "skills/my_skill.md")
                 staging_paths.append(expected)
-                assert os.path.islink(expected), f"Expected symlink at {expected}"
-                assert os.readlink(expected) == os.path.abspath(str(f1))
+                # File must exist (either as symlink or copy)
+                assert os.path.exists(expected), f"Expected staged file at {expected}"
+                # Content must match the source
+                with open(expected, "r") as fh:
+                    assert fh.read() == "content a"
 
             mock = MagicMock()
             mock.stdout = MagicMock()

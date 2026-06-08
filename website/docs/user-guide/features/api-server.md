@@ -272,6 +272,10 @@ Server-Sent Events stream of the run's tool-call progress, token deltas, and lif
 
 Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
 
+### POST /v1/runs/\{run_id\}/approval
+
+Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
+
 ## Jobs API (background scheduled work)
 
 The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.
@@ -307,6 +311,66 @@ Resume a previously paused job.
 ### POST /api/jobs/\{job_id\}/run
 
 Trigger the job to run immediately, out of schedule.
+
+## Sessions API (session control over REST)
+
+External UIs can manage Hermes sessions over REST without standing up the dashboard. All endpoints are gated by `API_SERVER_KEY` and live under `/api/sessions/*`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
+| `POST` | `/api/sessions` | Create an empty session |
+| `GET` | `/api/sessions/{id}` | Read session metadata |
+| `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
+| `DELETE` | `/api/sessions/{id}` | Delete a session |
+| `GET` | `/api/sessions/{id}/messages` | Message history for a session |
+| `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
+| `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
+
+`/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+```bash
+# fork a session and run one turn
+curl -X POST http://localhost:8642/api/sessions/$ID/fork \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"title": "explore alt path"}'
+
+# stream a turn over SSE
+curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"input": "what files changed in the last hour?"}'
+```
+
+## Skills and toolsets discovery
+
+`GET /v1/skills` and `GET /v1/toolsets` let external clients enumerate the agent's capabilities deterministically over REST instead of asking the model. Both are read-only and gated by `API_SERVER_KEY`.
+
+```bash
+curl http://localhost:8642/v1/skills \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+# → [{"name": "github-pr-workflow", "description": "...", "category": "..."}, ...]
+
+curl http://localhost:8642/v1/toolsets \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+# → [{"name": "core", "label": "...", "description": "...", "enabled": true,
+#     "configured": true, "tools": ["read_file", "write_file", ...]}, ...]
+```
+
+`/v1/skills` returns the same metadata the skills hub uses internally. `/v1/toolsets` returns toolsets resolved for the `api_server` platform with the concrete `tools` list each one expands to. Both are advertised under `endpoints.*` in `/v1/capabilities`.
+
+## Long-term memory scoping (`X-Hermes-Session-Key`)
+
+Multi-user frontends like Open WebUI need a stable per-channel identifier for long-term memory (Honcho, etc.) that is **independent** of the transcript-scoped `X-Hermes-Session-Id` (which rotates on `/new`). Pass `X-Hermes-Session-Key` on `/v1/chat/completions`, `/v1/responses`, or `/v1/runs` and Hermes threads it through to `AIAgent(gateway_session_key=...)`, where the Honcho memory provider uses it to derive a stable scope.
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Authorization: Bearer ***
+X-Hermes-Session-Id: transcript-alpha
+X-Hermes-Session-Key: agent:main:webui:dm:user-42
+```
+
+Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
 ## System Prompt Handling
 

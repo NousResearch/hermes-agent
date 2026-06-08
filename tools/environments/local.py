@@ -75,6 +75,27 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
+# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
+# providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
+# Bedrock-specific bearer token, which is a Hermes inference secret exactly
+# analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
+# ``boto3`` toolchain off it, so stripping it from terminal/execute_code
+# subprocesses costs no user capability.
+#
+# The GENERAL AWS credential chain (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# AWS_SESSION_TOKEN, AWS_PROFILE, and the config/role pointers) is INTENTIONALLY
+# left inheritable.  Per SECURITY.md §3.2 the local terminal is the user's
+# trusted operator shell; the agent having the same general AWS access the
+# user's own shell has is the intended posture, not a leak.  Hard-blocklisting
+# those vars would (a) regress every user who runs aws/terraform/cdk/boto3 in
+# the agent terminal — not just Bedrock users, since the registry is iterated
+# unconditionally — and (b) be unrecoverable, because env_passthrough.py
+# refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
+# issue #32314 discussion.
+_AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
+    "AWS_BEARER_TOKEN_BEDROCK",
+})
+
 
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
@@ -84,6 +105,8 @@ def _build_provider_env_blocklist() -> frozenset:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
+            if pconfig.auth_type == "aws_sdk":
+                blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
     except ImportError:
@@ -152,6 +175,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_SMTP_HOST",
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
+        "HERMES_DASHBOARD_SESSION_TOKEN",
         "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
         "GITHUB_APP_ID",
@@ -316,7 +340,7 @@ def _make_run_env(env: dict) -> dict:
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.
     try:
-        from gateway.session_context import get_session_env, _UNSET, _VAR_MAP
+        from gateway.session_context import _UNSET, _VAR_MAP
         for var_name, var in _VAR_MAP.items():
             value = var.get()
             if value is not _UNSET and value:

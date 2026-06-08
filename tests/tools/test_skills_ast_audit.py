@@ -1,7 +1,6 @@
 """Tests for tools.skills_ast_audit — opt-in AST diagnostic scanner."""
 
 import sys
-from pathlib import Path
 
 from tools.skills_ast_audit import ast_scan_path, format_ast_report
 

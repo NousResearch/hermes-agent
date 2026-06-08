@@ -18,7 +18,6 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 
@@ -3755,11 +3754,15 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
         caller = inspect.currentframe().f_back  # type: ignore[union-attr]
         code = caller.f_code if caller is not None else None
         filename = code.co_filename if code is not None else ""
-        if filename.endswith("gateway/run.py"):
+        # The kanban dispatcher/notifier watcher loops were extracted from
+        # gateway/run.py into gateway/kanban_watchers.py (god-file Phase 3),
+        # so accept either filename for the time-travel mock.
+        if filename.endswith("gateway/run.py") or filename.endswith("gateway/kanban_watchers.py"):
             return next(time_values, 1301.0)
         return real_monotonic()
 
     monkeypatch.setattr("gateway.run.time.monotonic", _monotonic_for_gateway_dispatcher)
+    monkeypatch.setattr("gateway.kanban_watchers.time.monotonic", _monotonic_for_gateway_dispatcher)
 
     calls = {"tick": 0}
 

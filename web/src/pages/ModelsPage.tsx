@@ -24,9 +24,9 @@ import { formatTokenCount } from "@/lib/format";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -95,11 +95,17 @@ function TokenBar({
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
-  const segments = [
-    { value: cacheRead, color: "bg-blue-400/60", dotColor: "bg-blue-400", label: "Cache Read" },
-    { value: reasoning, color: "bg-purple-400/60", dotColor: "bg-purple-400", label: "Reasoning" },
-    { value: input, color: "bg-[#ffe6cb]/70", dotColor: "bg-[#ffe6cb]", label: "Input" },
-    { value: output, color: "bg-emerald-500/70", dotColor: "bg-emerald-500", label: "Output" },
+  // Segments carry a CSS color value (hex or `var(--token)`) rather than
+  // a Tailwind class so the input/output series can pick up the active
+  // theme's `--series-*-token` vars — see `themes/types.ts`
+  // `ThemeSeriesColors`. The /60–/70 fade on the bar is applied via
+  // color-mix on the same value so themes don't need to ship two
+  // separate hex literals.
+  const segments: Array<{ color: string; label: string; value: number }> = [
+    { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
+    { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
+    { value: input, color: "var(--series-input-token)", label: "Input" },
+    { value: output, color: "var(--series-output-token)", label: "Output" },
   ].filter((s) => s.value > 0);
 
   return (
@@ -109,8 +115,11 @@ function TokenBar({
         {segments.map((s, i) => (
           <div
             key={i}
-            className={`${s.color} relative flex items-center transition-all duration-300`}
-            style={{ width: `${(s.value / total) * 100}%` }}
+            className="relative flex items-center transition-all duration-300"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${s.color} 70%, transparent)`,
+              width: `${(s.value / total) * 100}%`,
+            }}
           >
             {/* Stepped fill pattern overlay */}
             <div
@@ -128,7 +137,10 @@ function TokenBar({
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-text-secondary">
         {segments.map((s, i) => (
           <span key={i} className="flex items-center gap-1">
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${s.dotColor}`} />
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: s.color }}
+            />
             {s.label} {formatTokens(s.value)}
           </span>
         ))}
@@ -152,7 +164,7 @@ function CapabilityBadges({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {capabilities.supports_tools && (
-        <span className="inline-flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+        <span className="inline-flex items-center gap-1 bg-success/10 px-1.5 py-0.5 text-xs font-medium text-success">
           <Wrench className="h-2.5 w-2.5" /> Tools
         </span>
       )}
@@ -818,13 +830,24 @@ export default function ModelsPage() {
   }, []);
 
   useLayoutEffect(() => {
-    const periodLabel =
-      PERIODS.find((p) => p.days === days)?.label ?? `${days}d`;
+    // Period selector + refresh both live in afterTitle so the controls
+    // sit immediately next to the page title instead of being pinned to
+    // the far-right `end` slot. The active period is conveyed by the
+    // filled (non-outlined) button — no redundant period badge.
     setAfterTitle(
-      <span className="flex items-center gap-1.5">
-        <Badge tone="secondary" className="text-xs">
-          {periodLabel}
-        </Badge>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {PERIODS.map((p) => (
+          <Button
+            key={p.label}
+            type="button"
+            size="sm"
+            outlined={days !== p.days}
+            onClick={() => setDays(p.days)}
+            className="uppercase"
+          >
+            {p.label}
+          </Button>
+        ))}
         <Button
           type="button"
           ghost
@@ -836,26 +859,9 @@ export default function ModelsPage() {
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
-      </span>,
-    );
-    setEnd(
-      <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {PERIODS.map((p) => (
-            <Button
-              key={p.label}
-              type="button"
-              size="sm"
-              outlined={days !== p.days}
-              onClick={() => setDays(p.days)}
-              className="uppercase"
-            >
-              {p.label}
-            </Button>
-          ))}
-        </div>
       </div>,
     );
+    setEnd(null);
     return () => {
       setAfterTitle(null);
       setEnd(null);

@@ -48,6 +48,7 @@ export type CommandDispatchResponse =
   | { target: string; type: 'alias' }
   | { message?: string; name: string; type: 'skill' }
   | { message: string; notice?: string; type: 'send' }
+  | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -62,6 +63,12 @@ export interface ConfigDisplayConfig {
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string
+  /**
+   * Nudge the user toward the /agents spawn-tree dashboard the first time a
+   * turn starts delegating, via a one-time transient activity hint.  Opens
+   * nothing — just advertises the command.  Default true.
+   */
+  tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
   /** Legacy alias for display.mouse_tracking. */
@@ -115,11 +122,15 @@ export interface SessionCreateResponse {
 }
 
 export interface SessionResumeResponse {
+  inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
   resumed?: string
+  running?: boolean
   session_id: string
+  started_at?: number
+  status?: LiveSessionStatus
 }
 
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
@@ -207,6 +218,7 @@ export interface SessionUsageResponse {
   context_used?: number
   cost_status?: 'estimated' | 'exact'
   cost_usd?: number
+  credits_lines?: string[]
   input?: number
   model?: string
   output?: number
@@ -501,6 +513,19 @@ export type GatewayEvent =
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
+  | {
+      payload?: {
+        id?: string
+        key?: string
+        kind?: 'sticky' | 'ttl'
+        level?: 'error' | 'info' | 'success' | 'warn'
+        text?: string
+        ttl_ms?: null | number
+      }
+      session_id?: string
+      type: 'notification.show'
+    }
+  | { payload?: { key?: string }; session_id?: string; type: 'notification.clear' }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }

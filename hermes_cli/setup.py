@@ -12,7 +12,6 @@ Config files are stored in ~/.hermes/ for easy access.
 """
 
 import importlib.util
-import json
 import logging
 import os
 import re
@@ -306,7 +305,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
     appended at the end — the user toggles items with Space and confirms
     with Enter on "Continue →".
 
-    Falls back to a numbered toggle interface when simple_term_menu is
+    Falls back to a numbered toggle interface when curses is
     unavailable.
 
     Returns:
@@ -416,7 +415,9 @@ def _print_setup_summary(config: dict, hermes_home):
         elif browser_provider == "Camofox":
             missing_browser_hint = "CAMOFOX_URL"
         elif browser_provider == "Local browser":
-            missing_browser_hint = "npm install -g agent-browser"
+            missing_browser_hint = (
+                "npm install -g agent-browser && agent-browser install --with-deps"
+            )
         tool_status.append(
             ("Browser Automation", False, missing_browser_hint)
         )
@@ -455,22 +456,25 @@ def _print_setup_summary(config: dict, hermes_home):
     # Video generation — opt-in via `hermes tools` → Video Generation.
     # Only show the row when a plugin reports available so we don't badger
     # users who don't care about video gen with a "missing" status line.
-    try:
-        from agent.video_gen_registry import list_providers as _list_video_providers
-        from hermes_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
-        _ensure_plugins()
-        _video_backend = None
-        for _vp in _list_video_providers():
-            try:
-                if _vp.is_available():
-                    _video_backend = _vp.display_name
-                    break
-            except Exception:
-                continue
-    except Exception:
-        _video_backend = None
-    if _video_backend:
-        tool_status.append((f"Video Generation ({_video_backend})", True, None))
+    if subscription_features.video_gen.managed_by_nous:
+        tool_status.append(("Video Generation (FAL via Nous subscription)", True, None))
+    else:
+        try:
+            from agent.video_gen_registry import list_providers as _list_video_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
+            _ensure_plugins()
+            _video_backend = None
+            for _vp in _list_video_providers():
+                try:
+                    if _vp.is_available():
+                        _video_backend = _vp.display_name
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            _video_backend = None
+        if _video_backend:
+            tool_status.append((f"Video Generation ({_video_backend})", True, None))
 
     # TTS — show configured provider
     tts_provider = cfg_get(config, "tts", "provider", default="edge")
@@ -499,7 +503,6 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
     elif tts_provider == "kittentts":
         try:
-            import importlib.util
             kittentts_ok = importlib.util.find_spec("kittentts") is not None
         except Exception:
             kittentts_ok = False
@@ -735,175 +738,14 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     if isinstance(_m, dict):
         selected_provider = _m.get("provider")
 
-    # ── Same-provider fallback & rotation setup (full setup only) ──
-    if not quick and _supports_same_provider_pool_setup(selected_provider):
-        try:
-            from types import SimpleNamespace
-            from agent.credential_pool import load_pool
-            from hermes_cli.auth_commands import auth_add_command
-
-            pool = load_pool(selected_provider)
-            entries = pool.entries()
-            entry_count = len(entries)
-            manual_count = sum(1 for entry in entries if str(getattr(entry, "source", "")).startswith("manual"))
-            auto_count = entry_count - manual_count
-            print()
-            print_header("Same-Provider Fallback & Rotation")
-            print_info(
-                "Hermes can keep multiple credentials for one provider and rotate between"
-            )
-            print_info(
-                "them when a credential is exhausted or rate-limited. This preserves"
-            )
-            print_info(
-                "your primary provider while reducing interruptions from quota issues."
-            )
-            print()
-            if auto_count > 0:
-                print_info(
-                    f"Current pooled credentials for {selected_provider}: {entry_count} "
-                    f"({manual_count} manual, {auto_count} auto-detected from env/shared auth)"
-                )
-            else:
-                print_info(f"Current pooled credentials for {selected_provider}: {entry_count}")
-
-            while prompt_yes_no("Add another credential for same-provider fallback?", False):
-                auth_add_command(
-                    SimpleNamespace(
-                        provider=selected_provider,
-                        auth_type="",
-                        label=None,
-                        api_key=None,
-                        portal_url=None,
-                        inference_url=None,
-                        client_id=None,
-                        scope=None,
-                        no_browser=False,
-                        timeout=15.0,
-                        insecure=False,
-                        ca_bundle=None,
-                        min_key_ttl_seconds=5 * 60,
-                    )
-                )
-                pool = load_pool(selected_provider)
-                entry_count = len(pool.entries())
-                print_info(f"Provider pool now has {entry_count} credential(s).")
-
-            if entry_count > 1:
-                strategy_labels = [
-                    "Fill-first / sticky — keep using the first healthy credential until it is exhausted",
-                    "Round robin — rotate to the next healthy credential after each selection",
-                    "Random — pick a random healthy credential each time",
-                ]
-                current_strategy = _get_credential_pool_strategies(config).get(selected_provider, "fill_first")
-                default_strategy_idx = {
-                    "fill_first": 0,
-                    "round_robin": 1,
-                    "random": 2,
-                }.get(current_strategy, 0)
-                strategy_idx = prompt_choice(
-                    "Select same-provider rotation strategy:",
-                    strategy_labels,
-                    default_strategy_idx,
-                )
-                strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
-                _set_credential_pool_strategy(config, selected_provider, strategy_value)
-                print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
-        except Exception as exc:
-            logger.debug("Could not configure same-provider fallback in setup: %s", exc)
-
-    # ── Vision & Image Analysis Setup (full setup only) ──
-    if quick:
-        _vision_needs_setup = False
-    else:
-        try:
-            from agent.auxiliary_client import get_available_vision_backends
-            _vision_backends = set(get_available_vision_backends())
-        except Exception:
-            _vision_backends = set()
-
-        _vision_needs_setup = not bool(_vision_backends)
-
-        if selected_provider in _vision_backends:
-            _vision_needs_setup = False
-
-    if _vision_needs_setup:
-        _prov_names = {
-            "nous-api": "Nous Portal API key",
-            "copilot": "GitHub Copilot",
-            "copilot-acp": "GitHub Copilot ACP",
-            "zai": "Z.AI / GLM",
-            "kimi-coding": "Kimi / Moonshot",
-            "kimi-coding-cn": "Kimi / Moonshot (China)",
-            "stepfun": "StepFun Step Plan",
-            "minimax": "MiniMax",
-            "minimax-cn": "MiniMax CN",
-            "anthropic": "Anthropic",
-            "custom": "your custom endpoint",
-        }
-        _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
-
-        print()
-        print_header("Vision & Image Analysis (optional)")
-        print_info(f"Vision uses a separate multimodal backend. {_prov_display}")
-        print_info("doesn't currently provide one Hermes can auto-use for vision,")
-        print_info("so choose a backend now or skip and configure later.")
-        print()
-
-        _vision_choices = [
-            "OpenRouter — uses Gemini (free tier at openrouter.ai/keys)",
-            "OpenAI-compatible endpoint — base URL, API key, and vision model",
-            "Skip for now",
-        ]
-        _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
-
-        if _vision_idx == 0:  # OpenRouter
-            _or_key = prompt("  OpenRouter API key", password=True).strip()
-            if _or_key:
-                save_env_value("OPENROUTER_API_KEY", _or_key)
-                print_success("OpenRouter key saved — vision will use Gemini")
-            else:
-                print_info("Skipped — vision won't be available")
-        elif _vision_idx == 1:  # OpenAI-compatible endpoint
-            _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
-            _api_key_label = "  API key"
-            _is_native_openai = base_url_hostname(_base_url) == "api.openai.com"
-            if _is_native_openai:
-                _api_key_label = "  OpenAI API key"
-            _oai_key = prompt(_api_key_label, password=True).strip()
-            if _oai_key:
-                save_env_value("OPENAI_API_KEY", _oai_key)
-                # Save vision base URL to config (not .env — only secrets go there)
-                _vaux = config.setdefault("auxiliary", {}).setdefault("vision", {})
-                _vaux["base_url"] = _base_url
-                if _is_native_openai:
-                    _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
-                    _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
-                    _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
-                    _selected_vision_model = (
-                        _oai_vision_models[_vm_idx]
-                        if _vm_idx < len(_oai_vision_models)
-                        else "gpt-4o-mini"
-                    )
-                else:
-                    _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
-                if _selected_vision_model:
-                    save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
-                print_success(
-                    f"Vision configured with {_base_url}"
-                    + (f" ({_selected_vision_model})" if _selected_vision_model else "")
-                )
-            else:
-                print_info("Skipped — vision won't be available")
-        else:
-            print_info("Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* settings")
-
+    # Credential rotation, vision-backend selection, and TTS provider are no
+    # longer prompted here. They have safe defaults (rotation off, vision
+    # auto-detected from the main provider, TTS = Edge) and are configurable
+    # on demand via `hermes auth add`, `hermes setup` vision, and
+    # `hermes setup tts`. This keeps both quick and full setup thin.
 
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
-
-    if not quick and selected_provider != "nous":
-        _setup_tts_provider(config)
 
 
 # =============================================================================
@@ -1252,7 +1094,6 @@ def _setup_tts_provider(config: dict):
     elif selected == "kittentts":
         # Check if already installed
         try:
-            import importlib.util
             already_installed = importlib.util.find_spec("kittentts") is not None
         except Exception:
             already_installed = False
@@ -1340,29 +1181,9 @@ def setup_terminal_backend(config: dict):
     if selected_backend == "local":
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
-
-        # Gateway/cron working directory
-        print()
-        print_info("Gateway working directory:")
-        print_info("  Used by Telegram/Discord/cron sessions.")
-        print_info("  CLI/TUI always uses your launch directory instead.")
-        current_cwd = cfg_get(config, "terminal", "cwd", default="")
-        cwd = prompt("  Gateway working directory", current_cwd or str(Path.home()))
-        if cwd:
-            config["terminal"]["cwd"] = cwd
-
-        # Sudo support
-        print()
-        existing_sudo = get_env_value("SUDO_PASSWORD")
-        if existing_sudo:
-            print_info("Sudo password: configured")
-        elif prompt_yes_no(
-            "Enable sudo support? (stores password for apt install, etc.)", False
-        ):
-            sudo_pass = prompt("  Sudo password", password=True)
-            if sudo_pass:
-                save_env_value("SUDO_PASSWORD", sudo_pass)
-                print_success("Sudo password saved")
+        # Gateway working directory defaults to home; sudo stays off. Both are
+        # configurable later via `hermes setup terminal` / config.yaml.
+        config["terminal"].setdefault("cwd", str(Path.home()))
 
     elif selected_backend == "docker":
         print_success("Terminal backend: Docker")
@@ -1375,13 +1196,10 @@ def setup_terminal_backend(config: dict):
         else:
             print_info(f"Docker found: {docker_bin}")
 
-        # Docker image
-        current_image = cfg_get(config, "terminal", "docker_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
-        image = prompt("  Docker image", current_image)
-        config["terminal"]["docker_image"] = image
-        save_env_value("TERMINAL_DOCKER_IMAGE", image)
-
-        _prompt_container_resources(config)
+        # Image and resource limits use defaults; tune via `hermes setup terminal`.
+        config["terminal"].setdefault(
+            "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
+        )
 
     elif selected_backend == "singularity":
         print_success("Terminal backend: Singularity/Apptainer")
@@ -1396,12 +1214,11 @@ def setup_terminal_backend(config: dict):
         else:
             print_info(f"Found: {sing_bin}")
 
-        current_image = cfg_get(config, "terminal", "singularity_image", default="docker://nikolaik/python-nodejs:python3.11-nodejs20")
-        image = prompt("  Container image", current_image)
-        config["terminal"]["singularity_image"] = image
-        save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
-
-        _prompt_container_resources(config)
+        # Image and resource limits use defaults; tune via `hermes setup terminal`.
+        config["terminal"].setdefault(
+            "singularity_image",
+            "docker://nikolaik/python-nodejs:python3.11-nodejs20",
+        )
 
     elif selected_backend == "modal":
         print_success("Terminal backend: Modal")
@@ -1500,8 +1317,6 @@ def setup_terminal_backend(config: dict):
                 if token_secret:
                     save_env_value("MODAL_TOKEN_SECRET", token_secret)
 
-        _prompt_container_resources(config)
-
     elif selected_backend == "daytona":
         print_success("Terminal backend: Daytona")
         print_info("Persistent cloud development environments.")
@@ -1551,13 +1366,10 @@ def setup_terminal_backend(config: dict):
                 save_env_value("DAYTONA_API_KEY", api_key)
                 print_success("    Configured")
 
-        # Daytona image
-        current_image = cfg_get(config, "terminal", "daytona_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
-        image = prompt("  Sandbox image", current_image)
-        config["terminal"]["daytona_image"] = image
-        save_env_value("TERMINAL_DAYTONA_IMAGE", image)
-
-        _prompt_container_resources(config)
+        # Image and resource limits use defaults; tune via `hermes setup terminal`.
+        config["terminal"].setdefault(
+            "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
+        )
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")
@@ -1624,7 +1436,7 @@ def setup_terminal_backend(config: dict):
 
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
-    config.setdefault("agent", {})["max_turns"] = 90
+    config.setdefault("agent", {})["max_turns"] = 150
     # config.yaml is the authoritative source for max_turns; the gateway
     # bridges it into HERMES_MAX_ITERATIONS at startup. We no longer write
     # to .env to avoid the dual-source inconsistency that caused the
@@ -1636,18 +1448,17 @@ def _apply_default_agent_settings(config: dict):
     config.setdefault("compression", {})["enabled"] = True
     config["compression"]["threshold"] = 0.50
 
-    config.setdefault("session_reset", {}).update({
-        "mode": "both",
-        "idle_minutes": 1440,
-        "at_hour": 4,
-    })
+    # Default to never auto-resetting sessions. The gateway treats absent
+    # session_reset as "both", so we must write "none" explicitly to make
+    # the no-auto-reset default actually take effect.
+    config.setdefault("session_reset", {})["mode"] = "none"
 
     save_config(config)
     print_success("Applied recommended defaults:")
-    print_info("  Max iterations: 90")
+    print_info("  Max iterations: 150")
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
-    print_info("  Session reset: inactivity (1440 min) + daily (4:00)")
+    print_info("  Session reset: never (use /reset or compression)")
     print_info("  Run `hermes setup agent` later to customize.")
 
 
@@ -1828,6 +1639,52 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+
+
+def _is_valid_telegram_bot_token(token: str) -> bool:
+    return bool(_TELEGRAM_BOT_TOKEN_RE.match(token))
+
+
+def _setup_telegram_auto_result():
+    """Attempt automatic Telegram bot creation via managed QR onboarding."""
+    try:
+        from hermes_cli.telegram_managed_bot import auto_setup_telegram_bot_result
+    except ImportError:
+        return None
+
+    profile_name: str | None = None
+    try:
+        hermes_home = str(get_hermes_home())
+        if "/profiles/" in hermes_home:
+            profile_name = hermes_home.rstrip("/").rsplit("/", 1)[-1]
+    except Exception:
+        pass
+
+    return auto_setup_telegram_bot_result(profile_name=profile_name)
+
+
+def _setup_telegram_auto() -> str | None:
+    """Attempt automatic Telegram bot creation and return only the token."""
+    result = _setup_telegram_auto_result()
+    return result.token if result else None
+
+
+def _prompt_telegram_bot_token() -> str | None:
+    print_info("Create a bot via @BotFather on Telegram")
+    while True:
+        token = prompt("Telegram bot token", password=True)
+        if not token:
+            return None
+        if not _is_valid_telegram_bot_token(token):
+            print_error(
+                "Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
+                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
+            )
+            continue
+        return token
+
+
 def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
     print_header("Telegram")
@@ -1846,20 +1703,40 @@ def _setup_telegram():
                         print_success("Telegram allowlist configured")
             return
 
-    print_info("Create a bot via @BotFather on Telegram")
-    import re
+    print_info("How would you like to create your Telegram bot?")
+    print()
+    print_info("  [1] Automatic (recommended)")
+    print_info("      Scan a QR code → confirm in Telegram → done.")
+    print_info("      No token copy-paste needed.")
+    print()
+    print_info("  [2] Manual")
+    print_info("      Create a bot via @BotFather yourself and paste the token.")
+    print()
 
-    while True:
-        token = prompt("Telegram bot token", password=True)
+    choice = prompt("Choice [1/2]", default="1")
+    token = None
+    setup_result = None
+
+    if choice.strip() == "1":
+        setup_result = _setup_telegram_auto_result()
+        if setup_result:
+            token = setup_result.token
+            if not _is_valid_telegram_bot_token(token):
+                print_error("Automatic setup returned an invalid Telegram bot token.")
+                token = None
+                setup_result = None
+        else:
+            token = None
         if not token:
-            return
-        if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", token):
-            print_error(
-                "Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
-                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
-            )
-            continue
-        break
+            print()
+            print_info("Falling back to manual setup...")
+            print()
+
+    if not token:
+        token = _prompt_telegram_bot_token()
+    if not token:
+        return
+
     save_env_value("TELEGRAM_BOT_TOKEN", token)
     print_success("Telegram token saved")
 
@@ -1869,11 +1746,30 @@ def _setup_telegram():
     print_info("   1. Message @userinfobot on Telegram")
     print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
     print()
-    allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty for open access)"
-    )
+
+    detected_user_id = getattr(setup_result, "owner_user_id", None)
+    if detected_user_id:
+        detected_id = str(detected_user_id)
+        print_success(f"Detected your Telegram user ID: {detected_id}")
+        if prompt_yes_no("Allow this Telegram account to use the bot?", True):
+            extra = prompt("Additional allowed user IDs (comma-separated, optional)")
+            ids = [detected_id]
+            for uid in extra.replace(" ", "").split(","):
+                if uid and uid not in ids:
+                    ids.append(uid)
+            allowed_users = ",".join(ids)
+        else:
+            allowed_users = prompt(
+                "Allowed user IDs (comma-separated, leave empty for open access)"
+            )
+    else:
+        allowed_users = prompt(
+            "Allowed user IDs (comma-separated, leave empty for open access)"
+        )
+
     if allowed_users:
-        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        allowed_users = allowed_users.replace(" ", "")
+        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users)
         print_success("Telegram allowlist configured - only listed users can use the bot")
     else:
         print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
@@ -2912,20 +2808,23 @@ SETUP_SECTIONS = [
 
 
 def _run_portal_one_shot(config: dict) -> None:
-    """One-shot Nous Portal setup — OAuth + provider switch + Tool Gateway.
+    """One-shot Nous Portal setup — OAuth + model pick + provider + Tool Gateway.
 
-    Wired into ``hermes setup --portal``. Does NOT prompt for anything
-    besides what the underlying OAuth + Tool Gateway prompts already need.
-    Designed to be shareable as a single command (``hermes setup --portal``)
-    that gets a brand-new user from zero to a fully working Hermes session
-    with web/image/tts/browser tools all routed via their Portal sub.
+    Wired into ``hermes setup --portal`` and ``hermes portal``. This is the
+    Nous-Portal slice of the first-time quick setup, collapsed into a single
+    shareable command so a brand-new user goes from zero to a fully working
+    Hermes session — model selected, provider set, and web/image/tts/browser
+    tools routed via their Portal sub — without being told to run
+    ``hermes setup`` and hunt for the quick-setup option.
+
+    The login + model selection + provider switch + Tool Gateway opt-in are all
+    delegated to ``_model_flow_nous`` — the exact same flow quick setup uses
+    (``_run_first_time_quick_setup``) and the same one ``hermes model`` runs
+    when you pick Nous. Routing through it (instead of hand-rolling the auth +
+    provider write here) means ``hermes portal`` always offers a model picker,
+    and there is a single source of truth for the Nous onboarding steps.
     """
-    from types import SimpleNamespace
-
-    from hermes_cli.auth_commands import auth_add_command
-    from hermes_cli.config import save_config
-    from hermes_cli.auth import get_nous_auth_status
-    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
+    from hermes_cli.config import load_config
 
     print()
     print(
@@ -2949,78 +2848,46 @@ def _run_portal_one_shot(config: dict) -> None:
     print_info("  Sign up: https://portal.nousresearch.com/manage-subscription")
     print()
 
-    # Skip OAuth if already logged in (don't re-prompt every time the user
-    # runs `hermes setup --portal` after a successful first run).
-    already_logged_in = False
+    # _model_flow_nous handles BOTH the logged-out path (device-code OAuth,
+    # which selects a model internally) and the already-logged-in path (curated
+    # Nous model picker), then offers the Tool Gateway opt-in and sets
+    # provider=nous via the login/model save. This is the same routine quick
+    # setup calls, so `hermes portal` == quick setup's Nous step.
     try:
-        already_logged_in = bool((get_nous_auth_status() or {}).get("logged_in"))
-    except Exception:
-        already_logged_in = False
+        from hermes_cli.main import _model_flow_nous
 
-    if already_logged_in:
-        print_success("  Already logged into Nous Portal.")
-    else:
-        # Hand off to the shared auth wiring so the device-code flow is
-        # identical to `hermes auth add nous --type oauth`. SimpleNamespace
-        # mirrors the argparse Namespace contract that auth_add_command expects.
-        ns = SimpleNamespace(
-            provider="nous",
-            auth_type="oauth",
-            label=None,
-            api_key=None,
-            portal_url=None,
-            inference_url=None,
-            client_id=None,
-            scope=None,
-            no_browser=False,
-            timeout=None,
-            insecure=False,
-            ca_bundle=None,
-            min_key_ttl_seconds=5 * 60,
-        )
-        try:
-            auth_add_command(ns)
-        except SystemExit as e:
-            print()
-            print_error(f"  Nous Portal login failed (exit {e.code}).")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
-            return
-        except (KeyboardInterrupt, EOFError):
-            print()
-            print_info("  Setup cancelled.")
-            return
-        except Exception as exc:
-            print()
-            print_error(f"  Nous Portal login failed: {exc}")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
-            return
-
-    # Set provider → nous so the model picker, status surfaces, and
-    # managed-tool gating all light up. Leave model.model empty so the
-    # runtime picks Nous's default model; the user can change it later
-    # with `hermes model`.
-    model_cfg = config.get("model")
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-        config["model"] = model_cfg
-    model_cfg["provider"] = "nous"
-    save_config(config)
-    print()
-    print_success("  Nous set as your inference provider.")
-
-    # Offer the Tool Gateway opt-in (single Y/n) — same flow that fires
-    # from `hermes model` after picking Nous.
-    print()
-    try:
-        prompt_enable_tool_gateway(config)
-    except (KeyboardInterrupt, EOFError):
-        pass
+        _model_flow_nous(config)
+    except (KeyboardInterrupt, EOFError, SystemExit):
+        # _login_nous raises SystemExit(130)/(1) on cancel/failure; the
+        # logged-out path inside _model_flow_nous catches it, but the
+        # expired-session re-login path only catches Exception, so a
+        # SystemExit there would otherwise escape and kill the whole CLI.
+        # Treat all of these as a graceful cancel/abort for the portal flow.
+        print()
+        print_info("  Setup cancelled.")
+        print_info("  You can retry later with `hermes portal`.")
+        return
     except Exception as exc:
-        print_warning(f"  Tool Gateway prompt skipped: {exc}")
+        logger.debug("_model_flow_nous error during `hermes portal`: %s", exc)
+        print()
+        print_error(f"  Nous Portal setup encountered an error: {exc}")
+        print_info("  You can retry later with `hermes portal`.")
+        return
+
+    # Re-sync the in-memory config from disk — _model_flow_nous (and the
+    # underlying login/model save) write via their own load/save cycle, so any
+    # later save_config(config) by a caller must not clobber those values.
+    try:
+        _refreshed = load_config()
+        if isinstance(_refreshed, dict):
+            config.clear()
+            config.update(_refreshed)
+    except Exception:
+        pass
 
     print()
     print_success("Portal setup complete.")
-    print_info("  Run `hermes portal status` to inspect routing.")
+    print_info("  Run `hermes portal info` to inspect routing.")
     print_info("  Run `hermes` to start chatting.")
 
 
@@ -3196,10 +3063,14 @@ def run_setup_wizard(args):
         if migration_ran:
             config = load_config()
 
-        setup_mode = prompt_choice("How would you like to set up Hermes?", [
-            "Quick setup — provider, model & messaging (recommended)",
-            "Full setup — configure everything",
-        ], 0)
+        setup_mode = prompt_choice(
+            "How would you like to set up Hermes?",
+            [
+                "Quick Setup (Nous Portal) — free OAuth login, no API keys, model + tools (recommended)",
+                "Full setup — configure every provider, tool & option yourself (bring your own keys)",
+            ],
+            0,
+        )
 
         if setup_mode == 0:
             _run_first_time_quick_setup(config, hermes_home, is_existing)
@@ -3228,9 +3099,11 @@ def run_setup_wizard(args):
     if not (migration_ran and _skip_configured_section(config, "terminal", "Terminal Backend")):
         setup_terminal_backend(config)
 
-    # Section 3: Agent Settings
-    if not (migration_ran and _skip_configured_section(config, "agent", "Agent Settings")):
-        setup_agent_settings(config)
+    # Section 3: Agent Settings — no longer prompted. First installs get the
+    # recommended defaults silently; existing installs keep whatever they have.
+    # Tune later with `hermes setup agent`.
+    if not is_existing:
+        _apply_default_agent_settings(config)
 
     # Section 4: Messaging Platforms
     if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
@@ -3250,13 +3123,43 @@ def run_setup_wizard(args):
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
-    """Streamlined first-time setup: provider, model, terminal & messaging.
+    """Streamlined first-time setup via Nous Portal: OAuth, model, terminal & messaging.
 
-    Applies sensible defaults for TTS (Edge), agent settings, and tools —
-    the user can customize later via ``hermes setup <section>``.
+    Routes straight to the Nous Portal provider — runs the device-code OAuth
+    login, picks a Nous model, then configures the terminal backend and (optionally)
+    a messaging platform. Applies sensible defaults for everything else (agent
+    settings, tools); the user can customize later via ``hermes setup <section>``
+    or switch providers with ``hermes model``.
     """
-    # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
-    setup_model_provider(config, quick=True)
+    from hermes_cli.config import load_config
+
+    # Step 1: Nous Portal — OAuth login + model selection.
+    # _model_flow_nous() handles both the logged-out path (device-code OAuth,
+    # which selects a model internally) and the already-logged-in path (curated
+    # Nous model picker). Provider is set to "nous" by the login/model save.
+    print()
+    print_header("Nous Portal")
+    print_info("One subscription, 300+ models, plus the Tool Gateway:")
+    print_info("  web search, image generation, TTS, browser automation.")
+    print_info("Sign up: https://portal.nousresearch.com/manage-subscription")
+    print()
+    try:
+        from hermes_cli.main import _model_flow_nous
+        _model_flow_nous(config)
+    except (KeyboardInterrupt, EOFError):
+        print()
+        print_info("Nous Portal setup cancelled.")
+    except Exception as exc:
+        logger.debug("_model_flow_nous error during quick setup: %s", exc)
+        print_warning(f"Nous Portal setup encountered an error: {exc}")
+        print_info("You can try again later with: hermes model")
+
+    # Re-sync the wizard's config dict from disk — _model_flow_nous (and the
+    # underlying login/model save) write via their own load/save cycle, and the
+    # wizard's later save_config(config) must not clobber those values (#4172).
+    _refreshed = load_config()
+    config.clear()
+    config.update(_refreshed)
 
     # Step 2: Terminal Backend — where commands run is a core decision
     setup_terminal_backend(config)

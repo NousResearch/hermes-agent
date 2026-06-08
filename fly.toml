@@ -1,0 +1,51 @@
+# Fly.io deployment manifest for Hermes Price Tracker
+# Deploy: fly launch --config fly.toml  (first time)
+#         fly deploy                    (updates)
+#
+# Required secrets (set once with `fly secrets set KEY=value`):
+#   HERMES_OWNER_EMAIL          your admin email
+#   HERMES_STRIPE_PAYMENT_LINK  https://buy.stripe.com/...  (from Stripe Dashboard)
+#   STRIPE_WEBHOOK_SECRET       whsec_...  (from Stripe → Webhooks)
+#   STRIPE_SECRET_KEY           sk_live_...  (from Stripe API keys)
+#   OPENROUTER_API_KEY          or any LLM provider key for AI extraction
+#
+# After deploy, register the Stripe webhook URL:
+#   https://<your-app>.fly.dev/api/stripe/webhook
+# Events to send: checkout.session.completed, customer.subscription.deleted,
+#                 invoice.payment_failed, invoice.payment_succeeded
+
+app = "hermes-price-tracker"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "9119"
+  HERMES_HOME = "/opt/data"
+  # Dashboard binds to 0.0.0.0 so Fly's proxy can reach it.
+  # Auth is enforced by the session token injected into the SPA.
+  HERMES_DASHBOARD_HOST = "0.0.0.0"
+
+[http_service]
+  internal_port = 9119
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    path = "/api/status"
+    timeout = "5s"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[[mounts]]
+  source = "hermes_data"
+  destination = "/opt/data"
+  initial_size = "1gb"

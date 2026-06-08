@@ -46,6 +46,9 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/ds-assets/",
     "/fonts/",
     "/fonts-terminal/",
+    # Public SaaS pages — landing page and subscriber portal
+    "/subscribe",
+    "/portal",
 )
 
 

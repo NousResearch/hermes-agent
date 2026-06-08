@@ -13167,7 +13167,10 @@ class GatewayRunner:
         try:
             from run_agent import AIAgent
             from agent.manual_compression_feedback import summarize_manual_compression
-            from agent.model_metadata import estimate_request_tokens_rough
+            from agent.model_metadata import (
+                estimate_messages_tokens_rough,
+                estimate_request_tokens_rough,
+            )
 
             session_key = self._session_key_for_source(source)
             model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -13208,25 +13211,27 @@ class GatewayRunner:
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
 
-                # Estimate with system prompt + tool schemas included so the
-                # figure reflects real request pressure, not a transcript-only
-                # underestimate (#6217). Must be computed after tmp_agent is
-                # built so _cached_system_prompt/tools are populated.
+                # Two independent measurements, surfaced as two lines so the
+                # user can see both "how big is the conversation" and "how big
+                # is the actual request":
                 #
-                # Estimate over the FULL transcript (`history`), not the
-                # user/hermes-only `msgs` slice. Tool-call and tool-result
-                # messages are the bulk of a tool-heavy context, and the model
-                # is sent all of them — excluding them produced an estimate
-                # ~10x smaller than the real provider count, which is exactly
-                # the apples-to-oranges gap Ace flagged. `msgs` is still the
-                # right input for the compression *operation* (the summariser
-                # works on conversational turns), but it is the wrong basis for
-                # a "request size" figure.
+                #  • Chat size  — estimate_messages_tokens_rough over the
+                #    user/hermes turns only (`msgs`). Excludes system prompt,
+                #    tool schemas, and tool results. This is the original
+                #    "Approx request size" figure Ace wanted to retain.
+                #  • Full request size — estimate_request_tokens_rough over the
+                #    FULL transcript (`history`) plus system prompt + tool
+                #    schemas. This is what the model is actually sent and lines
+                #    up with the real provider count from /usage.
+                #
+                # The compressor itself is fed the full-request estimate so its
+                # pressure logic reflects reality (#6217).
                 _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
                 _tools = getattr(tmp_agent, "tools", None) or None
                 approx_tokens = estimate_request_tokens_rough(
                     history, system_prompt=_sys_prompt, tools=_tools
                 )
+                chat_before_tokens = estimate_messages_tokens_rough(msgs)
 
                 compressor = tmp_agent.context_compressor
                 if not compressor.has_content_to_compress(head):
@@ -13260,14 +13265,18 @@ class GatewayRunner:
                 self.session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
                 )
-                new_tokens = estimate_request_tokens_rough(
+                # After-compression estimates, same two bases as before.
+                chat_after_tokens = estimate_messages_tokens_rough(compressed)
+                full_after_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
                 )
+                # Chat-only before/after drives the headline (message counts)
+                # and the "Chat size" token line.
                 summary = summarize_manual_compression(
                     msgs,
                     compressed,
-                    approx_tokens,
-                    new_tokens,
+                    chat_before_tokens,
+                    chat_after_tokens,
                 )
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
@@ -13289,32 +13298,50 @@ class GatewayRunner:
                 self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
             lines = [f"🗜️ {summary['headline']}"]
-            # Lead with the real, provider-measured context size (when we have
-            # one from a prior live turn) so the trustworthy number is front
-            # and centre and clearly labelled as the real one. The estimate
-            # lines that follow are explicitly framed as char-based previews,
-            # so the two can no longer be mistaken for the same metric.
-            if real_before_tokens > 0:
-                _ctx_len = getattr(compressor, "context_length", 0) or 0
-                _pct = (
-                    min(100, real_before_tokens / _ctx_len * 100)
-                    if _ctx_len
-                    else 0
-                )
-                lines.append(
-                    t(
-                        "gateway.compress.real_measured",
-                        used=real_before_tokens,
-                        total=_ctx_len,
-                        pct=f"{_pct:.0f}",
-                    )
-                )
-                if not summary["noop"]:
-                    lines.append(t("gateway.compress.real_after_note"))
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))
-            lines.append(summary["token_line"])
-            lines.append(t("gateway.compress.estimate_legend"))
+
+            # Line 1 — Chat size: the conversation turns only (user/hermes),
+            # excluding system prompt, tool schemas, and tool results. This is
+            # the original "Approx request size" figure, now explicitly labelled
+            # so it isn't confused with the real context window.
+            if summary["noop"] and chat_after_tokens == chat_before_tokens:
+                lines.append(
+                    t("gateway.compress.chat_size_unchanged", before=chat_before_tokens)
+                )
+            else:
+                lines.append(
+                    t(
+                        "gateway.compress.chat_size",
+                        before=chat_before_tokens,
+                        after=chat_after_tokens,
+                    )
+                )
+
+            # Line 2 — Full request size: what the model is actually sent
+            # (chat + system + tools + tool results). The "before" is the REAL
+            # provider-measured count from the last live request when we have
+            # one (no ~ prefix); otherwise it falls back to the char-based
+            # full-request estimate (~ prefix). The "after" is always an
+            # estimate — the real post-compression count doesn't exist until
+            # the next live API call.
+            if real_before_tokens > 0:
+                lines.append(
+                    t(
+                        "gateway.compress.full_request_real",
+                        before=real_before_tokens,
+                        after=full_after_tokens,
+                    )
+                )
+            else:
+                lines.append(
+                    t(
+                        "gateway.compress.full_request_est",
+                        before=approx_tokens,
+                        after=full_after_tokens,
+                    )
+                )
+
             if summary["note"]:
                 lines.append(summary["note"])
             if _summary_aborted:

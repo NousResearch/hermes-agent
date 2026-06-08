@@ -70,21 +70,29 @@ async def test_compress_command_reports_noop_without_success_banner():
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
 
-    def _estimate(messages, **_kwargs):
-        assert messages == history
-        return 100
+    def _chat_est(messages, **_kwargs):
+        return 100  # chat size unchanged
+
+    def _full_est(messages, **_kwargs):
+        return 500  # full request size
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_chat_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_full_est),
     ):
         result = await runner._handle_compress_command(_make_event())
 
     assert "No changes from compression" in result
     assert "Compressed:" not in result
-    assert "Approx request size: ~100 tokens (unchanged)" in result
+    # Chat line uses the unchanged form and excludes-system framing.
+    assert "Chat size: ~100 tokens (unchanged" in result
+    assert "excludes system, tools, tool results" in result
+    # Full line still shown (estimate, no live turn yet).
+    assert "Full request size: ~500 → ~500 tokens" in result
+    assert "includes chat, system, tools, tool results" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -94,7 +102,7 @@ async def test_compress_command_explains_when_token_estimate_rises():
     history = _make_history()
     compressed = [
         history[0],
-        {"role": "assistant", "content": "Dense summary that still counts as more tokens."},
+        {"role": "hermes", "content": "Dense summary that still counts as more tokens."},
         history[-1],
     ]
     runner = _make_runner(history)
@@ -107,36 +115,37 @@ async def test_compress_command_explains_when_token_estimate_rises():
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
 
-    def _estimate(messages, **_kwargs):
-        if messages == history:
-            return 100
-        if messages == compressed:
-            return 120
-        raise AssertionError(f"unexpected transcript: {messages!r}")
+    def _chat_est(messages, **_kwargs):
+        # chat rises despite fewer messages → denser-summary note
+        return 100 if messages != compressed else 120
+
+    def _full_est(messages, **_kwargs):
+        return 500 if messages != compressed else 480
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_chat_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_full_est),
     ):
         result = await runner._handle_compress_command(_make_event())
 
     assert "Compressed: 4 → 3 messages" in result
-    assert "Approx request size: ~100 → ~120 tokens" in result
+    assert "Chat size: ~100 → ~120 tokens" in result
+    assert "Full request size: ~500 → ~480 tokens" in result
     assert "denser summaries" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_compress_command_shows_real_measured_context_when_available():
-    """When the session has a real, provider-measured last_prompt_tokens
-    (the same number /usage shows), /compress must lead with it — clearly
-    labelled as the real count — alongside the char-based estimate, so the
-    two metrics can't be confused. This is the apples-to-oranges fix:
-    a tool-heavy real context (e.g. 290K) was being implicitly compared
-    against a transcript-only estimate (~30K)."""
+async def test_compress_command_full_line_uses_real_measured_before_when_available():
+    """When the session has a real, provider-measured last_prompt_tokens (the
+    same number /usage shows), the Full request size line must use it as the
+    'before' WITHOUT a ~ prefix (it's real, not an estimate), while the
+    'after' stays an estimate. The Chat size line is the separate chat-only
+    figure. This keeps the two metrics distinct and labelled."""
     history = _make_history()
     compressed = [
         history[0],
@@ -157,38 +166,38 @@ async def test_compress_command_shows_real_measured_context_when_available():
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
 
-    def _estimate(messages, **_kwargs):
-        if messages == history:
-            return 100
-        if messages == compressed:
-            return 80
-        raise AssertionError(f"unexpected transcript: {messages!r}")
+    def _chat_est(messages, **_kwargs):
+        return 29_521 if messages != compressed else 27_300
+
+    def _full_est(messages, **_kwargs):
+        # full-request estimate; the real before should override this number
+        return 295_000 if messages != compressed else 265_000
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_chat_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_full_est),
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    # Real measured number is present, labelled as real, with the % occupancy.
-    assert "290,310" in result
-    assert "1,000,000" in result
-    assert "29%" in result
-    assert "real provider count" in result
-    # Estimate is still shown, but now explicitly framed as char-based.
-    assert "Approx request size: ~100 → ~80 tokens" in result
-    assert "char-based estimate" in result
-    # User is told the real after-count updates on the next message.
-    assert "updates on your next message" in result
+    # Chat line = chat-only estimate.
+    assert "Chat size: ~29,521 → ~27,300 tokens" in result
+    assert "excludes system, tools, tool results" in result
+    # Full line = REAL before (no ~) → estimate after.
+    assert "Full request size: 290,310 → ~265,000 tokens" in result
+    assert "before = last live request" in result
+    # The char-based full-request *before* estimate must NOT be used when a
+    # real count exists.
+    assert "295,000" not in result
 
 
 @pytest.mark.asyncio
-async def test_compress_command_omits_real_line_when_no_measured_value():
-    """With no prior live turn (last_prompt_tokens == 0) there is no real
-    number to show, so the real-measured line is omitted and only the
-    estimate (with its legend) appears — backwards-compatible readout."""
+async def test_compress_command_full_line_is_estimate_when_no_measured_value():
+    """With no prior live turn (last_prompt_tokens == 0) the Full request size
+    line falls back to the char-based estimate for both before and after,
+    flagged with ~ and an 'estimated' note."""
     history = _make_history()
     compressed = [history[0], {"role": "hermes", "content": "s"}, history[-1]]
     runner = _make_runner(history)
@@ -204,20 +213,25 @@ async def test_compress_command_omits_real_line_when_no_measured_value():
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
 
-    def _estimate(messages, **_kwargs):
-        return 100 if messages == history else 80
+    def _chat_est(messages, **_kwargs):
+        return 100 if messages != compressed else 80
+
+    def _full_est(messages, **_kwargs):
+        return 500 if messages != compressed else 400
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_chat_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_full_est),
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    assert "real provider count" not in result
-    assert "Approx request size" in result
-    assert "char-based estimate" in result
+    assert "Chat size: ~100 → ~80 tokens" in result
+    assert "Full request size: ~500 → ~400 tokens" in result
+    assert "estimated — no live request yet" in result
+    assert "last live request" not in result
 
 
 @pytest.mark.asyncio
@@ -259,6 +273,7 @@ async def test_compress_command_appends_warning_when_compression_aborts():
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
@@ -321,6 +336,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())

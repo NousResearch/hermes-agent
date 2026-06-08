@@ -801,6 +801,91 @@ class TestSyncTurn:
         assert "turn3-user" in content
         assert "turn4-user" in content
 
+    def test_sync_turn_omits_inline_base64_data_url_from_auto_retain(self, provider_with_config):
+        """Auto-retain should not send inline base64 data URLs to Hindsight."""
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "data:image/png;base64," + ("A" * 200_000)
+
+        p.sync_turn(f"please inspect {data_url}", "done")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert data_url not in item["content"]
+        assert "A" * 1_000 not in item["content"]
+        assert "please inspect" in item["content"]
+        assert "base64 image/png data URL omitted" in item["content"]
+        assert len(item["content"]) < 2_000
+
+    def test_sync_turn_omits_variant_base64_data_urls_from_auto_retain(self, provider_with_config):
+        """Auto-retain should catch valid data URL casing and parameter variants."""
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        parameterized = "data:image/png;charset=utf-8;base64," + ("D" * 200_000)
+        unknown_mime = "data:;base64," + ("E" * 200_000)
+        mixed_case = "DATA:IMAGE/JPEG;BASE64," + ("F" * 200_000)
+
+        p.sync_turn(f"variants {parameterized} {unknown_mime} {mixed_case}", "done")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert parameterized not in item["content"]
+        assert unknown_mime not in item["content"]
+        assert mixed_case not in item["content"]
+        assert "D" * 1_000 not in item["content"]
+        assert "E" * 1_000 not in item["content"]
+        assert "F" * 1_000 not in item["content"]
+        assert "base64 image/png data URL omitted" in item["content"]
+        assert "base64 unknown data URL omitted" in item["content"]
+        assert "base64 image/jpeg data URL omitted" in item["content"]
+        assert len(item["content"]) < 2_000
+
+    def test_sync_turn_preserves_text_after_inline_data_url(self, provider_with_config):
+        """Inline sanitizer should not consume normal text after a data URL line."""
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "data:image/png;base64," + ("A" * 1_000)
+
+        p.sync_turn(f"before {data_url}\nKeep this follow-up text", "done")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert data_url not in item["content"]
+        assert "before" in item["content"]
+        assert "Keep this follow-up text" in item["content"]
+
+    def test_sync_turn_omits_multimodal_image_data_from_auto_retain(self, provider_with_config):
+        """Gateway multimodal image payloads should be retained as metadata only."""
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "data:image/jpeg;base64," + ("B" * 250_000)
+        user_content = [
+            {"type": "text", "text": "remember my preference for concise diagrams"},
+            {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+        ]
+
+        p.sync_turn(user_content, "noted")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = json.loads(item["content"])
+        user_turn = content[0][0]["content"]
+        assert data_url not in item["content"]
+        assert "B" * 1_000 not in item["content"]
+        assert "remember my preference for concise diagrams" in user_turn
+        assert "image/jpeg" in user_turn
+        assert "data_url_chars=" in user_turn
+        assert len(item["content"]) < 2_000
+
+    def test_hindsight_retain_tool_preserves_explicit_content(self, provider):
+        """Sanitization is scoped to automatic transcript retain, not explicit tool calls."""
+        data_url = "data:image/png;base64," + ("C" * 1_000)
+
+        provider.handle_tool_call("hindsight_retain", {"content": data_url, "context": "manual test"})
+
+        call_kwargs = provider._client.aretain.call_args.kwargs
+        assert call_kwargs["content"] == data_url
+
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""
         provider.sync_turn("hello", "hi")

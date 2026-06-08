@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
@@ -81,6 +82,80 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+_DATA_URL_RE = re.compile(r"data:([^,\s]*?);base64,[A-Za-z0-9+/=_\-]+", re.IGNORECASE)
+
+
+def _data_url_mime(header: str) -> str:
+    """Return a normalized MIME type from a data URL header."""
+    return (header.split(";", 1)[0] or "unknown").lower()
+
+
+def _omit_inline_data_urls(text: str) -> str:
+    """Replace inline base64 data URLs with metadata-only placeholders."""
+    def _replace(match: re.Match[str]) -> str:
+        mime = _data_url_mime(match.group(1) or "")
+        return (
+            f"[base64 {mime} data URL omitted from Hindsight retain: "
+            f"data_url_chars={len(match.group(0))}]"
+        )
+
+    return _DATA_URL_RE.sub(_replace, str(text or ""))
+
+
+def _sanitize_retain_message_content(value: Any) -> str:
+    """Render auto-retained turn content without binary attachment payloads.
+
+    Gateway adapters can pass multimodal user messages as structured lists.
+    Discord image uploads may arrive as inline base64 ``data:image/...`` URLs;
+    retaining those blobs as text is expensive and not useful for memory
+    extraction. Keep user-visible text and replace attachments with compact
+    metadata placeholders before auto-retain serializes the turn.
+    """
+    if isinstance(value, list):
+        rendered: list[str] = []
+        for part in value:
+            if isinstance(part, dict):
+                part_type = str(part.get("type") or "attachment")
+                if part_type in {"text", "input_text"}:
+                    text = part.get("text")
+                    if text:
+                        rendered.append(_omit_inline_data_urls(str(text)))
+                    continue
+
+                if part_type in {"image_url", "input_image", "image"}:
+                    image_obj = part.get("image_url") if isinstance(part.get("image_url"), dict) else part
+                    url = ""
+                    if isinstance(image_obj, dict):
+                        url = str(image_obj.get("url") or image_obj.get("image_url") or "")
+                    elif isinstance(image_obj, str):
+                        url = image_obj
+                    if url.lower().startswith("data:"):
+                        header = url.split(",", 1)[0]
+                        mime = _data_url_mime(header[5:])
+                        rendered.append(
+                            f"[image attachment omitted from Hindsight retain: {mime}, "
+                            f"data_url_chars={len(url)}]"
+                        )
+                    else:
+                        rendered.append(
+                            f"[image attachment omitted from Hindsight retain: url_chars={len(url)}]"
+                        )
+                    continue
+
+                rendered.append(
+                    f"[{part_type} attachment omitted from Hindsight retain: "
+                    f"json_chars={len(json.dumps(part, ensure_ascii=False))}]"
+                )
+            else:
+                rendered.append(_omit_inline_data_urls(str(part)))
+        return "\n".join(piece for piece in rendered if piece)
+
+    if isinstance(value, dict):
+        return _sanitize_retain_message_content([value])
+
+    return _omit_inline_data_urls(str(value or ""))
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -1366,12 +1441,12 @@ class HindsightMemoryProvider(MemoryProvider):
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._retain_user_prefix}: {_sanitize_retain_message_content(user_content)}",
                 "timestamp": now,
             },
             {
                 "role": "assistant",
-                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "content": f"{self._retain_assistant_prefix}: {_sanitize_retain_message_content(assistant_content)}",
                 "timestamp": now,
             },
         ]

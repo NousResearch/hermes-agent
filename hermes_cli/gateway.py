@@ -3067,6 +3067,9 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+_LAUNCHD_DOMAIN_PROBE_TIMEOUT_SECONDS = 1.0
+
+
 def _launchd_service_loaded_in_domain(domain: str, label: str) -> bool:
     """Return True when launchd already knows ``label`` in ``domain``.
 
@@ -3083,16 +3086,16 @@ def _launchd_service_loaded_in_domain(domain: str, label: str) -> bool:
             ["launchctl", "print", f"{domain}/{label}"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=_LAUNCHD_DOMAIN_PROBE_TIMEOUT_SECONDS,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
     return result.returncode == 0
 
 
-def _launchd_domain() -> str:
+def _launchd_domain(label: str | None = None) -> str:
     uid = os.getuid()
-    label = get_launchd_label()
+    label = label or get_launchd_label()
     gui_domain = f"gui/{uid}"
     user_domain = f"user/{uid}"
 
@@ -3319,7 +3322,7 @@ def launchd_plist_is_current() -> bool:
     ) == _normalize_launchd_plist_for_comparison(expected)
 
 
-def refresh_launchd_plist_if_needed() -> bool:
+def refresh_launchd_plist_if_needed(domain: str | None = None) -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
@@ -3332,7 +3335,7 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    domain = _launchd_domain()
+    domain = domain or _launchd_domain(label)
     # Bootout/bootstrap so launchd picks up the new definition.  Keep the same
     # domain for both calls; after bootout the probe would no longer see the old
     # loaded job and could otherwise fall back to user/<uid> mid-refresh.
@@ -3437,8 +3440,8 @@ def launchd_start():
         print("✓ Service started")
         return
 
-    refresh_launchd_plist_if_needed()
-    domain = _launchd_domain()
+    domain = _launchd_domain(label)
+    refresh_launchd_plist_if_needed(domain=domain)
     target = f"{domain}/{label}"
     try:
         subprocess.run(
@@ -3448,6 +3451,9 @@ def launchd_start():
         )
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
+            if _launchctl_domain_unsupported(e.returncode):
+                _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+                return
             raise
         # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
@@ -3558,17 +3564,16 @@ def _wait_for_gateway_exit(
 def launchd_restart():
     label = get_launchd_label()
     drain_timeout = _get_restart_drain_timeout()
-    domain: str | None = None
-    target: str | None = None
     from gateway.status import get_running_pid
 
+    pid = get_running_pid()
+    if pid is not None and _request_gateway_self_restart(pid):
+        print("✓ Service restart requested")
+        return
+
+    domain = _launchd_domain(label)
+    target = f"{domain}/{label}"
     try:
-        pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
-        domain = _launchd_domain()
-        target = f"{domain}/{label}"
         if pid is not None:
             try:
                 terminate_pid(pid, force=False)
@@ -3592,8 +3597,6 @@ def launchd_restart():
                 return
             raise
         # Job not loaded — bootstrap and start fresh
-        if domain is None or target is None:
-            raise
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:

@@ -696,9 +696,11 @@ class TestLaunchdServiceRecovery:
     def test_launchd_domain_prefers_existing_gui_job(self, monkeypatch):
         label = gateway_cli.get_launchd_label()
         calls = []
+        timeouts = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            timeouts.append(kwargs.get("timeout"))
             if cmd == ["launchctl", "print", f"gui/{os.getuid()}/{label}"]:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
@@ -707,6 +709,7 @@ class TestLaunchdServiceRecovery:
 
         assert gateway_cli._launchd_domain() == f"gui/{os.getuid()}"
         assert calls == [["launchctl", "print", f"gui/{os.getuid()}/{label}"]]
+        assert timeouts == [1.0]
 
     def test_launchd_domain_uses_user_when_only_user_job_loaded(self, monkeypatch):
         label = gateway_cli.get_launchd_label()
@@ -768,6 +771,46 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    def test_launchd_start_falls_back_to_detached_on_kickstart_error_5(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A directly unmanageable loaded domain should degrade instead of raising."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = f"gui/{os.getuid()}"
+        target = f"{domain}/{label}"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda label=None: domain)
+        monkeypatch.setattr(
+            gateway_cli,
+            "refresh_launchd_plist_if_needed",
+            lambda *args, **kwargs: False,
+        )
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_start()
+
+        assert calls == [["launchctl", "kickstart", target]]
+        assert spawned == [True]
+        assert "background process" in capsys.readouterr().out.lower()
+
     def test_launchd_start_falls_back_to_detached_when_rebootstrap_fails(self, tmp_path, monkeypatch, capsys):
         """If even a fresh bootstrap can't manage the domain, spawn detached."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -776,7 +819,11 @@ class TestLaunchdServiceRecovery:
         target = f"{gateway_cli._launchd_domain()}/{label}"
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "refresh_launchd_plist_if_needed",
+            lambda *args, **kwargs: False,
+        )
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd == ["launchctl", "kickstart", target]:

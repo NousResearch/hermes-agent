@@ -2789,6 +2789,26 @@ async function saveImageFromUrl(rawUrl) {
   return true
 }
 
+function readWslClipboardImageBuffer() {
+  if (!IS_WSL) return null
+
+  try {
+    const buffer = execFileSync('wl-paste', ['--type', 'image/png', '--no-newline'], {
+      encoding: null,
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2500
+    })
+
+    if (!Buffer.isBuffer(buffer) || buffer.length < 8) return null
+    if (!buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return null
+
+    return buffer
+  } catch {
+    return null
+  }
+}
+
 async function writeComposerImage(buffer, ext = '.png') {
   const rawExt = String(ext || '.png')
     .trim()
@@ -5154,11 +5174,16 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
   const image = clipboard.readImage()
-  if (!image || image.isEmpty()) {
-    return ''
+  if (image && !image.isEmpty()) {
+    return writeComposerImage(image.toPNG(), '.png')
   }
 
-  return writeComposerImage(image.toPNG(), '.png')
+  const wslImageBuffer = readWslClipboardImageBuffer()
+  if (wslImageBuffer) {
+    return writeComposerImage(wslImageBuffer, '.png')
+  }
+
+  return ''
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>

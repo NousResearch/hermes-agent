@@ -536,6 +536,7 @@ def compress_context(
                 source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=agent.model,
                 model_config=agent._session_init_model_config,
+                system_prompt=new_system_prompt,
                 parent_session_id=old_session_id,
             )
             agent._session_db_created = True
@@ -546,7 +547,14 @@ def compress_context(
                     agent._session_db.set_session_title(agent.session_id, new_title)
                 except (ValueError, Exception) as e:
                     logger.debug("Could not propagate title on compression: %s", e)
-            agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+            persisted = agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+            if persisted is False:
+                logger.warning(
+                    "Session DB compression split did not persist system prompt "
+                    "for new session %s; continuation may rebuild and miss the "
+                    "prefix cache.",
+                    agent.session_id,
+                )
             # Reset flush cursor — new session starts with no messages written
             agent._last_flushed_db_idx = 0
         except Exception as e:

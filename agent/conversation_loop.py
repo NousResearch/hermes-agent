@@ -327,7 +327,25 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # subsequent turn).
     if agent._session_db:
         try:
-            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            persisted = agent._session_db.update_system_prompt(
+                agent.session_id,
+                agent._cached_system_prompt,
+            )
+            if persisted is False:
+                ensure_db_session = getattr(agent, "_ensure_db_session", None)
+                if callable(ensure_db_session):
+                    ensure_db_session()
+                    persisted = agent._session_db.update_system_prompt(
+                        agent.session_id,
+                        agent._cached_system_prompt,
+                    )
+            if persisted is False:
+                logger.warning(
+                    "Session DB update_system_prompt did not persist for "
+                    "session %s after session-row repair. Subsequent turns "
+                    "will rebuild the system prompt and miss the prefix cache.",
+                    agent.session_id,
+                )
         except Exception as exc:
             logger.warning(
                 "Session DB update_system_prompt failed for session %s: "

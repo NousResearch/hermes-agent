@@ -123,10 +123,35 @@ class TestSessionLifecycle:
 
     def test_update_system_prompt(self, db):
         db.create_session(session_id="s1", source="cli")
-        db.update_system_prompt("s1", "You are a helpful assistant.")
+        result = db.update_system_prompt("s1", "You are a helpful assistant.")
 
         session = db.get_session("s1")
+        assert result is True
         assert session["system_prompt"] == "You are a helpful assistant."
+
+    def test_update_system_prompt_repairs_null_existing_row(self, db):
+        """A pre-created row with NULL system_prompt must be repairable."""
+        db.create_session(session_id="s1", source="telegram", system_prompt=None)
+
+        result = db.update_system_prompt("s1", "stable prompt")
+
+        assert result is True
+        assert db.get_session("s1")["system_prompt"] == "stable prompt"
+
+    def test_update_system_prompt_reports_missing_row_without_stub_insert(self, db):
+        """Missing rows return False so callers can create a full metadata row."""
+        result = db.update_system_prompt("missing-session", "stable prompt")
+
+        assert result is False
+        assert db.get_session("missing-session") is None
+
+    def test_update_system_prompt_rejects_empty_prompts(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        with pytest.raises(ValueError, match="empty system_prompt"):
+            db.update_system_prompt("s1", "  \n\t")
+
+        assert db.get_session("s1")["system_prompt"] is None
 
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")

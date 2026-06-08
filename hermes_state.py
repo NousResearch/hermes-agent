@@ -1154,14 +1154,28 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
-        """Store the full assembled system prompt snapshot."""
+    def update_system_prompt(self, session_id: str, system_prompt: str) -> bool:
+        """Store the full assembled system prompt snapshot.
+
+        Returns ``True`` when an existing session row was updated and
+        ``False`` when no row matched.  Missing rows are deliberately not
+        inserted here: callers with access to full agent/session metadata
+        should create the session row, then retry persistence.  This keeps
+        the cache-persistence repair from creating partial stub sessions.
+        """
+        if not session_id:
+            return False
+        if not system_prompt or not system_prompt.strip():
+            raise ValueError("Refusing to persist empty system_prompt")
+
         def _do(conn):
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
             )
-        self._execute_write(_do)
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
 
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.

@@ -171,6 +171,46 @@ class TestSilentFailureWarnings:
             for m in warnings
         ), f"Expected write-failure warning, got: {warnings}"
 
+    def test_missing_session_row_is_created_with_prompt_then_persisted(self, caplog):
+        """A missing DB row should be repaired through the agent lifecycle.
+
+        ``update_system_prompt`` deliberately does not create stub rows; it
+        returns False so the caller can create a proper session row with the
+        agent's metadata, then retry prompt persistence once.
+        """
+        db = MagicMock()
+        db.get_session.return_value = None
+        db.update_system_prompt.side_effect = [False, True]
+        agent = _make_agent(session_db=db)
+        agent._ensure_db_session = MagicMock()
+
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [])
+
+        agent._build_system_prompt.assert_called_once()
+        agent._ensure_db_session.assert_called_once_with()
+        assert db.update_system_prompt.call_count == 2
+        db.update_system_prompt.assert_any_call(agent.session_id, "BUILT_PROMPT")
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_missing_session_row_retry_failure_warns_loudly(self, caplog):
+        db = MagicMock()
+        db.get_session.return_value = None
+        db.update_system_prompt.side_effect = [False, False]
+        agent = _make_agent(session_db=db)
+        agent._ensure_db_session = MagicMock()
+
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [])
+
+        agent._ensure_db_session.assert_called_once_with()
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(
+            "update_system_prompt did not persist" in m
+            and "Subsequent turns will rebuild" in m
+            for m in warnings
+        ), f"Expected retry-failure warning, got: {warnings}"
+
     def test_no_history_with_null_row_does_not_warn(self, caplog):
         """First turn (no history) hitting a null row is not surprising — no warn."""
         db = MagicMock()

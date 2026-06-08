@@ -3581,10 +3581,16 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait({"session_id": sid}, rid)
     if err:
         return err
+    assert session is not None
 
     return _ok(
         rid,
-        _live_session_payload(sid, session, touch=True),
+        _live_session_payload(
+            sid,
+            session,
+            touch=True,
+            transport=current_transport() or _stdio_transport,
+        ),
     )
 
 

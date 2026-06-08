@@ -161,6 +161,34 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _bundled_guard(name: str) -> Optional[str]:
+    """Return a refusal message if *name* is bundled or hub-installed.
+
+    Bundled and hub-installed skills carry upstream-maintained content.
+    Allowing the agent to mutate them silently diverges local state from
+    the upstream source and breaks reproducibility across machines.
+
+    Only agent-created skills (created via ``skill_manage(action="create")``)
+    may be freely mutated.
+
+    Best-effort: if the lookup fails we let the mutation through rather
+    than block on a broken manifest.
+    """
+    try:
+        from tools.skill_usage import is_agent_created
+        if not is_agent_created(name):
+            return (
+                f"Skill '{name}' is a bundled or hub-installed skill and "
+                f"cannot be modified by skill_manage. "
+                f"Only agent-created skills can be mutated. "
+                f"To customize, fork the skill with action='create' "
+                f"under a different name."
+            )
+    except Exception:
+        logger.debug("bundled-guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -553,6 +581,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
+    bundled_err = _bundled_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -592,6 +624,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    bundled_err = _bundled_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
 
     skill_dir = existing["path"]
 
@@ -686,6 +722,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
+    bundled_err = _bundled_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     # Validate absorbed_into target when declared non-empty
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
         target_name = absorbed_into.strip()
@@ -751,6 +791,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
 
+    bundled_err = _bundled_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -784,6 +828,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    bundled_err = _bundled_guard(name)
+    if bundled_err:
+        return {"success": False, "error": bundled_err}
 
     skill_dir = existing["path"]
 

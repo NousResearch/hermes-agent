@@ -957,3 +957,87 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+# ---------------------------------------------------------------------------
+# Bundled/hub-installed skill guard — ALL mutations are refused on skills
+# that are NOT agent-created (i.e., bundled or hub-installed).
+# ---------------------------------------------------------------------------
+
+class TestBundledGuard:
+    """All mutation actions are refused on bundled/hub-installed skills."""
+
+    @staticmethod
+    def _mark_bundled(name: str):
+        """Return a patch context that marks *name* as bundled (not agent-created)."""
+        def _fake_is_agent_created(skill_name, _name=name):
+            return skill_name != _name  # False for bundled skill, True for others
+        return patch("tools.skill_usage.is_agent_created", side_effect=_fake_is_agent_created)
+
+    def test_edit_refuses_bundled(self, tmp_path):
+        """Edit is refused on bundled skills."""
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            with self._mark_bundled("bundled-skill"):
+                result = _edit_skill("bundled-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+
+    def test_patch_refuses_bundled(self, tmp_path):
+        """Patch is refused on bundled skills."""
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            with self._mark_bundled("bundled-skill"):
+                result = _patch_skill("bundled-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+
+    def test_delete_refuses_bundled(self, tmp_path):
+        """Delete is refused on bundled skills."""
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            with self._mark_bundled("bundled-skill"):
+                result = _delete_skill("bundled-skill")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        # Skill still exists
+        assert (tmp_path / "bundled-skill" / "SKILL.md").exists()
+
+    def test_write_file_refuses_bundled(self, tmp_path):
+        """write_file is refused on bundled skills."""
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            with self._mark_bundled("bundled-skill"):
+                result = _write_file("bundled-skill", "references/api.md", "content")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+
+    def test_remove_file_refuses_bundled(self, tmp_path):
+        """remove_file is refused on bundled skills."""
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            _write_file("bundled-skill", "references/api.md", "content")
+            with self._mark_bundled("bundled-skill"):
+                result = _remove_file("bundled-skill", "references/api.md")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+
+    def test_agent_created_skills_still_mutable(self, tmp_path):
+        """Agent-created skills are not blocked by the bundled guard."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._mark_bundled("other-skill"):
+                result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result
+
+    def test_bundled_guard_fails_open(self, tmp_path):
+        """If is_agent_created raises, we allow mutations through.
+
+        Rationale: a broken manifest shouldn't lock the agent out
+        of skills it would otherwise be allowed to touch.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.is_agent_created",
+                       side_effect=RuntimeError("manifest broken")):
+                result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True

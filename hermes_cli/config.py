@@ -1118,7 +1118,7 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "threshold": 0.85,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
@@ -5845,7 +5845,7 @@ def show_config():
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

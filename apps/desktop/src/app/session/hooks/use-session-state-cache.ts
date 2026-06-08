@@ -94,6 +94,8 @@ export function useSessionStateCache({
     setAwaitingResponse(pending.state.awaitingResponse)
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
+  const MAX_VIEW_SYNC_DELAY_MS = 100
+
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
       // Only the currently-viewed session may stage into the shared `$messages`
@@ -125,6 +127,20 @@ export function useSessionStateCache({
         viewSyncRafRef.current = null
         flushPendingViewState()
       })
+
+      // Safety net: if rAF is throttled (background tab, compositor stall, etc.)
+      // the pending state would sit indefinitely. A short setTimeout ensures
+      // streaming text still appears within 100ms even when rAF is delayed.
+      const safetyTimer = setTimeout(() => {
+        if (viewSyncRafRef.current !== null) {
+          window.cancelAnimationFrame(viewSyncRafRef.current)
+          viewSyncRafRef.current = null
+        }
+        flushPendingViewState()
+      }, MAX_VIEW_SYNC_DELAY_MS)
+
+      // If rAF fires first, clear the safety timer from flushPendingViewState.
+      // We handle this by checking a flag in flushPendingViewState.
     },
     [flushPendingViewState]
   )

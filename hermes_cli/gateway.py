@@ -4083,6 +4083,11 @@ def launchd_restart():
         plist_path = get_launchd_plist_path()
         try:
             subprocess.run(
+                ["launchctl", "bootout", target],
+                check=False,
+                timeout=90,
+            )
+            subprocess.run(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
                 check=True,
                 timeout=30,

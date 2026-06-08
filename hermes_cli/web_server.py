@@ -5917,6 +5917,92 @@ async def events_ws(ws: WebSocket) -> None:
                     _event_channels.pop(channel, None)
 
 
+# ---------------------------------------------------------------------------
+# Price Scraper dashboard — /api/price-scraper/*
+# ---------------------------------------------------------------------------
+
+def _price_scraper_home() -> Path:
+    return get_hermes_home() / "web-price-scraper"
+
+
+@app.get("/api/price-scraper/results")
+async def get_price_scraper_results(domain: Optional[str] = None):
+    """List all saved price-scraper results, optionally filtered by domain."""
+    base = _price_scraper_home()
+    if not base.exists():
+        return {"results": [], "total": 0}
+
+    entries = []
+    for meta_file in sorted(base.rglob("meta.json"), reverse=True):
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            if domain and domain not in meta.get("domain", ""):
+                continue
+            result_file = meta_file.parent / "result.json"
+            meta["items"] = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else []
+            entries.append(meta)
+        except Exception:
+            continue
+
+    return {"results": entries, "total": len(entries)}
+
+
+@app.get("/api/price-scraper/config")
+async def get_price_scraper_config():
+    """Return Stripe payment link URL from env."""
+    stripe_link = os.environ.get("HERMES_STRIPE_PAYMENT_LINK", "")
+    return {"stripe_payment_link": stripe_link, "configured": bool(stripe_link)}
+
+
+@app.get("/api/price-scraper/export/csv")
+async def export_price_scraper_csv(domain: Optional[str] = None):
+    """Export all saved price-scraper results as a CSV file."""
+    import csv
+    import io as _io
+
+    base = _price_scraper_home()
+    rows: list[dict] = []
+
+    if base.exists():
+        for meta_file in sorted(base.rglob("meta.json"), reverse=True):
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                if domain and domain not in meta.get("domain", ""):
+                    continue
+                result_file = meta_file.parent / "result.json"
+                if not result_file.exists():
+                    continue
+                items = json.loads(result_file.read_text(encoding="utf-8"))
+                scraped_at = meta.get("scraped_at", "")
+                url = meta.get("url", "")
+                d = meta.get("domain", "")
+                if isinstance(items, list):
+                    for item in items:
+                        rows.append({
+                            "domain": d,
+                            "url": url,
+                            "scraped_at": scraped_at,
+                            "label": item.get("label", ""),
+                            "value": item.get("value", ""),
+                            "raw": item.get("raw", ""),
+                            "unit": item.get("unit", ""),
+                            "category": item.get("category", ""),
+                        })
+            except Exception:
+                continue
+
+    buf = _io.StringIO()
+    fieldnames = ["domain", "url", "scraped_at", "label", "value", "raw", "unit", "category"]
+    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="price-scraper-export.csv"'},
+    )
+
+
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 

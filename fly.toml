@@ -1,0 +1,54 @@
+# Fly.io deployment config for Hermes Agent
+# Docs: https://fly.io/docs/reference/configuration/
+#
+# First-time setup:
+#   fly launch --no-deploy        # creates app + sets [app] name below
+#   fly volumes create hermes_data --size 3 --region iad
+#   fly secrets set \
+#     HERMES_STRIPE_STARTER_LINK=https://buy.stripe.com/4gM00l3Gj1cjcR2avQeZ200 \
+#     HERMES_STRIPE_PRO_LINK=https://buy.stripe.com/eVqdRbgt57AH18kfQaeZ201 \
+#     OPENROUTER_API_KEY=<your-key>
+#   fly deploy
+
+app = "hermes-agent"
+primary_region = "iad"
+
+[build]
+  # Uses the repo's Dockerfile — no extra build args needed for basic deploy.
+  # Pass your git SHA for the build banner:
+  #   fly deploy --build-arg HERMES_GIT_SHA=$(git rev-parse HEAD)
+
+[env]
+  # Enable the web dashboard
+  HERMES_DASHBOARD       = "true"
+  HERMES_DASHBOARD_HOST  = "0.0.0.0"
+  HERMES_DASHBOARD_PORT  = "8080"
+  # Public access without OAuth — remove once you configure OAuth
+  HERMES_DASHBOARD_INSECURE = "true"
+
+[http_service]
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = true
+  auto_start_machines  = true
+  # Keep 1 machine warm so the dashboard doesn't cold-start on every visit.
+  # Set to 0 to stay entirely within the free tier (cold starts ~30s).
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "requests"
+    soft_limit = 25
+    hard_limit = 50
+
+[[vm]]
+  # shared-cpu-1x @ 512 MB — enough for Playwright + FastAPI + React.
+  # Free tier covers 256 MB; bump to 512 MB (~$3/mo) for reliable operation.
+  cpu_kind = "shared"
+  cpus     = 1
+  memory   = "512mb"
+
+[[mounts]]
+  # Persistent volume for all Hermes state (sessions, memories, price data).
+  # Create with: fly volumes create hermes_data --size 3 --region iad
+  source      = "hermes_data"
+  destination = "/opt/data"

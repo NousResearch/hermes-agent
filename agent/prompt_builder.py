@@ -991,6 +991,22 @@ def _write_skills_snapshot(
         logger.debug("Could not write skills prompt snapshot: %s", e)
 
 
+def _has_unsafe_name_chars(name: str) -> bool:
+    """True if *name* contains characters that must never reach the system
+    prompt: ``<``/``>`` (they delimit the ``<available_skills>`` fence) or
+    control characters (they can inject extra lines). No legitimate skill
+    name in the wild contains these — they are identifiers, not prose."""
+    return any(ch in "<>" or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name)
+
+
+def _strip_unsafe_name_chars(name: str) -> str:
+    """Remove fence/control characters from a skill identifier (non-destructive
+    for real names; only neutralises malicious/broken ones)."""
+    return "".join(
+        ch for ch in name if ch not in "<>" and ord(ch) >= 0x20 and ord(ch) != 0x7F
+    )
+
+
 def _build_snapshot_entry(
     skill_file: Path,
     skills_dir: Path,
@@ -1011,10 +1027,20 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    # Defense-in-depth: distrust a frontmatter `name:` carrying tag/control
+    # characters (never a real loadable identifier — skill_view keys off the
+    # directory name, and Windows filenames can't contain '<'/'>'). Fall back
+    # to the filesystem-derived skill_name so the cached snapshot stays
+    # structurally clean even before the render-time escape runs.
+    raw_name = str(frontmatter.get("name", skill_name))
+    if _has_unsafe_name_chars(raw_name):
+        raw_name = skill_name
+    safe_frontmatter_name = _strip_unsafe_name_chars(raw_name).strip() or "skill"
+
     return {
         "skill_name": skill_name,
         "category": category,
-        "frontmatter_name": str(frontmatter.get("name", skill_name)),
+        "frontmatter_name": safe_frontmatter_name,
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
@@ -1080,6 +1106,38 @@ def _skill_should_show(
             return False
 
     return True
+
+
+def _sanitize_skill_prompt_field(value: str) -> str:
+    """Neutralise untrusted skill metadata before it enters the system prompt.
+
+    A SKILL.md / DESCRIPTION.md is attacker-influenced input — it may be
+    locally authored, installed from the skills hub, or discovered in an
+    ``external_dir``. Its ``name``/``description`` (and category metadata) are
+    interpolated into the ``<available_skills>…</available_skills>`` fence of
+    the system prompt. Without neutralisation, a payload carrying a literal
+    ``</available_skills>`` closing tag breaks out of the delimited region — a
+    prompt-injection vector.
+
+    Two transforms, applied at the render boundary (the snapshot stores raw
+    truth; each rendering sink escapes for its own context):
+
+    1. Collapse every run of whitespace — including newlines, tabs, and other
+       control characters — to a single space, so a value cannot inject extra
+       fence lines or fake list items.
+    2. Escape ``&``, ``<``, ``>`` so no substring can be read as a tag
+       boundary. Escaping is lossless and a no-op for ordinary slug names and
+       prose descriptions.
+    """
+    if not value:
+        return ""
+    collapsed = " ".join(str(value).split())
+    # Escape '&' first so the '<'/'>' replacements below aren't double-escaped.
+    return (
+        collapsed.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def build_skills_system_prompt(
@@ -1262,20 +1320,30 @@ def build_skills_system_prompt(
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
+            # Neutralise untrusted metadata at the render boundary so it cannot
+            # break out of the <available_skills> fence (see
+            # _sanitize_skill_prompt_field). Dedup/sort still key off the raw
+            # name below — only the emitted text is escaped.
+            safe_category = _sanitize_skill_prompt_field(category)
             if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
+                index_lines.append(
+                    f"  {safe_category}: {_sanitize_skill_prompt_field(cat_desc)}"
+                )
             else:
-                index_lines.append(f"  {category}:")
+                index_lines.append(f"  {safe_category}:")
             # Deduplicate and sort skills within each category
             seen = set()
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
+                safe_name = _sanitize_skill_prompt_field(name)
                 if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                    index_lines.append(
+                        f"    - {safe_name}: {_sanitize_skill_prompt_field(desc)}"
+                    )
                 else:
-                    index_lines.append(f"    - {name}")
+                    index_lines.append(f"    - {safe_name}")
 
         result = (
             "## Skills (mandatory)\n"

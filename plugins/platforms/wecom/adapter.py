@@ -39,6 +39,8 @@ import os
 import re
 import time
 import uuid
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -181,6 +183,36 @@ class WeComStreamExpiredError(RuntimeError):
         self.errmsg = errmsg
 
 
+@dataclass
+class ReplyFrame:
+    """A queued reply frame waiting to be sent via aibot_respond_msg.
+
+    Used for ack tracking and FIFO ordering per req_id, aligning with
+    the official WeCom SDK's replyStreamNonBlocking semantics.
+    """
+    body: Dict[str, Any]
+    future: asyncio.Future
+    is_final: bool = False
+    sent_at: Optional[float] = None
+
+
+class ReplyQueue:
+    """Per-req_id reply frame queue with pending ack tracking.
+
+    Ensures:
+    - Intermediate frames skip if a previous frame's ack is pending
+    - Final frames wait for pending ack before sending
+    - All frames are sent FIFO within the same req_id
+
+    Aligned with official SDK's replyStreamNonBlocking + 5s ack timeout.
+    """
+    def __init__(self, req_id: str):
+        self.req_id = req_id
+        self.queue: deque[ReplyFrame] = deque()
+        self.pending_ack: Optional[ReplyFrame] = None
+        self.processing: bool = False
+
+
 class StreamTurn:
     """Per-turn stream state to avoid global state conflicts.
 
@@ -250,6 +282,9 @@ class WeComAdapter(BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._pending_responses: Dict[str, asyncio.Future] = {}
+        # Per-req_id reply queue with ack tracking — aligns with official
+        # SDK's replyStreamNonBlocking (skip if pending, wait before final).
+        self._reply_queues: Dict[str, ReplyQueue] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
 
@@ -694,6 +729,14 @@ class WeComAdapter(BasePlatformAdapter):
         req_id = self._payload_req_id(payload)
         cmd = str(payload.get("cmd") or "")
 
+        # Check reply queue ack first — aibot_respond_msg acks arrive with
+        # the original inbound req_id and no cmd (or non-callback cmd).
+        # This must be checked before _pending_responses to avoid the old
+        # _send_reply_request path stealing acks meant for the queue.
+        if req_id and cmd not in NON_RESPONSE_COMMANDS:
+            if self._resolve_reply_ack(req_id, payload):
+                return
+
         if req_id and req_id in self._pending_responses and cmd not in NON_RESPONSE_COMMANDS:
             future = self._pending_responses.get(req_id)
             if future and not future.done():
@@ -776,6 +819,124 @@ class WeComAdapter(BasePlatformAdapter):
             return response
         finally:
             self._pending_responses.pop(normalized_req_id, None)
+
+    # ── Per-req_id Reply Queue (ack tracking) ────────────────────────────
+    # Aligns with official SDK replyStreamNonBlocking:
+    #   - intermediate frame: skip if pending ack on this req_id
+    #   - final frame: wait for pending ack to drain before sending
+    #   - ack timeout: 5 seconds
+
+    _REPLY_ACK_TIMEOUT = 5.0
+
+    async def _send_reply_queued(
+        self,
+        reply_req_id: str,
+        body: Dict[str, Any],
+        *,
+        is_final: bool = False,
+        skip_if_pending: bool = False,
+    ) -> Dict[str, Any]:
+        """Send a reply via aibot_respond_msg with per-req_id ack tracking.
+
+        Args:
+            reply_req_id: The inbound callback req_id to reply to.
+            body: Reply body (msgtype: stream/markdown/...).
+            is_final: If True, wait for any pending ack before sending.
+            skip_if_pending: If True and a previous frame's ack is pending,
+                return immediately with {"skipped": True}.
+
+        Returns:
+            Response dict from WeCom, or {"skipped": True} if skipped.
+        """
+        if not self._ws or self._ws.closed:
+            raise RuntimeError("WeCom websocket is not connected")
+
+        normalized = str(reply_req_id or "").strip()
+        if not normalized:
+            raise ValueError("reply_req_id is required")
+
+        queue = self._reply_queues.get(normalized)
+        if queue is None:
+            queue = ReplyQueue(normalized)
+            self._reply_queues[normalized] = queue
+
+        # NonBlocking semantics: skip if a prior frame ack is pending
+        if skip_if_pending and queue.pending_ack is not None:
+            return {"skipped": True, "errcode": 0, "errmsg": "pending_ack"}
+
+        # Final frame: wait for pending ack to drain first
+        if is_final and queue.pending_ack is not None:
+            pending_frame = queue.pending_ack
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(pending_frame.future),
+                    timeout=self._REPLY_ACK_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "[%s] Reply ack timeout waiting for pending (req_id=%s), proceeding with final",
+                    self.name, normalized,
+                )
+            except Exception:
+                pass
+            # Clear pending regardless — either resolved or timed out
+            queue.pending_ack = None
+
+        # Create future for THIS frame's ack
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        frame = ReplyFrame(body=body, future=future, is_final=is_final)
+
+        # Send the frame
+        frame.sent_at = time.monotonic()
+        try:
+            await self._send_json(
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized}, "body": body}
+            )
+        except Exception as e:
+            if not future.done():
+                future.set_exception(e)
+            raise
+
+        # Register as pending ack
+        queue.pending_ack = frame
+
+        # For final frames: await the ack (blocking)
+        if is_final:
+            try:
+                response = await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
+                return response
+            except asyncio.TimeoutError:
+                # Final frame ack timeout — server might still process it
+                logger.warning(
+                    "[%s] Final frame ack timeout (req_id=%s)",
+                    self.name, normalized,
+                )
+                return {"errcode": 0, "errmsg": "ack_timeout"}
+            finally:
+                if queue.pending_ack is frame:
+                    queue.pending_ack = None
+                # Cleanup empty queue
+                if queue.pending_ack is None:
+                    self._reply_queues.pop(normalized, None)
+        else:
+            # Intermediate frame: fire-and-forget (don't await ack)
+            # But the pending_ack stays registered so subsequent frames can
+            # check and skip. The ack will be resolved by _dispatch_payload.
+            return {"errcode": 0, "errmsg": "sent_nonblocking"}
+
+    def _resolve_reply_ack(self, req_id: str, payload: Dict[str, Any]) -> bool:
+        """Resolve a pending reply ack. Returns True if handled."""
+        queue = self._reply_queues.get(req_id)
+        if queue is None or queue.pending_ack is None:
+            return False
+        frame = queue.pending_ack
+        if not frame.future.done():
+            frame.future.set_result(payload)
+        queue.pending_ack = None
+        # Cleanup if queue is empty
+        if queue.pending_ack is None and not queue.queue:
+            self._reply_queues.pop(req_id, None)
+        return True
 
     @staticmethod
     def _new_req_id(prefix: str) -> str:
@@ -1680,25 +1841,17 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """Send a single ``msgtype: "stream"`` frame via aibot_respond_msg.
 
-        WeCom's stream protocol:
-          * the first frame for a turn establishes ``stream.id``;
-          * every subsequent frame reuses that id with ``content`` set to
-            the **cumulative** text (not an incremental delta);
-          * ``finish=True`` on the final frame closes the stream and
-            replaces the live "thinking" bubble with the final content;
-          * ``content`` is capped at 20480 bytes server-side — we
-            pre-truncate to stay safely below.
+        Uses the per-req_id reply queue with ack tracking, aligned with the
+        official WeCom SDK's replyStreamNonBlocking semantics:
 
-        Performance: intermediate frames (finish=False) are fire-and-forget
-        — we send the WS frame and return immediately without waiting for
-        the server ack. This mirrors the official WeCom SDK's
-        ``replyStream`` / ``replyStreamNonBlocking`` behavior where only
-        the finishing frame needs confirmation. Without this optimization
-        each mid-stream frame blocks for ~15s waiting for an ack that
-        WeCom may not send until the stream closes.
-
-        Only the ``finish=True`` frame uses ``_send_reply_request`` (with
-        ack + timeout) so we reliably detect 846608 on the final frame.
+          * **Intermediate frames** (finish=False): sent non-blocking via
+            ``_send_reply_queued(skip_if_pending=True)``. If a prior frame's
+            ack is still pending, the frame is skipped (cumulative text means
+            no information is lost — the next frame carries all content).
+          * **Final frame** (finish=True): waits for any pending ack to drain
+            before sending, then awaits its own ack. This prevents version
+            conflicts (errcode 6000) between the finalize and a concurrent
+            intermediate frame.
 
         Raises :class:`WeComStreamExpiredError` on errcode 846608 so the
         caller can fall back to a proactive markdown send.
@@ -1721,19 +1874,19 @@ class WeComAdapter(BasePlatformAdapter):
         }
 
         if not finish:
-            # Fire-and-forget for intermediate frames — don't await ack.
-            # This is the key performance optimization: WeCom server may
-            # not ack intermediate stream frames at all, so awaiting the
-            # correlated response future would block 15s on every frame.
-            if not self._ws or self._ws.closed:
-                raise RuntimeError("WeCom websocket is not connected")
-            await self._send_json(
-                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": reply_req_id}, "body": body}
+            # Intermediate frame: non-blocking with pending-skip semantics.
+            # If a previous frame's ack is still pending on this req_id,
+            # skip this frame entirely (cumulative text guarantees no loss).
+            response = await self._send_reply_queued(
+                reply_req_id, body, is_final=False, skip_if_pending=True,
             )
-            return {"errcode": 0, "errmsg": "fire-and-forget"}
+            return response
 
-        # Finish frame: await ack so we reliably detect 846608.
-        response = await self._send_reply_request(reply_req_id, body)
+        # Final frame: wait for any pending intermediate ack, then send
+        # with ack tracking so we reliably detect 846608/6000.
+        response = await self._send_reply_queued(
+            reply_req_id, body, is_final=True, skip_if_pending=False,
+        )
         errcode = response.get("errcode", 0)
         if errcode == STREAM_EXPIRED_ERRCODE:
             raise WeComStreamExpiredError(

@@ -1116,78 +1116,100 @@ class TestResolveStreamReqId:
 class TestSendStreamFrame:
     """`send_stream_frame` lifecycle: init → cumulative updates → finalize."""
 
+    @staticmethod
+    def _mock_send_json_with_immediate_ack(adapter):
+        """Mock _send_reply_queued to bypass ack tracking entirely.
+
+        For tests that verify frame content/ordering, we don't need actual
+        ack tracking — just record what was sent and always succeed.
+        """
+        sent_frames = []
+
+        async def mock_send_reply_queued(reply_req_id, body, *, is_final=False, skip_if_pending=False):
+            sent_frames.append({
+                "req_id": reply_req_id,
+                "body": body,
+                "is_final": is_final,
+            })
+            return {"errcode": 0, "errmsg": "ok"}
+
+        adapter._send_reply_queued = AsyncMock(side_effect=mock_send_reply_queued)
+        adapter._sent_frames = sent_frames
+
     @pytest.mark.asyncio
     async def test_first_call_seeds_thinking_frame_then_returns_true(self):
-        """First frame for a chat sends <think></think> (matching official plugin THINKING_MESSAGE)."""
+        """First frame for a chat sends <think></think> seed.
+
+        Bypasses ack tracking so both seed and content are sent in same call.
+        """
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        # Intermediate frames (finish=False) are fire-and-forget via _send_json;
-        # we mock _send_json to capture them and _send_reply_request for finish frames.
-        adapter._send_json = AsyncMock()
         adapter._ws = MagicMock(closed=False)
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+        # Mock _send_reply_queued to bypass ack tracking
+        self._mock_send_json_with_immediate_ack(adapter)
 
         ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
 
         assert ok is True
-        # Two fire-and-forget calls via _send_json: <think></think> seed + content.
-        assert adapter._send_json.await_count == 2
-        seed_payload = adapter._send_json.await_args_list[0].args[0]
-        assert seed_payload["body"]["msgtype"] == "stream"
-        assert seed_payload["body"]["stream"]["content"] == "<think></think>"
-        assert seed_payload["body"]["stream"]["finish"] is False
+        # seed + content = 2 frames
+        assert len(adapter._sent_frames) == 2
+        seed_frame = adapter._sent_frames[0]
+        assert seed_frame["body"]["msgtype"] == "stream"
+        assert seed_frame["body"]["stream"]["content"] == "<think></think>"
+        assert seed_frame["body"]["stream"]["finish"] is False
 
-        content_payload = adapter._send_json.await_args_list[1].args[0]
-        assert content_payload["body"]["stream"]["content"] == "hello"
-        assert content_payload["body"]["stream"]["finish"] is False
+        content_frame = adapter._sent_frames[1]
+        assert content_frame["body"]["stream"]["content"] == "hello"
+        assert content_frame["body"]["stream"]["finish"] is False
 
     @pytest.mark.asyncio
     async def test_first_and_second_call_share_stream_id(self):
-        import asyncio
+        """Successive frames use the same stream_id."""
         from gateway.platforms.wecom import WeComAdapter, STREAM_FRAME_SKIP_WINDOW
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
         adapter._ws = MagicMock(closed=False)
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+        # Immediate ack so all frames are sent (no pending-skip)
+        self._mock_send_json_with_immediate_ack(adapter)
 
         await adapter.send_stream_frame("alpha", chat_id="chat-1")
-        # Wait past the skip window so the second frame is not dropped.
+        # Wait past the skip window so the second frame is not dropped by throttle.
         await asyncio.sleep(STREAM_FRAME_SKIP_WINDOW + 0.01)
         await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
 
-        # All fire-and-forget: seed + alpha + alpha beta = 3 calls
-        assert adapter._send_json.await_count == 3
-        ids = [
-            call.args[0]["body"]["stream"]["id"]
-            for call in adapter._send_json.await_args_list
-        ]
+        # seed + alpha + alpha beta = 3 frames
+        assert len(adapter._sent_frames) == 3
+        ids = [frame["body"]["stream"]["id"] for frame in adapter._sent_frames]
         assert ids[0] == ids[1] == ids[2]
         assert ids[0].startswith("stream_")
 
     @pytest.mark.asyncio
-    async def test_intermediate_frame_skipped_within_throttle_window(self):
-        """Rapid intermediate frames within skip window are dropped (throttle)."""
+    async def test_intermediate_frame_skipped_when_pending_ack(self):
+        """Intermediate frames are skipped if a prior frame's ack is pending.
+
+        This is the new ack-tracking semantics: if the seed frame's ack hasn't
+        returned yet, the next intermediate frame is skipped (returns success
+        but doesn't actually send). This prevents errcode 6000 version conflict.
+        """
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
+        adapter._send_json = AsyncMock()  # No auto-ack — pending stays pending
         adapter._ws = MagicMock(closed=False)
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         await adapter.send_stream_frame("alpha", chat_id="chat-1")
-        # Immediately send another — should be skipped by throttle.
+        # Seed frame sent, pending_ack is set. Immediately send another:
         ok = await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
 
         assert ok is True  # returns True (skip is silent success)
-        # Only seed + first content = 2 calls; second was skipped.
-        assert adapter._send_json.await_count == 2
+        # Only seed frame sent; second was skipped due to pending ack.
+        assert adapter._send_json.await_count == 1
 
-        # accumulated_text still updated despite skip (for finalize).
+        # accumulated_text still updated in StreamTurn despite skip.
         turn = list(adapter._stream_turns.values())[0]
         assert turn.accumulated_text == "alpha beta"
 
@@ -1198,9 +1220,9 @@ class TestSendStreamFrame:
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
         adapter._ws = MagicMock(closed=False)
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+        # Auto-ack so seed + first frame go through
+        self._mock_send_json_with_immediate_ack(adapter)
 
         # First call creates turn + seed + content frame.
         turn_id = "cap-test"
@@ -1213,14 +1235,14 @@ class TestSendStreamFrame:
         turn._last_frame_sent_at = 0  # clear time throttle
 
         # Record count BEFORE the overflow frame to assert it was truly skipped.
-        before_overflow = adapter._send_json.await_count
+        before_overflow = len(adapter._sent_frames)
 
         # Next intermediate frame should be dropped.
         ok = await adapter.send_stream_frame("overflow", chat_id="chat-1", turn_id=turn_id)
         assert ok is True
         assert turn.accumulated_text == "overflow"
-        # No additional _send_json call — overflow was dropped.
-        assert adapter._send_json.await_count == before_overflow
+        # No additional frame sent — overflow was dropped.
+        assert len(adapter._sent_frames) == before_overflow
 
         # Finalize still goes through unconditionally.
         ok = await adapter.send_stream_frame("final", chat_id="chat-1", finalize=True, turn_id=turn_id)
@@ -1228,13 +1250,14 @@ class TestSendStreamFrame:
 
     @pytest.mark.asyncio
     async def test_finalize_sends_finish_true_and_resets_state(self):
+        """Finalize frame waits for pending ack, sends finish=true, cleans up turn."""
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
         adapter._ws = MagicMock(closed=False)
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+        # Auto-ack so seed + content + finalize all go through
+        self._mock_send_json_with_immediate_ack(adapter)
 
         # With turn_id, creates independent turn
         turn_id = "test-turn-1"
@@ -1251,10 +1274,14 @@ class TestSendStreamFrame:
         assert ok is True
         # After finalize, turn should be cleaned up
         assert turn_key not in adapter._stream_turns
-        # Finalize goes through _send_reply_request (with ack).
-        last_call = adapter._send_reply_request.await_args_list[-1]
-        assert last_call.args[1]["stream"]["finish"] is True
-        assert last_call.args[1]["stream"]["content"] == "partial final"
+        # Finalize goes through _send_reply_queued (mocked).
+        # Find the finalize frame (is_final=True)
+        finalize_frames = [
+            f for f in adapter._sent_frames
+            if f["body"].get("stream", {}).get("finish") is True
+        ]
+        assert len(finalize_frames) == 1
+        assert finalize_frames[0]["body"]["stream"]["content"] == "partial final"
 
 # === FAILURE TESTS PLACEHOLDER ===
 
@@ -1289,25 +1316,27 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_846608_marks_chat_expired_and_returns_false(self):
-        """846608 is only detected on finish=True frames (the only ones that
-        await an ack). Intermediate frames are fire-and-forget."""
+        """846608 on finalize frame marks the chat expired and returns False."""
         from gateway.platforms.wecom import (
             STREAM_EXPIRED_ERRCODE, WeComAdapter,
         )
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_json = AsyncMock()
         adapter._ws = MagicMock(closed=False)
-        # The finalize frame (finish=True) returns 846608.
-        adapter._send_reply_request = AsyncMock(
-            return_value={"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"},
-        )
 
-        # First call (with seed + content) succeeds (fire-and-forget).
+        # Mock _send_reply_queued: intermediate succeeds, final returns 846608
+        async def mock_queued(reply_req_id, body, *, is_final=False, skip_if_pending=False):
+            if is_final:
+                return {"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"}
+            return {"errcode": 0, "errmsg": "ok"}
+
+        adapter._send_reply_queued = AsyncMock(side_effect=mock_queued)
+
+        # First call (seed + content) succeeds
         turn_id = "test-turn-2"
         await adapter.send_stream_frame("hello", chat_id="chat-1", turn_id=turn_id)
-        # Now try to finalize — this hits _send_reply_request and gets 846608.
+        # Now try to finalize — ack returns 846608.
         ok = await adapter.send_stream_frame("hello final", chat_id="chat-1", finalize=True, turn_id=turn_id)
 
         assert ok is False
@@ -1393,13 +1422,12 @@ class TestSendTypingTriggersThinking:
         adapter._last_chat_req_ids["chat-1"] = "req-1"
         adapter._send_json = AsyncMock()
         adapter._ws = MagicMock(closed=False)
-        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
 
         await adapter.send_typing("chat-1")
 
         adapter._send_json.assert_not_awaited()
-        adapter._send_reply_request.assert_not_awaited()
-        assert adapter._active_stream_id is None
+        # No stream turns created
+        assert len(adapter._stream_turns) == 0
 
     @pytest.mark.asyncio
     async def test_send_typing_does_not_raise(self):

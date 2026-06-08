@@ -24,9 +24,10 @@ import type { DesktopTheme, DesktopThemeColors } from './types'
 // installs are unaffected.
 const SKIN_KEY = 'hermes-desktop-theme-v2'
 const MODE_KEY = 'hermes-desktop-mode-v1'
-// Per-profile skin assignments: { [profileKey]: skinName }. A profile inherits
-// the global default until it's given its own theme.
+// Per-profile skin + light/dark mode assignments: { [profileKey]: value }. A
+// profile inherits the global default until it's given its own appearance.
 const PROFILE_SKINS_KEY = 'hermes-desktop-profile-themes-v1'
+const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
@@ -69,6 +70,40 @@ export function assignSkinToProfile(profileKey: string, skin: string): void {
   if (profileKey === 'default') {
     try {
       window.localStorage.setItem(SKIN_KEY, skin)
+    } catch {
+      // Storage is best-effort; the per-profile record above is the source of truth.
+    }
+  }
+}
+
+const normalizeMode = (value: string | null | undefined): ThemeMode =>
+  value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
+
+const readGlobalMode = (): string | null => {
+  try {
+    return window.localStorage.getItem(MODE_KEY)
+  } catch {
+    return null
+  }
+}
+
+/** The light/dark mode to render for `profileKey`: its own assignment, else the
+ *  global default (legacy `MODE_KEY`), else light. */
+export function resolveModeForProfile(profileKey: string): ThemeMode {
+  const assigned = storedStringRecord(PROFILE_MODES_KEY)[profileKey]
+
+  return normalizeMode(assigned ?? readGlobalMode())
+}
+
+/** Assign `mode` to `profileKey`. The default profile also updates the legacy
+ *  global mode so other profiles keep inheriting a sensible fallback and the
+ *  boot paint stays consistent for single-profile installs. */
+export function assignModeToProfile(profileKey: string, mode: ThemeMode): void {
+  persistStringRecord(PROFILE_MODES_KEY, { ...storedStringRecord(PROFILE_MODES_KEY), [profileKey]: mode })
+
+  if (profileKey === 'default') {
+    try {
+      window.localStorage.setItem(MODE_KEY, mode)
     } catch {
       // Storage is best-effort; the per-profile record above is the source of truth.
     }
@@ -293,11 +328,12 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
 }
 
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
-// active profile's theme so a non-default profile relaunch paints its own skin.
+// active profile's appearance so a non-default profile relaunch paints its own
+// skin + light/dark mode.
 if (typeof window !== 'undefined') {
-  const skin = resolveSkinForProfile(readBootProfileKey())
-  const mode = (window.localStorage.getItem(MODE_KEY) as ThemeMode) ?? 'light'
-  const resolved = resolveMode(mode)
+  const bootProfile = readBootProfileKey()
+  const skin = resolveSkinForProfile(bootProfile)
+  const resolved = resolveMode(resolveModeForProfile(bootProfile))
   applyTheme(deriveTheme(skin, resolved), resolved)
 }
 
@@ -326,8 +362,9 @@ const ThemeContext = createContext<ThemeContextValue>({
 })
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Themes are assigned per profile; the active profile drives which skin shows.
-  // Single-profile users only ever see "default", so their behavior is unchanged.
+  // Skin + mode are assigned per profile; the active profile drives which
+  // appearance shows. Single-profile users only ever see "default", so their
+  // behavior is unchanged.
   const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
 
   const [themeName, setThemeNameState] = useState(() =>
@@ -335,14 +372,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'light' : ((window.localStorage.getItem(MODE_KEY) as ThemeMode) ?? 'light')
+    typeof window === 'undefined' ? 'light' : resolveModeForProfile(readBootProfileKey())
   )
 
-  // Follow profile switches: paint the profile's assigned theme and remember it
-  // for the next boot's first paint.
+  // Follow profile switches: paint the profile's assigned skin + mode and
+  // remember it for the next boot's first paint.
   useEffect(() => {
     rememberActiveProfileKey(profileKey)
     setThemeNameState(resolveSkinForProfile(profileKey))
+    setModeState(resolveModeForProfile(profileKey))
   }, [profileKey])
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
@@ -361,7 +399,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next)
-    window.localStorage.setItem(MODE_KEY, next)
+    // Assign to whichever profile is live right now (read fresh so the callback
+    // stays stable across profile switches).
+    assignModeToProfile(normalizeProfileKey($activeGatewayProfile.get()), next)
   }, [])
 
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime

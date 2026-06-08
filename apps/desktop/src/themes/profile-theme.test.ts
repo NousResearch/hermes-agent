@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { assignSkinToProfile, resolveSkinForProfile } from './context'
+import {
+  assignModeToProfile,
+  assignSkinToProfile,
+  resolveModeForProfile,
+  resolveSkinForProfile
+} from './context'
 import { DEFAULT_SKIN_NAME } from './presets'
 
 describe('per-profile theme resolution', () => {
@@ -33,5 +38,36 @@ describe('per-profile theme resolution', () => {
     assignSkinToProfile('work', 'not-a-real-skin')
 
     expect(resolveSkinForProfile('work')).toBe(DEFAULT_SKIN_NAME)
+  })
+})
+
+describe('per-profile light/dark mode resolution', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  it('falls back to light when nothing is assigned', () => {
+    expect(resolveModeForProfile('default')).toBe('light')
+    expect(resolveModeForProfile('work')).toBe('light')
+  })
+
+  it('keeps each profile on its own assigned mode', () => {
+    assignModeToProfile('work', 'dark')
+    assignModeToProfile('default', 'system')
+
+    expect(resolveModeForProfile('work')).toBe('dark')
+    expect(resolveModeForProfile('default')).toBe('system')
+  })
+
+  it('lets an unassigned profile inherit the default profile as the global fallback', () => {
+    assignModeToProfile('default', 'dark')
+
+    expect(resolveModeForProfile('never-themed')).toBe('dark')
+  })
+
+  it('normalizes an unknown stored mode back to light', () => {
+    assignModeToProfile('work', 'midnight-mode' as never)
+
+    expect(resolveModeForProfile('work')).toBe('light')
   })
 })

@@ -19,11 +19,12 @@ deprecation cycle until >=2 Class-1 platforms validate them.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.relay.descriptor import CapabilityDescriptor
+from gateway.relay.transport import RelayTransport
 
 logger = logging.getLogger(__name__)
 
@@ -38,24 +39,6 @@ _LEN_FNS: Dict[str, Callable[[str], int]] = {
     "chars": len,
     "utf16": _utf16_len,
 }
-
-
-@runtime_checkable
-class RelayTransport(Protocol):
-    """Minimal transport contract the RelayAdapter delegates wire I/O to.
-
-    The full protocol (inbound MessageEvent stream, interrupt channel) is
-    fleshed out in gateway/relay/transport.py (Task 1.2); the adapter only
-    needs these outbound + lifecycle calls to satisfy the abstract methods.
-    """
-
-    async def connect(self) -> bool: ...
-
-    async def disconnect(self) -> None: ...
-
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]: ...
-
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]: ...
 
 
 class RelayAdapter(BasePlatformAdapter):
@@ -92,7 +75,12 @@ class RelayAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         if self._transport is None:
             raise RuntimeError("RelayAdapter has no transport configured")
+        self._transport.set_inbound_handler(self._on_inbound)
         return await self._transport.connect()
+
+    async def _on_inbound(self, event) -> None:
+        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+        await self.handle_message(event)
 
     async def disconnect(self) -> None:
         if self._transport is not None:

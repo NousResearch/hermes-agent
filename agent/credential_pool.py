@@ -91,6 +91,7 @@ AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
+SOURCE_MANUAL_DEVICE_CODE = f"{SOURCE_MANUAL}:device_code"
 
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"

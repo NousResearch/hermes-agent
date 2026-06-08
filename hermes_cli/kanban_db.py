@@ -5695,6 +5695,44 @@ def _provider_backoff_guard(task: Task) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def _is_dispatcher_spawnable(assignee: Optional[str]) -> bool:
+    """Return True iff the dispatcher should auto-spawn a worker for ``assignee``.
+
+    Two spawnable kinds:
+      1. **A real Hermes profile** — ``_default_spawn`` runs ``hermes -p <name>``.
+      2. **The special ``implementer`` supervisor lane** — when the implementer
+         flag is armed, ``_default_spawn`` routes ``assignee == "implementer"``
+         to a detached ``m2_supervisor`` process instead of a profile worker.
+         There is no profile *directory* named ``implementer``, so a bare
+         ``profile_exists`` check (wrongly) buckets it as non-spawnable and the
+         dispatcher never claims the task / resolves+persists its workspace_path
+         before the supervisor runs. The supervisor then can't satisfy the
+         ``artifact_exists`` gate (``workspace_path is missing``). Treating the
+         armed implementer lane as spawnable lets the normal claim →
+         resolve_workspace → set_workspace_path → spawn path run for it too.
+
+    When the implementer flag is **off**, the lane is NOT spawnable here — the
+    same fail-closed posture as a missing profile (skipped_nonspawnable). The
+    second-defense ``SpawnRefused`` in ``_default_spawn`` still fires only when
+    some other check (e.g. a real profile collision) routes it through spawn.
+
+    Falls back to "spawnable" (legacy permissive) when ``profile_exists`` can't
+    be imported — preserving the prior behaviour of the inlined checks.
+    """
+    if not assignee:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        # Can't introspect — assume spawnable, preserve legacy behavior.
+        return True
+    if profile_exists(assignee):
+        return True
+    if assignee.strip() == "implementer" and _implementer_enabled():
+        return True
+    return False
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -5716,13 +5754,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     ).fetchall()
     if not rows:
         return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if _is_dispatcher_spawnable(row["assignee"]):
             return True
     return False
 
@@ -5742,12 +5775,8 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     ).fetchall()
     if not rows:
         return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if _is_dispatcher_spawnable(row["assignee"]):
             return True
     return False
 
@@ -5894,7 +5923,7 @@ def dispatch_once(
                             {"findings": recipe_errors or [{"type": "recipe", "ok": False}]},
                         )
                 continue
-        # Skip ready tasks whose assignee is not a real Hermes profile.
+        # Skip ready tasks whose assignee is not dispatcher-spawnable.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
         # control-plane lane (e.g. an interactive Claude Code terminal
@@ -5904,11 +5933,12 @@ def dispatch_once(
         # subprocess would crash on startup, get reaped as a zombie,
         # the task would loop back to ``ready`` on next tick, and we'd
         # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
-        try:
-            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        # ``_is_dispatcher_spawnable`` also recognises the special armed
+        # ``implementer`` supervisor lane (no profile dir) so the claim +
+        # workspace_path persistence below runs before the supervisor
+        # spawns — otherwise its ``artifact_exists`` gate trips on a NULL
+        # workspace_path (#m2-implementer-ignition 2026-06-08).
+        if not _is_dispatcher_spawnable(row["assignee"]):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -6022,11 +6052,7 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if not _is_dispatcher_spawnable(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
         task_for_backoff = get_task(conn, row["id"])

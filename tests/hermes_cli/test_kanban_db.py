@@ -1103,6 +1103,55 @@ def test_has_spawnable_ready_true_when_real_profile_present(kanban_home, monkeyp
         assert kb.has_spawnable_ready(conn) is True
 
 
+def test_has_spawnable_ready_true_for_armed_implementer_lane_without_profile(
+    kanban_home, monkeypatch
+):
+    """The special implementer supervisor lane is dispatcher-spawnable when armed.
+
+    There is intentionally no ``implementer`` profile directory; the dispatcher
+    still must see the lane as spawnable so the normal claim/workspace_path
+    persistence path runs before ``_default_spawn`` routes to m2_supervisor.
+    """
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    monkeypatch.setattr(kb, "_implementer_enabled", lambda *a, **k: True)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="impl", assignee="implementer")
+        assert kb.has_spawnable_ready(conn) is True
+
+
+def test_dispatch_claims_and_persists_workspace_for_armed_implementer_lane(
+    kanban_home, monkeypatch
+):
+    """Implementer dispatch must use the normal claim→workspace→spawn path.
+
+    This guards the live-worker ignition regression where bypassing that path
+    left ``workspace_path`` NULL and made the supervisor's artifact gate fail
+    closed with "workspace_path is missing".
+    """
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    monkeypatch.setattr(kb, "_implementer_enabled", lambda *a, **k: True)
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, task.assignee, workspace))
+        return 12345
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="impl", assignee="implementer")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert res.spawned == [(tid, "implementer", spawns[0][2])]
+    assert spawns == [(tid, "implementer", task.workspace_path)]
+    assert task.workspace_path
+    assert task.status == "running"
+
+
 def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
     """Empty queue is the trivial false case — no ready tasks at all."""
     with kb.connect() as conn:

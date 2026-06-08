@@ -357,6 +357,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"task not found: {args.task}", file=sys.stderr)
         return 4
     workspace = kdb.resolve_workspace(task, board=args.board)
+    # 정상 디스패처 경로는 spawn 전에 workspace_path를 persist한다. 그러나 이
+    # supervisor가 (디스패처 claim을 거치지 않고) 직접 기동될 경우 task row의
+    # workspace_path가 NULL로 남아 artifact_exists 게이트가 "workspace_path is
+    # missing"으로 fail-closed된다(#m2-implementer-ignition 2026-06-08). 진입
+    # 경로와 무관하게 resolve된 workspace를 row에 고정해 게이트가 같은 값을 본다.
+    if not task.workspace_path:
+        kdb.set_workspace_path(conn, args.task, str(workspace))
+        task = kdb.get_task(conn, args.task)
     run_id = kdb._current_run_id(conn, args.task)
 
     # R4 seam: 실 워커 declared manifest는 워커 제출본에서 온다. R1 미배선이라

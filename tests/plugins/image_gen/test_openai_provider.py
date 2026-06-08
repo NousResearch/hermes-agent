@@ -120,6 +120,15 @@ class TestModelResolution:
         assert model_id == "gpt-image-2-high"
         assert meta["quality"] == "high"
 
+    def test_explicit_model_override_wins_over_config(self, tmp_path):
+        import yaml
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"model": "gpt-image-2-high"}})
+        )
+        model_id, meta = openai_plugin._resolve_model("gpt-image-2-low")
+        assert model_id == "gpt-image-2-low"
+        assert meta["quality"] == "low"
+
 
 # ── Generate ────────────────────────────────────────────────────────────────
 

@@ -90,6 +90,20 @@ class TestAvailability:
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
 
+# ── Model resolution ────────────────────────────────────────────────────────
+
+
+class TestModelResolution:
+    def test_explicit_model_override_wins_over_config(self, tmp_path):
+        import yaml
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai-codex": {"model": "gpt-image-2-high"}}})
+        )
+        model_id, meta = codex_plugin._resolve_model("gpt-image-2-low")
+        assert model_id == "gpt-image-2-low"
+        assert meta["quality"] == "low"
+
+
 # ── Generate ────────────────────────────────────────────────────────────────
 
 

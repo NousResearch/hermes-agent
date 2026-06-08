@@ -8275,6 +8275,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "image_model":
+            return await self._handle_image_model_command(event)
+
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
@@ -11116,6 +11119,14 @@ class GatewayRunner:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    async def _handle_image_model_command(self, event: MessageEvent) -> str:
+        """Handle /image_model command — switch image generation provider/model."""
+        from hermes_cli.image_model_switch import apply_image_model_switch
+
+        raw_args = event.get_command_args().strip() if event else ""
+        result = apply_image_model_switch(raw_args)
+        return result.message
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.

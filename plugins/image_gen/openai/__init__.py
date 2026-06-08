@@ -93,8 +93,13 @@ def _load_openai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(model_override: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
+    if isinstance(model_override, str):
+        explicit = model_override.strip()
+        if explicit in _MODELS:
+            return explicit, _MODELS[explicit]
+
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -210,7 +215,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        tier_id, meta = _resolve_model()
+        tier_id, meta = _resolve_model(kwargs.get("model"))
         size = _SIZES.get(aspect, _SIZES["square"])
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS

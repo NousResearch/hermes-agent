@@ -476,21 +476,22 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model resolution + payload construction
 # ---------------------------------------------------------------------------
-def _resolve_fal_model() -> tuple:
+def _resolve_fal_model(model_override: Optional[str] = None) -> tuple:
     """Resolve the active FAL model from config.yaml (primary) or default.
 
     Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
     configured model is unknown (logged as a warning).
     """
-    model_id = ""
+    model_id = model_override.strip() if isinstance(model_override, str) else ""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        if isinstance(img_cfg, dict):
-            raw = img_cfg.get("model")
-            if isinstance(raw, str):
-                model_id = raw.strip()
+        if not model_id:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
+            if isinstance(img_cfg, dict):
+                raw = img_cfg.get("model")
+                if isinstance(raw, str):
+                    model_id = raw.strip()
     except Exception as exc:
         logger.debug("Could not load image_gen.model from config: %s", exc)
 
@@ -724,6 +725,7 @@ def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> 
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    model: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None,
@@ -732,21 +734,23 @@ def image_generate_tool(
 ) -> str:
     """Generate an image from a text prompt using the configured FAL model.
 
-    The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``; the
-    remaining kwargs are overrides for direct Python callers and are filtered
-    per-model via the ``supports`` whitelist (unsupported overrides are
-    silently dropped so legacy callers don't break when switching models).
+    The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``;
+    ``model`` and the remaining kwargs are overrides for direct Python callers
+    and are filtered per-model via the ``supports`` whitelist (unsupported
+    overrides are silently dropped so legacy callers don't break when switching
+    models).
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    model_id, meta = _resolve_fal_model(model)
 
     debug_call_data = {
         "model": model_id,
         "parameters": {
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
+            "model": model,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
             "num_images": num_images,
@@ -1030,22 +1034,59 @@ IMAGE_GENERATE_SCHEMA = {
 }
 
 
-def _read_configured_image_model():
-    """Return the value of ``image_gen.model`` from config.yaml, or None."""
+def _read_image_gen_config() -> Dict[str, Any]:
+    """Return the ``image_gen`` config section as a dict."""
     try:
         from hermes_cli.config import load_config
+
         cfg = load_config()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None
         if isinstance(section, dict):
-            value = section.get("model")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+            return section
     except Exception as exc:
-        logger.debug("Could not read image_gen.model: %s", exc)
+        logger.debug("Could not read image_gen config: %s", exc)
+    return {}
+
+
+def _image_model_for_provider(
+    provider_name: str,
+    section: Optional[Dict[str, Any]] = None,
+    *,
+    primary: bool = True,
+    explicit_model: Optional[str] = None,
+    provider_obj: Any = None,
+) -> Optional[str]:
+    """Resolve the model to pass to an image provider."""
+    if isinstance(explicit_model, str) and explicit_model.strip():
+        return explicit_model.strip()
+    section = section if isinstance(section, dict) else _read_image_gen_config()
+    provider_cfg = section.get(provider_name) if provider_name else None
+    if isinstance(provider_cfg, dict):
+        value = provider_cfg.get("model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if primary:
+        value = section.get("model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if provider_obj is not None:
+        try:
+            default = provider_obj.default_model()
+            if isinstance(default, str) and default.strip():
+                return default.strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not read %s.default_model(): %s", provider_name, exc)
     return None
 
 
-def _read_configured_image_provider():
+def _read_configured_image_model():
+    """Return the active image model from config.yaml, or None."""
+    section = _read_image_gen_config()
+    provider = _read_configured_image_provider(section)
+    return _image_model_for_provider(provider or "", section, primary=True)
+
+
+def _read_configured_image_provider(section: Optional[Dict[str, Any]] = None):
     """Return the value of ``image_gen.provider`` from config.yaml, or None.
 
     We only consult the plugin registry when this is explicitly set — an
@@ -1056,21 +1097,142 @@ def _read_configured_image_provider():
     back into this module's pipeline via call-time indirection — see
     issue #26241).
     """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        if isinstance(section, dict):
-            value = section.get("provider")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    except Exception as exc:
-        logger.debug("Could not read image_gen.provider: %s", exc)
+    section = section if isinstance(section, dict) else _read_image_gen_config()
+    value = section.get("provider") if isinstance(section, dict) else None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 
+def _read_configured_image_fallbacks(section: Optional[Dict[str, Any]] = None) -> list[Dict[str, str]]:
+    """Return configured image provider fallbacks from ``image_gen.fallback_providers``.
+
+    Entries may be provider strings or dicts with ``provider`` and optional
+    ``model`` keys.
+    """
+    section = section if isinstance(section, dict) else _read_image_gen_config()
+    raw = section.get("fallback_providers") if isinstance(section, dict) else None
+    if isinstance(raw, (str, dict)):
+        raw_entries = [raw]
+    elif isinstance(raw, list):
+        raw_entries = raw
+    else:
+        raw_entries = []
+
+    entries: list[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_entries:
+        provider = ""
+        model = ""
+        if isinstance(item, str):
+            provider = item.strip()
+        elif isinstance(item, dict):
+            raw_provider = item.get("provider")
+            raw_model = item.get("model")
+            if isinstance(raw_provider, str):
+                provider = raw_provider.strip()
+            if isinstance(raw_model, str):
+                model = raw_model.strip()
+        if not provider:
+            continue
+        key = (provider, model)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {"provider": provider}
+        if model:
+            entry["model"] = model
+        entries.append(entry)
+    return entries
+
+
+_RETRYABLE_IMAGE_ERROR_TYPES = {
+    "auth_required",
+    "connection_error",
+    "empty_response",
+    "invalid_response",
+    "io_error",
+    "missing_api_key",
+    "missing_dependency",
+    "provider_contract",
+    "provider_exception",
+    "provider_not_registered",
+    "quota",
+    "rate_limit",
+    "timeout",
+}
+
+_NON_RETRYABLE_IMAGE_ERROR_TYPES = {
+    "bad_request",
+    "content_policy",
+    "invalid_argument",
+    "moderation",
+    "policy_violation",
+    "safety",
+}
+
+_RETRYABLE_IMAGE_ERROR_MARKERS = (
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "connection",
+    "overload",
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "server error",
+    "temporar",
+    "timeout",
+    "timed out",
+    "too many requests",
+    "unavailable",
+)
+
+_NON_RETRYABLE_IMAGE_ERROR_MARKERS = (
+    "400",
+    "bad request",
+    "content policy",
+    "disallowed",
+    "invalid prompt",
+    "invalid request",
+    "moderation",
+    "policy violation",
+    "safety",
+)
+
+
+def _sanitize_image_provider_error(error: Any) -> str:
+    """Redact and bound provider error text before user-facing aggregation."""
+    text = str(error or "unknown error")
+    try:
+        from agent.redact import redact_sensitive_text
+
+        text = redact_sensitive_text(text, force=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Image provider error redaction skipped: %s", exc)
+    return text if len(text) <= 500 else f"{text[:497]}..."
+
+
+def _image_provider_failure_is_retryable(result: Dict[str, Any]) -> bool:
+    """Return True when a failed provider result may safely try a fallback."""
+    error_type = str(result.get("error_type") or "provider_error").strip().lower()
+    error = str(result.get("error") or "").strip().lower()
+
+    if error_type in _NON_RETRYABLE_IMAGE_ERROR_TYPES:
+        return False
+    if any(marker in error for marker in _NON_RETRYABLE_IMAGE_ERROR_MARKERS):
+        return False
+    if error_type in _RETRYABLE_IMAGE_ERROR_TYPES:
+        return True
+    if error_type == "api_error":
+        return any(marker in error for marker in _RETRYABLE_IMAGE_ERROR_MARKERS)
+    return any(marker in error for marker in _RETRYABLE_IMAGE_ERROR_MARKERS)
+
+
 def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
-    """Route the call to a plugin-registered provider when one is selected.
+    """Route the call to plugin-registered providers when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
     in-tree FAL fallback in ``image_generate_tool``.
@@ -1079,14 +1241,14 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     ``"fal"`` itself, which now resolves to the
     ``plugins/image_gen/fal/`` plugin (the plugin re-enters this module's
     pipeline via ``_it`` indirection so behavior is identical to the
-    direct call, just routed through the registry).
+    direct call, just routed through the registry). When
+    ``image_gen.fallback_providers`` is configured, failed providers are tried
+    in order before returning an error.
     """
+    section = _read_image_gen_config()
     configured = _read_configured_image_provider()
     if not configured:
         return None
-
-    # Also read configured model so we can pass it to the plugin
-    configured_model = _read_configured_image_model()
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1095,57 +1257,131 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-        provider = get_provider(configured)
     except Exception as exc:
         logger.debug("image_gen plugin dispatch skipped: %s", exc)
         return None
 
-    if provider is None:
-        try:
-            # Long-lived sessions may have discovered plugins before a bundled
-            # backend was patched in or before config changed. Retry once with
-            # a forced refresh before surfacing a missing-provider error.
-            _ensure_plugins_discovered(force=True)
-            provider = get_provider(configured)
-        except Exception as exc:
-            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+    def _resolve_provider(name: str):
+        provider_obj = get_provider(name)
+        if provider_obj is None:
+            try:
+                # Long-lived sessions may have discovered plugins before a bundled
+                # backend was patched in or before config changed. Retry once with
+                # a forced refresh before surfacing a missing-provider error.
+                _ensure_plugins_discovered(force=True)
+                provider_obj = get_provider(name)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+        return provider_obj
 
-    if provider is None:
-        return json.dumps({
+    primary_model = _image_model_for_provider(configured, section, primary=True) or ""
+    attempts: list[Dict[str, str]] = [{"provider": configured}]
+    attempts[0]["model"] = primary_model
+    for fallback in _read_configured_image_fallbacks(section):
+        fallback_provider = fallback.get("provider", "")
+        fallback_model = fallback.get("model", "")
+        if not fallback_provider:
+            continue
+        if fallback_provider == configured and (not fallback_model or fallback_model == primary_model):
+            continue
+        attempts.append(fallback)
+
+    failures: list[Dict[str, str]] = []
+    has_fallbacks = len(attempts) > 1
+
+    def _failure_result(error: str, error_type: str, provider_name: str) -> Dict[str, Any]:
+        return {
             "success": False,
             "image": None,
-            "error": (
-                f"image_gen.provider='{configured}' is set but no plugin "
-                f"registered that name. Run `hermes plugins list` to see "
-                f"available image gen backends."
-            ),
-            "error_type": "provider_not_registered",
-        })
+            "error": error,
+            "error_type": error_type,
+            "provider": provider_name,
+        }
 
-    try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
-        if configured_model:
-            kwargs["model"] = configured_model
-        result = provider.generate(**kwargs)
-    except Exception as exc:
-        logger.warning(
-            "Image gen provider '%s' raised: %s",
-            getattr(provider, "name", "?"), exc,
+    for idx, attempt in enumerate(attempts):
+        provider_name = attempt.get("provider", "")
+        provider = _resolve_provider(provider_name)
+        if provider is None:
+            result = _failure_result(
+                (
+                    f"image_gen.provider='{provider_name}' is set but no plugin "
+                    f"registered that name. Run `hermes plugins list` to see "
+                    f"available image gen backends."
+                ),
+                "provider_not_registered",
+                provider_name,
+            )
+        else:
+            try:
+                kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+                model = _image_model_for_provider(
+                    provider_name,
+                    section,
+                    primary=(idx == 0),
+                    explicit_model=attempt.get("model"),
+                    provider_obj=provider,
+                )
+                if model:
+                    kwargs["model"] = model
+                result = provider.generate(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Image gen provider '%s' raised: %s",
+                    getattr(provider, "name", provider_name), exc,
+                )
+                result = _failure_result(
+                    f"Provider '{getattr(provider, 'name', provider_name)}' error: {exc}",
+                    "provider_exception",
+                    getattr(provider, "name", provider_name),
+                )
+
+        if not isinstance(result, dict):
+            result = _failure_result(
+                "Provider returned a non-dict result",
+                "provider_contract",
+                provider_name,
+            )
+
+        if result.get("success") is not False:
+            return json.dumps(result)
+
+        sanitized_error = _sanitize_image_provider_error(result.get("error") or "unknown error")
+        result["error"] = sanitized_error
+        failures.append(
+            {
+                "provider": str(result.get("provider") or provider_name),
+                "error_type": str(result.get("error_type") or "provider_error"),
+                "error": sanitized_error,
+            }
         )
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
-            "error_type": "provider_exception",
-        })
-    if not isinstance(result, dict):
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": "Provider returned a non-dict result",
-            "error_type": "provider_contract",
-        })
-    return json.dumps(result)
+        if not has_fallbacks:
+            return json.dumps(result)
+        has_next_fallback = idx + 1 < len(attempts)
+        if has_next_fallback and not _image_provider_failure_is_retryable(result):
+            logger.info(
+                "Image gen provider '%s' failed with non-retryable %s; skipping fallbacks",
+                failures[-1]["provider"],
+                failures[-1]["error_type"],
+            )
+            return json.dumps(result)
+        logger.info(
+            "Image gen provider '%s' failed (%s); %s",
+            failures[-1]["provider"],
+            failures[-1]["error_type"],
+            "trying fallback" if has_next_fallback else "no fallback left",
+        )
+
+    summary = "; ".join(
+        f"{item['provider']} ({item['error_type']}): {item['error']}"
+        for item in failures
+    ) or "no providers attempted"
+    return json.dumps({
+        "success": False,
+        "image": None,
+        "error": f"All configured image generation providers failed: {summary}",
+        "error_type": "provider_fallback_failed",
+        "provider_errors": failures,
+    })
 
 
 def _handle_image_generate(args, **kw):
@@ -1155,8 +1391,7 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     task_id = kw.get("task_id")
 
-    # Route to a plugin-registered provider if one is active (and it's
-    # not the in-tree FAL path).
+    # Route to a plugin-registered provider if one is active.
     dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)

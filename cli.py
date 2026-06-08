@@ -8062,6 +8062,20 @@ class HermesCLI:
                 return
             self._close_model_picker()
 
+    def _handle_image_model_switch(self, cmd_original: str):
+        """Handle /image_model — switch image generation provider/model globally."""
+        from hermes_cli.image_model_switch import apply_image_model_switch
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        result = apply_image_model_switch(raw_args)
+        prefix = "  " if result.success else "  ✗ "
+        for idx, line in enumerate(result.message.splitlines() or [""]):
+            if result.success:
+                _cprint(f"  {line}")
+            else:
+                _cprint(f"{prefix}{line}" if idx == 0 else f"    {line}")
+
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model for this session.
 
@@ -8992,6 +9006,8 @@ class HermesCLI:
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "image_model":
+            self._handle_image_model_switch(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":

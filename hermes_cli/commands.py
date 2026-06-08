@@ -125,6 +125,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
                args_hint="[model] [--provider name] [--global] [--refresh]"),
+    CommandDef("image_model", "Switch image generation provider/model", "Configuration",
+               aliases=("image-model",), args_hint="[provider|provider/model|model --provider provider]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
@@ -342,6 +344,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "image_model",
         "new",
         "profile",
         "queue",
@@ -522,6 +525,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "resume",
     "sessions",
     "model",
+    "image_model",
     # Maintenance / diagnostics — the ones that prompted this priority list.
     "debug",
     "restart",
@@ -1019,6 +1023,9 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "topic", "mute", "pro", "shortcuts",
 })
 
+_SLACK_ALIAS_PRIORITY = ("reset", "bg", "btw", "q")
+"""Common aliases that should survive Slack's 50-command cap."""
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Convert a command name to a valid Slack slash command name.
@@ -1079,16 +1086,26 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Second pass: high-value aliases that should survive the 50-command cap.
+    priority_aliases = set(_SLACK_ALIAS_PRIORITY)
+    for alias in _SLACK_ALIAS_PRIORITY:
+        cmd = resolve_command(alias)
+        if not cmd or not _is_gateway_available(cmd, overrides):
+            continue
+        _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Third pass: remaining aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         for alias in cmd.aliases:
+            if alias in priority_aliases:
+                continue
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Third pass: plugin commands.
+    # Fourth pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 

@@ -114,7 +114,7 @@ class TestFalImageGenProviderGenerate:
 
         monkeypatch.setattr(image_tool, "image_generate_tool", fake_image_generate_tool)
         monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
+                            lambda model_override=None: ("fal-ai/flux-2/klein/9b", {}))
 
         result = FalImageGenProvider().generate(
             "a serene mountain landscape",
@@ -133,6 +133,35 @@ class TestFalImageGenProviderGenerate:
         assert result["aspect_ratio"] == "square"
         assert result["model"] == "fal-ai/flux-2/klein/9b"
 
+    def test_generate_passes_model_override_to_legacy_pipeline(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from plugins.image_gen.fal import FalImageGenProvider
+
+        captured = {}
+
+        def fake_image_generate_tool(prompt, aspect_ratio, **kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "image": "https://fake/image.png"})
+
+        seen_model = {}
+
+        def fake_resolve(model_override=None):
+            seen_model["value"] = model_override
+            return "fal-ai/gpt-image-2", {}
+
+        monkeypatch.setattr(image_tool, "image_generate_tool", fake_image_generate_tool)
+        monkeypatch.setattr(image_tool, "_resolve_fal_model", fake_resolve)
+
+        result = FalImageGenProvider().generate(
+            "a serene mountain landscape",
+            aspect_ratio="square",
+            model="fal-ai/gpt-image-2",
+        )
+
+        assert captured["model"] == "fal-ai/gpt-image-2"
+        assert seen_model["value"] == "fal-ai/gpt-image-2"
+        assert result["model"] == "fal-ai/gpt-image-2"
+
     def test_generate_invalid_aspect_ratio_is_coerced(self, monkeypatch):
         import tools.image_generation_tool as image_tool
         from plugins.image_gen.fal import FalImageGenProvider
@@ -145,7 +174,7 @@ class TestFalImageGenProviderGenerate:
 
         monkeypatch.setattr(image_tool, "image_generate_tool", fake)
         monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
+                            lambda model_override=None: ("fal-ai/flux-2/klein/9b", {}))
 
         FalImageGenProvider().generate("p", aspect_ratio="not-a-real-ratio")
         # ``resolve_aspect_ratio`` clamps to landscape.
@@ -163,7 +192,7 @@ class TestFalImageGenProviderGenerate:
 
         monkeypatch.setattr(image_tool, "image_generate_tool", fake)
         monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
+                            lambda model_override=None: ("fal-ai/flux-2/klein/9b", {}))
 
         FalImageGenProvider().generate(
             "p",
@@ -200,7 +229,7 @@ class TestFalImageGenProviderGenerate:
 
         monkeypatch.setattr(image_tool, "image_generate_tool", lambda **kw: "not-json")
         monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
+                            lambda model_override=None: ("fal-ai/flux-2/klein/9b", {}))
 
         result = FalImageGenProvider().generate("p")
         assert result["success"] is False

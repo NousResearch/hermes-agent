@@ -337,6 +337,13 @@ class TestModelResolution:
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/nano-banana-pro"
 
+    def test_explicit_model_override_wins_over_config_and_env(self, image_tool, monkeypatch):
+        monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
+        with patch("hermes_cli.config.load_config",
+                   return_value={"image_gen": {"model": "fal-ai/nano-banana-pro"}}):
+            mid, _ = image_tool._resolve_fal_model("fal-ai/gpt-image-2")
+        assert mid == "fal-ai/gpt-image-2"
+
 
 # ---------------------------------------------------------------------------
 # Aspect ratio handling

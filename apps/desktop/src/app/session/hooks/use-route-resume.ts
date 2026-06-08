@@ -56,13 +56,15 @@ export function useRouteResume({
   startFreshSessionDraft
 }: RouteResumeOptions) {
   const lastPathnameRef = useRef<string | null>(null)
+  const seenGatewayStateRef = useRef(false)
   const wasGatewayOpenRef = useRef(false)
 
   useEffect(() => {
     const gatewayOpen = gatewayState === 'open'
     const pathnameChanged = lastPathnameRef.current !== locationPathname
-    const gatewayBecameOpen = !wasGatewayOpenRef.current && gatewayOpen
+    const gatewayBecameOpen = seenGatewayStateRef.current && !wasGatewayOpenRef.current && gatewayOpen
     lastPathnameRef.current = locationPathname
+    seenGatewayStateRef.current = true
     wasGatewayOpenRef.current = gatewayOpen
 
     if (currentView !== 'chat' || !gatewayOpen) {
@@ -99,7 +101,7 @@ export function useRouteResume({
       // before the pathname updates from /:sid -> /.
       const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
 
-      if (!alreadyActive && shouldResume && !creatingSessionRef.current) {
+      if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
         void resumeSession(routedSessionId, true)
       }
 

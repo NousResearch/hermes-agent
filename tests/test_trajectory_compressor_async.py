@@ -172,6 +172,60 @@ async def test_generate_summary_async_public_moonshot_kimi_k2_5_omits_temperatur
     assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
 
 
+def test_per_trajectory_timeout_preserves_original_entry(tmp_path):
+    """A summarization timeout must NOT delete the trajectory from the output.
+
+    Regression: the asyncio.TimeoutError branch in _process_directory_async used
+    to set results[...] = None, and the writer filtered None entries out — so any
+    trajectory whose processing exceeded per_trajectory_timeout (transient
+    summarizer slowness/rate-limiting under concurrency) was permanently dropped
+    from the training data. A timeout is a transient failure, so the original
+    (uncompressed) entry must be preserved, matching the generic-exception branch.
+    """
+    import asyncio
+    import json
+
+    from trajectory_compressor import (
+        AggregateMetrics,
+        CompressionConfig,
+        TrajectoryCompressor,
+    )
+
+    input_dir = tmp_path / "in"
+    output_dir = tmp_path / "out"
+    input_dir.mkdir()
+
+    entry = {"conversations": [{"from": "human", "value": "hello"}]}
+    (input_dir / "data.jsonl").write_text(
+        json.dumps(entry) + "\n", encoding="utf-8"
+    )
+
+    # Tiny timeout so the (intentionally slow) entry processing always trips it.
+    config = CompressionConfig(per_trajectory_timeout=1, metrics_enabled=False)
+
+    comp = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    comp.config = config
+    comp.logger = MagicMock()
+    comp.aggregate_metrics = AggregateMetrics()
+
+    async def _never_returns(_entry):
+        await asyncio.sleep(60)
+
+    comp.process_entry_async = _never_returns
+
+    comp.process_directory(input_dir, output_dir)
+
+    out_file = output_dir / "data.jsonl"
+    assert out_file.exists()
+    lines = [l for l in out_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+    # The trajectory survived the timeout, unmodified.
+    assert len(lines) == 1, "timed-out trajectory was silently dropped"
+    assert json.loads(lines[0]) == entry
+    # And it was accounted for as a failure, not a success.
+    assert comp.aggregate_metrics.trajectories_failed == 1
+
+
 @pytest.mark.asyncio
 async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_temperature():
     """kimi-k2.5 on api.moonshot.cn should not get a forced temperature."""

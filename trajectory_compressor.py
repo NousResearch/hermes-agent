@@ -1165,8 +1165,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                             description=f"[dim]✅ {compressed_count} compressed | ⏭️ {skipped_count} skipped | ⏱️ {timeout_count} timeout | 🔄 {api_calls} API calls | ⚡ {in_flight} in-flight[/dim]"
                         )
                     
-                    # Skip this entry entirely (don't include in output)
-                    results[file_path][entry_idx] = None
+                    # Keep the original (uncompressed) entry on timeout instead of
+                    # dropping it. A summarizer timeout is a transient failure, not a
+                    # reason to permanently delete valid training data — mirror the
+                    # generic-exception branch below, which also preserves the original.
+                    results[file_path][entry_idx] = (entry, TrajectoryMetrics())
                     
                 except Exception as e:
                     self.logger.error(f"Error processing entry from {file_path}:{entry_idx}: {e}")
@@ -1224,7 +1227,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             output_path = output_dir / file_path.name
             file_results = results[file_path]
             
-            # Sort by original entry index to preserve order, skip None (timed out) entries
+            # Sort by original entry index to preserve order; the `is not None`
+            # guard is defensive — every entry is now retained (compressed,
+            # skipped, or preserved-on-failure), so nothing is silently dropped.
             sorted_entries = [
                 file_results[idx][0] 
                 for idx in sorted(file_results.keys()) 

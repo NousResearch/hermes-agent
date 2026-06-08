@@ -1895,6 +1895,14 @@ class TestBuildAssistantMessage:
         assert result["content"] == "Hello!"
         assert result["finish_reason"] == "stop"
 
+    def test_strips_leaked_sent_marker_before_persistence(self, agent):
+        msg = _mock_assistant_msg(content="[sent: 2026-06-08T06:23+02:00]\nHello!")
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["content"] == "Hello!"
+        assert msg.content == "Hello!"
+
     def test_with_reasoning(self, agent):
         msg = _mock_assistant_msg(content="answer", reasoning="thinking")
         result = agent._build_assistant_message(msg, "stop")
@@ -3458,7 +3466,7 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            result = agent.run_conversation(prompt)
+            result = agent.run_conversation(prompt, current_message_timestamp=1710000000.0)
 
         assert result["final_response"] == "Final answer"
         sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]

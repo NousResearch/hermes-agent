@@ -842,6 +842,14 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # compression, title generation.
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
+        from agent.live_time_context import strip_sent_timestamp_prefix
+        _without_sent_timestamp = strip_sent_timestamp_prefix(_san_content).strip()
+        if _without_sent_timestamp != _san_content:
+            _san_content = _without_sent_timestamp
+            try:
+                assistant_message.content = _san_content
+            except Exception:
+                pass
 
     # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
     # from assistant content BEFORE the message enters conversation history.

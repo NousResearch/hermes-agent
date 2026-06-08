@@ -137,6 +137,26 @@ export const removeQueuedPrompt = (key: string | null | undefined, id: string): 
   return true
 }
 
+export const promoteQueuedPrompt = (key: string | null | undefined, id: string): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+  const index = queue.findIndex(e => e.id === id)
+
+  if (index <= 0) {
+    return false
+  }
+
+  const entry = queue[index]!
+  writeSession(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
+
+  return true
+}
+
 export const updateQueuedPrompt = (
   key: string | null | undefined,
   id: string,
@@ -194,31 +214,24 @@ export interface AutoDrainSettleInput {
   wasBusy: boolean
   isBusy: boolean
   queueLength: number
-  userInterrupted: boolean
 }
 
 /**
  * Decide whether the composer should auto-drain the next queued prompt when a
  * turn settles (busy transitions true → false).
  *
- * The queue auto-advances when a turn *completes naturally*, but must NOT
- * advance when the user *explicitly interrupted* the turn via the Stop button.
- * Conflating the two made the Stop button appear to "never work": cancelling a
- * turn flipped busy → false, the queue immediately re-fired its head, and the
- * agent kept running. An explicit interrupt means stop — the queued turns are
- * preserved and the user resumes them deliberately (Cmd/Ctrl+K, Enter, or the
- * per-row "send now" arrow).
+ * Queued turns always advance once the session is idle again, whether the turn
+ * finished naturally or the user interrupted it. Interrupting to reach a queued
+ * message is the whole point of the queue, so we never suppress the drain. The
+ * gateway guarantees a settle (message.complete + session.info running:false)
+ * even after an interrupt, so this single edge reliably advances the queue. To
+ * cancel queued turns the user deletes them from the panel.
  */
 export const shouldAutoDrainOnSettle = (params: AutoDrainSettleInput): boolean => {
-  const { isBusy, queueLength, userInterrupted, wasBusy } = params
+  const { isBusy, queueLength, wasBusy } = params
 
   // Only react to a true → false transition; ignore steady state and entry.
   if (isBusy || !wasBusy) {
-    return false
-  }
-
-  // An explicit Stop suppresses exactly one auto-drain.
-  if (userInterrupted) {
     return false
   }
 

@@ -7,12 +7,19 @@ declare global {
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
+      // and drop it if a remote one has gone unreachable, so the next
+      // getConnection() rebuilds a reachable descriptor instead of the renderer
+      // re-dialing a dead remote forever. No-op for local backends (they
+      // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
+      // remote cache was dropped.
+      revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
       getBootProgress: () => Promise<DesktopBootProgress>
-      getConnectionConfig: () => Promise<DesktopConnectionConfig>
+      getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
@@ -81,6 +88,10 @@ declare global {
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
+      uninstall: {
+        summary: () => Promise<DesktopUninstallSummary>
+        run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
+      }
     }
   }
 }
@@ -102,6 +113,30 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+}
+
+export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
+
+export interface DesktopUninstallSummary {
+  hermes_home: string
+  agent_installed: boolean
+  gui_installed: boolean
+  source_built_artifacts: string[]
+  packaged_app_paths: string[]
+  userdata_dir: string
+  userdata_exists: boolean
+  platform: string
+  running_app_path?: null | string
+  probe?: string
+}
+
+export interface DesktopUninstallResult {
+  ok: boolean
+  mode?: DesktopUninstallMode
+  willRemoveAppBundle?: boolean
+  scriptPath?: string
+  error?: string
+  message?: string
 }
 
 export interface DesktopUpdateCommit {
@@ -190,6 +225,9 @@ export interface DesktopActiveProfile {
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
+  // The profile this config describes, or null for the global/default
+  // connection. Per-profile entries let a profile point at its own backend.
+  profile: null | string
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -199,6 +237,9 @@ export interface DesktopConnectionConfig {
 
 export interface DesktopConnectionConfigInput {
   mode: 'local' | 'remote'
+  // When set, the save/apply/test targets this profile's per-profile remote
+  // override instead of the global connection.
+  profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string

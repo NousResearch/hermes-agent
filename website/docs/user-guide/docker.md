@@ -132,7 +132,7 @@ If no provider is registered and the bind is non-loopback, the dashboard **fails
 Opting out of the OAuth gate serves the dashboard's API surface (including model keys and session data) to anyone who can reach the published port. Only enable it when you have your own auth layer in front, or on a trusted LAN you fully control.
 :::
 
-Running the dashboard as a separate container is not supported: its gateway-liveness detection requires a shared PID namespace with the gateway process.
+Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace.
 
 ## Running interactively (CLI chat)
 

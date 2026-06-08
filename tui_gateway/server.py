@@ -866,6 +866,7 @@ def _git_branch_for_cwd(cwd: str) -> str:
             text=True,
             timeout=1.5,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             branch = result.stdout.strip()
@@ -877,6 +878,7 @@ def _git_branch_for_cwd(cwd: str) -> str:
             text=True,
             timeout=1.5,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         return head.stdout.strip() if head.returncode == 0 else ""
     except Exception:
@@ -5352,7 +5354,7 @@ def _(rid, params: dict) -> dict:
             str(pdf_path), str(out_prefix),
         ]
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -6626,6 +6628,7 @@ def _(rid, params: dict) -> dict:
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
             env=os.environ.copy(),
+            stdin=subprocess.DEVNULL,
         )
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
@@ -6686,6 +6689,7 @@ def _(rid, params: dict) -> dict:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                stdin=subprocess.DEVNULL,
             )
             output = (
                 (r.stdout or "")
@@ -7076,6 +7080,7 @@ def _list_repo_files(root: str) -> list[str]:
             capture_output=True,
             timeout=2.0,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
@@ -7093,6 +7098,7 @@ def _list_repo_files(root: str) -> list[str]:
                 capture_output=True,
                 timeout=2.0,
                 check=False,
+                stdin=subprocess.DEVNULL,
             )
             if list_result.returncode == 0:
                 for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
@@ -8826,7 +8832,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            stdin=subprocess.DEVNULL,
         )
         return _ok(
             rid,

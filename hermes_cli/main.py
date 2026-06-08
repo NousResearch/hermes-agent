@@ -7607,6 +7607,23 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
 
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
+    # Handle launcher subcommand first
+    gui_subcommand = getattr(args, "gui_subcommand", None)
+    if gui_subcommand == "launcher":
+        from hermes_cli.subcommands.gui_launcher import install_launcher, uninstall_launcher
+
+        action = getattr(args, "action", None)
+        if action == "install":
+            cwd = Path(args.cwd).expanduser().resolve() if args.cwd else None
+            success = install_launcher(cwd=cwd, name=args.name)
+            sys.exit(0 if success else 1)
+        elif action == "uninstall":
+            success = uninstall_launcher(name=args.name)
+            sys.exit(0 if success else 1)
+        else:
+            print("Usage: hermes desktop launcher [install|uninstall] [--cwd PATH] [--name NAME]")
+            sys.exit(1)
+
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")

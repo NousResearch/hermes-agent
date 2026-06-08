@@ -578,13 +578,8 @@ def _normalize_command_for_detection(command: str) -> str:
     # way they catch ~/.bashrc. Do not snapshot this at import time: tests and
     # profile/session launchers can set HOME after this module is imported.
     command = _rewrite_resolved_user_home(command)
-    # Fold the resolved absolute active-profile home path into the canonical
-    # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
-    # gateway deployments the agent often references the resolved absolute path
-    # directly (e.g. `sed -i ... /home/hermes/.hermes/config.yaml`) rather than
-    # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
-    # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
-    # after this module is imported — as the hermetic test conftest does.
+    # Fold resolved absolute Hermes-home paths into canonical token forms so
+    # config/env sensitive-path patterns catch absolute-path writes.
     command = _rewrite_resolved_hermes_home(command)
     return command
 
@@ -620,35 +615,43 @@ def _rewrite_resolved_user_home(command: str) -> str:
 
 
 def _rewrite_resolved_hermes_home(command: str) -> str:
-    """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
+    """Rewrite resolved absolute Hermes/home prefixes to token forms.
 
     Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
-    form) and replaces an occurrence of ``<home>/`` in *command* with
-    ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
-    patterns match. No-op when the path can't be resolved or doesn't appear.
+    form) and replaces occurrences in *command* so the static
+    ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH`` patterns match. No-op when
+    paths can't be resolved or don't appear.
     """
+    candidates: list[tuple[str, str]] = []
     try:
         from hermes_constants import get_hermes_home
         home = get_hermes_home().expanduser()
-        candidates = [
-            str(home).rstrip("/"),
-            str(home.resolve(strict=False)).rstrip("/"),
-        ]
+        candidates.extend([
+            (str(home).rstrip("/"), "~/.hermes"),
+            (str(home.resolve(strict=False)).rstrip("/"), "~/.hermes"),
+        ])
     except Exception:
-        return command
+        pass
+
+    _hermes_home = (os.environ.get("HERMES_HOME") or "").strip().rstrip("/")
+    if _hermes_home:
+        candidates.append((_hermes_home, "$HERMES_HOME"))
+    _home = (os.path.expanduser("~") or "").rstrip("/")
+    if _home:
+        candidates.append((_home, "~"))
+
     seen: set[str] = set()
-    for path in candidates:
+    for path, replacement in sorted(candidates, key=lambda item: len(item[0]), reverse=True):
         if not path or path in seen:
             continue
         seen.add(path)
         # Guard against a degenerate HERMES_HOME (e.g. "/" or "") rewriting
         # unrelated paths: require an absolute path with at least one non-root
-        # component. The active profile home is always a real directory like
-        # /home/hermes/.hermes or a per-test tempdir, never a bare root.
+        # component.
         normalized = path.rstrip("/")
         if not normalized.startswith("/") or normalized.count("/") < 2:
             continue
-        command = command.replace(normalized + "/", "~/.hermes/")
+        command = re.sub(re.escape(normalized), replacement, command, flags=re.IGNORECASE)
     return command
 
 

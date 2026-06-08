@@ -64,9 +64,10 @@ main() {
     return 1
   fi
 
+  local REPO PRS_TO_REVIEW PR_NUMBER HEAD_REPO TRUSTED_COMMENT_COUNT
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
   PRS_TO_REVIEW=$(mktemp "${TMPDIR:-/tmp}/hermes-prs-to-review.XXXXXX")
-  trap 'rm -f "$PRS_TO_REVIEW" "$PRS_TO_REVIEW.candidates"' RETURN EXIT
+  trap '[ -n "${PRS_TO_REVIEW:-}" ] && rm -f "$PRS_TO_REVIEW" "$PRS_TO_REVIEW.candidates"' RETURN EXIT
 
   echo "Scanning $REPO for authorized '@jules' PR review requests..."
 

@@ -1542,6 +1542,15 @@ class TestCorruptStatusFiles:
         p.write_text("4242", encoding="utf-8")
         assert status._read_pid_record(p) == {"pid": 4242}
 
+    def test_public_read_pid_record_matches_private(self, tmp_path):
+        # The public wrapper exists so callers outside gateway.status (e.g.
+        # gateway.run's --replace takeover check) don't reach into the private
+        # _read_pid_record. It must delegate with identical behavior.
+        p = tmp_path / "gateway.pid"
+        p.write_text(json.dumps({"pid": 99, "hermes_profile": "alpha"}), encoding="utf-8")
+        assert status.read_pid_record(p) == {"pid": 99, "hermes_profile": "alpha"}
+        assert status.read_pid_record(tmp_path / "missing.pid") is None
+
 
 class TestParseActiveAgents:
     """The shared read-side coercion used by BOTH HTTP surfaces (/api/status

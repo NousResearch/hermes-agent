@@ -19593,11 +19593,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # HERMES_PROFILE, we refuse the takeover instead of cross-killing a
     # sibling profile that shares this HERMES_HOME (#30155).
     from gateway.status import (
-        _read_pid_record,
         acquire_gateway_runtime_lock,
         get_running_pid,
         get_process_start_time,
         pidfile_records_different_profile,
+        read_pid_record,
         release_gateway_runtime_lock,
         remove_pid_file,
         terminate_pid,
@@ -19606,7 +19606,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
             current_profile = os.environ.get("HERMES_PROFILE")
-            existing_record = _read_pid_record()
+            existing_record = read_pid_record()
             if pidfile_records_different_profile(existing_record, current_profile):
                 existing_profile = (existing_record or {}).get("hermes_profile")
                 hermes_home = str(get_hermes_home())

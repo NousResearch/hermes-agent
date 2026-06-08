@@ -504,6 +504,16 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
     return None
 
 
+def read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
+    """Public wrapper around :func:`_read_pid_record`.
+
+    Lets callers outside this module (e.g. ``gateway.run``'s --replace
+    takeover check) read the gateway pidfile record without reaching into the
+    private ``_read_pid_record`` and coupling to pidfile-parsing internals.
+    """
+    return _read_pid_record(pid_path)
+
+
 def _read_gateway_lock_record(lock_path: Optional[Path] = None) -> Optional[dict[str, Any]]:
     return _read_pid_record(lock_path or _get_gateway_lock_path())
 

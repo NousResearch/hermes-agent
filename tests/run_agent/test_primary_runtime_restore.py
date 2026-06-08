@@ -505,6 +505,24 @@ class TestRateLimitCooldown:
         assert hasattr(agent, "_rate_limited_until")
         assert agent._rate_limited_until > before + 50  # ~60s from now
 
+    def test_cooldown_uses_retry_after_context_on_rate_limit_reason(self):
+        """Fallback cooldown should honor provider retry-after/reset windows."""
+        from run_agent import FailoverReason
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        before = time.monotonic()
+        mock_client = _mock_resolve()
+        reset_at = time.time() + 7200
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback(
+                reason=FailoverReason.rate_limit,
+                error_context={"reset_at": reset_at},
+            )
+
+        assert hasattr(agent, "_rate_limited_until")
+        assert agent._rate_limited_until > before + 7100
+
     def test_cooldown_not_set_when_already_on_fallback(self):
         """Chain-switching while already on fallback must not reset cooldown."""
         from run_agent import FailoverReason

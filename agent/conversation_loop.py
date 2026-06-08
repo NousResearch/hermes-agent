@@ -2922,7 +2922,10 @@ def run_conversation(
                             )
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
-                        if agent._try_activate_fallback(reason=classified.reason):
+                        if agent._try_activate_fallback(
+                            reason=classified.reason,
+                            error_context=error_context,
+                        ):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False

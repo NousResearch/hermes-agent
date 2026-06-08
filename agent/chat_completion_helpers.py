@@ -1128,7 +1128,39 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def _primary_cooldown_seconds(error_context: Optional[Dict[str, Any]] = None) -> float:
+    """Return provider cooldown seconds from structured error context.
+
+    ``extract_api_error_context`` normalizes retry-after / reset timestamps
+    into ``reset_at``. Use that provider-supplied window when available so
+    repeated turns do not restore an exhausted primary after the old fixed
+    60-second grace. Clamp absurdly-low/absurdly-high values to keep the
+    fallback mechanism useful and bounded.
+    """
+    default = 60.0
+    if not isinstance(error_context, dict):
+        return default
+    reset_at = error_context.get("reset_at")
+    if reset_at is None or reset_at == "":
+        return default
+    try:
+        reset_at_float = float(reset_at)
+    except (TypeError, ValueError):
+        return default
+    # ``reset_at`` is stored as epoch seconds by extract_api_error_context;
+    # a few provider bodies may carry small retry-after-like numbers instead.
+    seconds = reset_at_float - time.time() if reset_at_float > 1_000_000_000 else reset_at_float
+    if seconds <= 0:
+        return default
+    return max(default, min(seconds, 6 * 60 * 60))
+
+
+def try_activate_fallback(
+    agent,
+    reason: "FailoverReason | None" = None,
+    *,
+    error_context: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
     Called when the current model is failing after retries.  Swaps the
@@ -1148,7 +1180,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            agent._rate_limited_until = time.monotonic() + 60
+            agent._rate_limited_until = time.monotonic() + _primary_cooldown_seconds(error_context)
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
 

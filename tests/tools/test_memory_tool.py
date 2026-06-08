@@ -326,6 +326,10 @@ class TestMemoryStoreReplace:
         store.add("memory", "fact A")
         result = store.replace("memory", "nonexistent", "new")
         assert result["success"] is False
+        assert "No entry matched" in result["error"]
+        # Zero-match branch must return current entries so the agent can self-correct
+        assert result["current_entries"] == ["fact A"]
+        assert result["entry_previews"] == ["fact A"]
 
     def test_replace_ambiguous_match(self, store):
         store.add("memory", "server A runs nginx")
@@ -357,8 +361,12 @@ class TestMemoryStoreRemove:
         assert len(store.memory_entries) == 0
 
     def test_remove_no_match(self, store):
+        store.add("memory", "fact A")
         result = store.remove("memory", "nonexistent")
         assert result["success"] is False
+        # Zero-match branch must return current entries so the agent can self-correct
+        assert result["current_entries"] == ["fact A"]
+        assert result["entry_previews"] == ["fact A"]
 
     def test_remove_empty_old_text(self, store):
         result = store.remove("memory", "  ")

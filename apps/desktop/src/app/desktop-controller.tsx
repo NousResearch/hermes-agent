@@ -120,6 +120,10 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
+// Messaging gateways, cron, and other out-of-process producers write directly
+// to the shared state DB. Poll the bounded recent-session list so those rows
+// appear in the Desktop sidebar without a profile switch or app restart.
+const SESSION_POLL_INTERVAL_MS = 30_000
 
 // Cheap signature compare so the poll only swaps the atom (and re-renders the
 // sidebar) when the visible cron rows actually changed.
@@ -287,10 +291,13 @@ export function DesktopController() {
     }
   }, [])
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (showLoading = true) => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
-    setSessionsLoading(true)
+
+    if (showLoading) {
+      setSessionsLoading(true)
+    }
 
     try {
       const limit = $sessionsLimit.get()
@@ -639,6 +646,25 @@ export function DesktopController() {
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  // Keep recent sessions live for conversations created outside the Desktop
+  // renderer (Discord, Telegram, webhook/API, scheduler, etc.). These writes
+  // land in state.db but do not produce a renderer-owned session event.
+  useEffect(() => {
+    if (gatewayState !== 'open') {return}
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {void refreshSessions(false).catch(() => undefined)}
+    }
+
+    const intervalId = window.setInterval(tick, SESSION_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshSessions])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the

@@ -1067,16 +1067,7 @@ def _recover_pending_systemd_restart(
 def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    return result.returncode == 0
+    return _launchd_loaded_service() is not None
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -3067,12 +3058,64 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def _launchd_manager_name() -> str | None:
+    """Return launchd's current manager name, when available."""
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            ["launchctl", "managername"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout, _stderr = proc.communicate(timeout=5)
+        if proc.returncode == 0:
+            return stdout.strip() or None
+    except (OSError, subprocess.TimeoutExpired):
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        return None
+    return None
+
+
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    # LaunchAgents loaded for an interactive login session live in gui/<uid>.
+    # Headless/background callers on newer macOS releases may only be able to
+    # manage user/<uid>. Pick the domain that matches the current launchd
+    # manager so status/start/restart do not misclassify a healthy Aqua service
+    # as unloaded and fall back to a detached process.
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    if _launchd_manager_name() == "Aqua":
+        return f"gui/{uid}"
+    return f"user/{uid}"
+
+
+def _launchd_candidate_domains() -> list[str]:
+    """Return launchd domains to probe, with the active manager first."""
+    uid = os.getuid()
+    preferred = _launchd_domain()
+    return list(dict.fromkeys([preferred, f"gui/{uid}", f"user/{uid}"]))
+
+
+def _launchd_loaded_service(label: str | None = None) -> tuple[str, str] | None:
+    """Return (domain, launchctl print output) when the launchd job is loaded."""
+    label = label or get_launchd_label()
+    for domain in _launchd_candidate_domains():
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if result.returncode == 0:
+            return domain, result.stdout
+    return None
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and
@@ -3569,18 +3612,7 @@ def launchd_restart():
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        loaded = result.returncode == 0
-        loaded_output = result.stdout
-    except subprocess.TimeoutExpired:
-        loaded = False
-        loaded_output = ""
+    loaded_service = _launchd_loaded_service(label)
 
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():
@@ -3589,8 +3621,9 @@ def launchd_status(deep: bool = False):
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
 
-    if loaded:
-        print("✓ Gateway service is loaded")
+    if loaded_service is not None:
+        loaded_domain, loaded_output = loaded_service
+        print(f"✓ Gateway service is loaded in {loaded_domain}")
         print(loaded_output)
     else:
         print("✗ Gateway service is not loaded")
@@ -4980,16 +5013,7 @@ def _is_service_running() -> bool:
 
         return False
     elif is_macos() and get_launchd_plist_path().exists():
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            return result.returncode == 0
-        except subprocess.TimeoutExpired:
-            return False
+        return _launchd_loaded_service() is not None
     elif is_windows():
         from hermes_cli import gateway_windows
 

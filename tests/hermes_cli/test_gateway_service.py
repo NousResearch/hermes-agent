@@ -679,10 +679,39 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
-    def test_launchd_domain_uses_user_domain(self):
-        # The user/<uid> domain (not gui/<uid>) is the one reachable from
-        # non-Aqua/background sessions on macOS 26+ (issue #23387).
+    def test_launchd_status_detects_service_loaded_in_gui_domain(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        uid = os.getuid()
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_manager_name", lambda: "Background")
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd == ["launchctl", "print", f"gui/{uid}/{label}"]:
+                return SimpleNamespace(returncode=0, stdout="state = running\n", stderr="")
+            return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert f"loaded in gui/{uid}" in output
+        assert "state = running" in output
+
+    def test_launchd_domain_uses_user_domain_for_background_manager(self, monkeypatch):
+        # The user/<uid> domain is reachable from non-Aqua/background sessions
+        # on newer macOS releases (issue #23387).
+        monkeypatch.setattr(gateway_cli, "_launchd_manager_name", lambda: "Background")
         assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+
+    def test_launchd_domain_uses_gui_domain_for_aqua_manager(self, monkeypatch):
+        # Interactive LaunchAgents are loaded in gui/<uid>; using user/<uid>
+        # makes a healthy service look unloaded in Aqua sessions.
+        monkeypatch.setattr(gateway_cli, "_launchd_manager_name", lambda: "Aqua")
+        assert gateway_cli._launchd_domain() == f"gui/{os.getuid()}"
 
     def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
         # Codes that persist after a fresh bootstrap → launchd truly unavailable.
@@ -892,6 +921,25 @@ class TestGatewayServiceDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         assert gateway_cli._is_service_running() is False
+
+    def test_is_service_running_detects_launchd_job_in_gui_domain(self, monkeypatch):
+        label = gateway_cli.get_launchd_label()
+        uid = os.getuid()
+        plist = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist)
+        monkeypatch.setattr(gateway_cli, "_launchd_manager_name", lambda: "Background")
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd == ["launchctl", "print", f"gui/{uid}/{label}"]:
+                return SimpleNamespace(returncode=0, stdout="state = running\n", stderr="")
+            return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._is_service_running() is True
 
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):

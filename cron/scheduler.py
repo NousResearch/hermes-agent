@@ -448,6 +448,47 @@ def _iter_home_target_platforms():
         pass
 
 
+def cron_delivery_targets() -> list[dict]:
+    """Return the platforms a cron job can auto-deliver to.
+
+    Single source of truth for any UI (dashboard dropdown, etc.) that lets a
+    user pick a cron delivery target. A platform is included when it is a valid
+    cron delivery platform AND its gateway is configured (enabled + credentials
+    present). Each entry reports whether the platform's home target (the
+    room/channel cron posts to) is set — a platform can be configured for
+    interactive use but still lack the home target an unattended cron job needs.
+
+    Returns a list of dicts: ``{"id", "name", "home_target_set", "home_env_var"}``
+    ordered by the gateway's canonical platform order. Callers should always
+    prepend the implicit ``local`` option themselves — it needs no config.
+    """
+    targets: list[dict] = []
+    try:
+        from gateway.config import load_gateway_config
+
+        gateway_config = load_gateway_config()
+        connected = {p.value for p in gateway_config.get_connected_platforms()}
+    except Exception:
+        logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
+        connected = set()
+
+    for name in _iter_home_target_platforms():
+        if name not in connected:
+            continue
+        if not _is_known_delivery_platform(name):
+            continue
+        env_var = _resolve_home_env_var(name)
+        targets.append(
+            {
+                "id": name,
+                "name": name.replace("_", " ").title(),
+                "home_target_set": bool(_get_home_target_chat_id(name)),
+                "home_env_var": env_var or None,
+            }
+        )
+    return targets
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -1932,6 +1973,18 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # Title the cron session from the job (name → short prompt → id) so
+            # sidebars/history show a meaningful label instead of the injected
+            # "[IMPORTANT: …]" hint that is the session's first message. Set here
+            # (not at create time) so the agent's own INSERT keeps model /
+            # system_prompt; this only UPDATEs the title column. The run-time
+            # suffix keeps it unique against the sessions.title index across runs.
+            try:
+                _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                _session_db.set_session_title(_cron_session_id, _cron_title)
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:

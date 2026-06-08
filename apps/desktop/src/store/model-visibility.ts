@@ -7,7 +7,7 @@ const STORAGE_KEY = 'hermes.desktop.visible-models'
 
 /** Models shown per provider in the status-bar dropdown before the user has
  *  customized the list. Backend `models` are already relevance-ordered. */
-export const DEFAULT_VISIBLE_PER_PROVIDER = 5
+export const DEFAULT_VISIBLE_PER_PROVIDER = 50
 
 /** Stable key for a provider/model pair (`::` avoids colliding with model ids
  *  that contain a single colon, e.g. `model:tag`). */

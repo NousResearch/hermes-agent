@@ -72,6 +72,20 @@ model:
   #
 # max_tokens: 8192
 
+  # ── Custom request headers (optional) ─────────────────────────────────────
+  #
+  # default_headers: extra HTTP headers sent on every request to an
+  #   OpenAI-compatible endpoint. User values take precedence over the
+  #   provider/SDK defaults, so this is the supported way to override the
+  #   OpenAI Python SDK's identifying headers (User-Agent: OpenAI/Python ...,
+  #   X-Stainless-*) when a custom provider sits behind a gateway/WAF that
+  #   rejects them — e.g. an upstream that returns "502 Upstream access
+  #   forbidden" for the SDK default User-Agent but accepts a plain one.
+  #   Applies on the OpenAI wire only (not native Anthropic / Bedrock).
+  #
+  # default_headers:
+  #   User-Agent: "curl/8.7.1"
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.
@@ -1122,6 +1136,27 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+
+
+# =============================================================================
+# Update Behavior
+# =============================================================================
+updates:
+  # Create a full HERMES_HOME zip before every `hermes update`.
+  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
+  # Off by default because large homes can add minutes to every update.
+  pre_update_backup: false
+
+  # Number of pre-update backup zips to retain.
+  backup_keep: 5
+
+  # What non-interactive updates do with local source edits in the Hermes repo.
+  # Interactive terminal updates always prompt before restoring the autostash.
+  #
+  #   stash   - auto-stash before pull, then auto-restore after success (default)
+  #   discard - drop the update-created stash after success; use only on managed
+  #             installs where local source edits should not persist
+  non_interactive_local_changes: "stash"
 
 
 # =============================================================================

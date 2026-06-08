@@ -286,11 +286,74 @@ const MARKDOWN_COMPONENTS = {
   code: MarkdownCode
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+
+// Extract a leading YAML frontmatter block (--- ... ---) and parse its
+// top-level `key: value` entries in document order. Nested / multi-line
+// values are joined as raw text so the user still sees their content; we
+// don't try to be a full YAML implementation here. If the leading block
+// is malformed (no closing ---), the original text is returned unchanged.
+export function parseFrontmatter(text: string): { entries: Array<[string, string]> | null; body: string } {
+  if (!text.startsWith('---\n') && !text.startsWith('---\r\n')) return { entries: null, body: text }
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/)
+  if (!match) return { entries: null, body: text }
+  const body = text.slice(match[0].length)
+  const lines = match[1].split(/\r?\n/)
+  const entries: Array<[string, string]> = []
+  let currentKey: string | null = null
+  let currentVal: string[] = []
+  const flush = () => {
+    if (currentKey !== null) entries.push([currentKey, currentVal.join('\n').trim()])
+    currentKey = null
+    currentVal = []
+  }
+  for (const line of lines) {
+    const m = line.match(/^([A-Za-z0-9_][A-Za-z0-9_.-]*)\s*:\s*(.*)$/)
+    if (m && !line.startsWith(' ') && !line.startsWith('\t')) {
+      flush()
+      currentKey = m[1]
+      if (m[2]) currentVal.push(m[2])
+    } else if (currentKey !== null) {
+      currentVal.push(line)
+    }
+  }
+  flush()
+  return { entries: entries.length > 0 ? entries : null, body }
+}
+
+function FrontmatterTable({ entries }: { entries: Array<[string, string]> }) {
   return (
-    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground">
+    <div
+      className="mb-3 overflow-hidden rounded-md border border-border/60 bg-muted/30 text-xs"
+      data-selectable-text="true"
+    >
+      <div className="border-b border-border/60 bg-muted/50 px-3 py-1 font-mono text-[0.625rem] font-semibold uppercase tracking-wider text-muted-foreground">
+        frontmatter
+      </div>
+      <table className="w-full border-collapse">
+        <tbody>
+          {entries.map(([k, v], i) => (
+            <tr key={i} className={i > 0 ? 'border-t border-border/40' : undefined}>
+              <td className="w-1/3 max-w-[12rem] whitespace-nowrap px-3 py-1.5 align-top font-mono text-[0.6875rem] font-medium text-muted-foreground">
+                {k}
+              </td>
+              <td className="px-3 py-1.5 align-top font-mono text-[0.6875rem] text-foreground whitespace-pre-wrap break-words">
+                {v || <span className="text-muted-foreground/60">—</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function MarkdownPreview({ text }: { text: string }) {
+  const { entries, body } = useMemo(() => parseFrontmatter(text), [text])
+  return (
+    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
+      {entries && <FrontmatterTable entries={entries} />}
       <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
+        {body}
       </Streamdown>
     </div>
   )

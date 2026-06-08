@@ -1899,6 +1899,12 @@ class GatewayRunner:
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
+        # Per-platform reasoning_stream map.  Resolved lazily in
+        # _handle_message_with_agent because we need source.platform
+        # at run time, not at init time.  Cached on the runner so
+        # cross-call reads stay cheap and config-reload (via
+        # _handle_reasoning_command) can mutate a single dict.
+        self._reasoning_stream_per_platform: Dict[str, bool] = {}
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -3230,6 +3236,23 @@ class GatewayRunner:
         cfg = _load_gateway_runtime_config()
         return is_truthy_value(
             cfg_get(cfg, "display", "show_reasoning"),
+            default=False,
+        )
+
+    @staticmethod
+    def _load_reasoning_stream(platform: "Platform") -> bool:
+        """Load reasoning_stream toggle from per-platform display section.
+
+        Reads ``display.platforms.<platform>.reasoning_stream``.  The
+        top-level ``display.reasoning_stream`` is intentionally NOT
+        consulted here — there is no meaningful "global" stream mode,
+        because the user-visible UX (an edit-in-place bubble on a
+        specific platform's chat) only exists per-platform.
+        """
+        cfg = _load_gateway_runtime_config()
+        key = f"display.platforms.{_platform_config_key(platform)}.reasoning_stream"
+        return is_truthy_value(
+            cfg_get(cfg, *key.split(".")),
             default=False,
         )
 
@@ -9632,7 +9655,15 @@ class GatewayRunner:
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            if _show_reasoning_effective and response:
+            # ``_reasoning_consumer_emitted`` is set below by the
+            # /reasoning stream path; if True, the reasoning was
+            # already shown in its own message and must NOT be
+            # duplicated into the final response body.  The fallback
+            # is the existing prepend (legacy /reasoning show behavior).
+            _reasoning_consumer_emitted = bool(
+                agent_result.get("_reasoning_stream_emitted", False)
+            )
+            if _show_reasoning_effective and response and not _reasoning_consumer_emitted:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
@@ -12882,7 +12913,9 @@ class GatewayRunner:
             /reasoning <level>               Set reasoning effort for this session only
             /reasoning <level> --global      Persist reasoning effort to config.yaml
             /reasoning reset                 Clear this session's reasoning override
-            /reasoning show|on               Show model reasoning in responses
+            /reasoning show|on               Show model reasoning inline in the final response
+            /reasoning stream                Stream reasoning in a transient bubble
+                                             (auto-deleted after the answer lands)
             /reasoning hide|off              Hide model reasoning from responses
         """
         import yaml
@@ -12891,7 +12924,17 @@ class GatewayRunner:
         args, persist_global = self._parse_reasoning_command_args(raw_args)
         config_path = _hermes_home / "config.yaml"
         session_key = self._session_key_for_source(event.source)
+        platform_key = _platform_config_key(event.source.platform)
         self._show_reasoning = self._load_show_reasoning()
+        # Mirror the per-platform reasoning_stream state into the
+        # runner's in-memory map.  This keeps /reasoning consistent
+        # with what was on disk at command time.  ``getattr`` keeps
+        # bare-__new__ tests working.
+        if not hasattr(self, "_reasoning_stream_per_platform"):
+            self._reasoning_stream_per_platform = {}
+        self._reasoning_stream_per_platform[platform_key] = self._load_reasoning_stream(
+            event.source.platform
+        )
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source,
             session_key=session_key,
@@ -12926,11 +12969,17 @@ class GatewayRunner:
                 level = t("gateway.reasoning.level_disabled")
             else:
                 level = rc.get("effort", "medium")
-            display_state = (
-                t("gateway.reasoning.display_on")
-                if self._show_reasoning
-                else t("gateway.reasoning.display_off")
+            _stream_active = bool(
+                getattr(self, "_reasoning_stream_per_platform", {}).get(platform_key, False)
             )
+            if _stream_active:
+                display_state = t("gateway.reasoning.display_stream")
+            else:
+                display_state = (
+                    t("gateway.reasoning.display_on")
+                    if self._show_reasoning
+                    else t("gateway.reasoning.display_off")
+                )
             has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
             scope = (
                 t("gateway.reasoning.scope_session")
@@ -12945,16 +12994,38 @@ class GatewayRunner:
             )
 
         # Display toggle (per-platform)
-        platform_key = _platform_config_key(event.source.platform)
         if args in {"show", "on"}:
             self._show_reasoning = True
+            if not hasattr(self, "_reasoning_stream_per_platform"):
+                self._reasoning_stream_per_platform = {}
+            self._reasoning_stream_per_platform[platform_key] = False
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
+            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", False)
             return t("gateway.reasoning.display_set_on", platform=platform_key)
 
         if args in {"hide", "off"}:
             self._show_reasoning = False
+            if not hasattr(self, "_reasoning_stream_per_platform"):
+                self._reasoning_stream_per_platform = {}
+            self._reasoning_stream_per_platform[platform_key] = False
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
+            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", False)
             return t("gateway.reasoning.display_set_off", platform=platform_key)
+
+        if args == "stream":
+            # Stream mode is "show + ephemeral" — reasoning is shown
+            # in a transient bubble that auto-deletes, and the final
+            # answer has no reasoning text.  Forcing show_reasoning=true
+            # means the legacy /reasoning show path is the fallback
+            # for non-streaming models (agent_result.last_reasoning
+            # present but no streaming reasoning_callback fired).
+            self._show_reasoning = True
+            if not hasattr(self, "_reasoning_stream_per_platform"):
+                self._reasoning_stream_per_platform = {}
+            self._reasoning_stream_per_platform[platform_key] = True
+            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
+            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", True)
+            return t("gateway.reasoning.display_set_stream", platform=platform_key)
 
         # Effort level change
         effort = args.strip()
@@ -17715,6 +17786,7 @@ class GatewayRunner:
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        reasoning_consumer_holder = [None]  # Mutable container for /reasoning stream consumer
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -17937,6 +18009,44 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
+            # ── /reasoning stream consumer setup ─────────────────────────
+            # Issue #8080 parity.  Sends a single reasoning message that
+            # is edited in place as the model thinks, then auto-deleted
+            # once the final answer lands.  The model is wired through
+            # ``agent.reasoning_callback``; the consumer drains the
+            # callback queue and edits the bubble.
+            #
+            # Gating:
+            #   - /reasoning stream must be enabled for this platform.
+            #   - Reasoning config must be enabled (effort != "none").
+            #   - The platform must support message editing (we edit
+            #     in place; if it doesn't, the initial send is wasted).
+            # ``getattr`` with a default keeps bare-__new__ tests
+            # (object.__new__(GatewayRunner)) from breaking.
+            _reasoning_stream_active = bool(
+                getattr(self, "_reasoning_stream_per_platform", {}).get(platform_key, False)
+            )
+            if (
+                _reasoning_stream_active
+                and reasoning_config
+                and reasoning_config.get("enabled")
+                and reasoning_config.get("effort") not in (None, "", "none")
+            ):
+                try:
+                    from gateway.stream_consumer import ReasoningStreamConsumer
+                    _rc_adapter = self.adapters.get(source.platform)
+                    if _rc_adapter and getattr(
+                        _rc_adapter, "SUPPORTS_MESSAGE_EDITING", True
+                    ):
+                        _reasoning_consumer = ReasoningStreamConsumer(
+                            adapter=_rc_adapter,
+                            chat_id=source.chat_id,
+                            metadata=_status_thread_metadata,
+                        )
+                        reasoning_consumer_holder[0] = _reasoning_consumer
+                except Exception as _rc_err:
+                    logger.debug("Could not set up reasoning consumer: %s", _rc_err)
+
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
@@ -18076,6 +18186,21 @@ class GatewayRunner:
             agent.notice_callback = _notice_callback_sync
             agent.notice_clear_callback = None
             agent.reasoning_config = reasoning_config
+            # /reasoning stream: wire the agent's reasoning_callback to the
+            # reasoning consumer's on_delta so the bubble edits in place.
+            # The consumer is created above (reasoning_consumer_holder) and
+            # may be None if /reasoning stream isn't active for this
+            # platform, in which case we leave reasoning_callback unset so
+            # the agent's default (no-op) behavior applies.
+            _rc0 = reasoning_consumer_holder[0]
+            if _rc0 is not None:
+                def _reasoning_delta_cb(text: str) -> None:
+                    if _run_still_current():
+                        _rc0.on_delta(text)
+
+                agent.reasoning_callback = _reasoning_delta_cb
+            else:
+                agent.reasoning_callback = None
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
@@ -18704,6 +18829,42 @@ class GatewayRunner:
                 await asyncio.sleep(0.05)
 
         stream_task = asyncio.create_task(_start_stream_consumer())
+
+        # Reasoning consumer task — same pattern as the main stream
+        # consumer, plus an initial-send phase that creates the
+        # placeholder reasoning bubble.  We kick off ``send_initial``
+        # immediately (before the agent starts) so the bubble is
+        # visible from the first token.  The async ``run()`` is then
+        # started the same way the main stream consumer is.
+        reasoning_task = None
+        async def _start_reasoning_consumer() -> None:
+            """Send the placeholder reasoning bubble, then drain deltas."""
+            # Wait for consumer to be constructed inside the agent's
+            # setup block (which runs on a thread).
+            for _ in range(200):  # up to 10s
+                if reasoning_consumer_holder[0] is not None:
+                    break
+                await asyncio.sleep(0.05)
+            _rc = reasoning_consumer_holder[0]
+            if _rc is None:
+                return
+            try:
+                _sent = await _rc.send_initial()
+            except Exception as _rc_send_err:
+                logger.debug("Reasoning consumer initial send error: %s", _rc_send_err)
+                return
+            if not _sent:
+                return
+            try:
+                await _rc.run()
+            except Exception as _rc_run_err:
+                logger.debug("Reasoning consumer run error: %s", _rc_run_err)
+
+        # Always spawn: the task waits for the holder to populate, so
+        # it's safe to create unconditionally.  The 10s wait inside
+        # the task ensures we don't leak tasks if the consumer is never
+        # set up (e.g. /reasoning stream turned off mid-flight).
+        reasoning_task = asyncio.create_task(_start_reasoning_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
@@ -19047,6 +19208,41 @@ class GatewayRunner:
                     "failed": True,
                 }
 
+            # ── /reasoning stream finalization (non-queued path) ────────
+            # The queued-message branch handles this just below; this
+            # block covers the normal completion path where the agent
+            # finished and we now need to flush the reasoning bubble
+            # before delivering the final answer.  Skipped when the
+            # agent had no reasoning to stream (the consumer was
+            # never populated by the setup block).
+            _rc_final = reasoning_consumer_holder[0]
+            if _rc_final is not None:
+                try:
+                    _rc_final.finish()
+                except Exception as _rc_fin_err:
+                    logger.debug("Reasoning consumer finish failed: %s", _rc_fin_err)
+                if reasoning_task is not None:
+                    try:
+                        await asyncio.wait_for(reasoning_task, timeout=3.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        reasoning_task.cancel()
+                        try:
+                            await reasoning_task
+                        except asyncio.CancelledError:
+                            pass
+                    except Exception as _rc_wait_err:
+                        logger.debug("Reasoning consumer wait failed: %s", _rc_wait_err)
+                # Mirror the emitted flag into the result dict so the
+                # post-processing block can detect the streaming path
+                # and skip the legacy prepend.
+                _rh_result = result_holder[0]
+                if (
+                    _rc_final.emitted_any
+                    and isinstance(_rh_result, dict)
+                    and not _rh_result.get("_reasoning_stream_emitted")
+                ):
+                    _rh_result["_reasoning_stream_emitted"] = True
+
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
             # the actually-active model instead of the config default.
@@ -19178,6 +19374,41 @@ class GatewayRunner:
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
+
+                    # Reasoning consumer: signal finish() so any
+                    # remaining deltas flush, then await the task
+                    # so we know the bubble is finalized before
+                    # scheduling cleanup.  We also capture the
+                    # emitted flag here so the post-processing block
+                    # can skip the legacy prepend.
+                    _rc = reasoning_consumer_holder[0]
+                    if _rc is not None:
+                        try:
+                            _rc.finish()
+                        except Exception as _rc_fin_err:
+                            logger.debug("Reasoning consumer finish failed: %s", _rc_fin_err)
+                        if reasoning_task is not None:
+                            try:
+                                await asyncio.wait_for(reasoning_task, timeout=3.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
+                                reasoning_task.cancel()
+                                try:
+                                    await reasoning_task
+                                except asyncio.CancelledError:
+                                    pass
+                            except Exception as _rc_wait_err:
+                                logger.debug("Reasoning consumer wait failed: %s", _rc_wait_err)
+                        # Record into the result so the post-processing
+                        # block knows the streaming path already showed
+                        # the reasoning and should NOT prepend it.
+                        _res = result or {}
+                        if _rc.emitted_any and not _res.get("_reasoning_stream_emitted"):
+                            _res["_reasoning_stream_emitted"] = True
+                            # Mirror into result_holder so the post-
+                            # processing block (which reads via
+                            # agent_result.get(...)) sees the flag.
+                            if result is not None and isinstance(result, dict):
+                                result["_reasoning_stream_emitted"] = True
                     _previewed = bool(result.get("response_previewed"))
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
@@ -19445,6 +19676,58 @@ class GatewayRunner:
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        # /reasoning stream cleanup: delete the reasoning bubble after
+        # the final response lands.  Skipped on failed runs so the
+        # bubble stays as a breadcrumb the user can reference.  All
+        # adapter/delete exceptions are logged at debug — this is
+        # best-effort cleanup and must not affect message delivery.
+        _rc_cleanup = reasoning_consumer_holder[0]
+        if (
+            _rc_cleanup is not None
+            and _rc_cleanup.finalized_message_id
+            and session_key
+            and isinstance(response, dict)
+            and not response.get("failed")
+        ):
+            _rs_adapter = self.adapters.get(source.platform)
+            if _rs_adapter and hasattr(_rs_adapter, "delete_message"):
+                _rs_msg_id = str(_rc_cleanup.finalized_message_id)
+                _rs_chat_id = source.chat_id
+                _rs_adapter_ref = _rs_adapter
+                _rs_loop = asyncio.get_running_loop()
+
+                def _cleanup_reasoning_bubble() -> None:
+                    async def _delete_one() -> None:
+                        try:
+                            await _rs_adapter_ref.delete_message(
+                                _rs_chat_id, _rs_msg_id
+                            )
+                        except Exception as _de:
+                            logger.debug(
+                                "Reasoning bubble delete failed (chat=%s msg=%s): %s",
+                                _rs_chat_id, _rs_msg_id, _de,
+                            )
+                    try:
+                        safe_schedule_threadsafe(
+                            _delete_one(), _rs_loop,
+                            logger=logger,
+                            log_message="Reasoning bubble cleanup scheduling error",
+                        )
+                    except Exception:
+                        pass
+
+                try:
+                    _rs_adapter.register_post_delivery_callback(
+                        session_key,
+                        _cleanup_reasoning_bubble,
+                        generation=run_generation,
+                    )
+                except Exception as _rs_reg:
+                    logger.debug(
+                        "Reasoning bubble post-delivery registration failed: %s",
+                        _rs_reg,
+                    )
 
         return response
 

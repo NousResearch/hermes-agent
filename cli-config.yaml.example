@@ -953,6 +953,11 @@ display:
   #     platforms:
   #       telegram:
   #         cleanup_progress: true
+  #         # Stream reasoning into a transient bubble that auto-deletes
+  #         # after the final response lands. Issue #8080 / OpenClaw
+  #         # parity: live visibility into reasoning, clean final
+  #         # conversation. Requires a streaming reasoning model.
+  #         reasoning_stream: true
   cleanup_progress: false
 
   # Gateway-only natural mid-turn assistant updates.

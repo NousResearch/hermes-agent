@@ -8896,6 +8896,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
                     _user_entry,
+                    skip_db=self._session_db is not None,
                 )
             else:
                 history_len = agent_result.get("history_offset", len(history))
@@ -8903,17 +8904,20 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
+                    _agent_persisted = self._session_db is not None
                     _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
+                        skip_db=_agent_persisted,
                     )
                     if response:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts}
+                            {"role": "assistant", "content": response, "timestamp": ts},
+                            skip_db=_agent_persisted,
                         )
                 else:
                     # The agent already persisted these messages to SQLite via

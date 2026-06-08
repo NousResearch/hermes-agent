@@ -4,6 +4,24 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Linear Tracking
+
+Treat Linear updates as part of the work, not as an optional closeout task.
+When working a tracked issue, update the relevant Linear ticket as you make
+meaningful progress, uncover blockers, change scope, or finish verification.
+Do not wait for a separate prompt to keep Linear current.
+Also keep issue labels current: add the best existing label for the work
+being done, and create a new label only when the existing taxonomy does not
+fit.
+
+## Worktree Hygiene
+
+Use isolated git worktrees for issue/PR work by default when the main checkout
+is dirty, when the change belongs to a different Linear issue, or when runtime
+experiments should not contaminate an existing branch. Keep each branch scoped
+to one issue whenever practical, and avoid stacking unrelated commits into an
+active PR.
+
 ## Development Environment
 
 ```bash

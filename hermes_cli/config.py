@@ -6028,7 +6028,18 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
 
-    _set_nested(user_config, key, value)
+    # Resolve shortcut keys to their canonical dotted paths so that
+    # `hermes config set provider X` writes to `model.provider` (the key
+    # the runtime actually reads) instead of a dead top-level `provider:`.
+    # Without this mapping the shortcut silently diverges from the runtime
+    # key, creating a false sense of configuration success (issue #41943).
+    _KEY_SHORTCUTS = {
+        "provider": "model.provider",
+        "base_url": "model.base_url",
+    }
+    resolved_key = _KEY_SHORTCUTS.get(key, key)
+
+    _set_nested(user_config, resolved_key, value)
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
@@ -6065,10 +6076,11 @@ def set_config_value(key: str, value: str):
         "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
-    if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+    if resolved_key in _config_to_env_sync:
+        save_env_value(_config_to_env_sync[resolved_key], str(value))
 
-    print(f"✓ Set {key} = {value} in {config_path}")
+    display_key = resolved_key if resolved_key != key else key
+    print(f"✓ Set {display_key} = {value} in {config_path}")
 
 
 # =============================================================================

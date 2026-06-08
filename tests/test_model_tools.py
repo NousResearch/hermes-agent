@@ -64,6 +64,7 @@ class TestHandleFunctionCall:
                 tool_call_id="call-1",
                 turn_id="",
                 api_request_id="",
+                middleware_trace=[],
             ),
             call(
                 "post_tool_call",
@@ -79,6 +80,7 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                middleware_trace=[],
             ),
             call(
                 "transform_tool_result",
@@ -144,6 +146,60 @@ class TestHandleFunctionCall:
         fired = {c.args[0] for c in mock_invoke_hook.call_args_list}
         assert "post_tool_call" not in fired
         assert "transform_tool_result" not in fired
+
+    def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
+        seen = {}
+
+        def fake_invoke_middleware(kind, **kwargs):
+            if kind == "tool_request":
+                return [{
+                    "args": {**kwargs["args"], "rewritten": True},
+                    "source": "test-middleware",
+                    "reason": "rewrite",
+                }]
+            return []
+
+        def execution_middleware(**kwargs):
+            seen["execution_args"] = kwargs["args"]
+            return kwargs["next_call"]({**kwargs["args"], "wrapped": True})
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            seen["dispatch"] = (tool_name, args, kwargs)
+            return json.dumps({"ok": True, "args": args})
+
+        manager = type(
+            "Manager",
+            (),
+            {"_middleware": {"tool_request": [fake_invoke_middleware], "tool_execution": [execution_middleware]}},
+        )()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(
+            handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="tool-1",
+                session_id="session-1",
+            )
+        )
+
+        assert seen["execution_args"] == {"q": "test", "rewritten": True}
+        assert seen["dispatch"][1] == {"q": "test", "rewritten": True, "wrapped": True}
+        assert result["args"] == {"q": "test", "rewritten": True, "wrapped": True}
+        expected_trace = [{"source": "test-middleware", "reason": "rewrite"}]
+        pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert pre_call[1]["middleware_trace"] == expected_trace
+        assert post_call[1]["middleware_trace"] == expected_trace
 
 
 # =========================================================================

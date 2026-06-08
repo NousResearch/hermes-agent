@@ -19,6 +19,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { readSessionDrag } from '@/app/chat/composer/inline-refs'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -700,6 +701,21 @@ export function ChatSidebar({
     setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
   }
 
+  const handleNativeAgentSessionReorder = (activeId: string, overId: string) => {
+    if (activeId === overId) {
+      return
+    }
+
+    const oldIdx = agentSessions.findIndex(s => s.id === activeId)
+    const newIdx = agentSessions.findIndex(s => s.id === overId)
+
+    if (oldIdx < 0 || newIdx < 0) {
+      return
+    }
+
+    setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
+  }
+
   return (
     <Sidebar
       className={cn(
@@ -889,6 +905,7 @@ export function ChatSidebar({
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
+            onNativeSessionReorder={showAllProfiles ? undefined : handleNativeAgentSessionReorder}
             onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
             onResumeSession={onResumeSession}
             onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
@@ -1015,6 +1032,7 @@ interface SidebarSessionsSectionProps {
   labelMeta?: React.ReactNode
   sortable?: boolean
   onReorder?: (event: DragEndEvent) => void
+  onNativeSessionReorder?: (activeId: string, overId: string) => void
   dndSensors?: ReturnType<typeof useSensors>
 }
 
@@ -1041,11 +1059,14 @@ function SidebarSessionsSection({
   labelMeta,
   sortable = false,
   onReorder,
+  onNativeSessionReorder,
   dndSensors
 }: SidebarSessionsSectionProps) {
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   const showEmptyState = forceEmptyState || (!hasGroupedSessions && sessions.length === 0)
   const dndActive = sortable && !!onReorder
+
+  const useNativeSessionReorder = sortable && !pinned && Boolean(onNativeSessionReorder)
 
   const renderRow = (session: SessionInfo) => {
     const rowProps = {
@@ -1059,6 +1080,33 @@ function SidebarSessionsSection({
       session
     }
 
+    if (useNativeSessionReorder) {
+      return (
+        <SidebarSessionRow
+          key={session.id}
+          {...rowProps}
+          onDragOver={event => {
+            if (!readSessionDrag(event.dataTransfer)) {
+              return
+            }
+
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'move'
+          }}
+          onDrop={event => {
+            const dragged = readSessionDrag(event.dataTransfer)
+
+            if (!dragged || dragged.id === session.id) {
+              return
+            }
+
+            event.preventDefault()
+            onNativeSessionReorder?.(dragged.id, session.id)
+          }}
+        />
+      )
+    }
+
     return sortable ? (
       <SortableSidebarSessionRow key={session.id} {...rowProps} />
     ) : (
@@ -1069,7 +1117,9 @@ function SidebarSessionsSection({
   const renderRows = (items: SessionInfo[]) => items.map(renderRow)
 
   const renderSessionList = (items: SessionInfo[]) =>
-    dndActive ? (
+    useNativeSessionReorder ? (
+      renderRows(items)
+    ) : dndActive ? (
       <SortableContext items={items.map(s => s.id)} strategy={verticalListSortingStrategy}>
         {renderRows(items)}
       </SortableContext>
@@ -1078,7 +1128,9 @@ function SidebarSessionsSection({
     )
 
   const renderNestedSessionList = (items: SessionInfo[]) =>
-    dndActive ? (
+    useNativeSessionReorder ? (
+      renderRows(items)
+    ) : dndActive ? (
       <DndContext collisionDetection={closestCenter} onDragEnd={onReorder} sensors={dndSensors}>
         <SortableContext items={items.map(s => s.id)} strategy={verticalListSortingStrategy}>
           {renderRows(items)}
@@ -1230,7 +1282,12 @@ function SidebarWorkspaceGroup({
     >
       <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
         <button
-          className="flex min-w-0 items-center gap-1.5 bg-transparent text-left hover:text-(--ui-text-secondary)"
+          {...(reorderable ? dragHandleProps : undefined)}
+          aria-label={reorderable ? s.reorderWorkspace(group.label) : undefined}
+          className={cn(
+            'flex min-w-0 items-center gap-1.5 bg-transparent text-left hover:text-(--ui-text-secondary)',
+            reorderable && 'touch-none active:cursor-grabbing'
+          )}
           onClick={() => setOpen(value => !value)}
           type="button"
         >
@@ -1271,23 +1328,6 @@ function SidebarWorkspaceGroup({
               <Codicon name="add" size="0.75rem" />
             </button>
           </Tip>
-        )}
-        {reorderable && (
-          <span
-            {...dragHandleProps}
-            aria-label={s.reorderWorkspace(group.label)}
-            className="ml-auto -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
-            onClick={event => event.stopPropagation()}
-          >
-            <Codicon
-              className={cn(
-                'text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/workspace:opacity-80 hover:text-(--ui-text-secondary)',
-                dragging && 'text-(--ui-text-secondary) opacity-100'
-              )}
-              name="grabber"
-              size="0.75rem"
-            />
-          </span>
         )}
       </div>
       {open && (

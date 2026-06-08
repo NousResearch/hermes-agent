@@ -261,6 +261,9 @@ class TestSearchFallbackBackends:
             "search_fallback_backends": ["ddgs"],
         })
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        # Prevent _ensure_web_plugins_loaded from re-registering real
+        # providers and overwriting the mocks registered above.
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
 
         try:
             result = json.loads(web_tools.web_search_tool("builder news", limit=3))

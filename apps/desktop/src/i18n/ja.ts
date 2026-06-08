@@ -239,7 +239,11 @@ export const ja = defineLocale({
         backend: '実行バックエンド',
         timeout: 'コマンドタイムアウト',
         persistentShell: '永続シェル',
-        envPassthrough: '環境変数の引き継ぎ'
+        envPassthrough: '環境変数の引き継ぎ',
+        dockerImage: 'Docker イメージ',
+        singularityImage: 'Singularity イメージ',
+        modalImage: 'Modal イメージ',
+        daytonaImage: 'Daytona イメージ'
       },
       fileReadMaxChars: 'ファイル読み取り上限',
       toolOutput: {
@@ -280,6 +284,15 @@ export const ja = defineLocale({
           model: 'ローカル文字起こしモデル',
           language: '文字起こし言語'
         },
+        openai: {
+          model: 'OpenAI STT モデル'
+        },
+        groq: {
+          model: 'Groq STT モデル'
+        },
+        mistral: {
+          model: 'Mistral STT モデル'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT モデル',
           languageCode: 'ElevenLabs 言語',
@@ -299,6 +312,33 @@ export const ja = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 音声',
           modelId: 'ElevenLabs モデル'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 音声',
+          language: 'xAI 言語'
+        },
+        minimax: {
+          model: 'MiniMax TTS モデル',
+          voiceId: 'MiniMax 音声'
+        },
+        mistral: {
+          model: 'Mistral TTS モデル',
+          voiceId: 'Mistral 音声'
+        },
+        gemini: {
+          model: 'Gemini TTS モデル',
+          voice: 'Gemini 音声'
+        },
+        neutts: {
+          model: 'NeuTTS モデル',
+          device: 'NeuTTS デバイス'
+        },
+        kittentts: {
+          model: 'KittenTTS モデル',
+          voice: 'KittenTTS 音声'
+        },
+        piper: {
+          voice: 'Piper 音声'
         }
       },
       memory: {
@@ -1566,8 +1606,8 @@ export const ja = defineLocale({
       contextUsage: 'コンテキスト使用状況',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
-      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。',
-      yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。',
+      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
+      yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',
       noModel: 'モデルなし',
       switchModel: 'モデルを切り替え',

@@ -311,7 +311,11 @@ export const zh: Translations = {
         backend: '执行后端',
         timeout: '命令超时',
         persistentShell: '持久化 Shell',
-        envPassthrough: '环境变量透传'
+        envPassthrough: '环境变量透传',
+        dockerImage: 'Docker 镜像',
+        singularityImage: 'Singularity 镜像',
+        modalImage: 'Modal 镜像',
+        daytonaImage: 'Daytona 镜像'
       },
       fileReadMaxChars: '文件读取上限',
       toolOutput: {
@@ -352,6 +356,15 @@ export const zh: Translations = {
           model: '本地转写模型',
           language: '转写语言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 语言',
@@ -371,6 +384,33 @@ export const zh: Translations = {
         elevenlabs: {
           voiceId: 'ElevenLabs 语音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 语音',
+          language: 'xAI 语言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 语音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 语音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 语音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 设备'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 语音'
+        },
+        piper: {
+          voice: 'Piper 语音'
         }
       },
       memory: {
@@ -1604,8 +1644,8 @@ export const zh: Translations = {
       contextUsage: '上下文用量',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
-      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。',
-      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。',
+      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
+      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。Shift+点击可全局切换。',
       modelNone: '无',
       noModel: '无模型',
       switchModel: '切换模型',

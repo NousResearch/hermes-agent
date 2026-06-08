@@ -7,9 +7,11 @@ from hermes_state import SessionDB
 from agent.insights import (
     InsightsEngine,
     _estimate_cost,
-    _format_duration,
     _bar_chart,
-    _has_known_pricing,
+)
+from agent.usage_pricing import (
+    format_duration_compact as _format_duration,
+    has_known_pricing as _has_known_pricing,
 )
 
 

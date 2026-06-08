@@ -195,6 +195,83 @@ class TestFormatRemaining:
         assert format_remaining(3720) == "1h 2m"
 
 
+class TestShouldProbeDuringCooldown:
+    """Test single-provider re-probe during cooldown (port of openclaw#90717)."""
+
+    def test_has_fallback_never_probes(self, rate_guard_env):
+        from agent.nous_rate_guard import should_probe_nous_during_cooldown
+
+        # With a fallback chain available, prefer the fallback — no probe.
+        assert should_probe_nous_during_cooldown(has_fallback=True) is False
+
+    def test_no_fallback_first_probe_allowed(self, rate_guard_env):
+        from agent.nous_rate_guard import should_probe_nous_during_cooldown
+
+        assert should_probe_nous_during_cooldown(has_fallback=False) is True
+
+    def test_no_fallback_second_probe_throttled(self, rate_guard_env):
+        from agent.nous_rate_guard import should_probe_nous_during_cooldown
+
+        assert should_probe_nous_during_cooldown(has_fallback=False) is True
+        # Immediately after, the throttle slot is closed.
+        assert should_probe_nous_during_cooldown(has_fallback=False) is False
+
+    def test_probe_allowed_after_throttle_window(self, rate_guard_env):
+        from agent.nous_rate_guard import should_probe_nous_during_cooldown
+
+        assert (
+            should_probe_nous_during_cooldown(has_fallback=False, throttle_seconds=0.01)
+            is True
+        )
+        time.sleep(0.05)
+        assert (
+            should_probe_nous_during_cooldown(has_fallback=False, throttle_seconds=0.01)
+            is True
+        )
+
+    def test_probe_allowed_despite_far_future_reset(self, rate_guard_env):
+        """The #90717 scenario: a multi-day subscription reset must still probe.
+
+        The recorded reset is the provider's worst case for the window; a rolling
+        cap usually recovers earlier, so a single-provider primary re-probes
+        instead of staying silent for days.
+        """
+        from agent.nous_rate_guard import (
+            record_nous_rate_limit,
+            nous_rate_limit_remaining,
+            should_probe_nous_during_cooldown,
+        )
+
+        record_nous_rate_limit(headers={"x-ratelimit-reset-requests-1h": str(6 * 24 * 3600)})
+        remaining = nous_rate_limit_remaining()
+        assert remaining is not None and remaining > 5 * 24 * 3600
+        assert should_probe_nous_during_cooldown(has_fallback=False) is True
+
+    def test_records_slot_state(self, rate_guard_env):
+        from agent.nous_rate_guard import (
+            should_probe_nous_during_cooldown,
+            _probe_state_path,
+        )
+
+        should_probe_nous_during_cooldown(has_fallback=False)
+        with open(_probe_state_path()) as f:
+            state = json.load(f)
+        assert "last_probe_at" in state
+        assert state["last_probe_at"] > 0
+
+    def test_clear_removes_probe_slot(self, rate_guard_env):
+        from agent.nous_rate_guard import (
+            should_probe_nous_during_cooldown,
+            clear_nous_rate_limit,
+            _probe_state_path,
+        )
+
+        should_probe_nous_during_cooldown(has_fallback=False)
+        assert os.path.exists(_probe_state_path())
+        clear_nous_rate_limit()
+        assert not os.path.exists(_probe_state_path())
+
+
 class TestParseResetSeconds:
     """Test header parsing for reset times."""
 

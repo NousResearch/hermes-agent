@@ -160,8 +160,101 @@ def nous_rate_limit_remaining() -> Optional[float]:
         return None
 
 
+# Minimum gap between recovery probes while Nous is in cooldown.  A probe is a
+# single real request that tests whether the rolling RPH/RPM bucket has recovered
+# ahead of the worst-case reset time the 429 headers reported.  Throttling keeps
+# recovery probing from hammering the upstream (one probe per slot, not per turn).
+_PROBE_THROTTLE_SECONDS = 30.0
+_PROBE_SUBDIR = "rate_limits"
+_PROBE_FILENAME = "nous_probe.json"
+
+
+def _probe_state_path() -> str:
+    """Return the path to the Nous probe-throttle state file."""
+    try:
+        from hermes_constants import get_hermes_home
+        base = get_hermes_home()
+    except ImportError:
+        base = os.path.join(os.path.expanduser("~"), ".hermes")
+    return os.path.join(base, _PROBE_SUBDIR, _PROBE_FILENAME)
+
+
+def should_probe_nous_during_cooldown(
+    *,
+    has_fallback: bool,
+    throttle_seconds: float = _PROBE_THROTTLE_SECONDS,
+) -> bool:
+    """Decide whether to re-probe the Nous primary while it is in cooldown.
+
+    The recorded ``reset_at`` from a 429 reflects the provider-reported worst
+    case for the bucket window (e.g. ``x-ratelimit-reset-requests-1h`` reports
+    the full hour).  RPH/RPM buckets are rolling windows, so the real recovery
+    point is usually earlier — an aged-out request frees a slot well before the
+    headers' worst-case reset arrives.
+
+    When a fallback provider is configured the agent prefers the fallback chain,
+    so we do NOT probe (let the fallback carry the turn — covered by the caller).
+    But when there is **no fallback** (single-provider setup), staying silent
+    until ``reset_at`` literally arrives can mean minutes-to-days of dead air for
+    a cap that already recovered.  In that case we allow one probe per throttle
+    slot: "is the primary callable yet?" is a recovery question independent of
+    fallback configuration.
+
+    Ported from openclaw/openclaw#90717 (single-provider primary re-probe).
+
+    Args:
+        has_fallback: Whether a fallback provider is available for this turn.
+        throttle_seconds: Minimum gap between probes (default 30s).
+
+    Returns:
+        True when a recovery probe should be attempted now.
+    """
+    # With a fallback chain available, prefer the fallback — no probe.
+    if has_fallback:
+        return False
+
+    now = time.time()
+    path = _probe_state_path()
+
+    # Respect the throttle slot: at most one probe per ``throttle_seconds``.
+    try:
+        with open(path, encoding="utf-8") as f:
+            last = float(json.load(f).get("last_probe_at", 0))
+        if now - last < throttle_seconds:
+            return False
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        pass  # No prior probe (or unreadable state) — probing is allowed.
+
+    # Claim this slot so concurrent sessions don't all probe at once.
+    try:
+        state_dir = os.path.dirname(path)
+        os.makedirs(state_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"last_probe_at": now}, f)
+            atomic_replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception as exc:
+        logger.debug("Failed to record Nous probe slot: %s", exc)
+
+    return True
+
+
 def clear_nous_rate_limit() -> None:
     """Clear the rate limit state (e.g., after a successful Nous request)."""
+    # Also clear the probe-throttle slot so the next cooldown starts fresh.
+    try:
+        os.unlink(_probe_state_path())
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Failed to clear Nous probe slot: %s", exc)
     try:
         os.unlink(_state_path())
     except FileNotFoundError:

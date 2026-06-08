@@ -1206,6 +1206,7 @@ def run_conversation(
                     from agent.nous_rate_guard import (
                         nous_rate_limit_remaining,
                         format_remaining as _fmt_nous_remaining,
+                        should_probe_nous_during_cooldown,
                     )
                     _nous_remaining = nous_rate_limit_remaining()
                     if _nous_remaining is not None and _nous_remaining > 0:
@@ -1222,23 +1223,38 @@ def run_conversation(
                             compression_attempts = 0
                             primary_recovery_attempted = False
                             continue
-                        # No fallback available — surface buffered context
-                        # so user sees the rate-limit message that led here.
-                        agent._flush_status_buffer()
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": (
-                                f"⏳ {_nous_msg}\n\n"
-                                "No fallback provider available. "
-                                "Try again after the reset, or add a "
-                                "fallback provider in config.yaml."
-                            ),
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": _nous_msg,
-                        }
+                        # No fallback available.  The recorded reset is the
+                        # provider's worst-case for the bucket window; rolling
+                        # RPH/RPM caps usually recover earlier.  Allow one
+                        # throttled recovery probe (single-provider re-probe,
+                        # ported from openclaw/openclaw#90717) rather than going
+                        # silent until reset_at literally arrives.  A failed
+                        # probe re-records the cooldown via the 429 handler; a
+                        # successful probe clears it.
+                        if should_probe_nous_during_cooldown(has_fallback=False):
+                            agent._buffer_vprint(
+                                "⏳ No fallback — probing Nous Portal for early "
+                                "recovery..."
+                            )
+                            # Fall through to the real API call below.
+                        else:
+                            # Throttle slot not open — surface buffered context
+                            # so user sees the rate-limit message that led here.
+                            agent._flush_status_buffer()
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": (
+                                    f"⏳ {_nous_msg}\n\n"
+                                    "No fallback provider available. "
+                                    "Try again after the reset, or add a "
+                                    "fallback provider in config.yaml."
+                                ),
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "error": _nous_msg,
+                            }
                 except ImportError:
                     pass
                 except Exception:

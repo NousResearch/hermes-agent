@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       # Necesario para construir imágenes arm64 desde runners amd64
       - name: Set up QEMU
@@ -68,6 +69,11 @@ jobs:
               ;;
           esac
 
+          if [ ! -f "Dockerfile" ]; then
+            echo "No existe Dockerfile en la raíz de la rama ${BRANCH_NAME}. No se puede construir la imagen."
+            exit 1
+          fi
+
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --file Dockerfile \
@@ -84,25 +90,34 @@ jobs:
       # ---------------------------------------------------------
       # Publica tags:
       # - Crea imágenes de tags nuevos v*
+      # - Omite tags cuyo commit no tenga Dockerfile en la raíz
       # - Actualiza imágenes de tags v* si el tag Git cambió de commit
       # - Ignora tags que ya estén correctamente publicados
-      # - Actualiza latest al último tag v* según sort -V
+      # - Actualiza latest al último tag v* publicable según sort -V
       #
       # Se ejecuta en:
       # - push de tag v*
+      # - push a main/develop
       # - schedule
       # - workflow_dispatch
-      #
-      # No se ejecuta en push normal a main/develop para evitar revisar
-      # todos los tags en cada commit de rama.
       # ---------------------------------------------------------
       - name: Publish missing or updated version tags
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: |
+          startsWith(github.ref, 'refs/tags/') ||
+          github.ref == 'refs/heads/main' ||
+          github.ref == 'refs/heads/develop' ||
+          github.event_name == 'schedule' ||
+          github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
 
           git fetch --tags --force
+
+          echo "Evento: ${GITHUB_EVENT_NAME}"
+          echo "Ref: ${GITHUB_REF}"
+          echo "Ref name: ${GITHUB_REF_NAME}"
+          echo "SHA: ${GITHUB_SHA}"
 
           image_exists() {
             local ref="$1"
@@ -115,6 +130,11 @@ jobs:
               | awk '/^Digest:/ {print $2; exit}'
           }
 
+          tag_has_dockerfile() {
+            local commit="$1"
+            git cat-file -e "${commit}:Dockerfile" 2>/dev/null
+          }
+
           build_image_for_tag() {
             local tag="$1"
             local commit="$2"
@@ -122,7 +142,18 @@ jobs:
 
             echo "Construyendo imagen para tag ${tag}, commit ${commit}"
 
+            if ! [[ "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+              echo "El tag Git '${tag}' no es válido como tag Docker. Se omite."
+              return 0
+            fi
+
+            if ! tag_has_dockerfile "${commit}"; then
+              echo "El tag ${tag}, commit ${commit}, no contiene Dockerfile en la raíz. Se omite."
+              return 0
+            fi
+
             git checkout --force "${commit}"
+            git clean -fdx
 
             docker buildx build \
               --platform linux/amd64,linux/arm64 \
@@ -167,13 +198,34 @@ jobs:
             exit 0
           fi
 
-          LATEST_TAG="${TAGS[-1]}"
+          mapfile -t PUBLISHABLE_TAGS < <(
+            for TAG in "${TAGS[@]}"; do
+              COMMIT="$(git rev-list -n 1 "${TAG}")"
+
+              if git cat-file -e "${COMMIT}:Dockerfile" 2>/dev/null; then
+                echo "${TAG}"
+              else
+                echo "Se omite ${TAG}: el commit ${COMMIT} no contiene Dockerfile en la raíz." >&2
+              fi
+            done
+          )
+
+          if [ "${#PUBLISHABLE_TAGS[@]}" -eq 0 ]; then
+            echo "No hay tags v* con Dockerfile que publicar."
+            exit 0
+          fi
+
+          LATEST_TAG="${PUBLISHABLE_TAGS[-1]}"
 
           echo "Tags detectados:"
           printf '%s\n' "${TAGS[@]}"
-          echo "Latest tag calculado: ${LATEST_TAG}"
 
-          for TAG in "${TAGS[@]}"; do
+          echo "Tags publicables:"
+          printf '%s\n' "${PUBLISHABLE_TAGS[@]}"
+
+          echo "Latest tag publicable calculado: ${LATEST_TAG}"
+
+          for TAG in "${PUBLISHABLE_TAGS[@]}"; do
             COMMIT="$(git rev-list -n 1 "${TAG}")"
             SHA_SHORT="$(git rev-parse --short "${COMMIT}")"
 
@@ -223,8 +275,6 @@ jobs:
                 publish_tag_from_existing_sha_image "${TAG}" "${SHA_SHORT}"
               fi
             fi
-
-            if [ "${TAG}" = "${LATEST_TAG}" ]; then
-              publish_latest_from_tag "${TAG}"
-            fi
           done
+
+          publish_latest_from_tag "${LATEST_TAG}"

@@ -1,0 +1,7 @@
+name: jb_outbound
+version: 0.1.0
+description: "Jean-Billie — rien ne part sans accord. Intercepte les envois sortants (Telegram via send_message, email/réseaux via Composio MCP) et les transforme en propositions à valider auprès du control daemon (loopback). Rejoue l'envoi réel uniquement après approbation."
+author: "Jean-Billie (greffe sur Hermes Agent — MIT, Nous Research)"
+kind: standalone
+middleware:
+  - tool_execution

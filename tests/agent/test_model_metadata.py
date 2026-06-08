@@ -812,6 +812,38 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_single_slash_model_fallback(self, mock_endpoint_fetch, mock_fetch):
+        """Single-model server whose id contains a '/' must still hit the
+        "only one model served" shortcut.
+
+        Regression: fetch_endpoint_model_metadata registers a ``publisher/slug``
+        model under BOTH the full id and the bare ``slug`` (via
+        _add_model_aliases), so the cache has two keys pointing at one entry.
+        The resolver counted keys, saw len == 2, skipped the single-model
+        shortcut, and fell through to the substring match — which returned
+        None when the configured name matched neither key. We now count
+        distinct entries, so the only served model's window is used.
+        """
+        mock_fetch.return_value = {}
+        # Mirror what fetch_endpoint_model_metadata builds for one slash-id model:
+        # the full id and the bare slug both point at the SAME entry object.
+        entry = {"context_length": 262144}
+        mock_endpoint_fetch.return_value = {
+            "Org/Big-Model-V2": entry,
+            "Big-Model-V2": entry,
+        }
+
+        # Configured name matches neither key (e.g. a renamed deployment alias).
+        result = get_model_context_length(
+            "my-deployment",
+            base_url="http://myserver.example.com:8080/v1",
+            api_key="test-key",
+        )
+
+        assert result == 262144
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_custom_endpoint_fuzzy_substring_match(self, mock_endpoint_fetch, mock_fetch):
         """Fuzzy match: configured model name is substring of endpoint model."""
         mock_fetch.return_value = {}

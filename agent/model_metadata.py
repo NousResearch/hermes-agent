@@ -807,8 +807,19 @@ def _resolve_endpoint_context_length(
     endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
     matched = endpoint_metadata.get(model)
     if not matched:
-        if len(endpoint_metadata) == 1:
-            matched = next(iter(endpoint_metadata.values()))
+        # Count DISTINCT models, not dict keys.  fetch_endpoint_model_metadata
+        # builds the cache via _add_model_aliases, which registers both the
+        # full ``publisher/slug`` id and the bare ``slug`` as separate keys
+        # pointing at the SAME entry object.  So a single-model endpoint whose
+        # id contains a "/" has len(endpoint_metadata) == 2, which used to skip
+        # the "only one model served, just use it" shortcut and fall through to
+        # the fragile substring match below — returning None whenever the
+        # configured model name didn't substring-match either alias key.  This
+        # broke the common org/name id format (HuggingFace, LM Studio
+        # publisher/slug, OpenRouter-style ids).
+        distinct_entries = list({id(e): e for e in endpoint_metadata.values()}.values())
+        if len(distinct_entries) == 1:
+            matched = distinct_entries[0]
         else:
             for key, entry in endpoint_metadata.items():
                 if model in key or key in model:

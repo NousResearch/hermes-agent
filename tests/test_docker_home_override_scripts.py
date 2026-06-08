@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RUN = REPO_ROOT / "docker" / "s6-rc.d" / "dashboard" / "run"
 MAIN_WRAPPER = REPO_ROOT / "docker" / "main-wrapper.sh"
+STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"
 
 
 def test_main_wrapper_preserves_docker_workdir() -> None:
@@ -77,3 +78,39 @@ def test_dashboard_run_does_not_derive_insecure_from_bind_host() -> None:
         assert truthy in text, (
             f"HERMES_DASHBOARD_INSECURE should accept truthy value {truthy!r}"
         )
+
+
+def test_stage2_hook_repairs_cron_ownership_unconditionally() -> None:
+   """cron/ must be in the unconditional chown block alongside profiles/.
+
+   docker exec commands run as root, leaving jobs.json root-owned.
+   The unprivileged hermes runtime then hits EACCES on next boot.
+   Regression for issue #41966.
+   """
+   text = STAGE2_HOOK.read_text()
+
+   # profiles/ unconditional chown must still be present (existing behaviour)
+   assert 'chown -R hermes:hermes "$HERMES_HOME/profiles"' in text, (
+       "Unconditional profiles/ chown was removed — restore it."
+   )
+
+   # cron/ unconditional chown must be present
+   assert 'chown -R hermes:hermes "$HERMES_HOME/cron"' in text, (
+       "Unconditional cron/ chown is missing. "
+       "docker exec writes land as root and must be repaired on every boot."
+   )
+
+   # Both chowns must appear OUTSIDE the needs_chown conditional block
+   # (i.e. they must not be indented inside an `if` that gates on ownership).
+   lines = text.splitlines()
+   cron_chown_line = next(
+       (i for i, l in enumerate(lines)
+        if 'chown -R hermes:hermes "$HERMES_HOME/cron"' in l),
+       None,
+   )
+   assert cron_chown_line is not None, "cron/ chown line not found"
+   # Unconditional chowns are at 4-space indent (inside if [ -d ... ]; then)
+   # but NOT inside a deeper conditional like `if [ "$needs_chown" = true ]`
+   assert lines[cron_chown_line].startswith("    chown"), (
+       "cron/ chown must be at top-level indent (unconditional block)"
+   )

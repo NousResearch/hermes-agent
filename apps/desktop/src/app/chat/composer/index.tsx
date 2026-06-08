@@ -66,7 +66,8 @@ import {
   dragHasAttachments,
   droppedFileInlineRef,
   type InlineRefInput,
-  insertInlineRefsIntoEditor
+  insertInlineRefsIntoEditor,
+  splitDroppedFilesForComposer
 } from './inline-refs'
 import { QueuePanel } from './queue-panel'
 import {
@@ -171,10 +172,12 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
     busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()
@@ -919,19 +922,21 @@ export function ChatBar({
       return
     }
 
-    if (Array.from(event.dataTransfer.types || []).includes(HERMES_PATHS_MIME)) {
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, cwd))
-        .filter((ref): ref is string => Boolean(ref))
+    const { attachmentCandidates, inlineRefCandidates } = splitDroppedFilesForComposer(candidates)
 
-      if (insertInlineRefs(refs)) {
-        triggerHaptic('selection')
-      }
+    const refs = inlineRefCandidates
+      .map(candidate => droppedFileInlineRef(candidate, cwd))
+      .filter((ref): ref is string => Boolean(ref))
 
+    if (refs.length && insertInlineRefs(refs)) {
+      triggerHaptic('selection')
+    }
+
+    if (!attachmentCandidates.length) {
       return
     }
 
-    void Promise.resolve(onAttachDroppedItems(candidates)).then(attached => {
+    void Promise.resolve(onAttachDroppedItems(attachmentCandidates)).then(attached => {
       if (attached) {
         triggerHaptic('selection')
         requestMainFocus()
@@ -955,12 +960,13 @@ export function ChatBar({
     }
 
     const candidates = extractDroppedFiles(event.dataTransfer)
+    const { attachmentCandidates, inlineRefCandidates } = splitDroppedFilesForComposer(candidates)
 
-    const refs = candidates
+    const refs = inlineRefCandidates
       .map(candidate => droppedFileInlineRef(candidate, cwd))
       .filter((ref): ref is string => Boolean(ref))
 
-    if (!refs.length) {
+    if (!refs.length && (!onAttachDroppedItems || !attachmentCandidates.length)) {
       return
     }
 
@@ -968,9 +974,20 @@ export function ChatBar({
     event.stopPropagation()
     resetDragState()
 
-    if (insertInlineRefs(refs)) {
+    if (refs.length && insertInlineRefs(refs)) {
       triggerHaptic('selection')
     }
+
+    if (!onAttachDroppedItems || !attachmentCandidates.length) {
+      return
+    }
+
+    void Promise.resolve(onAttachDroppedItems(attachmentCandidates)).then(attached => {
+      if (attached) {
+        triggerHaptic('selection')
+        requestMainFocus()
+      }
+    })
   }
 
   const clearDraft = useCallback(() => {

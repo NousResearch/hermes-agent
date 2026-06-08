@@ -36,6 +36,7 @@ import {
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import { $attentionSessionIds, $workingSessionIds } from '@/store/session'
 import { type ThemeMode, useTheme } from '@/themes/context'
 
 import {
@@ -149,6 +150,8 @@ const THEME_MODES: ReadonlyArray<{ icon: IconComponent; mode: ThemeMode }> = [
 export function CommandPalette() {
   const { t } = useI18n()
   const open = useStore($commandPaletteOpen)
+  const attentionSessionIds = useStore($attentionSessionIds)
+  const workingSessionIds = useStore($workingSessionIds)
   const navigate = useNavigate()
   const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
@@ -184,6 +187,7 @@ export function CommandPalette() {
 
   const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
+  const sessionById = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
 
   // Reset the query/sub-page on close so it reopens clean.
   useEffect(() => {
@@ -194,10 +198,62 @@ export function CommandPalette() {
   }, [open])
 
   const go = useCallback((path: string) => () => navigate(path), [navigate])
+
+  const recentSessionItems = useMemo<PaletteItem[]>(
+    () =>
+      sessions.slice(0, 5).map((session, index) => ({
+        icon: index === 0 ? Zap : Clock,
+        id: `recent-session-${session.id}`,
+        keywords: ['recent', 'latest', 'live', 'chat', 'session', ...(session.preview ? [session.preview] : [])],
+        label: index === 0 ? `Live: ${session.title}` : session.title,
+        run: go(sessionRoute(session.id))
+      })),
+    [go, sessions]
+  )
+
+  const sessionShortcutItems = useMemo<PaletteItem[]>(() => {
+    const latestSession = sessions[0]
+    const runningSession = workingSessionIds.map(id => sessionById.get(id)).find(Boolean)
+    const inputSession = attentionSessionIds.map(id => sessionById.get(id)).find(Boolean)
+
+    const items: (PaletteItem | null)[] = [
+      latestSession
+        ? {
+            icon: Clock,
+            id: 'session-shortcut-recent-work',
+            keywords: ['recent work', 'latest', '최근 작업'],
+            label: `Recent work: ${latestSession.title}`,
+            run: go(sessionRoute(latestSession.id))
+          }
+        : null,
+      runningSession
+        ? {
+            icon: Activity,
+            id: 'session-shortcut-running-now',
+            keywords: ['running now', 'working', 'live', '현재 실행 중'],
+            label: `Running now: ${runningSession.title}`,
+            run: go(sessionRoute(runningSession.id))
+          }
+        : null,
+      inputSession
+        ? {
+            icon: Info,
+            id: 'session-shortcut-needs-input',
+            keywords: ['needs input', 'waiting', 'clarify', '입력 대기 중'],
+            label: `Needs input: ${inputSession.title}`,
+            run: go(sessionRoute(inputSession.id))
+          }
+        : null
+    ]
+
+    return items.filter((item): item is PaletteItem => item !== null)
+  }, [attentionSessionIds, go, sessionById, sessions, workingSessionIds])
+
   const settingsSectionLabel = useCallback(
     (section: (typeof SECTIONS)[number]) => t.settings.sections[section.id] ?? section.label,
     [t.settings.sections]
   )
+
   const configFieldLabel = useCallback(
     (key: string) =>
       fieldCopyForSchemaKey(t.settings.fieldLabels, key) ??
@@ -230,6 +286,22 @@ export function CommandPalette() {
           { icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
         ]
       },
+      ...(sessionShortcutItems.length > 0
+        ? [
+            {
+              heading: 'Session shortcuts',
+              items: sessionShortcutItems
+            }
+          ]
+        : []),
+      ...(recentSessionItems.length > 0
+        ? [
+            {
+              heading: 'Recent sessions',
+              items: recentSessionItems
+            }
+          ]
+        : []),
       {
         heading: cc.commandCenter,
         items: [
@@ -298,7 +370,7 @@ export function CommandPalette() {
         ]
       }
     ]
-  }, [go, settingsSectionLabel, t])
+  }, [go, recentSessionItems, sessionShortcutItems, settingsSectionLabel, t])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the

@@ -1445,7 +1445,6 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               role="textbox"
               suppressContentEditableWarning
             />
-            <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
             <button
               aria-label={copy.sendEdited}
               className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}

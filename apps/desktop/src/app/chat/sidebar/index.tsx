@@ -8,7 +8,6 @@ import {
   useSensors
 } from '@dnd-kit/core'
 import {
-  arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
@@ -52,8 +51,6 @@ import {
   $sidebarOverlayMounted,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
-  $sidebarSessionOrderIds,
-  $sidebarWorkspaceOrderIds,
   pinSession,
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
@@ -61,8 +58,6 @@ import {
   setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
-  setSidebarSessionOrderIds,
-  setSidebarWorkspaceOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '@/store/layout'
@@ -91,6 +86,7 @@ import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { ProfileRail } from './profile-switcher'
+import { freshestSessionId, topRecentSessions } from './session-order'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -128,65 +124,8 @@ const LOCAL_SESSION_SOURCES = new Set(['cli', 'desktop', 'local', 'tui'])
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
-const parseGroupDndId = (id: string) =>
-  id.startsWith(GROUP_DND_ID_PREFIX) ? id.slice(GROUP_DND_ID_PREFIX.length) : null
-
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
-
-function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[]): T[] {
-  if (!orderIds.length) {
-    return items
-  }
-
-  const byId = new Map(items.map(item => [getId(item), item]))
-  const seen = new Set<string>()
-  const out: T[] = []
-
-  for (const id of orderIds) {
-    const item = byId.get(id)
-
-    if (item) {
-      out.push(item)
-      seen.add(id)
-    }
-  }
-
-  for (const item of items) {
-    if (!seen.has(getId(item))) {
-      out.push(item)
-    }
-  }
-
-  return out
-}
-
-function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
-  if (!currentIds.length) {
-    return []
-  }
-
-  if (!orderIds.length) {
-    return currentIds
-  }
-
-  const current = new Set(currentIds)
-  const next = orderIds.filter(id => current.has(id))
-  const known = new Set(next)
-
-  for (const id of currentIds) {
-    if (!known.has(id)) {
-      next.push(id)
-      known.add(id)
-    }
-  }
-
-  return next
-}
-
-function sameIds(left: string[], right: string[]) {
-  return left.length === right.length && left.every((item, index) => item === right[index])
-}
 
 const baseName = (path: string) =>
   path
@@ -194,6 +133,12 @@ const baseName = (path: string) =>
     .split(/[/\\]/)
     .filter(Boolean)
     .pop()
+
+const workspaceDisplayName = (path: string) => {
+  const name = baseName(path) || path
+
+  return name.replace(/^\d{2}(?:\.\d{2})?[-_\s]+/, '')
+}
 
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
@@ -231,7 +176,7 @@ function workspaceGroupsFor(
   for (const session of sessions) {
     const path = session.cwd?.trim() || ''
     const id = path || '__no_workspace__'
-    const label = baseName(path) || path || noWorkspaceLabel
+    const label = workspaceDisplayName(path) || path || noWorkspaceLabel
 
     const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
     group.sessions.push(session)
@@ -358,11 +303,12 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const agentOrderIds = useStore($sidebarSessionOrderIds)
-  const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
+  // The "Recent" quick section is a lightweight, session-local collapse — no
+  // need to persist it like the recents/pins sections.
+  const [quickRecentOpen, setQuickRecentOpen] = useState(true)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
@@ -508,25 +454,27 @@ export function ChatSidebar({
     return [...out.values()]
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
-  const unpinnedAgentSessions = useMemo(
+  // Recents are pure activity order: `sortedSessions` is already recency-sorted
+  // (newest first), so the freshest session always floats to the top. Manual
+  // drag order now applies only to the Pinned section — never to recents or the
+  // workspace/source groups below.
+  const agentSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
     [sortedSessions, pinnedRealIdSet]
   )
 
-  useEffect(() => {
-    const next = reconcileOrderIds(
-      unpinnedAgentSessions.map(s => s.id),
-      agentOrderIds
-    )
+  // The single most-recently-active session across loaded recents + cron runs.
+  // Badged 'Live' in the row so the newest is obvious at a glance.
+  const liveSessionId = useMemo(
+    () => freshestSessionId([visibleSessions, cronSessions], session => session.id, sessionTime),
+    [visibleSessions, cronSessions]
+  )
 
-    if (!sameIds(next, agentOrderIds)) {
-      setSidebarSessionOrderIds(next)
-    }
-  }, [agentOrderIds, unpinnedAgentSessions])
-
-  const agentSessions = useMemo(
-    () => orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds),
-    [unpinnedAgentSessions, agentOrderIds]
+  // Top 5 most-recently-worked sessions spanning local, external-source, and
+  // cron runs — a quick-access shortcut above the fuller recents list.
+  const recentQuickSessions = useMemo(
+    () => topRecentSessions([visibleSessions, cronSessions], session => session.id, sessionTime, 5),
+    [visibleSessions, cronSessions]
   )
 
   const { localSessions: localAgentSessions, sourceGroups } = useMemo(
@@ -534,19 +482,9 @@ export function ChatSidebar({
     [agentSessions]
   )
 
-  const orderedSourceGroups = useMemo(
-    () => orderByIds(sourceGroups, g => g.id, workspaceOrderIds),
-    [sourceGroups, workspaceOrderIds]
-  )
-
   const agentGroups = useMemo(
-    () =>
-      orderByIds(
-        workspaceGroupsFor(localAgentSessions, s.noWorkspace, { preserveSessionOrder: sourceGroups.length > 0 }),
-        g => g.id,
-        workspaceOrderIds
-      ),
-    [localAgentSessions, s.noWorkspace, sourceGroups.length, workspaceOrderIds]
+    () => workspaceGroupsFor(localAgentSessions, s.noWorkspace, { preserveSessionOrder: true }),
+    [localAgentSessions, s.noWorkspace]
   )
 
   const loadMoreForProfileGroup = useCallback(
@@ -613,7 +551,7 @@ export function ChatSidebar({
   const displayAgentSessions = sourceGroups.length ? localAgentSessions : agentSessions
 
   const displayAgentGroups = useMemo(() => {
-    if (orderedSourceGroups.length) {
+    if (sourceGroups.length) {
       const localGroups = agentsGrouped
         ? agentGroups
         : localAgentSessions.length
@@ -628,7 +566,7 @@ export function ChatSidebar({
             ]
           : []
 
-      return orderByIds([...orderedSourceGroups, ...localGroups], g => g.id, workspaceOrderIds)
+      return [...localGroups, ...sourceGroups]
     }
 
     return showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
@@ -636,26 +574,10 @@ export function ChatSidebar({
     agentGroups,
     agentsGrouped,
     localAgentSessions,
-    orderedSourceGroups,
     profileGroups,
     showAllProfiles,
-    workspaceOrderIds
+    sourceGroups
   ])
-
-  useEffect(() => {
-    if (!displayAgentGroups?.length || showAllProfiles) {
-      return
-    }
-
-    const next = reconcileOrderIds(
-      displayAgentGroups.map(g => g.id),
-      workspaceOrderIds
-    )
-
-    if (!sameIds(next, workspaceOrderIds)) {
-      setSidebarWorkspaceOrderIds(next)
-    }
-  }, [displayAgentGroups, showAllProfiles, workspaceOrderIds])
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
@@ -697,43 +619,6 @@ export function ChatSidebar({
     reorderPinnedSession(dragged ? sessionPinId(dragged) : String(active.id), newIndex)
   }
 
-  const handleAgentDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id) {
-      return
-    }
-
-    const activeId = String(active.id)
-    const overId = String(over.id)
-    const activeGroup = parseGroupDndId(activeId)
-    const overGroup = parseGroupDndId(overId)
-
-    if (activeGroup && overGroup) {
-      const groups = displayAgentGroups ?? []
-      const oldIdx = groups.findIndex(g => g.id === activeGroup)
-      const newIdx = groups.findIndex(g => g.id === overGroup)
-
-      if (oldIdx < 0 || newIdx < 0) {
-        return
-      }
-
-      setSidebarWorkspaceOrderIds(arrayMove(groups, oldIdx, newIdx).map(g => g.id))
-
-      return
-    }
-
-    if (activeGroup || overGroup) {
-      return
-    }
-
-    const oldIdx = agentSessions.findIndex(s => s.id === activeId)
-    const newIdx = agentSessions.findIndex(s => s.id === overId)
-
-    if (oldIdx < 0 || newIdx < 0) {
-      return
-    }
-
-    setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
-  }
 
   return (
     <Sidebar
@@ -834,6 +719,7 @@ export function ChatSidebar({
             }
             label={s.results}
             labelMeta={String(searchResults.length)}
+            liveSessionId={liveSessionId}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onResumeSession={onResumeSession}
@@ -847,6 +733,27 @@ export function ChatSidebar({
           />
         )}
 
+        {contentVisible && showSessionSections && !trimmedQuery && recentQuickSessions.length > 0 && (
+          <SidebarSessionsSection
+            activeSessionId={activeSidebarSessionId}
+            contentClassName="flex max-h-40 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+            emptyState={null}
+            label="Recent 5"
+            labelMeta={String(recentQuickSessions.length)}
+            liveSessionId={liveSessionId}
+            onArchiveSession={onArchiveSession}
+            onDeleteSession={onDeleteSession}
+            onResumeSession={onResumeSession}
+            onToggle={() => setQuickRecentOpen(!quickRecentOpen)}
+            onTogglePin={pinSession}
+            open={quickRecentOpen}
+            pinned={false}
+            rootClassName="shrink-0 p-0 pb-1"
+            sessions={recentQuickSessions}
+            workingSessionIdSet={workingSessionIdSet}
+          />
+        )}
+
         {contentVisible && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
@@ -854,6 +761,7 @@ export function ChatSidebar({
             dndSensors={dndSensors}
             emptyState={<SidebarPinnedEmptyState />}
             label={s.pinned}
+            liveSessionId={liveSessionId}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onReorder={handlePinnedDragEnd}
@@ -926,10 +834,10 @@ export function ChatSidebar({
             }
             label={s.sessions}
             labelMeta={recentsMeta}
+            liveSessionId={liveSessionId}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
-            onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
             onResumeSession={onResumeSession}
             onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
             onTogglePin={pinSession}
@@ -937,7 +845,6 @@ export function ChatSidebar({
             pinned={false}
             rootClassName="min-h-0 flex-1 p-0"
             sessions={displayAgentSessions}
-            sortable={!showAllProfiles && agentSessions.length > 1}
             workingSessionIdSet={workingSessionIdSet}
           />
         )}
@@ -1065,6 +972,7 @@ interface SidebarSessionsSectionProps {
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
   labelMeta?: React.ReactNode
+  liveSessionId?: null | string
   sortable?: boolean
   onReorder?: (event: DragEndEvent) => void
   dndSensors?: ReturnType<typeof useSensors>
@@ -1091,6 +999,7 @@ function SidebarSessionsSection({
   footer,
   groups,
   labelMeta,
+  liveSessionId = null,
   sortable = false,
   onReorder,
   dndSensors
@@ -1102,6 +1011,7 @@ function SidebarSessionsSection({
   const renderRow = (session: SessionInfo) => {
     const rowProps = {
       isPinned: pinned,
+      isLive: session.id === liveSessionId,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
@@ -1181,6 +1091,7 @@ function SidebarSessionsSection({
     inner = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
+        liveSessionId={liveSessionId}
         onArchiveSession={onArchiveSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
@@ -1387,6 +1298,7 @@ function SidebarCount({ children }: { children: React.ReactNode }) {
 interface SortableSessionRowProps {
   session: SessionInfo
   isPinned: boolean
+  isLive: boolean
   isSelected: boolean
   isWorking: boolean
   onArchive: () => void

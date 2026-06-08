@@ -1,7 +1,14 @@
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import {
+  AssistantRuntimeProvider,
+  ExportedMessageRepository,
+  type ThreadMessage,
+  useExternalStoreRuntime
+} from '@assistant-ui/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
 import { Thread } from './thread'
 
@@ -43,11 +50,14 @@ class TestResizeObserver {
   }
 }
 
+const requestAnimationFrameStub = (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 0)
+const cancelAnimationFrameStub = (id: number) => window.clearTimeout(id)
+
 vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
+vi.stubGlobal('requestAnimationFrame', requestAnimationFrameStub)
+vi.stubGlobal('cancelAnimationFrame', cancelAnimationFrameStub)
+Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: requestAnimationFrameStub })
+Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: cancelAnimationFrameStub })
 
 Element.prototype.scrollTo = function scrollTo() {}
 
@@ -277,6 +287,28 @@ function StaticThreadHarness() {
   )
 }
 
+function EditableResetHarness() {
+  const [messages, setMessages] = useState<ThreadMessage[]>([userMessage()])
+  const messageRepository = useMemo(() => ExportedMessageRepository.fromArray(messages), [messages])
+
+  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
+    messageRepository,
+    isRunning: false,
+    onEdit: async () => {},
+    onNew: async () => {},
+    setMessages: () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <button onClick={() => setMessages([])} type="button">
+        clear messages
+      </button>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
 function TodoHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -410,6 +442,27 @@ describe('assistant-ui streaming renderer', () => {
     const { container } = render(<IntroHarness />)
 
     expect(container.querySelector('[data-slot="aui_composer-clearance"]')).toBeNull()
+  })
+
+  it('does not throw when a message edit composer is mounted and the thread resets empty', async () => {
+    const { container } = render(<EditableResetHarness />)
+    const ui = within(container)
+
+    fireEvent.click(ui.getByRole('button', { name: /edit message/i }))
+    await waitFor(() => {
+      expect(ui.getByRole('textbox', { name: /edit message/i })).toBeTruthy()
+    })
+
+    // The edit composer uses a custom contentEditable editor. Mounting the
+    // hidden Assistant UI primitive input creates a second message-scoped
+    // composer subscriber; during empty-thread/session resets that subscriber
+    // can read `thread().message({ index: 0 }).composer()` after the message
+    // client lookup has been cleared.
+    expect(container.querySelector('[data-slot="aui_edit-composer-root"] textarea.sr-only')).toBeNull()
+
+    expect(() => {
+      fireEvent.click(ui.getByRole('button', { name: /clear messages/i }))
+    }).not.toThrow(/tapClientLookup/)
   })
 
   it('renders assistant provider errors inline', () => {
@@ -640,23 +693,20 @@ describe('assistant-ui streaming renderer', () => {
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
+      expect(container.textContent).toContain('const answer = 42')
     })
 
-    expect(container.textContent).toContain('const answer = 42')
     expect(container.textContent).not.toContain('```ts')
   })
 
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
     const { container } = render(<RunningReasoningHarness />)
-    const ui = within(container)
-
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
+      expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     })
 
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     expect(container.textContent).not.toContain('```ts')
   })
 

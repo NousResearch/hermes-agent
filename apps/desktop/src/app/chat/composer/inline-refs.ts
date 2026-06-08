@@ -83,6 +83,21 @@ export function droppedFileInlineRef(candidate: DroppedFile, cwd: string | null 
   return `@${kind}:${formatRefValue(rel)}`
 }
 
+export function splitDroppedFilesForComposer(candidates: readonly DroppedFile[]) {
+  const attachmentCandidates: DroppedFile[] = []
+  const inlineRefCandidates: DroppedFile[] = []
+
+  for (const candidate of candidates) {
+    if (candidate.file) {
+      attachmentCandidates.push(candidate)
+    } else {
+      inlineRefCandidates.push(candidate)
+    }
+  }
+
+  return { attachmentCandidates, inlineRefCandidates }
+}
+
 export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonly InlineRefInput[]) {
   if (!refs.length) {
     return null

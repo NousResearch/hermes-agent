@@ -11,6 +11,7 @@ import { SidebarSessionRow } from './session-row'
 
 interface SessionRowCommonProps {
   isPinned: boolean
+  isLive: boolean
   isSelected: boolean
   isWorking: boolean
   onArchive: () => void
@@ -27,6 +28,7 @@ interface VirtualSessionListProps {
   onResumeSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
+  liveSessionId?: null | string
   sessions: SessionInfo[]
   sortable: boolean
   workingSessionIdSet: Set<string>
@@ -43,6 +45,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onResumeSession,
   onTogglePin,
   pinned,
+  liveSessionId = null,
   sessions,
   sortable,
   workingSessionIdSet
@@ -74,6 +77,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
     const commonProps: SessionRowCommonProps = {
       isPinned: pinned,
+      isLive: session.id === liveSessionId,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),

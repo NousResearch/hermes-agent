@@ -16,6 +16,7 @@ import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
   isPinned: boolean
+  isLive?: boolean
   isSelected: boolean
   isWorking: boolean
   onArchive: () => void
@@ -48,6 +49,7 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
 export function SidebarSessionRow({
   session,
   isPinned,
+  isLive = false,
   isSelected,
   isWorking,
   onArchive,
@@ -182,9 +184,17 @@ export function SidebarSessionRow({
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
+          {isLive && (
+            <span
+              className="shrink-0 rounded-[4px] border border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) px-1 py-px text-[0.5625rem] font-semibold uppercase tracking-[0.08em] text-(--ui-accent)"
+              title="Live"
+            >
+              Live
+            </span>
+          )}
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
+          {!isWorking && !isLive && (
             <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
               {age}
             </span>

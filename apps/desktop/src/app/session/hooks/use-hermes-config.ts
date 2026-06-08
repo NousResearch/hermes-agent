@@ -54,6 +54,16 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       if (cwd && cwd !== '.') {
         setCurrentCwd(prev => prev || cwd)
         void refreshProjectBranch($currentCwd.get() || cwd)
+      } else if (!$currentCwd.get().trim()) {
+        const desktopDefault = await window.hermesDesktop?.settings
+          ?.getDefaultProjectDir?.()
+          .then(result => result.dir?.trim() || '')
+          .catch(() => '')
+
+        if (desktopDefault) {
+          setCurrentCwd(prev => prev || desktopDefault)
+          void refreshProjectBranch($currentCwd.get() || desktopDefault)
+        }
       }
 
       const reasoning = (config.agent?.reasoning_effort ?? '').trim()

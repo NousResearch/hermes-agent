@@ -569,6 +569,150 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_timeout_signals_reconnect_and_opens_breaker(self):
+        from tools import mcp_tool
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        server = _make_mock_server("test_srv", session=mock_session)
+        reconnect_requested = threading.Event()
+
+        class _ReconnectEvent:
+            def set(self):
+                reconnect_requested.set()
+
+        class _Loop:
+            def is_running(self):
+                return True
+
+            def call_soon_threadsafe(self, callback, *args):
+                callback(*args)
+
+        server._reconnect_event = _ReconnectEvent()
+        _servers["test_srv"] = server
+        mcp_tool._server_error_counts.pop("test_srv", None)
+        mcp_tool._server_breaker_opened_at.pop("test_srv", None)
+        old_loop = mcp_tool._mcp_loop
+        mcp_tool._mcp_loop = _Loop()
+
+        try:
+            handler = _make_tool_handler("test_srv", "slow_tool", 30)
+
+            def _timeout_run(coro_or_factory, timeout=30):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+                coro.close()
+                raise TimeoutError("MCP call timed out after 30.0s")
+
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_timeout_run):
+                result = json.loads(handler({}))
+
+            assert "TimeoutError" in result["error"]
+            assert reconnect_requested.is_set()
+            assert (
+                mcp_tool._server_error_counts["test_srv"]
+                >= mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+            )
+            assert "test_srv" in mcp_tool._server_breaker_opened_at
+        finally:
+            mcp_tool._mcp_loop = old_loop
+            _servers.pop("test_srv", None)
+            mcp_tool._server_error_counts.pop("test_srv", None)
+            mcp_tool._server_breaker_opened_at.pop("test_srv", None)
+
+    def test_timeout_opened_breaker_short_circuits_followup_call(self):
+        from tools import mcp_tool
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+        mcp_tool._server_error_counts["test_srv"] = (
+            mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        )
+        mcp_tool._server_breaker_opened_at["test_srv"] = time.monotonic()
+
+        try:
+            handler = _make_tool_handler("test_srv", "slow_tool", 30)
+            with patch("tools.mcp_tool._run_on_mcp_loop") as mock_run:
+                result = json.loads(handler({}))
+
+            assert "unreachable" in result["error"].lower()
+            mock_run.assert_not_called()
+        finally:
+            _servers.pop("test_srv", None)
+            mcp_tool._server_error_counts.pop("test_srv", None)
+            mcp_tool._server_breaker_opened_at.pop("test_srv", None)
+
+    def test_read_only_timeout_reconnects_and_retries_once(self):
+        from tools import mcp_tool
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+        mcp_tool._mcp_read_only_tool_names.add("mcp_test_srv_slow_tool")
+        mcp_tool._server_error_counts.pop("test_srv", None)
+        mcp_tool._server_breaker_opened_at.pop("test_srv", None)
+
+        calls = {"count": 0}
+
+        def _timeout_then_success(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            coro.close()
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise TimeoutError("MCP call timed out after 30.0s")
+            return json.dumps({"result": "fresh calendar data"})
+
+        try:
+            handler = _make_tool_handler("test_srv", "slow_tool", 30)
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_timeout_then_success), \
+                 patch("tools.mcp_tool._request_server_reconnect_and_wait", return_value=True) as reconnect:
+                result = json.loads(handler({}))
+
+            assert result == {"result": "fresh calendar data"}
+            assert calls["count"] == 2
+            reconnect.assert_called_once()
+            assert mcp_tool._server_error_counts.get("test_srv", 0) == 0
+            assert "test_srv" not in mcp_tool._server_breaker_opened_at
+        finally:
+            _servers.pop("test_srv", None)
+            mcp_tool._mcp_read_only_tool_names.discard("mcp_test_srv_slow_tool")
+            mcp_tool._server_error_counts.pop("test_srv", None)
+            mcp_tool._server_breaker_opened_at.pop("test_srv", None)
+
+    def test_non_read_only_timeout_does_not_retry(self):
+        from tools import mcp_tool
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+        mcp_tool._server_error_counts.pop("test_srv", None)
+        mcp_tool._server_breaker_opened_at.pop("test_srv", None)
+
+        calls = {"count": 0}
+
+        def _timeout_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            coro.close()
+            calls["count"] += 1
+            raise TimeoutError("MCP call timed out after 30.0s")
+
+        try:
+            handler = _make_tool_handler("test_srv", "write_tool", 30)
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_timeout_run), \
+                 patch("tools.mcp_tool._request_server_reconnect_and_wait") as reconnect:
+                result = json.loads(handler({}))
+
+            assert "TimeoutError" in result["error"]
+            assert calls["count"] == 1
+            reconnect.assert_not_called()
+        finally:
+            _servers.pop("test_srv", None)
+            mcp_tool._server_error_counts.pop("test_srv", None)
+            mcp_tool._server_breaker_opened_at.pop("test_srv", None)
+
 
 class TestRunOnMCPLoopInterrupts:
     def test_interrupt_cancels_waiting_mcp_call(self):

@@ -250,3 +250,65 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         )
     finally:
         _cleanup(mcp_tool, "srv")
+
+
+def test_circuit_breaker_cleared_after_successful_tool_discovery(monkeypatch, tmp_path):
+    """A successful transport reconnect should close a stale breaker.
+
+    ``MCPServerTask.run`` rediscovers tools after initial connect and after
+    reconnect. If list_tools succeeds, the transport is viable again and the
+    breaker should not keep short-circuiting future tool calls.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("srv")
+    session = MagicMock()
+    tools_result = MagicMock()
+    tools_result.tools = []
+    session.list_tools = MagicMock()
+
+    async def _list_tools():
+        return tools_result
+
+    session.list_tools = _list_tools
+    server.session = session
+
+    mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+    mcp_tool._server_breaker_opened_at["srv"] = 1000.0
+
+    try:
+        import asyncio
+
+        asyncio.run(server._discover_tools())
+
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+        assert "srv" not in mcp_tool._server_breaker_opened_at
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_fresh_session_replaces_rpc_lock(monkeypatch, tmp_path):
+    """Reconnect installs a new RPC lock instead of reusing a wedged one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools.mcp_tool import MCPServerTask
+
+    async def _check():
+        server = MCPServerTask("srv")
+        old_lock = server._rpc_lock
+        await old_lock.acquire()
+
+        fresh_session = object()
+        server._install_session(fresh_session)
+
+        assert server.session is fresh_session
+        assert server._rpc_lock is not old_lock
+        assert old_lock.locked()
+        assert not server._rpc_lock.locked()
+
+    import asyncio
+
+    asyncio.run(_check())

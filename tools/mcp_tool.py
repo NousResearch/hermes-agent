@@ -1151,6 +1151,18 @@ class MCPServerTask:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
 
+    def _install_session(self, session: Any) -> None:
+        """Install a fresh initialized MCP session.
+
+        ``_rpc_lock`` is scoped to one transport session.  A timed-out
+        ``call_tool`` coroutine may keep the old lock held until the SDK
+        fully tears down that transport.  Reusing that lock after reconnect
+        lets the first post-reconnect retry block behind dead session state,
+        so each fresh session gets its own lock.
+        """
+        self._rpc_lock = asyncio.Lock()
+        self.session = session
+
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
     async def _refresh_tools_task(self):
@@ -1415,7 +1427,7 @@ class MCPServerTask:
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
                     self.initialize_result = await session.initialize()
-                    self.session = session
+                    self._install_session(session)
                     await self._discover_tools()
                     self._ready.set()
                     # stdio transport does not use OAuth, but we still honor
@@ -1564,7 +1576,7 @@ class MCPServerTask:
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
                     self.initialize_result = await session.initialize()
-                    self.session = session
+                    self._install_session(session)
                     await self._discover_tools()
                     self._ready.set()
                     reason = await self._wait_for_lifecycle_event()
@@ -1613,7 +1625,7 @@ class MCPServerTask:
                 ):
                     async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                         self.initialize_result = await session.initialize()
-                        self.session = session
+                        self._install_session(session)
                         await self._discover_tools()
                         self._ready.set()
                         reason = await self._wait_for_lifecycle_event()
@@ -1636,7 +1648,7 @@ class MCPServerTask:
             ):
                 async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                     self.initialize_result = await session.initialize()
-                    self.session = session
+                    self._install_session(session)
                     await self._discover_tools()
                     self._ready.set()
                     reason = await self._wait_for_lifecycle_event()
@@ -1657,6 +1669,7 @@ class MCPServerTask:
             if hasattr(tools_result, "tools")
             else []
         )
+        _reset_server_error(self.name)
 
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
@@ -1901,6 +1914,15 @@ def _bump_server_error(server_name: str) -> None:
         _server_breaker_opened_at[server_name] = time.monotonic()
 
 
+def _open_server_breaker(server_name: str) -> None:
+    """Open the circuit breaker immediately for a known-bad server state."""
+    _server_error_counts[server_name] = max(
+        _server_error_counts.get(server_name, 0),
+        _CIRCUIT_BREAKER_THRESHOLD,
+    )
+    _server_breaker_opened_at[server_name] = time.monotonic()
+
+
 def _reset_server_error(server_name: str) -> None:
     """Fully close the breaker for ``server_name``.
 
@@ -1910,6 +1932,56 @@ def _reset_server_error(server_name: str) -> None:
     """
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
+
+
+def _signal_server_reconnect(server_name: str, reason: str) -> bool:
+    """Ask an MCP server task to rebuild its transport session."""
+    with _lock:
+        srv = _servers.get(server_name)
+        loop = _mcp_loop
+    if srv is None or not hasattr(srv, "_reconnect_event"):
+        return False
+    if loop is None or not loop.is_running():
+        return False
+    logger.info(
+        "MCP server '%s': signalling transport reconnect (%s)",
+        server_name,
+        reason,
+    )
+    loop.call_soon_threadsafe(srv._reconnect_event.set)
+    return True
+
+
+def _request_server_reconnect_and_wait(
+    server_name: str,
+    reason: str,
+    *,
+    previous_session: Any = None,
+    timeout: float = 15.0,
+) -> bool:
+    """Signal an MCP reconnect and wait for a fresh session object."""
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None:
+        return False
+    if not _signal_server_reconnect(server_name, reason):
+        return False
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current_session = getattr(srv, "session", None)
+        if current_session is not None and current_session is not previous_session:
+            return True
+        time.sleep(0.25)
+
+    logger.warning(
+        "MCP server '%s': reconnect did not ready within %.0fs after %s; "
+        "falling through to error response.",
+        server_name,
+        timeout,
+        reason,
+    )
+    return False
 
 # ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
@@ -2197,22 +2269,12 @@ def _handle_session_expired_and_retry(
         server_name, op_description, exc,
     )
 
-    # Trigger the same reconnect mechanism the OAuth recovery path
-    # uses, then wait briefly for the new session to come back ready.
-    loop.call_soon_threadsafe(srv._reconnect_event.set)
-    deadline = time.monotonic() + 15
-    ready = False
-    while time.monotonic() < deadline:
-        if srv.session is not None and srv._ready.is_set():
-            ready = True
-            break
-        time.sleep(0.25)
-    if not ready:
-        logger.warning(
-            "MCP server '%s': reconnect did not ready within 15s after "
-            "session-expired error; falling through to error response.",
-            server_name,
-        )
+    if not _request_server_reconnect_and_wait(
+        server_name,
+        f"session-expired error during {op_description}",
+        previous_session=srv.session,
+        timeout=15.0,
+    ):
         return None
 
     try:
@@ -2233,6 +2295,60 @@ def _handle_session_expired_and_retry(
     return None
 
 
+def _handle_read_only_timeout_and_retry(
+    server_name: str,
+    tool_name: str,
+    exc: BaseException,
+    retry_call,
+):
+    """Reconnect and retry once when a read-only MCP call times out."""
+    if not isinstance(exc, TimeoutError):
+        return None
+
+    tool_name_prefixed = (
+        f"mcp_{sanitize_mcp_name_component(server_name)}_"
+        f"{sanitize_mcp_name_component(tool_name)}"
+    )
+    with _lock:
+        is_read_only = tool_name_prefixed in _mcp_read_only_tool_names
+        srv = _servers.get(server_name)
+    if not is_read_only or srv is None:
+        return None
+
+    logger.info(
+        "MCP server '%s': read-only tool '%s' timed out; reconnecting "
+        "transport and retrying once.",
+        server_name,
+        tool_name,
+    )
+    if not _request_server_reconnect_and_wait(
+        server_name,
+        f"read-only tool call timed out: {tool_name}",
+        previous_session=srv.session,
+        timeout=15.0,
+    ):
+        return None
+
+    try:
+        result = retry_call()
+        try:
+            parsed = json.loads(result)
+            if "error" not in parsed:
+                _reset_server_error(server_name)
+                return result
+        except (json.JSONDecodeError, TypeError):
+            _reset_server_error(server_name)
+            return result
+    except Exception as retry_exc:
+        logger.warning(
+            "MCP %s/%s retry after timeout reconnect failed: %s",
+            server_name,
+            tool_name,
+            retry_exc,
+        )
+    return None
+
+
 # Sanitized server names whose ``supports_parallel_tool_calls`` config is True.
 # Populated during ``register_mcp_servers()`` and queried by
 # ``is_mcp_tool_parallel_safe()`` for the parallel-execution check in run_agent.
@@ -2245,6 +2361,7 @@ _parallel_safe_servers: set = set()
 # captured at registration time so parallel safety never relies on prefix
 # guessing.
 _mcp_tool_server_names: Dict[str, str] = {}
+_mcp_read_only_tool_names: set[str] = set()
 
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -2600,7 +2717,24 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
 
-            _bump_server_error(server_name)
+            recovered = _handle_read_only_timeout_and_retry(
+                server_name,
+                tool_name,
+                exc,
+                _call_once,
+            )
+            if recovered is not None:
+                return recovered
+
+            if isinstance(exc, TimeoutError):
+                _open_server_breaker(server_name)
+                _signal_server_reconnect(
+                    server_name,
+                    f"tool call timed out: {tool_name}",
+                )
+            else:
+                _bump_server_error(server_name)
+
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
@@ -3147,17 +3281,37 @@ _UTILITY_CAPABILITY_ATTRS = {
 }
 
 
-def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
-    """Remember the exact MCP server that registered *tool_name*."""
+def _track_mcp_tool_server(
+    tool_name: str,
+    server_name: str,
+    *,
+    read_only: bool = False,
+) -> None:
+    """Remember the exact MCP server and safety hints for *tool_name*."""
     safe_server_name = sanitize_mcp_name_component(server_name)
     with _lock:
         _mcp_tool_server_names[tool_name] = safe_server_name
+        if read_only:
+            _mcp_read_only_tool_names.add(tool_name)
+        else:
+            _mcp_read_only_tool_names.discard(tool_name)
 
 
 def _forget_mcp_tool_server(tool_name: str) -> None:
     """Forget MCP server provenance for a deregistered tool."""
     with _lock:
         _mcp_tool_server_names.pop(tool_name, None)
+        _mcp_read_only_tool_names.discard(tool_name)
+
+
+def _mcp_tool_is_read_only(mcp_tool) -> bool:
+    """Return True when an MCP tool advertises read-only semantics."""
+    annotations = getattr(mcp_tool, "annotations", None)
+    if annotations is None:
+        return False
+    if isinstance(annotations, dict):
+        return bool(annotations.get("readOnlyHint"))
+    return bool(getattr(annotations, "readOnlyHint", False))
 
 
 def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
@@ -3294,7 +3448,11 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
             description=schema["description"],
         )
-        _track_mcp_tool_server(tool_name_prefixed, name)
+        _track_mcp_tool_server(
+            tool_name_prefixed,
+            name,
+            read_only=_mcp_tool_is_read_only(mcp_tool),
+        )
         registered_names.append(tool_name_prefixed)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and

@@ -179,6 +179,7 @@ def test_sync_all_propagates_session_id_to_providers():
     p = _RecordingProvider()
     mm.add_provider(p)
     mm.sync_all("hello", "world", session_id="sess-42")
+    mm.flush_pending(timeout=5)
     assert p.sync_calls == [
         {"user": "hello", "asst": "world", "session_id": "sess-42"}
     ]
@@ -189,6 +190,7 @@ def test_queue_prefetch_all_propagates_session_id_to_providers():
     p = _RecordingProvider()
     mm.add_provider(p)
     mm.queue_prefetch_all("next query", session_id="sess-42")
+    mm.flush_pending(timeout=5)
     assert p.queue_calls == [{"query": "next query", "session_id": "sess-42"}]
 
 

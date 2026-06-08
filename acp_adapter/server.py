@@ -71,6 +71,7 @@ from acp_adapter.events import (
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
+from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
 
@@ -709,8 +710,39 @@ class HermesACPAgent(acp.Agent):
                 exc_info=True,
             )
 
-    async def _send_session_info_update(self, session_id: str) -> None:
-        """Send ACP native session metadata after Hermes changes it."""
+    def _provenance_meta(
+        self,
+        acp_session_id: str,
+        current_hermes_session_id: str,
+        previous_hermes_session_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Best-effort ``_meta.hermes.sessionProvenance`` for an ACP session."""
+        try:
+            return session_provenance_meta(
+                self.session_manager._get_db(),
+                acp_session_id,
+                current_hermes_session_id,
+                previous_hermes_session_id=previous_hermes_session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Could not build ACP session provenance for %s", acp_session_id, exc_info=True
+            )
+            return None
+
+    async def _send_session_info_update(
+        self,
+        session_id: str,
+        *,
+        current_hermes_session_id: Optional[str] = None,
+        previous_hermes_session_id: Optional[str] = None,
+    ) -> None:
+        """Send ACP native session metadata after Hermes changes it.
+
+        When the internal Hermes head rotated (e.g. compression-driven session
+        split during a turn), pass ``previous_hermes_session_id`` so the
+        attached ``_meta.hermes.sessionProvenance`` flags the rotation reason.
+        """
         if not self._conn:
             return
         try:
@@ -727,10 +759,16 @@ class HermesACPAgent(acp.Agent):
         # the updated_at since we're emitting this notification precisely
         # because the title was just refreshed.
         updated_at = datetime.now(timezone.utc).isoformat()
+        meta = self._provenance_meta(
+            session_id,
+            current_hermes_session_id or session_id,
+            previous_hermes_session_id,
+        )
         update = SessionInfoUpdate(
             session_update="session_info_update",
             title=title if isinstance(title, str) and title.strip() else None,
             updated_at=updated_at,
+            field_meta=meta,
         )
         try:
             await self._conn.session_update(
@@ -1081,6 +1119,9 @@ class HermesACPAgent(acp.Agent):
             session_id=state.session_id,
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            field_meta=self._provenance_meta(
+                state.session_id, getattr(state.agent, "session_id", state.session_id)
+            ),
         )
 
     async def load_session(
@@ -1125,6 +1166,9 @@ class HermesACPAgent(acp.Agent):
         return LoadSessionResponse(
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            field_meta=self._provenance_meta(
+                session_id, getattr(state.agent, "session_id", session_id)
+            ),
         )
 
     async def resume_session(
@@ -1157,6 +1201,9 @@ class HermesACPAgent(acp.Agent):
         return ResumeSessionResponse(
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            field_meta=self._provenance_meta(
+                state.session_id, getattr(state.agent, "session_id", state.session_id)
+            ),
         )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -1494,6 +1541,11 @@ class HermesACPAgent(acp.Agent):
                         logger.debug("Could not clear ACP session context", exc_info=True)
 
         try:
+            # Snapshot the internal Hermes DB session id before the turn so we
+            # can detect a compression-driven session rotation afterwards. The
+            # ACP `session_id` stays the stable client handle; agent.session_id
+            # is the live internal head that compression may rotate.
+            pre_turn_hermes_id = getattr(state.agent, "session_id", None)
             # Wrap the executor call in a fresh copy of the current context so
             # concurrent ACP sessions on the shared ThreadPoolExecutor don't
             # stomp on each other's ContextVar writes (HERMES_SESSION_KEY in
@@ -1512,8 +1564,41 @@ class HermesACPAgent(acp.Agent):
             # Persist updated history so sessions survive process restarts.
             self.session_manager.save_session(session_id)
 
+        # Detect a compression-driven internal session rotation. If the agent's
+        # DB head moved during the turn, emit a session_info_update carrying
+        # _meta.hermes.sessionProvenance so ACP clients can render the boundary
+        # and keep old/new ids in lineage. The ACP session_id is unchanged.
+        post_turn_hermes_id = getattr(state.agent, "session_id", None)
+        if (
+            conn
+            and post_turn_hermes_id
+            and pre_turn_hermes_id
+            and post_turn_hermes_id != pre_turn_hermes_id
+        ):
+            try:
+                await self._send_session_info_update(
+                    session_id,
+                    current_hermes_session_id=post_turn_hermes_id,
+                    previous_hermes_session_id=pre_turn_hermes_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not emit ACP provenance update after rotation for %s",
+                    session_id,
+                    exc_info=True,
+                )
+
         final_response = result.get("final_response", "")
-        if final_response:
+        cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+        interrupted = bool(result.get("interrupted")) or cancelled
+        # Hermes' local "waiting for model response" interrupt status is metadata,
+        # not assistant prose — clients get cancellation from stop_reason instead.
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        suppress_interrupt_response = interrupted and final_response.startswith(
+            INTERRUPT_WAITING_FOR_MODEL_PREFIX
+        )
+        if final_response and not suppress_interrupt_response:
             try:
                 from agent.title_generator import maybe_auto_title
 
@@ -1534,7 +1619,12 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn and (not streamed_message or result.get("response_transformed")):
+        if (
+            final_response
+            and conn
+            and not suppress_interrupt_response
+            and (not streamed_message or result.get("response_transformed"))
+        ):
             # Deliver the final response when streaming did not already send it,
             # or when a plugin hook transformed the response after streaming
             # finished (e.g. transform_llm_output) — otherwise the appended /
@@ -1576,7 +1666,7 @@ class HermesACPAgent(acp.Agent):
 
         await self._send_usage_update(state)
 
-        stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
+        stop_reason = "cancelled" if cancelled else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Slash commands (headless) -------------------------------------------

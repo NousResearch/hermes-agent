@@ -122,6 +122,26 @@ async def test_session_crud_and_message_history(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_follow_compression_tip(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server")
+    session_db.append_message(source_id, "user", "before compression")
+    session_db.end_session(source_id, "compression")
+    session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
+    session_db.replace_messages(source_id, [])
+    session_db.append_message("tip-session", "user", "after compression")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        messages_resp = await cli.get(f"/api/sessions/{source_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+
+    assert messages["object"] == "list"
+    assert messages["session_id"] == "tip-session"
+    assert [m["content"] for m in messages["data"]] == ["after compression"]
+
+
+@pytest.mark.asyncio
 async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server", model="test-model")
     session_db.set_session_title(source_id, "Original")

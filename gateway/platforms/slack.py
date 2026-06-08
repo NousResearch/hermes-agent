@@ -317,6 +317,7 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -2290,7 +2291,38 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            # Channel message session scoping.
+            #
+            # Three cases:
+            #   (a) genuine thread reply   → scope session per thread
+            #   (b) top-level, reply_in_thread=true (the default)  →
+            #       legacy behaviour: each top-level message becomes its
+            #       own thread, so the UX still "replies in a thread"
+            #       and sessions are keyed per thread root
+            #   (c) top-level, reply_in_thread=false → scope one session
+            #       across the whole channel so context accumulates across
+            #       messages (#15421 bug 1)
+            event_thread_ts_raw = event.get("thread_ts")
+            # Align with ``is_thread_reply`` below — a ``thread_ts ==
+            # ts`` payload (some thread-root shapes) is not a real reply
+            # and must not prevent the shared-session path from taking
+            # effect.  Matching the same invariant here keeps the two
+            # branches in sync even if Slack introduces new payload
+            # variants (Copilot on #15464).
+            if event_thread_ts_raw and event_thread_ts_raw != ts:
+                thread_ts = event_thread_ts_raw
+            elif self.config.extra.get("reply_in_thread", True):
+                # Legacy default: treat ts as a synthetic thread root so
+                # this top-level message gets its own session.
+                thread_ts = ts
+            else:
+                # reply_in_thread=false: no thread key → session manager
+                # groups by (platform, channel_id, None) and the channel
+                # shares one conversation.  reply_to_message_id at the
+                # outbound side is already gated on ``thread_ts != ts``
+                # so None here produces a non-threaded reply without
+                # further changes.
+                thread_ts = None
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is

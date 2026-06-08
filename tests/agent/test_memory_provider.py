@@ -229,6 +229,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.queue_prefetch_all("next turn")
+        mgr.flush_pending(timeout=5)
         assert p1.queued_prefetches == ["next turn"]
         assert p2.queued_prefetches == ["next turn"]
 
@@ -240,6 +241,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.sync_all("user msg", "assistant msg")
+        mgr.flush_pending(timeout=5)
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
 
@@ -253,7 +255,7 @@ class TestMemoryManager:
         ]
 
         mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
-
+        mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
 
     def test_sync_all_omits_messages_for_legacy_provider(self):
@@ -262,7 +264,7 @@ class TestMemoryManager:
         mgr.add_provider(p)
 
         mgr.sync_all("user msg", "assistant msg", messages=[{"role": "tool"}])
-
+        mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg")]
 
     def test_sync_failure_doesnt_block_others(self):
@@ -275,6 +277,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.sync_all("user", "assistant")
+        mgr.flush_pending(timeout=5)
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
 

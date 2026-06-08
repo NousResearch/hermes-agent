@@ -176,8 +176,8 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-          </span>
+              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+            </span>
           )}
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}

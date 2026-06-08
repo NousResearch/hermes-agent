@@ -1772,7 +1772,12 @@ class TestProfileArg:
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         unit = gateway_cli.generate_systemd_unit(system=False)
         assert "--profile mybot" in unit
-        assert "gateway run --replace" in unit
+        assert "gateway run" in unit
+        # Under a process supervisor (Restart=always), --replace makes each
+        # restart kill its predecessor → self-kill loop. The systemd unit must
+        # NOT use --replace; the supervisor owns the lifecycle. (--replace stays
+        # on the manual launchd fallback path — see test_launchd_plist_includes_profile.)
+        assert "--replace" not in unit
 
     def test_launchd_plist_includes_profile(self, tmp_path, monkeypatch):
         """generate_launchd_plist should include --profile in ProgramArguments for named profiles."""

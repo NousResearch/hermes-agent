@@ -1794,6 +1794,108 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class TestTransientTransportRetry:
+    """call_llm retries ONCE on the same provider for a transient transport
+    blip before escalating to the fallback chain.
+
+    Salvaged from PR #16587 (@ARegalado1). The original fixed only the
+    context-compression caller; this lives in call_llm so every auxiliary
+    task (compression, memory flush, title-gen, session-search, vision)
+    gets the same same-target retry, and the gate reuses the canonical
+    _is_connection_error detector.
+    """
+
+    def _patches(self, client):
+        return (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openrouter", "some-model", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task: resp,
+            ),
+        )
+
+    def test_retries_streaming_close_once_same_provider(self):
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [
+            Exception(
+                "peer closed connection without sending complete message body "
+                "(incomplete chunked read)"
+            ),
+            {"ok": True},
+        ]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        # Same client called twice — no provider fallback needed.
+        assert client.chat.completions.create.call_count == 2
+
+    def test_retries_5xx_once_same_provider(self):
+        class _Err503(Exception):
+            status_code = 503
+
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [_Err503("upstream"), {"ok": True}]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+
+    def test_does_not_retry_non_transient_400(self):
+        class _Err400(Exception):
+            status_code = 400
+
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = _Err400("bad request")
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3, pytest.raises(_Err400):
+            call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        # Non-transient: single attempt, no same-target retry.
+        assert client.chat.completions.create.call_count == 1
+
+    def test_second_transient_failure_escalates_to_fallback(self):
+        """Two transient failures in a row exhaust the same-target retry and
+        fall through to the existing connection-error provider fallback."""
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = Exception(
+            "peer closed connection without sending complete message body"
+        )
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://api.openai.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(fb_client, "fb-model", "openai"),
+            ),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        # Primary tried twice (initial + same-target retry), then fallback.
+        assert primary.chat.completions.create.call_count == 2
+        assert fb_client.chat.completions.create.call_count == 1
+
+
 class TestIsConnectionError:
     """Tests for _is_connection_error detection."""
 
@@ -2870,6 +2972,109 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+
+class TestCodexAuxiliaryToolMessageConversion:
+    """Regression for issue #5709.
+
+    The auxiliary Codex adapter used to maintain its own chat->Responses
+    conversion loop that forwarded every non-system message's ``role``
+    verbatim into Responses ``input[]``. When ``flush_memories()`` /
+    compression replayed real session history containing assistant
+    ``tool_calls`` and ``role="tool"`` results, the tool messages leaked
+    into the request and the Responses API rejected them with
+    ``HTTP 400: Invalid value: 'tool'. Supported values are: 'assistant',
+    'system', 'developer', and 'user'.``
+
+    The fix routes the auxiliary path through the SAME shared converter the
+    main agent transport uses (``_chat_messages_to_responses_input``), so
+    no Responses request ever includes a raw ``role="tool"`` input item.
+    """
+
+    def _capture_input(self, messages):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        item=SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        ),
+                    ),
+                    SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                        status="completed", id="r1", usage=None,
+                    )),
+                ])
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+        adapter.create(messages=messages, model="gpt-5.5")
+        return fake_client.responses.kwargs
+
+    def test_tool_history_never_leaks_role_tool(self):
+        messages = [
+            {"role": "system", "content": "You are a memory summarizer."},
+            {"role": "user", "content": "What files did I touch?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {"name": "search_files", "arguments": '{"pattern":"foo"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_abc123", "content": "Found 3 matches"},
+            {"role": "assistant", "content": "You touched bar.py."},
+        ]
+        kwargs = self._capture_input(messages)
+        input_items = kwargs["input"]
+
+        # No raw role="tool" item reaches the Responses API (the 400 trigger).
+        assert not any(it.get("role") == "tool" for it in input_items)
+
+        # Assistant tool call -> function_call item with a call_id.
+        function_calls = [it for it in input_items if it.get("type") == "function_call"]
+        assert function_calls, "assistant tool_call must become a function_call item"
+        assert function_calls[0]["call_id"] == "call_abc123"
+        assert function_calls[0]["name"] == "search_files"
+
+        # Tool result -> function_call_output with the matching call_id.
+        outputs = [it for it in input_items if it.get("type") == "function_call_output"]
+        assert outputs, "tool result must become a function_call_output item"
+        assert outputs[0]["call_id"] == "call_abc123"
+
+        # System message is hoisted to instructions, not left in input[].
+        assert kwargs["instructions"] == "You are a memory summarizer."
+        assert not any(it.get("role") == "system" for it in input_items)
+
+    def test_plain_text_history_still_works(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        kwargs = self._capture_input(messages)
+        input_items = kwargs["input"]
+        roles = [it.get("role") for it in input_items]
+        assert "user" in roles and "assistant" in roles
+        assert not any(it.get("role") == "tool" for it in input_items)
+        assert kwargs["instructions"] == "sys"
 
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:

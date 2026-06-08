@@ -702,7 +702,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if agent._should_emit_quiet_tool_messages():
             cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
             agent._safe_print(f"  {cute_msg}")
-        elif not agent.quiet_mode:
+        elif getattr(agent, "tool_progress_mode", "all") != "off":
             _preview_str = _multimodal_text_summary(function_result)
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")

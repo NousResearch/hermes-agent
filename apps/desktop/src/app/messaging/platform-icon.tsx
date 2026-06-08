@@ -28,15 +28,17 @@ import { cn } from '@/lib/utils'
 type IconKind = 'brand' | 'generic'
 
 interface PlatformIconSpec {
-  Icon: ComponentType<SVGProps<SVGSVGElement>>
+  Icon?: ComponentType<SVGProps<SVGSVGElement>>
   color: string
   kind: IconKind
+  monogram?: string
 }
 
 const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   telegram: { Icon: SiTelegram, color: '#26A5E4', kind: 'brand' },
   discord: { Icon: SiDiscord, color: '#5865F2', kind: 'brand' },
   // Slack removed from Simple Icons by Salesforce request — letter monogram.
+  slack: { color: '#4A154B', kind: 'brand', monogram: 'S' },
   mattermost: { Icon: SiMattermost, color: '#0058CC', kind: 'brand' },
   matrix: { Icon: SiMatrix, color: '#000000', kind: 'brand' },
   signal: { Icon: SiSignal, color: '#3A76F0', kind: 'brand' },
@@ -87,7 +89,7 @@ export function PlatformAvatar({ className, platformId, platformName }: Platform
         color
       }}
     >
-      <Icon className="size-3.5" />
+      {Icon ? <Icon className="size-3.5" /> : spec.monogram || platformName.charAt(0).toUpperCase()}
     </span>
   )
 }

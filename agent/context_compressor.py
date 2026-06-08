@@ -553,6 +553,22 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+    def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Clear per-session compaction state at a real session boundary.
+
+        ``_previous_summary`` is per-session iterative-summary state. It is
+        cleared on ``on_session_reset()`` (/new, /reset), but session *end*
+        (CLI exit, gateway expiry, session-id rotation) goes through
+        ``on_session_end()`` instead — which inherited a no-op from
+        ``ContextEngine``. Without clearing here, a cron/background session's
+        summary could survive on a reused compressor instance and leak into the
+        next live session via the ``_generate_summary()`` iterative-update path
+        (#38788). ``compress()`` already guards the leak at the point of use;
+        this is defense-in-depth that drops the stale summary the moment the
+        owning session ends.
+        """
+        self._previous_summary = None
+
     def update_model(
         self,
         model: str,
@@ -1818,6 +1834,41 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             accumulated += msg_tokens
             cut_idx = i
 
+        # If the backward walk never broke early because the entire transcript
+        # fits within soft_ceiling, accumulated now holds the total transcript
+        # size.  Without intervention _ensure_last_user_message_in_tail pushes
+        # cut_idx forward to include the last user message, and the caller's
+        # compress_start >= compress_end guard either returns unchanged (no-op)
+        # or compresses a single message — both of which trigger the infinite
+        # compaction loop described in #40803.
+        #
+        # Fix: when the whole transcript fits in soft_ceiling, compute a
+        # meaningful cut point using the raw (non-inflated) budget so that
+        # compression actually summarizes a worthwhile middle section.
+        if cut_idx <= head_end and accumulated <= soft_ceiling and accumulated > 0:
+            # The entire compressable region fits in the soft ceiling.
+            # Re-walk with the raw budget (no 1.5x multiplier) to find a
+            # split that gives the summarizer something useful.
+            raw_budget = token_budget
+            raw_accumulated = 0
+            for j in range(n - 1, head_end - 1, -1):
+                raw_msg = messages[j]
+                raw_content = raw_msg.get("content") or ""
+                raw_len = _content_length_for_budget(raw_content)
+                raw_tok = raw_len // _CHARS_PER_TOKEN + 10
+                for tc in raw_msg.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        args = tc.get("function", {}).get("arguments", "")
+                        raw_tok += len(args) // _CHARS_PER_TOKEN
+                if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
+                    cut_idx = j
+                    break
+                raw_accumulated += raw_tok
+                cut_idx = j
+            # If the raw-budget walk also consumed everything (very small
+            # transcript), fall through — the existing fallback logic below
+            # will still force a minimal cut after head_end.
+
         # Ensure we protect at least min_tail messages
         fallback_cut = n - min_tail
         cut_idx = min(cut_idx, fallback_cut)
@@ -1920,6 +1971,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
+            # No compressable window — the entire transcript fits within
+            # the tail budget (soft_ceiling).  Without recording this as
+            # an ineffective compression the anti-thrashing guard in
+            # should_compress() never fires and every subsequent turn
+            # re-triggers a no-op compression loop.  (#40803)
+            self._ineffective_compression_count += 1
+            self._last_compression_savings_pct = 0.0
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression skipped: compress_start (%d) >= compress_end (%d) "
+                    "— transcript fits within tail budget, nothing to compress. "
+                    "ineffective_compression_count=%d",
+                    compress_start, compress_end,
+                    self._ineffective_compression_count,
+                )
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
@@ -1940,6 +2006,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
+        elif self._previous_summary:
+            # No handoff summary found in the current messages, but
+            # _previous_summary is non-empty — it was set by a different
+            # (now-ended) session (e.g., a cron job, a prior /new).  Discard
+            # it so _generate_summary() does not inject cross-session content
+            # into the summarizer prompt via the iterative-update path.
+            self._previous_summary = None
 
         if not self.quiet_mode:
             logger.info(

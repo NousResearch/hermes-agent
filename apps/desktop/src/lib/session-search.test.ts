@@ -52,6 +52,14 @@ describe('sessionMatchesSearch', () => {
     expect(sessionMatchesSearch(session, 'hermes-agent')).toBe(true)
   })
 
+  it('matches sessions by source platform and aliases', () => {
+    expect(sessionMatchesSearch(makeSession({ source: 'telegram' }), 'Telegram')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ source: 'whatsapp' }), 'WhatsApp')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ source: 'whatsapp' }), 'wa')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ source: 'slack' }), 'slack')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ source: 'bluebubbles' }), 'imessage')).toBe(true)
+  })
+
   it('does not match unrelated queries', () => {
     expect(sessionMatchesSearch(makeSession(), 'totally-unrelated')).toBe(false)
   })

@@ -104,5 +104,30 @@ export function effectiveVisibleKeys(
   stored: Set<string> | null,
   providers: readonly ModelOptionProvider[]
 ): Set<string> {
-  return stored ?? defaultVisibleKeys(providers)
+  if (!stored) {
+    return defaultVisibleKeys(providers)
+  }
+
+  if (stored.size === 0) {
+    return new Set()
+  }
+
+  const next = new Set(stored)
+
+  for (const provider of providers) {
+    const providerPrefix = `${provider.slug}::`
+    const hasStoredProvider = [...stored].some(key => key.startsWith(providerPrefix))
+
+    if (hasStoredProvider) {
+      continue
+    }
+
+    const families = collapseModelFamilies(provider.models ?? [])
+
+    for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
+      next.add(modelVisibilityKey(provider.slug, family.id))
+    }
+  }
+
+  return next
 }

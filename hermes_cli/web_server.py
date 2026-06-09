@@ -873,6 +873,34 @@ _JARVIS_COCKPIT_SAFE_FILES: tuple[tuple[str, str], ...] = (
 )
 _JARVIS_COCKPIT_TODO_RELATIVE_PATH = Path("runbooks/jarvis-todo/jarvis-actions.json")
 _JARVIS_COCKPIT_GATES_RELATIVE_DIR = Path("runbooks/gates")
+_JARVIS_COCKPIT_IMPROVEMENTS_RELATIVE_PATH = Path("runbooks/jarvis-cockpit-improvements.json")
+_JARVIS_COCKPIT_GRAPHIFY_RELATIVE_PATH = Path("runbooks/jarvis-cockpit-graphify/latest.json")
+_JARVIS_COCKPIT_GRAPHIFY_NOTES_RELATIVE_DIR = Path("runbooks/jarvis-cockpit-graphify/notes")
+_JARVIS_COCKPIT_IMPROVEMENT_ACTIONS = {"run", "park", "dismiss", "restore"}
+
+
+class JarvisCockpitImprovementActionRequest(BaseModel):
+    suggestion_id: str
+    action: str
+    actor: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class JarvisCockpitGraphifyQueryRequest(BaseModel):
+    mode: str
+    question: Optional[str] = None
+    source: Optional[str] = None
+    target: Optional[str] = None
+    node: Optional[str] = None
+    budget: Optional[int] = None
+    depth: Optional[int] = None
+
+
+class JarvisCockpitGraphifyNoteRequest(BaseModel):
+    title: Optional[str] = None
+    mode: Optional[str] = None
+    output: str
+    question: Optional[str] = None
 
 
 def _jarvis_cockpit_safety() -> Dict[str, bool]:
@@ -966,6 +994,502 @@ def _jarvis_cockpit_safe_artifacts(raw_artifacts: Any) -> list[dict[str, Any]]:
     return artifacts
 
 
+
+def _jarvis_cockpit_default_improvements() -> dict[str, Any]:
+    """Default local improvement board seed used when the docs file is absent."""
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "version": 1,
+        "updated_at": now,
+        "rules": {
+            "labels": ["Bygg nu", "Förbered", "Utforska"],
+            "tabs": ["Aktuella", "Parkerad", "Historik"],
+            "cron_history_rule": "Read history before proposing new items; avoid dismissed, parked or completed repeats unless there is a new reason.",
+            "local_only": True,
+            "external_writes_allowed": False,
+        },
+        "suggestions": [
+            {
+                "id": "hermes-status-health",
+                "title": "Hermes-status / Jarvis hälsa",
+                "classification": "Bygg nu",
+                "status": "active",
+                "why": "Cockpit ska visa om Jarvis/Hermes-miljön verkar frisk inifrån Desktop.",
+                "benefit": "Tobias ser snabbt profil, gateway, senaste fel och stale-status utan teknisk letning.",
+                "risk": "Låg — lokal statusvy och inga externa writes.",
+                "next_step": "Visa Hermes/Jarvis-hälsa i Cockpit med tydlig OK/varning/status-copy.",
+                "owner": "Jarvis",
+                "gate_required": False,
+                "created_at": now,
+                "source": "jarvis-cockpit-session-2026-06-07",
+            },
+            {
+                "id": "cockpit-gates-decisions",
+                "title": "Gates / Beslut",
+                "classification": "Bygg nu",
+                "status": "active",
+                "why": "Cockpit ska samla beslut som kräver Tobias godkännande, parkering eller nej.",
+                "benefit": "Minskar lösa beslut i chattar och gör risk/konsekvens synlig.",
+                "risk": "Låg — lokala gate-pointers, inga live-mutationer.",
+                "next_step": "Gör gates-listan mer beslutsorienterad med rekommendation och säkra knappar.",
+                "owner": "Jarvis",
+                "gate_required": False,
+                "created_at": now,
+                "source": "jarvis-cockpit-session-2026-06-07",
+            },
+            {
+                "id": "cockpit-improvements-history",
+                "title": "Förbättringar med Historik",
+                "classification": "Bygg nu",
+                "status": "active",
+                "why": "Förslag ska kunna köras, parkeras eller avfärdas och historiken ska hindra upprepningar.",
+                "benefit": "Cockpit blir en konkret förbättringsmotor istället för ännu en dashboard.",
+                "risk": "Låg — lokal JSON och lokala UI-kvitton.",
+                "next_step": "Bygg Aktuella/Parkerad/Historik med Kör, Parkera och Avfärda.",
+                "owner": "Jarvis",
+                "gate_required": False,
+                "created_at": now,
+                "source": "jarvis-cockpit-session-2026-06-07",
+            },
+            {
+                "id": "cron-improvement-engine",
+                "title": "Styr om nattligt cronjobb till förbättringsmotor",
+                "classification": "Förbered",
+                "status": "active",
+                "why": "Cronjobbet ska föreslå eller förbereda förbättringar, inte skapa nya boards i onödan.",
+                "benefit": "Färre dubbletter och bättre förslag kopplade till Tobias faktiska beslut.",
+                "risk": "Medel — själva cronändringen är automation och ska göras som separat, tydligt scoped steg.",
+                "next_step": "Skriv ny prompt som läser Cockpit-historiken innan nya förslag skapas.",
+                "owner": "Jarvis",
+                "gate_required": True,
+                "created_at": now,
+                "source": "jarvis-cockpit-session-2026-06-07",
+            },
+            {
+                "id": "advanced-health-signals",
+                "title": "Avancerad intern hälsa över tid",
+                "classification": "Utforska",
+                "status": "active",
+                "why": "Det kan bli värdefullt att se tool failures, modell-latens och memory/source-map drift över tid.",
+                "benefit": "Kan ge tidigare varning när Jarvis kvalitet eller drift börjar glida.",
+                "risk": "Oklart värde och kan skapa brus om det byggs för tidigt.",
+                "next_step": "Gör en read-only feasibility/spike senare om grund-Cockpit används.",
+                "owner": "Jarvis",
+                "gate_required": False,
+                "created_at": now,
+                "source": "jarvis-cockpit-session-2026-06-07",
+            },
+        ],
+        "history": [],
+    }
+
+
+def _jarvis_cockpit_improvements_path() -> Path:
+    return _JARVIS_COCKPIT_DOCS_ROOT / _JARVIS_COCKPIT_IMPROVEMENTS_RELATIVE_PATH
+
+
+def _jarvis_cockpit_improvement_source(path: Path, state: str, *, reason: str | None = None) -> Dict[str, Any]:
+    return _jarvis_cockpit_source_record("jarvis-cockpit-improvements", path, state, reason=reason)
+
+
+def _jarvis_cockpit_read_improvements() -> tuple[dict[str, Any], Dict[str, Any]]:
+    path = _jarvis_cockpit_improvements_path()
+    try:
+        stat_result = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return _jarvis_cockpit_default_improvements(), _jarvis_cockpit_improvement_source(path, "missing", reason="using_default_seed")
+    except OSError:
+        return _jarvis_cockpit_default_improvements(), _jarvis_cockpit_improvement_source(path, "missing", reason="not_a_safe_regular_file")
+    if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISREG(stat_result.st_mode):
+        return _jarvis_cockpit_default_improvements(), _jarvis_cockpit_improvement_source(path, "missing", reason="not_a_safe_regular_file")
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return _jarvis_cockpit_default_improvements(), _jarvis_cockpit_improvement_source(path, "error", reason="json_parse_failed")
+    if not isinstance(data, dict):
+        return _jarvis_cockpit_default_improvements(), _jarvis_cockpit_improvement_source(path, "error", reason="json_root_not_object")
+    data.setdefault("version", 1)
+    data.setdefault("rules", _jarvis_cockpit_default_improvements()["rules"])
+    if not isinstance(data.get("suggestions"), list):
+        data["suggestions"] = []
+    if not isinstance(data.get("history"), list):
+        data["history"] = []
+    if not isinstance(data.get("updated_at"), str):
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return data, _jarvis_cockpit_improvement_source(path, "ok")
+
+
+def _jarvis_cockpit_write_improvements(data: dict[str, Any]) -> Path:
+    path = _jarvis_cockpit_improvements_path()
+    root = _JARVIS_COCKPIT_DOCS_ROOT.resolve()
+    target_parent = path.parent
+    target_parent.mkdir(parents=True, exist_ok=True)
+    if target_parent.is_symlink() or not target_parent.is_dir():
+        raise HTTPException(status_code=400, detail="Jarvis Cockpit improvements directory is not safe")
+    resolved_parent = target_parent.resolve()
+    if root not in (resolved_parent, *resolved_parent.parents):
+        raise HTTPException(status_code=400, detail="Jarvis Cockpit improvements path is outside docs root")
+    if path.exists() and (path.is_symlink() or not path.is_file()):
+        raise HTTPException(status_code=400, detail="Jarvis Cockpit improvements file is not safe")
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    tmp_path = target_parent / f".{path.name}.{secrets.token_hex(6)}.tmp"
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+    return path
+
+
+def _jarvis_cockpit_apply_improvement_action(request: JarvisCockpitImprovementActionRequest) -> dict[str, Any]:
+    action = request.action.strip().lower()
+    if action not in _JARVIS_COCKPIT_IMPROVEMENT_ACTIONS:
+        raise HTTPException(status_code=400, detail="Unsupported improvement action")
+    suggestion_id = request.suggestion_id.strip()
+    if not suggestion_id:
+        raise HTTPException(status_code=400, detail="Missing suggestion_id")
+    data, _source = _jarvis_cockpit_read_improvements()
+    suggestions = [item for item in data.get("suggestions", []) if isinstance(item, dict)]
+    suggestion = next((item for item in suggestions if item.get("id") == suggestion_id), None)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Improvement suggestion not found")
+    next_status = {
+        "run": "running",
+        "park": "parked",
+        "dismiss": "dismissed",
+        "restore": "active",
+    }[action]
+    now = datetime.now(timezone.utc).isoformat()
+    suggestion["status"] = next_status
+    suggestion["updated_at"] = now
+    if action == "run":
+        suggestion["last_run_at"] = now
+    elif action == "park":
+        suggestion["parked_at"] = now
+    elif action == "dismiss":
+        suggestion["dismissed_at"] = now
+    elif action == "restore":
+        suggestion["restored_at"] = now
+    history = [item for item in data.get("history", []) if isinstance(item, dict)]
+    history.append({
+        "id": f"hist-{now.replace(':', '').replace('+', 'Z')}-{secrets.token_hex(3)}",
+        "suggestion_id": suggestion_id,
+        "title": suggestion.get("title"),
+        "action": action,
+        "status_after": next_status,
+        "classification": suggestion.get("classification"),
+        "actor": request.actor or "Tobias",
+        "reason": request.reason,
+        "at": now,
+        "cron_repeat_guard": action in {"park", "dismiss", "run"},
+    })
+    data["suggestions"] = suggestions
+    data["history"] = history
+    written_path = _jarvis_cockpit_write_improvements(data)
+    return {
+        "status": "ok",
+        "action": action,
+        "suggestion_id": suggestion_id,
+        "improvements_path": str(written_path),
+        "updated_at": data["updated_at"],
+        "safety": {
+            "local_only": True,
+            "external_writes": False,
+            "microsoft_writes": False,
+            "blikk_writes": False,
+            "mail_mutation": False,
+            "secrets_read": False,
+            "cron_changed": False,
+        },
+        "improvements": data,
+    }
+
+
+def _jarvis_cockpit_read_graphify_lane() -> tuple[dict[str, Any], Dict[str, Any]]:
+    """Read the local Graphify lane manifest without running Graphify or touching the network."""
+    data, source = _jarvis_cockpit_read_json_source("jarvis-cockpit-graphify", _JARVIS_COCKPIT_GRAPHIFY_RELATIVE_PATH)
+    if data is None:
+        return {"status": "missing", "state": source.get("state", "missing")}, source
+
+    raw_safety = data.get("safety")
+    safety: dict[str, Any] = raw_safety if isinstance(raw_safety, dict) else {}
+    safe = (
+        safety.get("local_only") is True
+        and safety.get("structural_only") is True
+        and safety.get("external_writes") is False
+        and safety.get("semantic_llm") is False
+        and safety.get("hooks") is False
+        and safety.get("mcp") is False
+        and safety.get("watch") is False
+        and safety.get("secrets_found") is False
+    )
+    notes_dir = (_JARVIS_COCKPIT_DOCS_ROOT / _JARVIS_COCKPIT_GRAPHIFY_NOTES_RELATIVE_DIR).resolve()
+    latest_note = _jarvis_cockpit_latest_graphify_note(notes_dir)
+    lane = {
+        "status": data.get("status", "ok" if safe else "attention"),
+        "state": "ok" if safe and source.get("state") == "ok" else "attention",
+        "scope": data.get("scope"),
+        "command": data.get("command"),
+        "nodes": data.get("nodes"),
+        "edges": data.get("edges"),
+        "communities": data.get("communities"),
+        "token_reduction": data.get("token_reduction"),
+        "updated_at": data.get("updated_at"),
+        "report_path": data.get("report_path"),
+        "html_path": data.get("html_path"),
+        "graph_path": data.get("graph_path"),
+        "notes_dir": str(notes_dir),
+        "latest_note_path": latest_note.get("path"),
+        "latest_note_title": latest_note.get("title"),
+        "latest_note_updated_at": latest_note.get("updated_at"),
+        "safety": {
+            "local_only": safety.get("local_only") is True,
+            "structural_only": safety.get("structural_only") is True,
+            "external_writes": safety.get("external_writes") is True,
+            "semantic_llm": safety.get("semantic_llm") is True,
+            "hooks": safety.get("hooks") is True,
+            "mcp": safety.get("mcp") is True,
+            "watch": safety.get("watch") is True,
+            "secrets_found": safety.get("secrets_found") is True,
+        },
+    }
+    return {key: value for key, value in lane.items() if value is not None}, source
+
+
+def _jarvis_cockpit_latest_graphify_note(notes_dir: Path) -> dict[str, str]:
+    """Return latest local Graphify note metadata without creating files or following symlinks."""
+    root = _JARVIS_COCKPIT_DOCS_ROOT.resolve()
+    try:
+        resolved_dir = notes_dir.resolve()
+    except OSError:
+        return {}
+    if root not in (resolved_dir, *resolved_dir.parents):
+        return {}
+    if not notes_dir.exists() or notes_dir.is_symlink() or not notes_dir.is_dir():
+        return {}
+
+    candidates: list[Path] = []
+    for candidate in notes_dir.glob("*.md"):
+        try:
+            if candidate.is_file() and not candidate.is_symlink():
+                candidates.append(candidate)
+        except OSError:
+            continue
+    if not candidates:
+        return {}
+    latest = max(candidates, key=lambda path: path.stat().st_mtime)
+    try:
+        first_line = latest.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except (OSError, IndexError):
+        first_line = latest.stem
+    title = first_line.removeprefix("# ").strip() or latest.stem
+    return {
+        "path": str(latest),
+        "title": title[:120],
+        "updated_at": datetime.fromtimestamp(latest.stat().st_mtime, timezone.utc).isoformat(),
+    }
+
+
+def _jarvis_cockpit_graphify_safe_graph_path(graphify: dict[str, Any]) -> Path:
+    raw_safety = graphify.get("safety")
+    safety: dict[str, Any] = raw_safety if isinstance(raw_safety, dict) else {}
+    safe = (
+        graphify.get("state") == "ok"
+        and safety.get("local_only") is True
+        and safety.get("structural_only") is True
+        and safety.get("external_writes") is False
+        and safety.get("semantic_llm") is False
+        and safety.get("hooks") is False
+        and safety.get("mcp") is False
+        and safety.get("watch") is False
+        and safety.get("secrets_found") is False
+    )
+    if not safe:
+        raise HTTPException(status_code=400, detail="Graphify lane is not safe for local query helpers")
+    raw_graph_path = graphify.get("graph_path")
+    if not isinstance(raw_graph_path, str) or not raw_graph_path:
+        raise HTTPException(status_code=400, detail="Graphify graph path is missing")
+    graph_path = Path(raw_graph_path).expanduser().resolve()
+    root = (_JARVIS_COCKPIT_DOCS_ROOT / "runbooks" / "jarvis-cockpit-graphify").resolve()
+    if root not in (graph_path.parent, *graph_path.parents):
+        raise HTTPException(status_code=400, detail="Graphify graph path is outside the approved Cockpit artifact directory")
+    if not graph_path.is_file() or graph_path.is_symlink() or graph_path.suffix != ".json":
+        raise HTTPException(status_code=400, detail="Graphify graph path is not a safe local JSON file")
+    return graph_path
+
+
+def _jarvis_cockpit_graphify_text(value: str | None, *, field: str, max_len: int = 200) -> str:
+    text = (value or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail=f"Missing Graphify {field}")
+    if len(text) > max_len:
+        raise HTTPException(status_code=400, detail=f"Graphify {field} is too long")
+    if "\x00" in text or "\n" in text or "\r" in text:
+        raise HTTPException(status_code=400, detail=f"Graphify {field} contains unsupported control characters")
+    return text
+
+
+def _jarvis_cockpit_run_graphify_query(request: JarvisCockpitGraphifyQueryRequest) -> dict[str, Any]:
+    graphify, _source = _jarvis_cockpit_read_graphify_lane()
+    graph_path = _jarvis_cockpit_graphify_safe_graph_path(graphify)
+    mode = request.mode.strip().lower()
+    cmd = ["uvx", "--from", "graphifyy", "graphify"]
+    if mode == "query":
+        question = _jarvis_cockpit_graphify_text(request.question, field="question", max_len=300)
+        budget = max(200, min(int(request.budget or 1200), 3000))
+        cmd += ["query", question, "--budget", str(budget), "--graph", str(graph_path)]
+    elif mode == "path":
+        source = _jarvis_cockpit_graphify_text(request.source, field="source")
+        target = _jarvis_cockpit_graphify_text(request.target, field="target")
+        cmd += ["path", source, target, "--graph", str(graph_path)]
+    elif mode == "affected":
+        node = _jarvis_cockpit_graphify_text(request.node or request.question, field="node")
+        depth = max(1, min(int(request.depth or 2), 4))
+        cmd += ["affected", node, "--depth", str(depth), "--graph", str(graph_path)]
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported Graphify query mode")
+
+    env = os.environ.copy()
+    for key in (
+        "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        env.pop(key, None)
+    env["GRAPHIFY_QUERY_LOG_DISABLE"] = "1"
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(graph_path.parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="Graphify query timed out") from exc
+    output = (completed.stdout or "").strip()
+    error_output = (completed.stderr or "").strip()
+    if completed.returncode != 0:
+        raise HTTPException(status_code=400, detail=(error_output or output or "Graphify query failed")[:2000])
+    return {
+        "status": "ok",
+        "mode": mode,
+        "output": output[:8000],
+        "stderr": error_output[:2000],
+        "graph_path": str(graph_path),
+        "safety": {
+            "local_only": True,
+            "structural_only": True,
+            "external_writes": False,
+            "semantic_llm": False,
+            "hooks": False,
+            "mcp": False,
+            "watch": False,
+            "query_log": False,
+        },
+    }
+
+
+def _jarvis_cockpit_graphify_note_slug(value: str | None) -> str:
+    base = (value or "graphify-insight").strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
+    return (slug or "graphify-insight")[:64].strip("-") or "graphify-insight"
+
+
+def _jarvis_cockpit_write_graphify_note(request: JarvisCockpitGraphifyNoteRequest) -> dict[str, Any]:
+    output = (request.output or "").strip()
+    if not output:
+        raise HTTPException(status_code=400, detail="Missing Graphify note output")
+    if len(output) > 12000:
+        raise HTTPException(status_code=400, detail="Graphify note output is too long")
+    title = _jarvis_cockpit_graphify_text(request.title or "Graphify insight", field="note title", max_len=120)
+    mode = (request.mode or "query").strip().lower()
+    if mode not in {"query", "path", "affected"}:
+        raise HTTPException(status_code=400, detail="Unsupported Graphify note mode")
+
+    root = _JARVIS_COCKPIT_DOCS_ROOT.resolve()
+    notes_dir = _JARVIS_COCKPIT_DOCS_ROOT / _JARVIS_COCKPIT_GRAPHIFY_NOTES_RELATIVE_DIR
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    if notes_dir.is_symlink() or not notes_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Graphify notes directory is not safe")
+    resolved_dir = notes_dir.resolve()
+    if root not in (resolved_dir, *resolved_dir.parents):
+        raise HTTPException(status_code=400, detail="Graphify notes path is outside docs root")
+
+    now = datetime.now(timezone.utc)
+    slug = _jarvis_cockpit_graphify_note_slug(title)
+    note_path = notes_dir / f"{now.strftime('%Y%m%d-%H%M%S')}-{slug}.md"
+    if note_path.exists() or note_path.is_symlink():
+        raise HTTPException(status_code=400, detail="Graphify note path is not safe")
+    question = (request.question or "").strip()
+    body = [
+        f"# {title}",
+        "",
+        f"- Created: {now.isoformat()}",
+        f"- Mode: {mode}",
+        "- Source: Jarvis Cockpit Graphify local helper",
+        "- Safety: local-only note; no external writes; Graphify query log off",
+    ]
+    if question:
+        body.append(f"- Query: {question[:300]}")
+    body.extend(["", "## Result", "", "```text", output[:12000], "```", ""])
+    tmp_path = notes_dir / f".{note_path.name}.{secrets.token_hex(6)}.tmp"
+    tmp_path.write_text("\n".join(body), encoding="utf-8")
+    tmp_path.replace(note_path)
+    return {
+        "status": "ok",
+        "action": "jarvis-cockpit-graphify-note",
+        "note_path": str(note_path),
+        "note_title": title,
+        "notes_dir": str(notes_dir.resolve()),
+        "updated_at": now.isoformat(),
+        "safety": {
+            "local_only": True,
+            "external_writes": False,
+            "microsoft_writes": False,
+            "blikk_writes": False,
+            "mail_mutation": False,
+            "secrets_read": False,
+            "cron_changed": False,
+        },
+    }
+
+
+def _jarvis_cockpit_graphify_card(graphify: dict[str, Any], updated_at: str) -> dict[str, Any]:
+    state = graphify.get("state", "missing")
+    actions: list[dict[str, Any]] = []
+    html_path = graphify.get("html_path")
+    report_path = graphify.get("report_path")
+    if state == "ok" and isinstance(html_path, str) and html_path:
+        actions.append({"label": "Open Graphify HTML", "type": "open-url", "target": html_path, "external_write": False})
+    if state == "ok" and isinstance(report_path, str) and report_path:
+        actions.append({"label": "Open Graphify report", "type": "open-url", "target": report_path, "external_write": False})
+
+    if state == "ok":
+        summary = f"{graphify.get('nodes', 0)} nodes / {graphify.get('edges', 0)} edges for {graphify.get('scope', 'local project graph')}."
+    elif state == "missing":
+        summary = "No local Graphify manifest yet; run a structural-only graph to populate this lane."
+    else:
+        summary = "Graphify manifest exists but safety receipt needs attention."
+
+    details = [
+        f"Scope: {graphify.get('scope', 'not set')}",
+        f"Token reduction: {graphify.get('token_reduction', 'not measured')}",
+        "Policy: local structural graph only; semantic LLM, hooks, MCP and watch remain gated.",
+    ]
+    return {
+        "id": "graphify-lane",
+        "title": "Graphify project graph",
+        "kind": "system",
+        "state": state,
+        "summary": summary,
+        "details": details,
+        "source": str(_JARVIS_COCKPIT_GRAPHIFY_RELATIVE_PATH),
+        "updated_at": graphify.get("updated_at", updated_at),
+        "actions": actions,
+    }
+
+
 def _jarvis_cockpit_read_gates() -> tuple[list[dict[str, Any]], Dict[str, Any]]:
     gates_dir = _JARVIS_COCKPIT_DOCS_ROOT / _JARVIS_COCKPIT_GATES_RELATIVE_DIR
     try:
@@ -1002,6 +1526,10 @@ def _jarvis_cockpit_contract() -> Dict[str, Any]:
     sources.append(todo_source)
     gates, gates_source = _jarvis_cockpit_read_gates()
     sources.append(gates_source)
+    improvements, improvements_source = _jarvis_cockpit_read_improvements()
+    sources.append(improvements_source)
+    graphify, graphify_source = _jarvis_cockpit_read_graphify_lane()
+    sources.append(graphify_source)
 
     jarvis_todo: list[dict[str, Any]] = []
     artifacts: list[dict[str, Any]] = []
@@ -1016,8 +1544,20 @@ def _jarvis_cockpit_contract() -> Dict[str, Any]:
 
     todo_by_status = _jarvis_cockpit_count_by(jarvis_todo, "status")
     waiting_gates = [gate for gate in gates if gate.get("status") == "waiting"]
+    improvement_suggestions = [item for item in improvements.get("suggestions", []) if isinstance(item, dict)]
+    improvement_history = [item for item in improvements.get("history", []) if isinstance(item, dict)]
+    active_improvements = [item for item in improvement_suggestions if item.get("status", "active") in {"active", "running"}]
+    parked_improvements = [item for item in improvement_suggestions if item.get("status") == "parked"]
     missing_sources = [source for source in sources if source.get("state") == "missing"]
+    error_sources = [source for source in sources if source.get("state") == "error"]
+    health_state = "error" if error_sources else ("attention" if missing_sources or waiting_gates else "ok")
     status_cards = [
+        {
+            "id": "hermes-jarvis-health", "title": "Hermes / Jarvis hälsa", "kind": "system", "state": health_state,
+            "summary": "Lokal trafikljusstatus beräknad från Cockpit-källor, gates och safety receipt.",
+            "details": [f"Missing sources: {len(missing_sources)}", f"Waiting gates: {len(waiting_gates)}", "Desktop-status mäts inte här eftersom Cockpit visas inifrån Desktop."],
+            "source": "api/jarvis/cockpit", "updated_at": updated_at, "actions": [],
+        },
         {
             "id": "safety-boundary", "title": "Safety boundary", "kind": "safety", "state": "ok",
             "summary": "Read-only local Jarvis docs only; no live writes, secrets, Microsoft Graph, Blikk, mail or Dispatch embedding.",
@@ -1039,6 +1579,17 @@ def _jarvis_cockpit_contract() -> Dict[str, Any]:
             "source": str(_JARVIS_COCKPIT_GATES_RELATIVE_DIR), "updated_at": updated_at, "actions": [],
         },
         {
+            "id": "improvements", "title": "Förbättringar", "kind": "system",
+            "state": "ok" if improvements_source.get("state") in {"ok", "missing"} else "attention",
+            "summary": f"{len(active_improvements)} aktuella, {len(parked_improvements)} parkerade, {len(improvement_history)} historikhändelser.",
+            "details": [
+                "Rubriker: Bygg nu, Förbered, Utforska.",
+                "Historik används som spärr mot upprepade cronförslag.",
+            ],
+            "source": str(_JARVIS_COCKPIT_IMPROVEMENTS_RELATIVE_PATH), "updated_at": improvements.get("updated_at", updated_at), "actions": [],
+        },
+        _jarvis_cockpit_graphify_card(graphify, updated_at),
+        {
             "id": "dispatch-link", "title": "Open Dispatch Dashboard", "kind": "dispatch-link", "state": "ok",
             "summary": "Dispatch stays outside Jarvis Cockpit and is available as a link only.",
             "details": [], "source": "dispatch-boundary", "updated_at": updated_at,
@@ -1051,6 +1602,8 @@ def _jarvis_cockpit_contract() -> Dict[str, Any]:
         "dispatch_boundary": {"dispatch_embedded": False, "dispatch_url": _JARVIS_COCKPIT_DISPATCH_URL, "rule": "Dispatch stays in real Dispatch Dashboard"},
         "jarvis_todo": jarvis_todo,
         "gates": gates,
+        "improvements": improvements,
+        "graphify": graphify,
         "status_cards": status_cards,
         "artifacts": artifacts,
         "sources": sources,
@@ -1068,6 +1621,24 @@ async def get_jarvis_cockpit():
     caches, Keychain, .env, profile config, cron, NUC or backup resources.
     """
     return _jarvis_cockpit_contract()
+
+
+@app.post("/api/jarvis/cockpit/improvements/action")
+async def post_jarvis_cockpit_improvement_action(request: JarvisCockpitImprovementActionRequest):
+    """Apply a local-only Cockpit improvement board action and append history."""
+    return _jarvis_cockpit_apply_improvement_action(request)
+
+
+@app.post("/api/jarvis/cockpit/graphify/query")
+async def post_jarvis_cockpit_graphify_query(request: JarvisCockpitGraphifyQueryRequest):
+    """Run local-only Graphify query helpers against the approved Cockpit graph artifact."""
+    return _jarvis_cockpit_run_graphify_query(request)
+
+
+@app.post("/api/jarvis/cockpit/graphify/note")
+async def post_jarvis_cockpit_graphify_note(request: JarvisCockpitGraphifyNoteRequest):
+    """Persist one local-only Graphify insight note under the approved Cockpit notes directory."""
+    return _jarvis_cockpit_write_graphify_note(request)
 
 
 def _jarvis_cockpit_report_safety() -> Dict[str, bool]:

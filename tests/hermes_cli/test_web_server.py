@@ -3,6 +3,7 @@
 import os
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -395,6 +396,19 @@ class TestWebServerEndpoints:
         }))
         (docs_root / "source-map").mkdir()
         (docs_root / "source-map" / "personas-dashboards-source-map.md").write_text("# personas\n")
+        gates_dir = docs_root / "runbooks" / "gates"
+        gates_dir.mkdir(parents=True)
+        (gates_dir / "cockpit-health.json").write_text(json.dumps({
+            "id": "gate-cockpit-health",
+            "title": "Aktivera Hermes-status v1",
+            "status": "waiting",
+            "decision": "Ska Jarvis bygga enkel trafikljusstatus i Cockpit?",
+            "recommendation": "Kör lokal v1 utan externa writes.",
+            "scope": "Endast lokal Cockpit-UI och read-only kontrakt.",
+            "default_action": "Kör",
+            "risk": "Låg",
+            "owner": "Jarvis",
+        }))
 
         monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
         resp = self.client.get("/api/jarvis/cockpit")
@@ -417,14 +431,108 @@ class TestWebServerEndpoints:
         assert source_states["jarvis-actions"] == "ok"
         assert source_states["personas-dashboards-source-map"] == "ok"
         assert source_states["jarvis-system-current-state"] == "missing"
-        assert source_states["gates"] == "missing"
+        assert source_states["gates"] == "ok"
+        assert data["gates"][0]["recommendation"] == "Kör lokal v1 utan externa writes."
+        health_card = next(card for card in data["status_cards"] if card["id"] == "hermes-jarvis-health")
+        assert health_card["state"] == "attention"
+        assert "Waiting gates: 1" in health_card["details"]
         assert {source["id"] for source in data["missing"]} == {
             "jarvis-system-current-state",
             "next-recommendation-guard",
             "hermes-desktop-pinned-session-routing",
             "alfred-dispatch-operator-pack",
-            "gates",
+            "jarvis-cockpit-improvements",
+            "jarvis-cockpit-graphify",
         }
+
+    def test_get_jarvis_cockpit_surfaces_local_graphify_lane(self, tmp_path, monkeypatch):
+        """Graphify lane reads only a local manifest and exposes safe graph artifacts."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        graphify_dir = docs_root / "runbooks" / "jarvis-cockpit-graphify"
+        graphify_dir.mkdir(parents=True)
+        notes_dir = graphify_dir / "notes"
+        notes_dir.mkdir()
+        latest_note_path = notes_dir / "20260609-graphify.md"
+        latest_note_path.write_text("# Latest Graphify note\n\nSaved insight.\n", encoding="utf-8")
+        report_path = graphify_dir / "GRAPH_REPORT.md"
+        html_path = graphify_dir / "graph.html"
+        graph_path = graphify_dir / "graph.json"
+        report_path.write_text("# Graph Report\n", encoding="utf-8")
+        html_path.write_text("<html></html>\n", encoding="utf-8")
+        graph_path.write_text("{}\n", encoding="utf-8")
+        (graphify_dir / "latest.json").write_text(json.dumps({
+            "status": "ok",
+            "scope": "Hermes Desktop / Jarvis Cockpit",
+            "command": "graphify update . --no-cluster && graphify cluster-only . --no-label",
+            "nodes": 344,
+            "edges": 366,
+            "communities": 14,
+            "token_reduction": "11.3x",
+            "updated_at": "2026-06-09T01:03:21+02:00",
+            "report_path": str(report_path),
+            "html_path": str(html_path),
+            "graph_path": str(graph_path),
+            "safety": {
+                "local_only": True,
+                "structural_only": True,
+                "external_writes": False,
+                "semantic_llm": False,
+                "hooks": False,
+                "mcp": False,
+                "watch": False,
+                "secrets_found": False,
+            },
+        }), encoding="utf-8")
+
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Graphify lane must not run network/subprocess while reading cockpit")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", forbidden)
+        monkeypatch.setattr(ws.subprocess, "run", forbidden)
+
+        resp = self.client.get("/api/jarvis/cockpit")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["graphify"] == {
+            "status": "ok",
+            "state": "ok",
+            "scope": "Hermes Desktop / Jarvis Cockpit",
+            "command": "graphify update . --no-cluster && graphify cluster-only . --no-label",
+            "nodes": 344,
+            "edges": 366,
+            "communities": 14,
+            "token_reduction": "11.3x",
+            "updated_at": "2026-06-09T01:03:21+02:00",
+            "report_path": str(report_path),
+            "html_path": str(html_path),
+            "graph_path": str(graph_path),
+            "notes_dir": str(notes_dir.resolve()),
+            "latest_note_path": str(latest_note_path),
+            "latest_note_title": "Latest Graphify note",
+            "latest_note_updated_at": data["graphify"]["latest_note_updated_at"],
+            "safety": {
+                "local_only": True,
+                "structural_only": True,
+                "external_writes": False,
+                "semantic_llm": False,
+                "hooks": False,
+                "mcp": False,
+                "watch": False,
+                "secrets_found": False,
+            },
+        }
+        graphify_card = next(card for card in data["status_cards"] if card["id"] == "graphify-lane")
+        assert graphify_card["state"] == "ok"
+        assert "344 nodes" in graphify_card["summary"]
+        assert graphify_card["actions"] == [
+            {"label": "Open Graphify HTML", "type": "open-url", "target": str(html_path), "external_write": False},
+            {"label": "Open Graphify report", "type": "open-url", "target": str(report_path), "external_write": False},
+        ]
 
     def test_get_jarvis_cockpit_reports_missing_allowlisted_files_without_crashing(self, tmp_path, monkeypatch):
         """Missing whitelist entries remain HTTP 200 and are surfaced in sources + missing."""
@@ -446,6 +554,8 @@ class TestWebServerEndpoints:
             "alfred-dispatch-operator-pack",
             "jarvis-actions",
             "gates",
+            "jarvis-cockpit-improvements",
+            "jarvis-cockpit-graphify",
         }
         assert set(missing_by_id) == expected_missing
         assert all(source["state"] == "missing" for source in data["sources"])
@@ -572,6 +682,190 @@ class TestWebServerEndpoints:
         assert "External writes: NO" in text
         assert "Microsoft writes: NO" in text
         assert "cockpit-local-report" in text
+
+    def test_post_jarvis_cockpit_graphify_query_runs_only_against_safe_local_graph(self, tmp_path, monkeypatch):
+        """Graphify query helpers execute only safe local read-only commands against the approved graph."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        graphify_dir = docs_root / "runbooks" / "jarvis-cockpit-graphify"
+        graphify_dir.mkdir(parents=True)
+        graph_path = graphify_dir / "graph.json"
+        graph_path.write_text("{}\n", encoding="utf-8")
+        (graphify_dir / "latest.json").write_text(json.dumps({
+            "status": "ok",
+            "scope": "Hermes Desktop / Jarvis Cockpit",
+            "graph_path": str(graph_path),
+            "safety": {
+                "local_only": True,
+                "structural_only": True,
+                "external_writes": False,
+                "semantic_llm": False,
+                "hooks": False,
+                "mcp": False,
+                "watch": False,
+                "secrets_found": False,
+            },
+        }), encoding="utf-8")
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            assert cmd == [
+                "uvx", "--from", "graphifyy", "graphify", "query", "JarvisCockpitView",
+                "--budget", "900", "--graph", str(graph_path.resolve())
+            ]
+            assert kwargs["shell"] is False
+            assert kwargs["cwd"] == str(graphify_dir.resolve())
+            assert kwargs["env"]["GRAPHIFY_QUERY_LOG_DISABLE"] == "1"
+            return subprocess.CompletedProcess(cmd, 0, "2 nodes found\nJarvisCockpitView -> healthTone\n", "")
+
+        monkeypatch.setattr(ws.subprocess, "run", fake_run)
+
+        resp = self.client.post("/api/jarvis/cockpit/graphify/query", json={
+            "mode": "query",
+            "question": "JarvisCockpitView",
+            "budget": 900,
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["mode"] == "query"
+        assert data["output"] == "2 nodes found\nJarvisCockpitView -> healthTone"
+        assert data["safety"] == {
+            "local_only": True,
+            "structural_only": True,
+            "external_writes": False,
+            "semantic_llm": False,
+            "hooks": False,
+            "mcp": False,
+            "watch": False,
+            "query_log": False,
+        }
+        assert len(calls) == 1
+
+    def test_post_jarvis_cockpit_graphify_note_writes_local_only_markdown(self, tmp_path, monkeypatch):
+        """Graphify insight cards can persist local notes only inside the approved notes directory."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Graphify note save must not use network/subprocess/config helpers")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", forbidden)
+        monkeypatch.setattr(ws.subprocess, "run", forbidden)
+        monkeypatch.setattr(ws, "load_config", forbidden, raising=False)
+
+        resp = self.client.post("/api/jarvis/cockpit/graphify/note", json={
+            "title": "What affects Cockpit health?",
+            "mode": "affected",
+            "question": "healthTone",
+            "output": "Affected nodes for healthTone\n- JarvisCockpitView [calls]",
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["action"] == "jarvis-cockpit-graphify-note"
+        assert data["note_title"] == "What affects Cockpit health?"
+        assert data["notes_dir"] == str((docs_root / "runbooks" / "jarvis-cockpit-graphify" / "notes").resolve())
+        assert data["safety"] == {
+            "local_only": True,
+            "external_writes": False,
+            "microsoft_writes": False,
+            "blikk_writes": False,
+            "mail_mutation": False,
+            "secrets_read": False,
+            "cron_changed": False,
+        }
+        note = Path(data["note_path"])
+        assert note.exists()
+        assert note.is_relative_to(docs_root / "runbooks" / "jarvis-cockpit-graphify" / "notes")
+        text = note.read_text(encoding="utf-8")
+        assert "# What affects Cockpit health?" in text
+        assert "- Mode: affected" in text
+        assert "External writes" not in text
+        assert "Affected nodes for healthTone" in text
+
+    def test_post_jarvis_cockpit_graphify_query_rejects_unsafe_manifest(self, tmp_path, monkeypatch):
+        """Graphify query helpers stop if the manifest is not structural/local-only safe."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        graphify_dir = docs_root / "runbooks" / "jarvis-cockpit-graphify"
+        graphify_dir.mkdir(parents=True)
+        graph_path = graphify_dir / "graph.json"
+        graph_path.write_text("{}\n", encoding="utf-8")
+        (graphify_dir / "latest.json").write_text(json.dumps({
+            "graph_path": str(graph_path),
+            "safety": {"local_only": True, "structural_only": True, "semantic_llm": True},
+        }), encoding="utf-8")
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("unsafe Graphify manifest must not execute subprocess")
+
+        monkeypatch.setattr(ws.subprocess, "run", forbidden)
+        resp = self.client.post("/api/jarvis/cockpit/graphify/query", json={"mode": "affected", "node": "healthTone"})
+
+        assert resp.status_code == 400
+        assert "not safe" in resp.json()["detail"]
+
+    def test_post_jarvis_cockpit_improvement_action_updates_local_history_only(self, tmp_path, monkeypatch):
+        """Improvement actions write only the local Cockpit improvements JSON and append history."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        improvements_path = docs_root / "runbooks" / "jarvis-cockpit-improvements.json"
+        improvements_path.parent.mkdir(parents=True)
+        improvements_path.write_text(json.dumps({
+            "version": 1,
+            "updated_at": "2026-06-07T10:00:00+02:00",
+            "rules": {"local_only": True, "external_writes_allowed": False},
+            "suggestions": [{
+                "id": "cockpit-improvements-history",
+                "title": "Förbättringar med Historik",
+                "classification": "Bygg nu",
+                "status": "active",
+            }],
+            "history": [],
+        }))
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("external or forbidden helper was called")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", forbidden)
+        monkeypatch.setattr(ws.subprocess, "run", forbidden)
+        monkeypatch.setattr(ws, "load_config", forbidden, raising=False)
+
+        resp = self.client.post("/api/jarvis/cockpit/improvements/action", json={
+            "suggestion_id": "cockpit-improvements-history",
+            "action": "park",
+            "actor": "Tobias",
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["action"] == "park"
+        assert data["safety"] == {
+            "local_only": True,
+            "external_writes": False,
+            "microsoft_writes": False,
+            "blikk_writes": False,
+            "mail_mutation": False,
+            "secrets_read": False,
+            "cron_changed": False,
+        }
+        saved = json.loads(improvements_path.read_text())
+        assert saved["suggestions"][0]["status"] == "parked"
+        assert saved["history"][0]["action"] == "park"
+        assert saved["history"][0]["cron_repeat_guard"] is True
 
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.

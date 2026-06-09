@@ -69,9 +69,15 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice, spectrumText;
+let Spectrum, imessage, attachment, voice, spectrumReply, spectrumText;
 try {
-  ({ Spectrum, attachment, voice, text: spectrumText } = await import("spectrum-ts"));
+  ({
+    Spectrum,
+    attachment,
+    voice,
+    reply: spectrumReply,
+    text: spectrumText,
+  } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
@@ -395,6 +401,28 @@ async function resolveSpace(spaceId) {
   throw new Error(`unable to resolve space id ${spaceId}`);
 }
 
+async function maybeReplyContent(space, builder, replyTo) {
+  if (!replyTo) return builder;
+  if (typeof space.getMessage !== "function") {
+    console.error("photon-sidecar: reply requested but space.getMessage is unavailable");
+    return builder;
+  }
+  try {
+    const target = await space.getMessage(replyTo);
+    if (!target) {
+      console.error(`photon-sidecar: reply target ${replyTo} not found; sending normally`);
+      return builder;
+    }
+    return spectrumReply(builder, target);
+  } catch (e) {
+    console.error(
+      "photon-sidecar: failed to resolve reply target; sending normally: " +
+        (e && e.stack ? e.stack : String(e))
+    );
+    return builder;
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.headers["x-hermes-sidecar-token"] !== sharedToken) {
     return unauthorized(res);
@@ -423,9 +451,8 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "spaceId and text are required");
       }
       const space = await resolveSpace(spaceId);
-      const result = replyTo
-        ? await space.send(spectrumText(text), { replyTo })
-        : await space.send(spectrumText(text));
+      const content = await maybeReplyContent(space, spectrumText(text), replyTo);
+      const result = await space.send(content);
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/send-attachment") {
@@ -447,10 +474,8 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const sendOpts = replyTo ? { replyTo } : undefined;
-      const result = sendOpts
-        ? await space.send(builder, sendOpts)
-        : await space.send(builder);
+      const content = await maybeReplyContent(space, builder, replyTo);
+      const result = await space.send(content);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.

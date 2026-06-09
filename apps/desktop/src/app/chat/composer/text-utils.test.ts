@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
+import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs, readPastedText } from './text-utils'
+
+function makeClipboard(data: Record<string, string>): DataTransfer {
+  return {
+    getData: (type: string) => data[type] ?? ''
+  } as unknown as DataTransfer
+}
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -100,6 +106,39 @@ describe('extractClipboardImageBlobs', () => {
     } as unknown as DataTransfer
 
     expect(extractClipboardImageBlobs(clipboard)).toEqual([image])
+  })
+})
+
+describe('readPastedText', () => {
+  it('trims surrounding whitespace but keeps internal newlines', () => {
+    const clipboard = makeClipboard({ text: '\n  first line\nsecond line  \n' })
+
+    expect(readPastedText(clipboard)).toBe('first line\nsecond line')
+  })
+
+  it('collapses column tabs to spaces for a spreadsheet paste', () => {
+    const clipboard = makeClipboard({
+      text: 'FEERUM\t2026-06-05\t17,95 fp5_bear3',
+      'text/html': '<table><tr><td>FEERUM</td><td>2026-06-05</td><td>17,95 fp5_bear3</td></tr></table>'
+    })
+
+    expect(readPastedText(clipboard)).toBe('FEERUM 2026-06-05 17,95 fp5_bear3')
+  })
+
+  it('leaves tab indentation untouched when the paste is not tabular', () => {
+    const code = 'def foo():\n\treturn 1'
+    const clipboard = makeClipboard({ text: code })
+
+    expect(readPastedText(clipboard)).toBe(code)
+  })
+
+  it('keeps tabs when HTML is present but contains no table', () => {
+    const clipboard = makeClipboard({
+      text: 'a\tb',
+      'text/html': '<div>a\tb</div>'
+    })
+
+    expect(readPastedText(clipboard)).toBe('a\tb')
   })
 })
 

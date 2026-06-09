@@ -325,6 +325,47 @@ def test_regenerate_project_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     assert photon_auth.regenerate_project_secret("tok", "p") == "rotated"
 
 
+
+def test_create_project_unwraps_success_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Photon may wrap project credentials under a top-level data object."""
+    captured: Dict[str, Any] = {}
+
+    def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
+        captured["url"] = url
+        captured["body"] = kwargs.get("json")
+        captured["headers"] = kwargs.get("headers")
+        return _FakeResponse(json_body={
+            "succeed": True,
+            "data": {
+                "id": "dashboard-project-id",
+                "spectrumProjectId": "spectrum-project-id",
+                "projectSecret": "project-secret",
+            },
+        })
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+
+    data = photon_auth.create_project("dashboard-token", name="Hermes Agent")
+
+    assert data["spectrumProjectId"] == "spectrum-project-id"
+    assert data["projectSecret"] == "project-secret"
+    assert data["id"] == "dashboard-project-id"
+    assert "spectrum" not in captured["body"]
+    assert captured["body"]["name"] == "Hermes Agent"
+    assert captured["headers"]["Authorization"] == "Bearer dashboard-token"
+    assert captured["url"].endswith("/api/projects")
+
+
+def test_create_project_raises_on_succeed_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(json_body={"succeed": False, "message": "quota exceeded"})
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+
+    with pytest.raises(RuntimeError, match="quota exceeded"):
+        photon_auth.create_project("tok")
+
+
 # ---------------------------------------------------------------------------
 # Users
 

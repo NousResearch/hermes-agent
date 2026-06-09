@@ -7,7 +7,7 @@ import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
 import { $connection, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { usePromptActions } from './use-prompt-actions'
+import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
@@ -700,6 +700,55 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
 
     await Promise.resolve()
     expect(requestGateway).not.toHaveBeenCalledWith('file.attach', expect.anything())
+  })
+})
+
+describe('uploadComposerAttachment remote read failures', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
+    // electron/hardening.cjs rejects the readFileDataUrl IPC with this exact
+    // shape when a file exceeds DATA_URL_READ_MAX_BYTES.
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => {
+          throw new Error('File preview failed: file is too large (20971520 bytes; limit 16777216 bytes).')
+        })
+      }
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'file:big', kind: 'file', label: 'huge.csv', path: '/abs/huge.csv' },
+        { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow('huge.csv is too large to upload to the remote gateway (max 16 MB).')
+
+    // The cap is hit before any gateway round-trip.
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('passes non-cap read errors through unchanged', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => {
+          throw new Error('ENOENT: no such file')
+        })
+      }
+    })
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'file:gone', kind: 'file', label: 'gone.csv', path: '/abs/gone.csv' },
+        { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow('ENOENT: no such file')
   })
 })
 

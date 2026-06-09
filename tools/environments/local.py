@@ -301,14 +301,26 @@ _SANE_PATH = (
 
 
 def _append_missing_sane_path_entries(existing_path: str) -> str:
-    """Return PATH with each missing POSIX sane entry appended once.
+    """Return a normalised POSIX PATH with missing sane entries appended.
 
-    The caller-supplied PATH is normalised first: empty entries (which a
-    leading/trailing/double ``:`` express, and which POSIX shells treat as
-    the current working directory — a mild foot-gun) and duplicate entries
-    are dropped, preserving first-occurrence order. Each missing _SANE_PATH
-    entry is then appended once at the end so existing entries keep their
-    precedence.
+    On POSIX the caller-supplied PATH is rewritten (not merely appended to):
+    empty entries and duplicate entries are dropped, preserving
+    first-occurrence order, then each missing ``_SANE_PATH`` entry is appended
+    once at the end so existing entries keep their precedence.
+
+    Two intentional normalisations beyond the bare "add Homebrew dirs" fix:
+
+    - **Empty entries are stripped.** A leading/trailing/double ``:`` encodes
+      an empty PATH element, which POSIX shells interpret as the current
+      working directory — a mild foot-gun in a default terminal environment.
+      We drop these rather than carry them through.
+    - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
+      that already contains repeats is not propagated verbatim.
+
+    For a well-formed PATH (no empties, no duplicates) the leading segment is
+    byte-identical to the input and ordering is preserved; only the missing
+    sane entries are appended. On Windows this is a no-op passthrough (the
+    separator is ``;`` and the native PATH must not be touched).
     """
     if _IS_WINDOWS:
         return existing_path
@@ -327,16 +339,25 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
         seen.add(entry)
         ordered_entries.append(entry)
 
+    # _SANE_PATH is a static, duplicate-free constant, so a membership check
+    # against the caller entries is sufficient — no need to track `seen` here.
     for entry in sane_entries:
         if entry not in seen:
-            seen.add(entry)
             ordered_entries.append(entry)
 
     return ":".join(ordered_entries)
 
 
 def _path_env_key(run_env: dict) -> str | None:
-    """Return the PATH env key to update without altering Windows casing."""
+    """Return the PATH env key to update without altering Windows casing.
+
+    Note: this is deliberately a *second* Windows guard, distinct from the
+    early-return in ``_append_missing_sane_path_entries``. Its job is to pick
+    the correctly-cased key (``Path`` vs ``PATH``) so completion writes back to
+    the key the caller already used; the helper's guard makes that helper safe
+    to call standalone (it is, e.g. in the Windows unit tests). Both are
+    intentional.
+    """
     if not _IS_WINDOWS:
         return "PATH"
     for key in run_env:

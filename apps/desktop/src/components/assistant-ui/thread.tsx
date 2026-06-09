@@ -769,7 +769,7 @@ const UserMessage: FC<{
     const fullHeight = inner.scrollHeight
 
     outer.style.setProperty('--human-msg-full', `${fullHeight}px`)
-    setBodyClamped(fullHeight > lineHeight * 2 + 1)
+    setBodyClamped(fullHeight > lineHeight * 4 + 1)
   }, [])
 
   useResizeObserver(measureClamp, clampInnerRef)

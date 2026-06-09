@@ -827,14 +827,16 @@ canvas {
 }
 
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
-   prompt doesn't dominate the viewport. The clamp lifts on focus only (clicking
+   prompt doesn't dominate the viewport.  The clamp lifts on focus only (clicking
    opens the edit composer, which shows the full text) — not on hover, so the
-   bubble doesn't jump as the pointer passes over it. --human-msg-full is the
+   bubble doesn't jump as the pointer passes over it.  Up to four lines are
+   visible before the fade kicks in, so short multi-line prompts (numbered
+   lists, two-question prompts) stay fully readable.  --human-msg-full is the
    measured content height (set in UserMessage) so it animates to the real
    height instead of overshooting the cap. */
 .sticky-human-clamp {
   cursor: pointer;
-  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  max-height: calc(4 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
   transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
 }

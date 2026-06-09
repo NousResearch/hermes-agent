@@ -486,7 +486,38 @@ export function usePromptActions({
         attachmentRefs = syncedAttachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
-        await requestGateway('prompt.submit', { session_id: sessionId, text })
+
+        // On sleep/wake the gateway's in-memory session may have been cleared
+        // while the desktop app still holds the old session ID. Detect this,
+        // resume the stored session to re-register it, and retry once.
+        let submitErr: unknown = null
+
+        try {
+          await requestGateway('prompt.submit', { session_id: sessionId, text })
+        } catch (firstErr) {
+          const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
+
+          if (/session not found/i.test(firstMsg) && selectedStoredSessionIdRef.current) {
+            // Re-register the session in the gateway and get a fresh live ID.
+            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+              session_id: selectedStoredSessionIdRef.current
+            })
+            const recoveredId = resumed?.session_id
+
+            if (recoveredId) {
+              activeSessionIdRef.current = recoveredId
+              await requestGateway('prompt.submit', { session_id: recoveredId, text })
+            } else {
+              submitErr = firstErr
+            }
+          } else {
+            submitErr = firstErr
+          }
+        }
+
+        if (submitErr !== null) {
+          throw submitErr
+        }
 
         if (usingComposerAttachments) {
           clearComposerAttachments()

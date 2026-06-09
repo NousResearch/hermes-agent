@@ -194,7 +194,8 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         )
 
     try:
-        ls = p.start_login(redirect_uri=_redirect_uri(request))
+        redirect_uri = _redirect_uri(request)
+        ls = p.start_login(redirect_uri=redirect_uri)
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -226,10 +227,12 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     # only server-controlled channel that survives. Validate before we
     # store it so an attacker who reaches /auth/login directly with
     # ``next=//evil.example`` can't poison the cookie.
+    from urllib.parse import quote
+
     safe_next = _validate_post_login_target(next)
     if safe_next:
-        from urllib.parse import quote
         pkce = f"{pkce};next={quote(safe_next, safe='')}"
+    pkce = f"{pkce};redirect_uri={quote(redirect_uri, safe='')}"
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
         prefix=_prefix(request),
@@ -306,11 +309,17 @@ async def auth_callback(
         )
 
     try:
+        redirect_uri = _redirect_uri(request)
+        from urllib.parse import unquote
+        cookie_redirect_uri = parts.get("redirect_uri")
+        if cookie_redirect_uri:
+            redirect_uri = unquote(cookie_redirect_uri)
+
         session = p.complete_login(
             code=code,
             state=state,
             code_verifier=verifier,
-            redirect_uri=_redirect_uri(request),
+            redirect_uri=redirect_uri,
         )
     except InvalidCodeError as e:
         audit_log(

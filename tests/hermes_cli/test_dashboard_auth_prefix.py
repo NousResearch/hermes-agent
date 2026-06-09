@@ -531,6 +531,78 @@ class TestPublicUrlOverride:
             r for r in caplog.records if r.levelno == logging.WARNING
         ]
 
+    def test_self_hosted_flow_reuses_env_based_redirect_uri_in_callback(
+        self, patch_config, monkeypatch
+    ):
+        """When the callback request uses a proxy-inferred scheme that
+        differs from the login request, the provider must still see the
+        env-backed redirect URI."""
+        patch_config(None)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://hermes.example.com"
+        )
+        captured: dict[str, str] = {}
+
+        class _CaptureProvider(StubAuthProvider):
+            name = "self-hosted-capture"
+            display_name = "Self-Hosted Capture"
+
+            def start_login(self, *, redirect_uri: str):
+                captured["start"] = redirect_uri
+                return super().start_login(redirect_uri=redirect_uri)
+
+            def complete_login(
+                self, *, code: str, state: str, code_verifier: str, redirect_uri: str
+            ):
+                captured["complete"] = redirect_uri
+                return super().complete_login(
+                    code=code,
+                    state=state,
+                    code_verifier=code_verifier,
+                    redirect_uri=redirect_uri,
+                )
+
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
+        prev_required = getattr(web_server.app.state, "auth_required", None)
+
+        clear_providers()
+        register_provider(_CaptureProvider())
+        web_server.app.state.bound_host = "dashboard.internal"
+        web_server.app.state.bound_port = 443
+        web_server.app.state.auth_required = True
+
+        client = TestClient(
+            web_server.app,
+            base_url="http://dashboard.internal",
+        )
+        try:
+            login = client.get(
+                "/auth/login?provider=self-hosted-capture",
+                headers={"x-forwarded-proto": "http"},
+                follow_redirects=False,
+            )
+            assert login.status_code == 302
+            from urllib.parse import parse_qs, urlparse
+
+            state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+            callback = client.get(
+                f"/auth/callback?code=stub_code&state={state}",
+                headers={"x-forwarded-proto": "http"},
+                follow_redirects=False,
+            )
+            assert callback.status_code == 302
+            assert captured.get("start") == "https://hermes.example.com/auth/callback"
+            assert (
+                captured.get("complete") == "https://hermes.example.com/auth/callback"
+            )
+            assert captured.get("start") == captured.get("complete")
+        finally:
+            clear_providers()
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.bound_port = prev_port
+            web_server.app.state.auth_required = prev_required
+
 
 # ---------------------------------------------------------------------------
 # Cookies: Path attribute + __Host- / __Secure- prefix rules

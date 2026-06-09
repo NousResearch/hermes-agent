@@ -54,10 +54,35 @@ class TestRepairToolCallArguments:
 
     def test_unclosed_bracket_and_brace(self):
         result = _repair_tool_call_arguments('{"a": [1, 2', "t")
-        # Bracket counting adds ']' then '}', producing {"a": [1, 2]}
-        # which is valid JSON.  But the naive count can't always recover
-        # complex nesting — verify we at least get valid JSON.
-        json.loads(result)
+        # The unclosed array must be closed before the object — ']' then
+        # '}', yielding {"a": [1, 2]}. A fixed '}'-then-']' order would
+        # produce the invalid {"a": [1, 2}] and lose the whole payload.
+        assert json.loads(result) == {"a": [1, 2]}
+
+    def test_unclosed_array_of_strings_recovers(self):
+        result = _repair_tool_call_arguments('{"files": ["a.py", "b.py"', "t")
+        assert json.loads(result) == {"files": ["a.py", "b.py"]}
+
+    def test_unclosed_nested_write_file_args_recovers(self):
+        raw = '{"path": "x.txt", "lines": ["one", "two"'
+        result = _repair_tool_call_arguments(raw, "write_file")
+        assert json.loads(result) == {"path": "x.txt", "lines": ["one", "two"]}
+
+    def test_unclosed_object_inside_array_closes_lifo(self):
+        # Stack is [ '{', '[', '{' ] → closers must be '}', ']', '}'.
+        result = _repair_tool_call_arguments('{"a": [{"b": 1', "t")
+        assert json.loads(result) == {"a": [{"b": 1}]}
+
+    def test_flat_object_still_recovers(self):
+        # Regression guard: the simple (already-working) case must not break.
+        result = _repair_tool_call_arguments('{"a": 1, "b": 2', "t")
+        assert json.loads(result) == {"a": 1, "b": 2}
+
+    def test_brace_inside_string_value_not_treated_as_delimiter(self):
+        # The '{' lives inside a string value and must not be counted as an
+        # open delimiter, so the only missing closer is the object's '}'.
+        result = _repair_tool_call_arguments('{"msg": "a { b"', "t")
+        assert json.loads(result) == {"msg": "a { b"}
 
     # -- Stage 5: excess closing delimiters --
 

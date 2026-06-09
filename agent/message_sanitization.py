@@ -224,13 +224,38 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     fixed = raw_stripped
     # 1. Strip trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    # 2. Close unclosed structures
-    open_curly = fixed.count('{') - fixed.count('}')
-    open_bracket = fixed.count('[') - fixed.count(']')
-    if open_curly > 0:
-        fixed += '}' * open_curly
-    if open_bracket > 0:
-        fixed += ']' * open_bracket
+    # 2. Close unclosed structures in LIFO nesting order.
+    # A plain count-and-append ('}' * n then ']' * m) closes in a fixed
+    # order that is wrong for nested payloads: '{"k": [1, 2' would become
+    # '{"k": [1, 2}]' (invalid) instead of '{"k": [1, 2]}'. Walk the text
+    # tracking string state — so braces/brackets inside string values are
+    # ignored — and append the closer for each still-open delimiter by
+    # popping the open-delimiter stack.
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in fixed:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in '{[':
+            stack.append(ch)
+        elif ch == '}':
+            if stack and stack[-1] == '{':
+                stack.pop()
+        elif ch == ']':
+            if stack and stack[-1] == '[':
+                stack.pop()
+    if stack:
+        closers = {'{': '}', '[': ']'}
+        fixed += ''.join(closers[opener] for opener in reversed(stack))
     # 3. Remove excess closing braces/brackets (bounded to 50 iterations)
     for _ in range(50):
         try:

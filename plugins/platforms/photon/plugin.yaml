@@ -42,7 +42,7 @@ optional_env:
     prompt: "Webhook receiver path"
     password: false
   - name: PHOTON_WEBHOOK_BIND
-    description: "Bind address for the webhook receiver (default 0.0.0.0)"
+    description: "Bind address for the webhook receiver (default 127.0.0.1; set 0.0.0.0 only for the public Photon-cloud webhook path, and only with a signing secret)"
     prompt: "Webhook bind address"
     password: false
   - name: PHOTON_SIDECAR_PORT

@@ -473,3 +473,11 @@ def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(adapter_mod.shutil, "which", lambda _name: None)
     assert adapter_mod.check_requirements() is False
+
+
+def test_webhook_binds_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Secure-by-default: the inbound receiver must not be exposed to the network
+    # unless the operator explicitly opts in (the sidecar bridges over loopback).
+    monkeypatch.delenv("PHOTON_WEBHOOK_BIND", raising=False)
+    adapter = _make_adapter(monkeypatch)
+    assert adapter._webhook_bind == "127.0.0.1"

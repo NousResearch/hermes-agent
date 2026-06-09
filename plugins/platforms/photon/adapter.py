@@ -79,7 +79,13 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_WEBHOOK_PORT = 8788
 _DEFAULT_WEBHOOK_PATH = "/photon/webhook"
-_DEFAULT_WEBHOOK_BIND = "0.0.0.0"
+# Bind the inbound webhook receiver to loopback by default. The sidecar bridges
+# inbound over the gRPC stream and POSTs to 127.0.0.1, so loopback is all that's
+# needed — and binding 0.0.0.0 would expose the receiver to the network, where
+# (with no PHOTON_WEBHOOK_SECRET) an attacker could inject forged inbound
+# messages. The public Photon-cloud webhook path is opt-in: set
+# PHOTON_WEBHOOK_BIND=0.0.0.0 *and* a signing secret.
+_DEFAULT_WEBHOOK_BIND = "127.0.0.1"
 
 _DEFAULT_SIDECAR_PORT = 8789
 _DEFAULT_SIDECAR_BIND = "127.0.0.1"
@@ -457,6 +463,17 @@ class PhotonAdapter(BasePlatformAdapter):
         app = web.Application(client_max_size=2 * 1024 * 1024)
         app.router.add_post(self._webhook_path, self._handle_webhook)
         app.router.add_get("/healthz", lambda _: web.Response(text="ok"))
+        # Fail loud if the receiver is exposed beyond loopback without a signing
+        # secret — that combination accepts forged inbound from any network peer.
+        if self._webhook_bind not in ("127.0.0.1", "::1", "localhost") and (
+            not self._webhook_secret
+        ):
+            logger.warning(
+                "[photon] webhook bound to %s with NO PHOTON_WEBHOOK_SECRET — "
+                "this accepts UNSIGNED inbound from the network. Set a signing "
+                "secret, or bind to 127.0.0.1 (the default).",
+                self._webhook_bind,
+            )
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._webhook_bind, self._webhook_port)
@@ -1231,6 +1248,11 @@ async def _run_quiet(args: List[str], timeout: float = 45.0) -> int:
         await asyncio.wait_for(proc.wait(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        # Reap the killed process so it doesn't linger as a zombie.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            pass
         return 1
     return proc.returncode or 0
 

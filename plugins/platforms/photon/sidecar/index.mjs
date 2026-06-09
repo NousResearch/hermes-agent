@@ -169,6 +169,12 @@ const senderId = (m) =>
     ? m.sender.id
     : m?.sender?.id?.phone || m?.sender?.phone || "";
 
+// Mask a phone/handle for logs — keep enough to debug, never the full PII.
+const maskHandle = (h) => {
+  const s = String(h || "");
+  return s.length <= 6 ? "***" : `${s.slice(0, 3)}***${s.slice(-2)}`;
+};
+
 // In-memory dedup (the adapter dedups too; this is belt-and-suspenders and also
 // covers the spectrum reconnect/catch-up replay that re-emits recent messages).
 const _seen = new Map();
@@ -310,7 +316,9 @@ async function handleInbound(space, message) {
   if (!id || isDuplicate(id)) return;
   const from = senderId(message);
   if (ALLOW.size && from && !ALLOW.has(from)) {
-    console.error(`photon-sidecar: drop non-allowlisted sender ${from}`);
+    console.error(
+      `photon-sidecar: drop non-allowlisted sender ${maskHandle(from)}`
+    );
     return;
   }
   // Fire-and-forget read receipt (handles its own errors); don't delay forward.

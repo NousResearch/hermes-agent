@@ -255,6 +255,63 @@ class TestGenerateGeminiTts:
 
         assert mock_post.call_args[0][0].startswith("https://custom-gemini.example.com/v1beta/")
 
+    def test_persona_prompt_file_appends_labeled_transcript(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        persona_file = tmp_path / "voice-persona.md"
+        persona_file.write_text(
+            "# AUDIO PROFILE: Dry Butler\n\n### DIRECTOR'S NOTES\nStyle: Understated.",
+            encoding="utf-8",
+        )
+        config = {"gemini": {"persona_prompt_file": str(persona_file)}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert "Synthesize speech from the TRANSCRIPT only" in prompt_text
+        assert "# AUDIO PROFILE: Dry Butler" in prompt_text
+        assert "### DIRECTOR'S NOTES\nStyle: Understated." in prompt_text
+        assert "#### TRANSCRIPT\nHi" in prompt_text
+
+    def test_persona_prompt_file_supports_transcript_placeholder(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        persona_file = tmp_path / "voice-persona.md"
+        persona_file.write_text(
+            "### DIRECTOR'S NOTES\nPacing: Slow.\n\n#### TRANSCRIPT\n{{ transcript }}",
+            encoding="utf-8",
+        )
+        config = {"gemini": {"persona_prompt_file": str(persona_file)}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Read this.", str(tmp_path / "test.wav"), config)
+
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert "{{ transcript }}" not in prompt_text
+        assert "#### TRANSCRIPT\nRead this." in prompt_text
+
+    def test_missing_persona_prompt_file_warns_and_continues(
+        self, tmp_path, monkeypatch, caplog, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        config = {"gemini": {"persona_prompt_file": str(tmp_path / "missing.md")}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert prompt_text == "Hi"
+        assert "persona prompt file unavailable" in caplog.text
+
 
 class TestGeminiInCheckRequirements:
     def test_gemini_api_key_satisfies_requirements(self, monkeypatch):

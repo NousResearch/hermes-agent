@@ -85,7 +85,7 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).not.toHaveBeenCalled()
   })
 
-  it('uses the registered in-app picker in remote mode', async () => {
+  it('uses the registered in-app directory picker in remote mode', async () => {
     const remoteSelect = vi.fn(async () => ['/remote/project'])
     $connection.set({ mode: 'remote' } as never)
     setDesktopFsRemotePicker({ selectPaths: remoteSelect })
@@ -95,6 +95,18 @@ describe('desktop filesystem facade', () => {
     ])
 
     expect(remoteSelect).toHaveBeenCalledWith({ defaultPath: '/remote', directories: true, multiple: false })
+    expect(selectPaths).not.toHaveBeenCalled()
+  })
+
+  it('does not treat the remote directory picker as a general file picker', async () => {
+    const remoteSelect = vi.fn(async () => ['/remote/project'])
+    $connection.set({ mode: 'remote' } as never)
+    setDesktopFsRemotePicker({ selectPaths: remoteSelect })
+
+    await expect(selectDesktopPaths({ directories: false, multiple: false })).resolves.toEqual([])
+    await expect(selectDesktopPaths({ directories: true, multiple: true })).resolves.toEqual([])
+
+    expect(remoteSelect).not.toHaveBeenCalled()
     expect(selectPaths).not.toHaveBeenCalled()
   })
 })

@@ -97,7 +97,7 @@ async function gitignoreFor(dir: string) {
   let cached = gitignoreCache.get(key)
 
   if (!cached) {
-    cached = readGitignore(key)
+    cached = readGitignore(clean(dir))
     gitignoreCache.set(key, cached)
   }
 

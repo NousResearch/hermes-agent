@@ -1245,6 +1245,19 @@ def init_agent(
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
 
+    # Per-platform hint suffix. Users add extra formatting rules that get
+    # appended to the built-in PLATFORM_HINTS. Lives under the platform
+    # section in config (e.g. matrix.platform_hint_suffix), not agent:.
+    agent._platform_hint_suffixes = {}
+    try:
+        for _section_key, _section in _agent_cfg.items():
+            if isinstance(_section, dict) and "platform_hint_suffix" in _section:
+                _sfx = _section.get("platform_hint_suffix", "")
+                if isinstance(_sfx, str) and _sfx.strip():
+                    agent._platform_hint_suffixes[_section_key] = _sfx.strip()
+    except Exception:
+        pass
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

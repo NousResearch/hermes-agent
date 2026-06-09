@@ -1907,6 +1907,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in rooms
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+        # "platform_hint_suffix": "",  # Append custom text to the built-in system prompt hint for ANY platform (matrix, telegram, discord, etc.)
     },
 
     # Approval mode for dangerous commands:

@@ -275,6 +275,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
         stable_parts.append(PLATFORM_HINTS[platform_key])
+        # Append user-configured platform hint suffix (e.g. matrix.platform_hint_suffix).
+        _suffixes = getattr(agent, "_platform_hint_suffixes", {})
+        if platform_key in _suffixes:
+            stable_parts.append(_suffixes[platform_key])
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:

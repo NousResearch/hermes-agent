@@ -1162,6 +1162,29 @@ agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
 
+## Platform Hint Suffix
+
+Hermes injects platform-specific guidance into the system prompt — formatting rules for Matrix, Markdown guidance for Telegram/Discord, character limits for SMS, etc. The `platform_hint_suffix` key lets you append custom rules to these built-in hints without editing the source code.
+
+Place it under any platform's config section:
+
+```yaml
+matrix:
+  platform_hint_suffix: |-
+    Also remember: always use emoji reactions for acknowledgment.
+
+telegram:
+  platform_hint_suffix: |-
+    Always reply in the user's language.
+    Keep messages under 500 characters.
+```
+
+The suffix is appended after the built-in hint in every session for that platform. Leave unset (default) for no additional guidance. Works with any platform that has a built-in PLATFORM_HINTS entry (Matrix, Telegram, Discord, Slack, Signal, WhatsApp, Feishu, DingTalk, WeCom, WeChat, Mattermost, SMS, Email, QQ, and custom plugin platforms with registered hints).
+
+:::note
+This appends to the built-in hint — it does not replace it. If you need to completely override the hint, the built-in text lives in `agent/prompt_builder.py`.
+:::
+
 ## TTS Configuration
 
 ```yaml

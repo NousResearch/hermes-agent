@@ -66,6 +66,34 @@ The gateway keys the session via `build_session_key()` from the embedded
 `SessionSource` — so populating the right discriminators is the single
 highest-correctness responsibility of the connector.
 
+### SessionSource fields (the wire surface)
+
+Source of truth: `SessionSource.to_dict()` in `gateway/session.py`. These are
+every key the gateway accepts on the wire. `platform`, `chat_id`, `chat_type`,
+`user_id`, `user_name`, `thread_id`, `chat_name`, and `chat_topic` are always
+present (may be `null`); the rest are included only when set.
+
+| Field | Type | Always sent | Meaning |
+| --- | --- | --- | --- |
+| `platform` | string | yes | Platform name (matches the descriptor's `platform`). |
+| `chat_id` | string | yes | Primary conversation id (channel/chat). Session-key discriminator. |
+| `chat_type` | string | yes | `dm` / `group` / `channel` / `thread` / `forum`. |
+| `chat_name` | string\|null | yes | Human-readable chat name. |
+| `user_id` | string\|null | yes | Message author id. Session-key discriminator. |
+| `user_name` | string\|null | yes | Author display name. |
+| `thread_id` | string\|null | yes | Thread/forum-topic id when in a thread. Session-key discriminator. |
+| `chat_topic` | string\|null | yes | Channel topic/description (Discord, Slack). |
+| `user_id_alt` | string | no | Platform-specific stable alt id (Signal UUID, Feishu union_id). |
+| `chat_id_alt` | string | no | Alternate chat id (e.g. Signal group internal id). |
+| `guild_id` | string | no | Discord guild / Slack workspace / Matrix server scope. **REQUIRED for Discord server isolation.** Session-key discriminator. |
+| `parent_chat_id` | string | no | Parent channel when `chat_id` refers to a thread. |
+| `message_id` | string | no | Id of the triggering message (for pin/reply/react). |
+
+> `is_bot` (author-is-a-bot/webhook classification) exists on the gateway-side
+> dataclass but is **intentionally NOT on the wire** in v1 — it is not part of
+> `to_dict()`. Do not add it to the connector's `SessionSource` until it is
+> first added here and to `to_dict()` (additive bump).
+
 ### SessionSource discriminators per platform
 
 | Platform | chat_id | chat_type | user_id | thread_id | guild_id |

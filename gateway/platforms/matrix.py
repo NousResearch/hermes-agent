@@ -196,6 +196,7 @@ MAX_MESSAGE_LENGTH = 4000
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
 from hermes_constants import get_hermes_dir as _get_hermes_dir
+from utils import env_var_enabled
 
 _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
 _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
@@ -974,9 +975,11 @@ class MatrixAdapter(BasePlatformAdapter):
                             # Escape hatch: print to stderr if explicitly opted in.
                             # Accepts both HERMES_PRINT_GENERATED_SECRETS and the
                             # legacy _ONCE suffix for backward compatibility.
-                            if os.environ.get(
+                            # Uses shared truthy parser so "false"/"0"/"off"
+                            # do NOT enable secret printing (egilewski review).
+                            if env_var_enabled(
                                 "HERMES_PRINT_GENERATED_SECRETS"
-                            ) or os.environ.get(
+                            ) or env_var_enabled(
                                 "HERMES_PRINT_GENERATED_SECRETS_ONCE"
                             ):
                                 import sys

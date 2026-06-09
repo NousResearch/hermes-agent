@@ -338,3 +338,54 @@ class TestRecoveryKeySecurity:
         assert not secret_file.exists()
 
         await adapter.disconnect()
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("false_val", ["false", "0", "no", "off", "False", "FALSE"])
+    async def test_false_valued_env_does_not_print_key(self, tmp_path, false_val):
+        """Regression: 'false'/'0'/'off' must NOT enable secret printing (egilewski review)."""
+        adapter, _, _, fake_mautrix = _setup_adapter_and_stubs(tmp_path)
+        from gateway.platforms import matrix as matrix_mod
+
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+             patch.dict("sys.modules", fake_mautrix), \
+             patch.object(matrix_mod, "_STORE_DIR", tmp_path), \
+             patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
+             patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
+             patch.dict(os.environ, {"HERMES_PRINT_GENERATED_SECRETS": false_val}), \
+             patch("builtins.print") as mock_print:
+            await adapter.connect()
+
+        key_printed = any(
+            "test-recovery-key-abc123" in str(c) for c in mock_print.call_args_list
+        )
+        assert not key_printed, (
+            f"HERMES_PRINT_GENERATED_SECRETS={false_val!r} should NOT print key"
+        )
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("false_val", ["false", "0", "no", "off"])
+    async def test_false_valued_legacy_env_does_not_print_key(self, tmp_path, false_val):
+        """Regression: legacy _ONCE suffix with false values must not print key."""
+        adapter, _, _, fake_mautrix = _setup_adapter_and_stubs(tmp_path)
+        from gateway.platforms import matrix as matrix_mod
+
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+             patch.dict("sys.modules", fake_mautrix), \
+             patch.object(matrix_mod, "_STORE_DIR", tmp_path), \
+             patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
+             patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
+             patch.dict(os.environ, {"HERMES_PRINT_GENERATED_SECRETS_ONCE": false_val}), \
+             patch("builtins.print") as mock_print:
+            await adapter.connect()
+
+        key_printed = any(
+            "test-recovery-key-abc123" in str(c) for c in mock_print.call_args_list
+        )
+        assert not key_printed, (
+            f"HERMES_PRINT_GENERATED_SECRETS_ONCE={false_val!r} should NOT print key"
+        )
+
+        await adapter.disconnect()

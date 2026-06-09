@@ -23,6 +23,16 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+_PROXY_ENV_KEYS = (
+    "HERMES_UPDATE_PROXY",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
@@ -107,6 +117,7 @@ def _ensure_uv_path() -> Optional[str]:
     except Exception as exc:
         logger.warning("Managed uv install failed: %s", exc)
         print(f"  ✗ Failed to install managed uv: {exc}")
+        _print_installer_proxy_guidance(os.environ)
         return None
 
     # Verify
@@ -191,6 +202,27 @@ def update_managed_uv() -> Optional[str]:
 # Installer internals
 # ---------------------------------------------------------------------------
 
+def _installer_proxy(env: dict[str, str]) -> Optional[str]:
+    """Return the proxy URL the standalone installer should use, if any."""
+    for key in _PROXY_ENV_KEYS:
+        value = (env.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _print_installer_proxy_guidance(env: dict[str, str]) -> None:
+    """Print proxy guidance after a managed uv installer failure."""
+    if _installer_proxy(env):
+        print("  A proxy is configured for this installer run.")
+        print("  Verify the proxy URL can reach https://astral.sh and retry.")
+        return
+
+    print("  If you are behind a proxy, retry with:")
+    print("    hermes update --proxy http://proxy-host:port")
+    print("  Or set HTTPS_PROXY/HTTP_PROXY in your shell before updating.")
+
+
 def _install_uv(target: Path) -> None:
     """Bootstrap uv into *target* using the official standalone installer.
 
@@ -220,8 +252,18 @@ def _install_uv_posix(env: dict[str, str]) -> None:
         installer_path = f.name
 
     try:
+        curl_cmd = [
+            "curl",
+            "-LsSf",
+            "https://astral.sh/uv/install.sh",
+            "-o",
+            installer_path,
+        ]
+        proxy = _installer_proxy(env)
+        if proxy:
+            curl_cmd[1:1] = ["--proxy", proxy]
         subprocess.run(
-            ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
+            curl_cmd,
             check=True,
             capture_output=True,
         )
@@ -241,7 +283,16 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 def _install_uv_windows(env: dict[str, str]) -> None:
     """Invoke the PowerShell installer."""
     cmd = (
-        'irm https://astral.sh/uv/install.ps1 | iex'
+        "$proxy = $env:HERMES_UPDATE_PROXY; "
+        "if (-not $proxy) { $proxy = $env:HTTPS_PROXY }; "
+        "if (-not $proxy) { $proxy = $env:https_proxy }; "
+        "if (-not $proxy) { $proxy = $env:HTTP_PROXY }; "
+        "if (-not $proxy) { $proxy = $env:http_proxy }; "
+        "if (-not $proxy) { $proxy = $env:ALL_PROXY }; "
+        "if (-not $proxy) { $proxy = $env:all_proxy }; "
+        "$params = @{ Uri = 'https://astral.sh/uv/install.ps1' }; "
+        "if ($proxy) { $params['Proxy'] = $proxy }; "
+        "Invoke-RestMethod @params | Invoke-Expression"
     )
     subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],

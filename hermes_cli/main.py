@@ -7788,6 +7788,54 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _apply_update_proxy_env(args) -> str | None:
+    """Apply ``hermes update --proxy`` to this process and its children."""
+    proxy = str(getattr(args, "proxy", "") or "").strip()
+    if not proxy:
+        return None
+
+    for key in (
+        "HERMES_UPDATE_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "all_proxy",
+    ):
+        os.environ[key] = proxy
+    return proxy
+
+
+def _current_update_proxy() -> str | None:
+    """Return the proxy currently visible to update network subprocesses."""
+    for key in (
+        "HERMES_UPDATE_PROXY",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _print_update_proxy_guidance() -> None:
+    """Print a concise proxy hint for update network failures."""
+    if _current_update_proxy():
+        print("  A proxy is configured for this update.")
+        print("  Verify the proxy URL can reach the update hosts and retry.")
+        return
+
+    print("  If you are behind a proxy, retry with:")
+    print("    hermes update --proxy http://proxy-host:port")
+    print("  Or set HTTPS_PROXY/HTTP_PROXY in your shell before updating.")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -7815,6 +7863,9 @@ def cmd_update(args):
     if detect_install_method(PROJECT_ROOT) == "docker":
         print(format_docker_update_message())
         sys.exit(1)
+
+    if _apply_update_proxy_env(args):
+        print("→ Using update proxy from --proxy")
 
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
@@ -8040,6 +8091,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if "Could not resolve host" in stderr or "unable to access" in stderr:
                 print("✗ Network error — cannot reach the remote repository.")
                 print(f"  {stderr.splitlines()[0]}" if stderr else "")
+                _print_update_proxy_guidance()
             elif (
                 "Authentication failed" in stderr or "could not read Username" in stderr
             ):

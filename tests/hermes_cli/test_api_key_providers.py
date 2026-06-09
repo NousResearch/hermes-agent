@@ -1172,6 +1172,31 @@ class TestNovitaProvider:
         assert float(result["prompt"]) == 2690 / 10_000 / 1_000_000
         assert float(result["completion"]) == 4000 / 10_000 / 1_000_000
 
+    def test_extract_pricing_skips_list_typed_values(self):
+        """_extract_pricing must not crash when pricing values are lists.
+
+        Some providers (e.g. zenmux.ai) return pricing as a list of objects
+        instead of a scalar number.  The ``not in {None, ""}`` membership
+        check raises ``TypeError: unhashable type: 'list'`` on list values.
+        """
+        from agent.model_metadata import _extract_pricing
+
+        payload = {
+            "id": "some/model",
+            "pricing": {
+                "prompt": [{"value": 2, "unit": "perMTokens"}],
+                "completion": [{"value": 4, "unit": "perMTokens"}],
+                "request": 0.001,
+            },
+        }
+        # Must not raise TypeError; list values are skipped, scalar is kept.
+        result = _extract_pricing(payload)
+        assert "request" in result
+        assert result["request"] == 0.001
+        # List-typed fields are silently ignored.
+        assert "prompt" not in result
+        assert "completion" not in result
+
     def test_novita_pricing_cache(self, monkeypatch):
         """_fetch_novita_pricing should cache results in _pricing_cache."""
         from hermes_cli import models as models_mod

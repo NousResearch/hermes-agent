@@ -287,7 +287,8 @@ export const zh: Translations = {
       technical: '技术',
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
-      themeDesc: '仅桌面端调色板。所选模式叠加其上。'
+      themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -311,7 +312,11 @@ export const zh: Translations = {
         backend: '执行后端',
         timeout: '命令超时',
         persistentShell: '持久化 Shell',
-        envPassthrough: '环境变量透传'
+        envPassthrough: '环境变量透传',
+        dockerImage: 'Docker 镜像',
+        singularityImage: 'Singularity 镜像',
+        modalImage: 'Modal 镜像',
+        daytonaImage: 'Daytona 镜像'
       },
       fileReadMaxChars: '文件读取上限',
       toolOutput: {
@@ -352,6 +357,15 @@ export const zh: Translations = {
           model: '本地转写模型',
           language: '转写语言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 语言',
@@ -371,6 +385,33 @@ export const zh: Translations = {
         elevenlabs: {
           voiceId: 'ElevenLabs 语音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 语音',
+          language: 'xAI 语言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 语音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 语音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 语音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 设备'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 语音'
+        },
+        piper: {
+          voice: 'Piper 语音'
         }
       },
       memory: {
@@ -1384,9 +1425,13 @@ export const zh: Translations = {
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
     connectionRetry: '请检查网络连接后重试。',
     latestBody: '你正在运行最新版本。',
+    latestBodyBackend: '后端正在运行最新版本。',
     allSetTitle: '已是最新',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安装。',
+    availableTitleBackend: '后端有可用更新',
+    availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
+    availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
@@ -1397,10 +1442,19 @@ export const zh: Translations = {
     copied: '已复制',
     done: '完成',
     applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后重新打开 Hermes。',
+    applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: 'Hermes 将关闭以应用更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
-    notNow: '暂不'
+    notNow: '暂不',
+    applyStatus: {
+      preparing: '正在更新后端…',
+      pulling: '后端更新中…',
+      restarting: '后端正在重启以加载更新…',
+      notAvailable: '此后端无法更新。',
+      failed: '后端更新失败。',
+      noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
+    }
   },
 
   install: {
@@ -1580,6 +1634,9 @@ export const zh: Translations = {
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `后端 v${version}`,
+      clientLabel: version => `客户端 v${version}`,
+      backendLabel: version => `后端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '关闭命令中心',
@@ -1604,8 +1661,8 @@ export const zh: Translations = {
       contextUsage: '上下文用量',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
-      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。',
-      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。',
+      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
+      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。Shift+点击可全局切换。',
       modelNone: '无',
       noModel: '无模型',
       switchModel: '切换模型',

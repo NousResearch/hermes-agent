@@ -7,6 +7,7 @@ import type {
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
@@ -53,6 +54,7 @@ export type {
   AnalyticsSkillEntry,
   AnalyticsSkillsSummary,
   AnalyticsTotals,
+  BackendUpdateCheckResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
@@ -683,6 +685,15 @@ export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     path: '/api/hermes/update',
     method: 'POST'
+  })
+}
+
+/** Query the connected backend's own update state. In remote mode this is the
+ *  authoritative source for the backend's behind-count + "what's changed",
+ *  distinct from the Electron client clone's git state. */
+export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResponse> {
+  return window.hermesDesktop.api<BackendUpdateCheckResponse>({
+    path: `/api/hermes/update/check${force ? '?force=true' : ''}`
   })
 }
 

@@ -243,6 +243,57 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    # ── GET /api/media (remote image display) ───────────────────────────
+
+    def test_get_media_serves_image_in_root(self):
+        """An image under the gateway's images dir is returned as a data URL."""
+        from hermes_constants import get_hermes_home
+
+        img_dir = get_hermes_home() / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        img = img_dir / "shot.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        resp = self.client.get("/api/media", params={"path": str(img)})
+        assert resp.status_code == 200
+        assert resp.json()["data_url"].startswith("data:image/png;base64,")
+
+    def test_get_media_rejects_path_outside_roots(self, tmp_path):
+        """An image-extension file outside the media roots is forbidden."""
+        outside = tmp_path / "secret.png"
+        outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        resp = self.client.get("/api/media", params={"path": str(outside)})
+        assert resp.status_code == 403
+
+    def test_get_media_rejects_non_image_extension(self):
+        from hermes_constants import get_hermes_home
+
+        img_dir = get_hermes_home() / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        env = img_dir / "leak.env"
+        env.write_text("SECRET=1")
+
+        resp = self.client.get("/api/media", params={"path": str(env)})
+        assert resp.status_code == 415
+
+    def test_get_media_404_for_missing_file(self):
+        from hermes_constants import get_hermes_home
+
+        missing = get_hermes_home() / "images" / "nope.png"
+        resp = self.client.get("/api/media", params={"path": str(missing)})
+        assert resp.status_code == 404
+
+    def test_get_media_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.get(
+            "/api/media",
+            params={"path": "/tmp/x.png"},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+        assert resp.status_code == 401
+
     # ── Dashboard font override ─────────────────────────────────────────
 
     def test_get_dashboard_font_defaults_to_theme(self):
@@ -587,6 +638,37 @@ class TestWebServerEndpoints:
             for r in results
         )
 
+    def test_get_session_messages_follows_compression_tip(self):
+        """Reading a compressed session by its old id should hydrate from the
+        live continuation, matching /resume behavior."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="desktop-root", source="cli")
+            db.append_message(session_id="desktop-root", role="user", content="before compression")
+            db.end_session("desktop-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 10, now - 5, "desktop-root"),
+            )
+            db.create_session(session_id="desktop-tip", source="cli", parent_session_id="desktop-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 4, "desktop-tip"))
+            db.replace_messages("desktop-root", [])
+            db.append_message(session_id="desktop-tip", role="user", content="after compression")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/desktop-root/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["session_id"] == "desktop-tip"
+        assert [m["content"] for m in payload["messages"]] == ["after compression"]
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 
@@ -771,6 +853,69 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json() == {"ok": True, "pid": 12345, "name": "hermes-update"}
         assert calls == [(["update"], "hermes-update")]
+
+    def test_action_status_reaps_completed_process(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        waited = {"done": False}
+
+        class _Proc:
+            pid = 42424
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                waited["done"] = True
+
+        proc = _Proc()
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS["hermes-update"] = proc
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["running"] is False
+        assert data["exit_code"] == 0
+        assert data["pid"] == 42424
+
+        # Process should have been reaped and moved to results.
+        assert waited["done"] is True
+        assert "hermes-update" not in web_server._ACTION_PROCS
+        assert web_server._ACTION_RESULTS["hermes-update"] == {
+            "exit_code": 0,
+            "pid": 42424,
+        }
+
+    def test_action_status_ignores_wait_failure(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class _Proc:
+            pid = 99
+
+            def poll(self):
+                return 1
+
+            def wait(self, timeout=None):
+                raise OSError("already reaped")
+
+        proc = _Proc()
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS["hermes-update"] = proc
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["exit_code"] == 1
+        # Still reaped despite wait() raising.
+        assert "hermes-update" not in web_server._ACTION_PROCS
+        assert web_server._ACTION_RESULTS["hermes-update"] == {
+            "exit_code": 1,
+            "pid": 99,
+        }
+
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -1082,6 +1227,74 @@ class TestWebServerEndpoints:
         assert data["ok"] is False
         assert data["state"] == "not_configured"
         assert "DISCORD_BOT_TOKEN" in data["message"]
+
+    def test_telegram_onboarding_worker_request_uses_httpx(self, monkeypatch):
+        import httpx
+        import hermes_cli.web_server as ws
+
+        calls = {}
+
+        def fail_urlopen(*_args, **_kwargs):
+            raise AssertionError("Telegram onboarding should not use urllib")
+
+        class FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                calls["client_kwargs"] = kwargs
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return False
+
+            def request(self, method, url, **kwargs):
+                calls["request"] = (method, url, kwargs)
+                return httpx.Response(
+                    201,
+                    json={"ok": True},
+                    request=httpx.Request(method, url),
+                )
+
+        monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "https://worker.example")
+        monkeypatch.setattr(ws.urllib.request, "urlopen", fail_urlopen)
+        monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
+
+        payload = ws._telegram_onboarding_request_sync(
+            "POST",
+            "/v1/telegram/pairings",
+            body={"bot_name": "Hermes Agent"},
+            bearer_token="poll-secret",
+        )
+
+        assert payload == {"ok": True}
+        method, url, kwargs = calls["request"]
+        assert method == "POST"
+        assert url == "https://worker.example/v1/telegram/pairings"
+        assert kwargs["json"] == {"bot_name": "Hermes Agent"}
+        assert kwargs["headers"]["Accept"] == "application/json"
+        assert kwargs["headers"]["Authorization"] == "Bearer poll-secret"
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+        assert kwargs["headers"]["User-Agent"].startswith("HermesDashboard/")
+
+    def test_telegram_onboarding_worker_request_maps_unexpected_errors(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "not a valid url")
+
+        with pytest.raises(ws.HTTPException) as exc:
+            ws._telegram_onboarding_request_sync(
+                "POST",
+                "/v1/telegram/pairings",
+                body={"bot_name": "Hermes Agent"},
+            )
+
+        assert exc.value.status_code == 502
+        assert (
+            exc.value.detail
+            == "Telegram setup service is unavailable. Try again shortly."
+        )
 
     def test_telegram_onboarding_start_strips_poll_token(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -3932,6 +4145,39 @@ class TestPtyWebSocket:
 
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
+
+    def test_resolve_chat_argv_applies_terminal_backend_config(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import hermes_cli.main as main_mod
+
+        config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "terminal:",
+                    "  backend: docker",
+                    "  docker_image: example/hermes-tools:latest",
+                    "  docker_extra_args:",
+                    "    - --network=host",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_IMAGE", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_EXTRA_ARGS", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["TERMINAL_ENV"] == "docker"
+        assert env["TERMINAL_DOCKER_IMAGE"] == "example/hermes-tools:latest"
+        assert env["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
 
     def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)

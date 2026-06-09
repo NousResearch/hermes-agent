@@ -46,7 +46,12 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
+from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+
+import hmac
+import os
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
@@ -92,6 +97,113 @@ def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
         # cleanly because it's the caller.
         return True
     return bool(_ws._ws_auth_ok(ws))
+
+
+# ---------------------------------------------------------------------------
+# Cloud bearer-token auth (origin-aware)
+# ---------------------------------------------------------------------------
+#
+# The dashboard's auth middleware skips /api/plugins/* by design (localhost
+# only). For cloud callers coming through a tunnel (Tailscale Funnel, ngrok),
+# we require a bearer token. Localhost callers keep the existing no-auth UX.
+# Token is stored at ~/.hermes/cloud-token (mode 600), one per cloud caller,
+# rotatable, with optional scopes embedded in the token itself (future).
+# ---------------------------------------------------------------------------
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+def _load_cloud_token() -> Optional[str]:
+    """Load the cloud bearer token from ~/.hermes/cloud-token (mode 600).
+
+    Returns None if the file doesn't exist or is unreadable.
+    """
+    token_path = Path(os.path.expanduser("~/.hermes/cloud-token"))
+    try:
+        if token_path.exists():
+            return token_path.read_text().strip()
+    except Exception:
+        pass
+    return None
+
+
+def _is_local_request(request: Request) -> bool:
+    """Check if the request originates from localhost (127.0.0.0/8 or ::1)."""
+    client = request.client
+    if client is None:
+        return False
+    host = client.host
+    # IPv4 localhost
+    if host == "127.0.0.1" or host.startswith("127."):
+        return True
+    # IPv6 localhost
+    if host == "::1" or host == "0:0:0:0:0:0:0:1":
+        return True
+    return False
+
+
+async def _require_bearer_if_remote(
+    request: Request,
+    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> str:
+    """Require bearer token for non-localhost callers.
+
+    Localhost callers (dashboard UI, local CLI via dashboard port) pass through
+    without a token. Non-localhost callers (cloud via tunnel) must present a
+    valid bearer token matching ~/.hermes/cloud-token.
+    """
+    # Localhost keeps existing UX — no token required
+    if _is_local_request(request):
+        return "local"
+
+    # Remote caller — require bearer
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            detail="bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    expected = _load_cloud_token()
+    if not expected or not hmac.compare_digest(creds.credentials, expected):
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="invalid token",
+        )
+
+    return creds.credentials
+
+
+async def _ws_upgrade_authorized_cloud(ws: WebSocket) -> bool:
+    """WebSocket upgrade auth with origin-aware bearer for cloud callers.
+
+    Localhost upgrades (dashboard UI) use the existing session-token gate.
+    Non-localhost upgrades (cloud via tunnel) require bearer token.
+    """
+    # Check origin first
+    client = ws.client
+    is_local = False
+    if client is not None:
+        host = client.host
+        if host == "127.0.0.1" or host.startswith("127.") or host == "::1" or host == "0:0:0:0:0:0:0:1":
+            is_local = True
+
+    if is_local:
+        # Local caller — delegate to existing dashboard WS gate
+        return _ws_upgrade_authorized(ws)
+
+    # Remote caller — require bearer token in query string
+    # Browser SDK's buildWsUrl() assembles ?token= for us; cloud side
+    # passes the bearer token as ?bearer=<token>
+    bearer = ws.query_params.get("bearer")
+    if not bearer:
+        return False
+
+    expected = _load_cloud_token()
+    if not expected or not hmac.compare_digest(bearer, expected):
+        return False
+
+    return True
 
 
 def _resolve_board(board: Optional[str]) -> Optional[str]:
@@ -594,7 +706,7 @@ class CreateTaskBody(BaseModel):
     goal_max_turns: Optional[int] = None
 
 
-@router.post("/tasks")
+@router.post("/tasks", dependencies=[Depends(_require_bearer_if_remote)])
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -684,7 +796,7 @@ def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
         conn.close()
 
 
-@router.post("/tasks/{task_id}/attachments")
+@router.post("/tasks/{task_id}/attachments", dependencies=[Depends(_require_bearer_if_remote)])
 async def upload_task_attachment(
     task_id: str,
     file: UploadFile = File(...),
@@ -786,7 +898,7 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         conn.close()
 
 
-@router.delete("/attachments/{attachment_id}")
+@router.delete("/attachments/{attachment_id}", dependencies=[Depends(_require_bearer_if_remote)])
 def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -818,7 +930,7 @@ class UpdateTaskBody(BaseModel):
     metadata: Optional[dict] = None
 
 
-@router.patch("/tasks/{task_id}")
+@router.patch("/tasks/{task_id}", dependencies=[Depends(_require_bearer_if_remote)])
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -941,7 +1053,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 # DELETE /tasks/:id
 # ---------------------------------------------------------------------------
 
-@router.delete("/tasks/{task_id}")
+@router.delete("/tasks/{task_id}", dependencies=[Depends(_require_bearer_if_remote)])
 def delete_task(task_id: str, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -1088,7 +1200,7 @@ class CommentBody(BaseModel):
     author: Optional[str] = "dashboard"
 
 
-@router.post("/tasks/{task_id}/comments")
+@router.post("/tasks/{task_id}/comments", dependencies=[Depends(_require_bearer_if_remote)])
 def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
@@ -1114,7 +1226,7 @@ class LinkBody(BaseModel):
     child_id: str
 
 
-@router.post("/links")
+@router.post("/links", dependencies=[Depends(_require_bearer_if_remote)])
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -1127,7 +1239,7 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
         conn.close()
 
 
-@router.delete("/links")
+@router.delete("/links", dependencies=[Depends(_require_bearer_if_remote)])
 def delete_link(
     parent_id: str = Query(...),
     child_id: str = Query(...),
@@ -1158,7 +1270,7 @@ class BulkTaskBody(BaseModel):
     reclaim_first: bool = False
 
 
-@router.post("/tasks/bulk")
+@router.post("/tasks/bulk", dependencies=[Depends(_require_bearer_if_remote)])
 def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
     """Apply the same patch to every id in ``payload.ids``.
 
@@ -1504,7 +1616,7 @@ class TerminateRunBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/runs/{run_id}/terminate")
+@router.post("/runs/{run_id}/terminate", dependencies=[Depends(_require_bearer_if_remote)])
 def terminate_run_endpoint(
     run_id: int,
     payload: TerminateRunBody,
@@ -1560,7 +1672,7 @@ class ReclaimBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/reclaim")
+@router.post("/tasks/{task_id}/reclaim", dependencies=[Depends(_require_bearer_if_remote)])
 def reclaim_task_endpoint(
     task_id: str,
     payload: ReclaimBody,
@@ -1598,7 +1710,7 @@ class SpecifyBody(BaseModel):
     author: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/specify")
+@router.post("/tasks/{task_id}/specify", dependencies=[Depends(_require_bearer_if_remote)])
 def specify_task_endpoint(
     task_id: str,
     payload: SpecifyBody,
@@ -1648,7 +1760,7 @@ class ReassignBody(BaseModel):
     reason: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/reassign")
+@router.post("/tasks/{task_id}/reassign", dependencies=[Depends(_require_bearer_if_remote)])
 def reassign_task_endpoint(
     task_id: str,
     payload: ReassignBody,
@@ -1810,7 +1922,7 @@ def get_home_channels(
     return {"home_channels": result}
 
 
-@router.post("/tasks/{task_id}/home-subscribe/{platform}")
+@router.post("/tasks/{task_id}/home-subscribe/{platform}", dependencies=[Depends(_require_bearer_if_remote)])
 def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
     """Subscribe *task_id* to notifications routed to *platform*'s home channel.
 
@@ -1845,7 +1957,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
         conn.close()
 
 
-@router.delete("/tasks/{task_id}/home-subscribe/{platform}")
+@router.delete("/tasks/{task_id}/home-subscribe/{platform}", dependencies=[Depends(_require_bearer_if_remote)])
 def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(None)):
     """Remove any notify subscription on *task_id* that matches *platform*'s home."""
     homes = _configured_home_channels()
@@ -1951,7 +2063,7 @@ def get_task_log(
 # Dispatch nudge (optional quick-path so the UI doesn't wait 60 s)
 # ---------------------------------------------------------------------------
 
-@router.post("/dispatch")
+@router.post("/dispatch", dependencies=[Depends(_require_bearer_if_remote)])
 def dispatch(
     dry_run: bool = Query(False),
     max_n: int = Query(8, alias="max"),
@@ -2022,7 +2134,7 @@ def list_boards(include_archived: bool = Query(False)):
     return {"boards": boards, "current": current}
 
 
-@router.post("/boards")
+@router.post("/boards", dependencies=[Depends(_require_bearer_if_remote)])
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a new board. Idempotent — ``slug`` collision returns existing."""
     try:
@@ -2043,7 +2155,7 @@ def create_board_endpoint(payload: CreateBoardBody):
     return {"board": meta, "current": kanban_db.get_current_board()}
 
 
-@router.patch("/boards/{slug}")
+@router.patch("/boards/{slug}", dependencies=[Depends(_require_bearer_if_remote)])
 def rename_board(slug: str, payload: RenameBoardBody):
     """Update a board's display metadata (slug is immutable — create a new one to rename the directory)."""
     try:
@@ -2062,7 +2174,7 @@ def rename_board(slug: str, payload: RenameBoardBody):
     return {"board": meta}
 
 
-@router.delete("/boards/{slug}")
+@router.delete("/boards/{slug}", dependencies=[Depends(_require_bearer_if_remote)])
 def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
     """Archive (default) or hard-delete a board."""
     try:
@@ -2072,7 +2184,7 @@ def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete
     return {"result": res, "current": kanban_db.get_current_board()}
 
 
-@router.post("/boards/{slug}/switch")
+@router.post("/boards/{slug}/switch", dependencies=[Depends(_require_bearer_if_remote)])
 def switch_board(slug: str):
     """Persist ``slug`` as the active board for subsequent CLI / slash calls.
 
@@ -2142,7 +2254,7 @@ def list_profile_roster():
     }
 
 
-@router.patch("/profiles/{profile_name}")
+@router.patch("/profiles/{profile_name}", dependencies=[Depends(_require_bearer_if_remote)])
 def update_profile_description(profile_name: str, payload: DescribeBody):
     """Set or clear the description of a profile.
 
@@ -2175,7 +2287,7 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
     return {"ok": True, "profile": canon, "description": text}
 
 
-@router.post("/profiles/{profile_name}/describe-auto")
+@router.post("/profiles/{profile_name}/describe-auto", dependencies=[Depends(_require_bearer_if_remote)])
 def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
     """Generate a description for the named profile via the auxiliary
     LLM (``auxiliary.profile_describer``). Persists with
@@ -2211,7 +2323,7 @@ class DecomposeBody(BaseModel):
     author: Optional[str] = None
 
 
-@router.post("/tasks/{task_id}/decompose")
+@router.post("/tasks/{task_id}/decompose", dependencies=[Depends(_require_bearer_if_remote)])
 def decompose_task_endpoint(
     task_id: str,
     payload: DecomposeBody,
@@ -2305,7 +2417,7 @@ def get_orchestration_settings():
     }
 
 
-@router.put("/orchestration")
+@router.put("/orchestration", dependencies=[Depends(_require_bearer_if_remote)])
 def set_orchestration_settings(payload: OrchestrationSettingsBody):
     """Update the kanban orchestration knobs in ~/.hermes/config.yaml.
 
@@ -2383,7 +2495,11 @@ async def stream_events(ws: WebSocket):
     # single-use ticket / server-internal credential). Browsers can't set
     # Authorization on a WS upgrade, so the credential rides in the query
     # string — the browser SDK's buildWsUrl() assembles it.
-    if not _ws_upgrade_authorized(ws):
+    #
+    # Cloud callers (via tunnel) use ?bearer=<token>; localhost uses the
+    # existing ?token= or ?ticket= gate. Origin-aware routing keeps the
+    # local dashboard UX intact while protecting the tunneled surface.
+    if not await _ws_upgrade_authorized_cloud(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
     await ws.accept()

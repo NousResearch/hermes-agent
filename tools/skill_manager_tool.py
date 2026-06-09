@@ -171,6 +171,32 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
+def _discover_skill_subdirs(skill_dir: Path) -> set[str]:
+    """Scan a skill directory and return names of subdirectories that
+    contain discoverable content files — for linked_files discovery.
+
+    This is used for read-side discovery only. Write validation still
+    uses ALLOWED_SUBDIRS for safety.
+    """
+    seen: set[str] = set()
+    if not skill_dir.exists():
+        return seen
+    try:
+        for entry in skill_dir.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            for f in entry.rglob("*"):
+                if f.is_file() and f.suffix in {
+                    ".md", ".py", ".sh", ".bash", ".yaml", ".yml",
+                    ".json", ".js", ".ts", ".rb", ".tex", ".txt",
+                }:
+                    seen.add(entry.name)
+                    break
+    except PermissionError:
+        pass
+    return seen
+
+
 # =============================================================================
 # Validation helpers
 # =============================================================================
@@ -793,7 +819,8 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if not target.exists():
         # List what's actually there for the model to see
         available = []
-        for subdir in ALLOWED_SUBDIRS:
+        found_subdirs = _discover_skill_subdirs(skill_dir)
+        for subdir in found_subdirs | ALLOWED_SUBDIRS:
             d = skill_dir / subdir
             if d.exists():
                 for f in d.rglob("*"):

@@ -16,6 +16,7 @@ from tools.skill_manager_tool import (
     _edit_skill,
     _patch_skill,
     _delete_skill,
+    _discover_skill_subdirs,
     _write_file,
     _remove_file,
     skill_manage,
@@ -957,3 +958,58 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# _discover_skill_subdirs — custom subdirectory auto-discovery
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverSkillSubdirs:
+    def test_finds_custom_subdirs_with_content(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "steps").mkdir()
+        (skill_dir / "steps" / "phase1.md").write_text("# Phase 1")
+        (skill_dir / "steps" / "phase2.md").write_text("# Phase 2")
+        (skill_dir / "checks").mkdir()
+        (skill_dir / "checks" / "preflight.py").write_text("print('ok')")
+
+        result = _discover_skill_subdirs(skill_dir)
+
+        assert "steps" in result
+        assert "checks" in result
+
+    def test_skips_empty_subdirectory(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "empty").mkdir()
+
+        result = _discover_skill_subdirs(skill_dir)
+
+        assert "empty" not in result
+
+    def test_skips_dot_directories(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / ".hidden").mkdir()
+        (skill_dir / ".hidden" / "secret.md").write_text("shh")
+
+        result = _discover_skill_subdirs(skill_dir)
+
+        assert ".hidden" not in result
+
+    def test_returns_empty_for_nonexistent_dir(self, tmp_path):
+        result = _discover_skill_subdirs(tmp_path / "nope")
+        assert result == set()
+
+    def test_includes_known_standard_subdirs(self, tmp_path):
+        """Standard dirs like references/ should also be discoverable."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "guide.md").write_text("guide")
+
+        result = _discover_skill_subdirs(skill_dir)
+
+        assert "references" in result

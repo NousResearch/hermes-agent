@@ -1262,44 +1262,47 @@ def skill_view(
         asset_files = []
         script_files = []
 
+        # Build linked files structure for clear discovery
+        linked_files = {}
+
+        # Auto-discover all subdirectories — known dirs use extension-globbing,
+        # custom dirs include all files.
         if skill_dir:
-            references_dir = skill_dir / "references"
-            if references_dir.exists():
-                reference_files = [
-                    str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")
-                ]
+            for entry in sorted(skill_dir.iterdir(), key=lambda e: e.name):
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                subdir_name = entry.name
 
-            templates_dir = skill_dir / "templates"
-            if templates_dir.exists():
-                for ext in [
-                    "*.md",
-                    "*.py",
-                    "*.yaml",
-                    "*.yml",
-                    "*.json",
-                    "*.tex",
-                    "*.sh",
-                ]:
-                    template_files.extend(
-                        [
-                            str(f.relative_to(skill_dir))
-                            for f in templates_dir.rglob(ext)
-                        ]
-                    )
-
-            # assets/ — agentskills.io standard directory for supplementary files
-            assets_dir = skill_dir / "assets"
-            if assets_dir.exists():
-                for f in assets_dir.rglob("*"):
-                    if f.is_file():
-                        asset_files.append(str(f.relative_to(skill_dir)))
-
-            scripts_dir = skill_dir / "scripts"
-            if scripts_dir.exists():
-                for ext in ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"]:
-                    script_files.extend(
-                        [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
-                    )
+                if subdir_name == "references":
+                    reference_files = [
+                        str(f.relative_to(skill_dir))
+                        for f in entry.glob("*.md")
+                    ]
+                elif subdir_name == "templates":
+                    for ext in [
+                        "*.md", "*.py", "*.yaml", "*.yml", "*.json",
+                        "*.tex", "*.sh",
+                    ]:
+                        template_files.extend(
+                            [str(f.relative_to(skill_dir)) for f in entry.rglob(ext)]
+                        )
+                elif subdir_name == "assets":
+                    for f in entry.rglob("*"):
+                        if f.is_file():
+                            asset_files.append(str(f.relative_to(skill_dir)))
+                elif subdir_name == "scripts":
+                    for ext in ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"]:
+                        script_files.extend(
+                            [str(f.relative_to(skill_dir)) for f in entry.glob(ext)]
+                        )
+                else:
+                    # Custom subdirectory — include all files as-is
+                    custom_files = []
+                    for f in entry.rglob("*"):
+                        if f.is_file():
+                            custom_files.append(str(f.relative_to(skill_dir)))
+                    if custom_files:
+                        linked_files[subdir_name] = custom_files
 
         # Read tags/related_skills with backward compat:
         # Check metadata.hermes.* first (agentskills.io convention), fall back to top-level
@@ -1314,7 +1317,6 @@ def skill_view(
         )
 
         # Build linked files structure for clear discovery
-        linked_files = {}
         if reference_files:
             linked_files["references"] = reference_files
         if template_files:

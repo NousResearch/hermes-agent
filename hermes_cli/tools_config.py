@@ -2752,6 +2752,9 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         web_cfg = config.setdefault("web", {})
         web_cfg["backend"] = provider["web_backend"]
         web_cfg["use_gateway"] = bool(managed_feature)
+        # Auto-set extract_backend to match when Tavily is selected
+        if provider["web_backend"] == "tavily" and not web_cfg.get("extract_backend"):
+            web_cfg["extract_backend"] = "tavily"
 
     # For tools without a specific config key (e.g. image_gen), still
     # track use_gateway so the runtime knows the user's intent.
@@ -3261,6 +3264,9 @@ def _reconfigure_provider(
         web_cfg = config.setdefault("web", {})
         web_cfg["backend"] = provider["web_backend"]
         web_cfg["use_gateway"] = bool(managed_feature)
+        # Auto-set extract_backend to match when Tavily is selected
+        if provider["web_backend"] == "tavily" and not web_cfg.get("extract_backend"):
+            web_cfg["extract_backend"] = "tavily"
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if managed_feature and managed_feature not in {"web", "tts", "browser"}:

@@ -20,6 +20,8 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.voice_bench import append_event as _voice_bench_append
+
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -4177,6 +4179,9 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
+                _tts_data = {}
+                _voice_turn_id = str(getattr(event, "voice_bench_id", "") or "")
+                _bench_platform = _platform_name(self.platform)
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -4188,13 +4193,37 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            _tts_start = time.perf_counter()
                             tts_result_str = await asyncio.to_thread(
                                 text_to_speech_tool, text=speech_text
                             )
+                            _tts_elapsed_ms = round((time.perf_counter() - _tts_start) * 1000, 1)
                             tts_data = _json.loads(tts_result_str)
+                            _tts_data = tts_data if isinstance(tts_data, dict) else {}
                             _tts_path = tts_data.get("file_path")
+                            if _voice_turn_id:
+                                _voice_bench_append({
+                                    "turn_id": _voice_turn_id,
+                                    "stage": "tts",
+                                    "platform": _bench_platform,
+                                    "chat_id": event.source.chat_id,
+                                    "message_id": getattr(event, "message_id", None),
+                                    "elapsed_ms": _tts_elapsed_ms,
+                                    "provider": _tts_data.get("provider"),
+                                    "voice_compatible": _tts_data.get("voice_compatible"),
+                                    "audio_path": os.path.basename(str(_tts_path or "")),
+                                })
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+                        if _voice_turn_id:
+                            _voice_bench_append({
+                                "turn_id": _voice_turn_id,
+                                "stage": "tts",
+                                "platform": _bench_platform,
+                                "chat_id": event.source.chat_id,
+                                "message_id": getattr(event, "message_id", None),
+                                "error": f"{type(tts_err).__name__}: {tts_err}"[:240],
+                            })
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
@@ -4207,12 +4236,25 @@ class BasePlatformAdapter(ABC):
                             and text_content[:1024] == text_content
                         ):
                             telegram_tts_caption = text_content
+                        _delivery_start = time.perf_counter()
                         tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
                             metadata=_thread_metadata,
                         )
+                        if _voice_turn_id:
+                            _voice_bench_append({
+                                "turn_id": _voice_turn_id,
+                                "stage": "delivery",
+                                "platform": _bench_platform,
+                                "chat_id": event.source.chat_id,
+                                "message_id": getattr(event, "message_id", None),
+                                "elapsed_ms": round((time.perf_counter() - _delivery_start) * 1000, 1),
+                                "method": "adapter_play_tts",
+                                "success": bool(getattr(tts_result, "success", False)),
+                                "error": str(getattr(tts_result, "error", "") or "")[:240],
+                            })
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )

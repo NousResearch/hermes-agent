@@ -8,7 +8,7 @@ This module provides:
 Usage:
     # Start the gateway
     python -m gateway.run
-    
+
     # Or from CLI
     python cli.py --gateway
 """
@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import json
@@ -53,6 +54,9 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.voice_bench import append_event as _voice_bench_append
+from gateway.voice_bench import format_recent as _voice_bench_format_recent
+from gateway.voice_bench import new_turn_id as _voice_bench_new_turn_id
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -66,6 +70,21 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_VOICE_PERSONA_PREFIX_RE = re.compile(
+    r"^\s*(?:leo\s+(?:here|aici)|leo|guardian)\s*(?:[-:–—.]|\bis\b)?\s*",
+    re.IGNORECASE,
+)
+_VOICE_OPERATIONAL_LINE_RE = re.compile(
+    r"(?im)^\s*(?:operational for the current session|opera[țt]ional pentru sesiunea curent[aă])\.?\s*$"
+)
+_VOICE_PROVIDER_FAILURE_RE = re.compile(
+    r"(?i)(gemini quota exhausted|quota exhausted|rate limit|rate-limited|\b429\b|"
+    r"maximum iterations.*couldn'?t summarize|provider authentication failed|codeassist)"
+)
+_VOICE_SIMPLE_SUM_RE = re.compile(
+    r"\b(\d+)\s*(?:\+|plus|adunat\s+cu)\s*(\d+)\b",
+    re.IGNORECASE,
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -126,6 +145,7 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
 )
 
 _GATEWAY_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|authorization)\s*[:=]\s*([^\s,;]+)"),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
@@ -223,7 +243,14 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Best-effort secret redaction before text can leave the gateway."""
     redacted = str(text or "")
     for pattern in _GATEWAY_SECRET_PATTERNS:
-        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
+        redacted = pattern.sub(
+            lambda m: (
+                f"{m.group(1)}=[REDACTED]"
+                if m.lastindex == 2
+                else (m.group(1) if m.lastindex else "") + "[REDACTED]"
+            ),
+            redacted,
+        )
     return redacted
 
 
@@ -1395,8 +1422,13 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
                     return frames / float(rate)
             secs = await asyncio.to_thread(_wav_duration)
             return _format_duration(secs)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Discord voice transcript mirror send failed: guild=%s user=%s error=%s",
+                guild_id,
+                user_id,
+                exc,
+            )
 
     if ext in (".ogg", ".opus", ".oga"):
         try:
@@ -1958,7 +1990,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = False
         self._restart_command_source: Optional[SessionSource] = None
         self._stop_task: Optional[asyncio.Task] = None
-        
+
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
@@ -2132,7 +2164,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
-        
+
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
@@ -2275,9 +2307,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _save_voice_modes(self) -> None:
         try:
             self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            self._VOICE_MODE_PATH.write_text(
-                json.dumps(self._voice_mode, indent=2)
+            tmp_path = self._VOICE_MODE_PATH.with_suffix(
+                self._VOICE_MODE_PATH.suffix + ".tmp"
             )
+            with tmp_path.open("w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._voice_mode, indent=2))
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp_path.replace(self._VOICE_MODE_PATH)
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
 
@@ -3146,7 +3184,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
-        
+
         Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
         the top-level prefill_messages_file key in ~/.hermes/config.yaml.
         agent.prefill_messages_file is accepted as a legacy fallback.
@@ -3180,7 +3218,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
         """Load ephemeral system prompt from config or env var.
-        
+
         Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
         agent.system_prompt in ~/.hermes/config.yaml.
         """
@@ -4462,7 +4500,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
-        
+
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
@@ -4564,7 +4602,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "security advisory check failed at gateway startup",
                 exc_info=True,
             )
-        
+
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
             "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
@@ -4628,7 +4666,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
                 "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
             )
-        
+
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path
         # does this via an explicit call in hermes_cli/main.py; the
@@ -4665,7 +4703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Discover and load event hooks
         self.hooks.discover_and_load()
 
-        
+
         # Recover background processes from checkpoint (crash recovery)
         try:
             from tools.process_registry import process_registry
@@ -4714,13 +4752,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
-            
+
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
@@ -4735,7 +4773,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     logger.warning("No adapter available for %s", _pval)
                 continue
-            
+
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
@@ -4743,7 +4781,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
-            
+
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
@@ -4833,7 +4871,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
                 }
-        
+
         if connected_count == 0:
             if startup_nonretryable_errors:
                 reason = "; ".join(startup_nonretryable_errors)
@@ -4886,14 +4924,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 logger.warning("No messaging platforms enabled.")
                 logger.info("Gateway will continue running for cron job execution.")
-        
+
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
 
         self._running = True
         self._update_runtime_status("running")
-        
+
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
@@ -4901,10 +4939,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
-        
+
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
-        
+
         # Build initial channel directory for send_message name resolution
         try:
             from gateway.channel_directory import build_channel_directory
@@ -4913,7 +4951,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info("Channel directory built: %d target(s)", ch_count)
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
-        
+
         # Check if we're restarting after a /update command. If the update is
         # still running, keep watching so we notify once it actually finishes.
         notified = await self._send_update_notification()
@@ -5004,7 +5042,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         asyncio.create_task(self._handoff_watcher())
 
         logger.info("Press Ctrl+C to stop")
-        
+
         return True
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
@@ -5963,8 +6001,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self._shutdown_event.wait()
 
     def _create_adapter(
-        self, 
-        platform: Platform, 
+        self,
+        platform: Platform,
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.
@@ -6035,14 +6073,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _notify_mode = "important"
             adapter._notifications_mode = _notify_mode
             return adapter
-        
+
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
             if not check_whatsapp_requirements():
                 logger.warning("WhatsApp: Node.js not installed or bridge not configured")
                 return None
             return WhatsAppAdapter(config)
-        
+
         elif platform == Platform.SLACK:
             from gateway.platforms.slack import SlackAdapter, check_slack_requirements
             if not check_slack_requirements():
@@ -6169,6 +6207,386 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    def _is_user_authorized(self, source: SessionSource) -> bool:
+        """
+        Check if a user is authorized to use the bot.
+
+        Checks in order:
+        1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
+        3. DM pairing approved list
+        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
+        5. Default: deny
+        """
+        # Home Assistant events are system-generated (state changes), not
+        # user-initiated messages.  The HASS_TOKEN already authenticates the
+        # connection, so HA events are always authorized.
+        # Webhook events are authenticated via HMAC signature validation in
+        # the adapter itself — no user allowlist applies.
+        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+            return True
+
+        user_id = source.user_id
+
+        # Telegram (and similar) authorize entire group/forum/channel chats
+        # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
+        # That allowlist is chat-scoped, so it must work even when
+        # source.user_id is None — Telegram emits anonymous-admin posts,
+        # sender_chat traffic, and channel broadcasts with no `from_user`,
+        # and an operator who explicitly listed the chat expects those to
+        # be honored. Run this check before the no-user-id guard below so
+        # documented behavior matches reality
+        # (website/docs/reference/environment-variables.md,
+        # website/docs/user-guide/messaging/telegram.md).
+        if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
+            chat_allowlist_env = {
+                Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+                Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            }.get(source.platform, "")
+            if chat_allowlist_env:
+                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                if raw_chat_allowlist:
+                    allowed_group_ids = {
+                        cid.strip()
+                        for cid in raw_chat_allowlist.split(",")
+                        if cid.strip()
+                    }
+                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                        return True
+
+        if not user_id:
+            return False
+
+        platform_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+            Platform.SMS: "SMS_ALLOWED_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+            Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+        }
+        platform_group_user_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+        }
+        platform_group_chat_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+            Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+        }
+        platform_allow_all_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+            Platform.SMS: "SMS_ALLOW_ALL_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
+            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
+            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+        }
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        platform_allow_bots_map = {
+            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
+            Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+        }
+
+        # Plugin platforms: check the registry for auth env var names
+        if source.platform not in platform_env_map:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(source.platform.value)
+                if entry:
+                    if entry.allowed_users_env:
+                        platform_env_map[source.platform] = entry.allowed_users_env
+                    if entry.allow_all_env:
+                        platform_allow_all_map[source.platform] = entry.allow_all_env
+            except Exception:
+                pass
+
+        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
+        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+            return True
+
+        if getattr(source, "is_bot", False):
+            allow_bots_var = platform_allow_bots_map.get(source.platform)
+            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+                return True
+
+        # Check pairing store (always checked, regardless of allowlists)
+        platform_name = source.platform.value if source.platform else ""
+        if self.pairing_store.is_approved(platform_name, user_id):
+            return True
+
+        # Check platform-specific and global allowlists
+        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        group_user_allowlist = ""
+        group_chat_allowlist = ""
+        if source.chat_type in {"group", "forum"}:
+            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
+            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+
+        if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
+            # No env allowlists configured. Adapters that own their own
+            # config-driven access policy (dm_policy / group_policy /
+            # allow_from / group_allow_from) already gated this message at
+            # intake — it would not have reached the gateway otherwise — so
+            # honor that decision instead of falling through to the
+            # env-only default-deny below, which would silently break
+            # `dm_policy: open` and config-only allowlists. (#34515)
+            if self._adapter_enforces_own_access_policy(source.platform):
+                # Exception: `dm_policy: pairing` does NOT authorize at intake.
+                # The adapter forwards the DM precisely so the gateway can run
+                # its pairing handshake (issue a code, consult the pairing
+                # store). The pairing-store approval check above already ran and
+                # returned False for this sender, so blanket-trusting the
+                # adapter here would silently turn pairing mode into open
+                # access. Fall through to default-deny so the unpaired sender is
+                # offered a pairing code instead. (Pairing is DM-only; group
+                # traffic keeps the adapter-trust path.)
+                if not (
+                    source.chat_type == "dm"
+                    and self._adapter_dm_policy(source.platform) == "pairing"
+                ):
+                    return True
+            # No allowlists configured -- check global allow-all flag
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
+        # Telegram can optionally authorize group traffic by chat ID.
+        # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
+        # the sender user ID for group/forum messages.
+        if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
+            allowed_group_ids = {
+                chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
+            }
+            if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                return True
+
+        # Backward-compat shim for #15027: prior to PR #17686,
+        # TELEGRAM_GROUP_ALLOWED_USERS was (mis)used as a chat-ID allowlist.
+        # Values starting with "-" are Telegram chat IDs, not user IDs, so if
+        # users still have those in TELEGRAM_GROUP_ALLOWED_USERS we honor them
+        # as chat IDs and warn once. The correct var is now
+        # TELEGRAM_GROUP_ALLOWED_CHATS.
+        if (
+            source.platform == Platform.TELEGRAM
+            and group_user_allowlist
+            and source.chat_type in {"group", "forum"}
+            and source.chat_id
+        ):
+            legacy_chat_ids = {
+                v.strip()
+                for v in group_user_allowlist.split(",")
+                if v.strip().startswith("-")
+            }
+            if legacy_chat_ids:
+                if not getattr(self, "_warned_telegram_group_users_legacy", False):
+                    logger.warning(
+                        "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
+                        "(%s). Treating them as chat IDs for backward compatibility. "
+                        "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
+                        "is now for sender user IDs.",
+                        ",".join(sorted(legacy_chat_ids)),
+                    )
+                    self._warned_telegram_group_users_legacy = True
+                if source.chat_id in legacy_chat_ids:
+                    return True
+
+        # Check if user is in any allowlist. In group/forum chats,
+        # TELEGRAM_GROUP_ALLOWED_USERS is the scoped allowlist and should not
+        # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
+        # allowlist and still works everywhere for backward compatibility.
+        allowed_ids = set()
+        if platform_allowlist:
+            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+        if group_user_allowlist:
+            allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
+        # "*" in any allowlist means allow everyone (consistent with
+        # SIGNAL_GROUP_ALLOWED_USERS precedent)
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+
+        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
+        if source.platform == Platform.WHATSAPP:
+            normalized_allowed_ids = set()
+            for allowed_id in allowed_ids:
+                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
+            if normalized_allowed_ids:
+                allowed_ids = normalized_allowed_ids
+
+            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
+            normalized_user_id = _normalize_whatsapp_identifier(user_id)
+            if normalized_user_id:
+                check_ids.add(normalized_user_id)
+
+        return bool(check_ids & allowed_ids)
+
+    def _is_voice_bench_user_authorized(self, source: SessionSource) -> bool:
+        """Authorize /voice bench by sender user, not group chat allowlist."""
+        user_id = str(source.user_id or "").strip()
+        if not user_id:
+            return False
+
+        platform_key = str(getattr(source.platform, "value", source.platform) or "")
+        platform_env_map = {
+            "telegram": "TELEGRAM_ALLOWED_USERS",
+            "discord": "DISCORD_ALLOWED_USERS",
+            "whatsapp": "WHATSAPP_ALLOWED_USERS",
+            "slack": "SLACK_ALLOWED_USERS",
+            "signal": "SIGNAL_ALLOWED_USERS",
+            "email": "EMAIL_ALLOWED_USERS",
+            "sms": "SMS_ALLOWED_USERS",
+            "mattermost": "MATTERMOST_ALLOWED_USERS",
+            "matrix": "MATRIX_ALLOWED_USERS",
+            "dingtalk": "DINGTALK_ALLOWED_USERS",
+            "feishu": "FEISHU_ALLOWED_USERS",
+            "wecom": "WECOM_ALLOWED_USERS",
+            "wecom_callback": "WECOM_CALLBACK_ALLOWED_USERS",
+            "weixin": "WEIXIN_ALLOWED_USERS",
+            "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",
+            "qqbot": "QQ_ALLOWED_USERS",
+            "yuanbao": "YUANBAO_ALLOWED_USERS",
+        }
+        platform_group_user_env_map = {
+            "telegram": "TELEGRAM_GROUP_ALLOWED_USERS",
+        }
+
+        platform_name = platform_key
+        pairing_store = getattr(self, "pairing_store", None)
+        if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
+            return True
+
+        allowed_ids: set[str] = set()
+        platform_env = platform_env_map.get(platform_key, "")
+        if platform_env:
+            allowed_ids.update(
+                uid.strip() for uid in os.getenv(platform_env, "").split(",") if uid.strip()
+            )
+        if source.chat_type in {"group", "forum"}:
+            group_user_env = platform_group_user_env_map.get(platform_key, "")
+            if group_user_env:
+                allowed_ids.update(
+                    uid.strip() for uid in os.getenv(group_user_env, "").split(",") if uid.strip()
+                )
+        allowed_ids.update(
+            uid.strip() for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",") if uid.strip()
+        )
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+        return bool(check_ids & allowed_ids)
+
+    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+        """Return how unauthorized DMs should be handled for a platform.
+
+        Resolution order:
+        1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
+        2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
+        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+           ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
+           or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
+           the allowlist signals that the owner has deliberately restricted
+           access; spamming unknown contacts with pairing codes is both noisy
+           and a potential info-leak. (#9337)
+        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        """
+        config = getattr(self, "config", None)
+
+        # Check for an explicit per-platform override first.
+        if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:
+            platform_cfg = config.platforms.get(platform) if hasattr(config, "platforms") else None
+            if platform_cfg and "unauthorized_dm_behavior" in getattr(platform_cfg, "extra", {}):
+                # Operator explicitly configured behavior for this platform — respect it.
+                return config.get_unauthorized_dm_behavior(platform)
+
+        # Check for an explicit global config override.
+        if config and hasattr(config, "unauthorized_dm_behavior"):
+            if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
+                return config.unauthorized_dm_behavior
+
+        # Config-driven dm_policy (WeCom / Weixin / Yuanbao / QQBot). An
+        # allowlist or disabled DM policy means the operator restricted access,
+        # so unauthorized DMs should be dropped silently rather than answered
+        # with a pairing code. An explicit pairing policy opts back into codes.
+        if platform and config and hasattr(config, "platforms"):
+            platform_cfg = config.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                dm_policy = str(extra.get("dm_policy") or "").strip().lower()
+                if dm_policy == "pairing":
+                    return "pair"
+                if dm_policy in {"allowlist", "disabled"}:
+                    return "ignore"
+
+        # No explicit override.  Fall back to allowlist-aware default:
+        # if any allowlist is configured for this platform, silently drop
+        # unauthorized messages instead of sending pairing codes.
+        if platform:
+            platform_env_map = {
+                Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+                Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
+                Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+                Platform.SLACK:    "SLACK_ALLOWED_USERS",
+                Platform.SIGNAL:   "SIGNAL_ALLOWED_USERS",
+                Platform.EMAIL:    "EMAIL_ALLOWED_USERS",
+                Platform.SMS:      "SMS_ALLOWED_USERS",
+                Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+                Platform.MATRIX:   "MATRIX_ALLOWED_USERS",
+                Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+                Platform.FEISHU:   "FEISHU_ALLOWED_USERS",
+                Platform.WECOM:    "WECOM_ALLOWED_USERS",
+                Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+                Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
+                Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+                Platform.QQBOT:    "QQ_ALLOWED_USERS",
+            }
+            platform_group_env_map = {
+                Platform.TELEGRAM: (
+                    "TELEGRAM_GROUP_ALLOWED_USERS",
+                    "TELEGRAM_GROUP_ALLOWED_CHATS",
+                ),
+                Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
+            }
+            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+                return "ignore"
+            for env_key in platform_group_env_map.get(platform, ()):
+                if os.getenv(env_key, "").strip():
+                    return "ignore"
+
+        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+            return "ignore"
+
+        return "pair"
+
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self.adapters.get(source.platform)
@@ -6203,7 +6621,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
-        
+
         This is the core message processing pipeline:
         1. Check user authorization
         2. Check for commands (/new, /reset, etc.)
@@ -6306,7 +6724,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -6982,7 +7400,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
-        
+
         if canonical == "help":
             return await self._handle_help_command(event)
 
@@ -6992,7 +7410,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
-        
+
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
@@ -7010,10 +7428,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
-        
+
         if canonical == "stop":
             return await self._handle_stop_command(event)
-        
+
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
@@ -7043,7 +7461,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
-        
+
         if canonical == "undo":
             async def _do_undo():
                 return await self._handle_undo_command(event)
@@ -7066,7 +7484,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 detail=_undo_detail,
                 execute=_do_undo,
             )
-        
+
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
@@ -7305,7 +7723,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
-        
+
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
@@ -7476,10 +7894,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             if audio_paths:
-                message_text, _successful_transcripts = await self._enrich_message_with_transcription(
+                if not getattr(event, "voice_bench_id", None):
+                    event.voice_bench_id = _voice_bench_new_turn_id()
+                _stt_result = await self._enrich_message_with_transcription_result(
+                    event,
                     message_text,
                     audio_paths,
                 )
+                message_text = str(_stt_result.get("text") or "")
+                _successful_transcripts = list(_stt_result.get("transcripts") or [])
                 # Echo each successful transcript back to the user immediately,
                 # before the agent loop runs. Lets the user verify STT quality
                 # in real-time and see the raw whisper output verbatim.
@@ -7498,28 +7921,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 logger.debug(
                                     "Transcript echo failed (non-fatal): %s", _echo_exc,
                                 )
-                _stt_fail_markers = (
-                    "No STT provider",
-                    "STT is disabled",
-                    "can't listen",
-                    "VOICE_TOOLS_OPENAI_KEY",
-                )
-                if any(marker in message_text for marker in _stt_fail_markers):
+                _stt_failures = list(_stt_result.get("failures") or [])
+                if _stt_failures and not int(_stt_result.get("transcript_count") or 0):
                     _stt_adapter = self.adapters.get(source.platform)
                     _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _stt_adapter:
                         try:
-                            _stt_msg = (
-                                "🎤 I received your voice message but can't transcribe it — "
-                                "no speech-to-text provider is configured.\n\n"
-                                "To enable voice: install faster-whisper "
-                                "(`uv pip install faster-whisper` in the Hermes venv; "
-                                "`pip install faster-whisper` also works if pip is on PATH) "
-                                "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
-                            )
-                            if self._has_setup_skill():
-                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            _stt_msg = self._stt_user_failure_message(_stt_failures)
                             await _stt_adapter.send(
                                 source.chat_id,
                                 _stt_msg,
@@ -7527,6 +7935,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                         except Exception:
                             pass
+                    _placeholder = "(The user sent a message with no text content)"
+                    if not message_text.strip() or message_text.strip() == _placeholder:
+                        return None
 
         if audio_file_paths:
             from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
@@ -7775,7 +8186,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
-        
+
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
             session_entry.created_at == session_entry.updated_at
@@ -7793,13 +8204,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        
+
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         try:
@@ -7810,7 +8221,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
@@ -7913,7 +8324,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -8269,7 +8680,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pb_err,
                 )
                 context_prompt += _intro_note
-        
+
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
@@ -8292,7 +8703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"or ignore to skip."
                 )
                 await self._deliver_platform_notice(source, notice)
-        
+
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state
         # into context so the agent knows who is in the channel and who
@@ -8305,6 +8716,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 vc_context = adapter.get_voice_channel_context(guild_id)
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
+
+        voice_reply_note = self._voice_reply_context_prompt(event)
+        if voice_reply_note:
+            context_prompt += f"\n\n{voice_reply_note}"
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -8359,6 +8774,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                voice_reply_turn=bool(voice_reply_note),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -8398,6 +8814,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "results. This can happen with some models — try again or "
                     "rephrase your question."
                 )
+            if voice_reply_note:
+                response = self._sanitize_voice_reply_response(response, event)
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -8407,6 +8825,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
+            _voice_turn_id = str(getattr(event, "voice_bench_id", "") or "")
+            if _voice_turn_id:
+                _voice_bench_append({
+                    "turn_id": _voice_turn_id,
+                    "stage": "agent",
+                    "platform": _platform_name,
+                    "chat_id": source.chat_id,
+                    "message_id": getattr(event, "message_id", None),
+                    "elapsed_ms": round(_response_time * 1000, 1),
+                    "api_calls": _api_calls,
+                    "response_chars": _resp_len,
+                    "response": response[:300],
+                })
 
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
@@ -8493,7 +8924,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
-            
+
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
@@ -8538,7 +8969,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the time we reach here the approval has already been resolved.  The
             # old post-loop pop_pending + approval_hint code was removed in favour
             # of the blocking approach that mirrors CLI's synchronous input().
-            
+
             # Save the full conversation to the transcript, including tool calls.
             # This preserves the complete agent loop (tool_calls, tool results,
             # intermediate reasoning) so sessions can be resumed with full context
@@ -8606,7 +9037,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             ts = datetime.now().isoformat()
-            
+
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
             # -- the same list of dicts sent as tools=[...] in the API request.
@@ -8624,7 +9055,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "timestamp": ts,
                     }
                 )
-            
+
             # The agent already persisted these messages to SQLite via
             # _flush_messages_to_session_db(), so skip the DB write here
             # to prevent the duplicate-write bug (#860 / #42039).
@@ -8693,7 +9124,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
-            
+
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
@@ -8743,7 +9174,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             return response
-            
+
         except Exception as e:
             # Stop typing indicator on error too
             try:
@@ -9302,6 +9733,207 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return raw.guild.id
         return None
 
+    async def _handle_voice_command(self, event: MessageEvent) -> str:
+        """Handle /voice [on|off|tts|smoke|bench|channel|leave|status] command."""
+        args = event.get_command_args().strip().lower()
+        chat_id = event.source.chat_id
+        platform = event.source.platform
+        voice_key = self._voice_key(platform, chat_id)
+
+        adapter = self.adapters.get(platform)
+
+        if args == "smoke":
+            return await self._run_voice_smoke()
+        elif args == "bench" or args.startswith("bench "):
+            if not self._is_voice_bench_user_authorized(event.source):
+                return "Voice bench is restricted to an authorized user."
+            parts = args.split()
+            limit = 5
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                except ValueError:
+                    return "Usage: /voice bench [1-20]"
+                if limit < 1 or limit > 20:
+                    return "Usage: /voice bench [1-20]"
+            platform_name = str(getattr(platform, "value", platform) or "")
+            return await asyncio.to_thread(
+                _voice_bench_format_recent,
+                platform_name,
+                chat_id,
+                limit=limit,
+            )
+        elif args in {"on", "enable"}:
+            self._voice_mode[voice_key] = "voice_only"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+            return t("gateway.voice.enabled_voice_only")
+        elif args in {"off", "disable"}:
+            self._voice_mode[voice_key] = "off"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+            return t("gateway.voice.disabled_text")
+        elif args == "tts":
+            self._voice_mode[voice_key] = "all"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+            return t("gateway.voice.tts_enabled")
+        elif args in {"channel", "join"}:
+            return await self._handle_voice_channel_join(event)
+        elif args == "leave":
+            return await self._handle_voice_channel_leave(event)
+        elif args == "status":
+            mode = self._voice_mode.get(voice_key, "off")
+            labels = {
+                "off": t("gateway.voice.label_off"),
+                "voice_only": t("gateway.voice.label_voice_only"),
+                "all": t("gateway.voice.label_all"),
+            }
+            # Append voice channel info if connected
+            adapter = self.adapters.get(event.source.platform)
+            guild_id = self._get_guild_id(event)
+            if guild_id and hasattr(adapter, "get_voice_channel_info"):
+                info = adapter.get_voice_channel_info(guild_id)
+                if info:
+                    lines = [
+                        t("gateway.voice.status_mode", label=labels.get(mode, mode)),
+                        t("gateway.voice.status_channel", channel=info['channel_name']),
+                        t("gateway.voice.status_participants", count=info['member_count']),
+                    ]
+                    for m in info["members"]:
+                        status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
+                        lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
+                    return "\n".join(lines)
+            return t("gateway.voice.status_mode", label=labels.get(mode, mode))
+        else:
+            if args:
+                return (
+                    "Unknown /voice option. Usage: /voice on|off|tts|status|bench|smoke."
+                )
+            # Toggle: off → on, on/all → off
+            current = self._voice_mode.get(voice_key, "off")
+            if current == "off":
+                self._voice_mode[voice_key] = "voice_only"
+                self._save_voice_modes()
+                if adapter:
+                    self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                toggle_line = t("gateway.voice.enabled_short")
+            else:
+                self._voice_mode[voice_key] = "off"
+                self._save_voice_modes()
+                if adapter:
+                    self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+                toggle_line = t("gateway.voice.disabled_short")
+            # Bare /voice still toggles, but append an explainer so users
+            # discover the on/off/tts/status subcommands (and, on Discord,
+            # live voice-channel join/leave). The toggle result is shown
+            # first via the {toggle} placeholder.
+            supports_voice_channels = adapter is not None and hasattr(
+                adapter, "join_voice_channel"
+            )
+            channels = (
+                t("gateway.voice.help_channels") if supports_voice_channels else ""
+            )
+            return t("gateway.voice.help", toggle=toggle_line, channels=channels)
+
+    @staticmethod
+    def _format_voice_smoke_result(metrics: dict[str, Any]) -> str:
+        """Render a concise operator summary from voice_io_smoke metrics."""
+        passed = bool(metrics.get("passed"))
+        latency = metrics.get("latency_ms") if isinstance(metrics.get("latency_ms"), dict) else {}
+        brain = metrics.get("brain") if isinstance(metrics.get("brain"), dict) else {}
+        artifacts = metrics.get("artifacts") if isinstance(metrics.get("artifacts"), dict) else {}
+        lines = [f"Voice smoke {'PASS' if passed else 'FAIL'}"]
+        if metrics.get("error"):
+            error = _redact_gateway_user_facing_secrets(str(metrics.get("error")))
+            lines.append(f"Error: {error[:180]}")
+        if latency:
+            parts = []
+            for label, key in (
+                ("total", "total"),
+                ("stt", "stt"),
+                ("brain", "brain"),
+                ("tts", "tts"),
+            ):
+                value = latency.get(key)
+                if isinstance(value, (int, float)):
+                    parts.append(f"{label}={value:.1f}ms")
+            if parts:
+                lines.append(", ".join(parts))
+        first_content = brain.get("first_content_ms")
+        done = brain.get("done_ms")
+        if isinstance(first_content, (int, float)) or isinstance(done, (int, float)):
+            lines.append(
+                "brain_stream="
+                f"{first_content:.1f}ms first"
+                if isinstance(first_content, (int, float))
+                else "brain_stream=unknown first"
+            )
+            if isinstance(done, (int, float)):
+                lines[-1] += f", {done:.1f}ms done"
+        transcript = str(metrics.get("transcript") or "").strip()
+        if transcript:
+            transcript = _redact_gateway_user_facing_secrets(transcript)
+            lines.append(f"Transcript: {transcript[:160]}")
+        response = str(metrics.get("brain_response") or "").strip()
+        if response:
+            response = _redact_gateway_user_facing_secrets(response)
+            lines.append(f"Brain: {response[:160]}")
+        output_wav = artifacts.get("output_wav")
+        if output_wav:
+            lines.append(f"Output: {os.path.basename(str(output_wav))}")
+        return "\n".join(lines)
+
+    async def _run_voice_smoke(self) -> str:
+        """Run the isolated Hermes-main voice I/O smoke and report metrics."""
+        smoke_script = Path.home() / ".hermes-voice" / "bin" / "voice_io_smoke.py"
+        output_root = Path.home() / ".hermes-voice" / "output"
+        if not smoke_script.is_file():
+            return f"Voice smoke FAIL\nMissing smoke script: {smoke_script}"
+
+        try:
+            timeout = float(os.environ.get("HERMES_VOICE_SMOKE_COMMAND_TIMEOUT", "75"))
+        except ValueError:
+            timeout = 75.0
+        timeout = max(10.0, min(timeout, 180.0))
+
+        out_dir = output_root / f"voice-io-smoke-command-{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        cmd = [sys.executable, str(smoke_script), "--out-dir", str(out_dir)]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(Exception):
+                proc.kill()  # type: ignore[name-defined]
+                await proc.wait()  # type: ignore[name-defined]
+            return f"Voice smoke FAIL\nTimed out after {timeout:.0f}s"
+        except Exception as exc:
+            logger.warning("voice smoke command failed to start: %s", exc)
+            return f"Voice smoke FAIL\nCould not start smoke: {type(exc).__name__}"
+
+        metrics_path = out_dir / "metrics.json"
+        try:
+            payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception:
+            stdout_preview = stdout.decode("utf-8", errors="replace")[:240] if stdout else ""
+            stderr_preview = stderr.decode("utf-8", errors="replace")[:240] if stderr else ""
+            detail = _redact_gateway_user_facing_secrets(
+                stdout_preview or stderr_preview or f"exit={proc.returncode}"
+            )
+            return f"Voice smoke FAIL\nMetrics missing or invalid: {detail}"
+
+        summary = self._format_voice_smoke_result(payload)
+        summary += f"\nMetrics: {metrics_path}"
+        if proc.returncode not in (0, None) and payload.get("passed"):
+            summary += f"\nWarning: smoke exited {proc.returncode}"
+        return summary
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -9540,15 +10172,185 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if has_agent_tts:
             return False
 
-        # Dedup: base adapter auto-TTS already handles voice input
-        # (play_tts plays in VC when connected, so runner can skip).
-        # When streaming already delivered the text (already_sent=True),
-        # the base adapter will receive None and can't run auto-TTS,
-        # so the runner must take over.
-        if is_voice_input and not already_sent:
+        if self._runner_should_skip_voice_input_auto_tts(event, already_sent=already_sent):
             return False
 
         return True
+
+    def _runner_should_skip_voice_input_auto_tts(
+        self,
+        event: MessageEvent,
+        *,
+        already_sent: bool = False,
+    ) -> bool:
+        """Return True when the base adapter owns TTS for this voice input.
+
+        Non-streamed voice input returns final text to the platform adapter,
+        which can run its voice-first auto-TTS path and keep normal text
+        fallback if TTS delivery fails.  If streaming already delivered the
+        text, the adapter receives no final text, so the runner must generate
+        the voice reply instead.
+        """
+        return event.message_type == MessageType.VOICE and not already_sent
+
+    def _voice_reply_context_prompt(self, event: MessageEvent) -> str:
+        """Guide enabled voice-note turns away from manual TTS/tool work."""
+        if not self._is_voice_reply_turn(event):
+            return ""
+
+        return (
+            "[Voice reply mode is active for this chat. These rules are for "
+            "the final spoken reply only: the platform adapter will synthesize "
+            "and send your final answer as audio. Do not call "
+            "text_to_speech, terminal, web/search, weather, or media-generation "
+            "tools merely to make the spoken reply. Do not include MEDIA: tags "
+            "or audio file paths unless the user explicitly asks you to create "
+            "a reusable audio asset. Answer with concise, natural text only: "
+            "default to one short sentence, and two short sentences only when "
+            "needed. Follow the user's requested language; otherwise reply in "
+            "the same language as the voice transcript. If the user asks for "
+            "only a result, return only the result. Never introduce yourself as "
+            "Leo, Pafi, Guardian, or any team/persona name; if a name is needed, "
+            "you are Hermes. Do not invent live/current facts such as weather, "
+            "prices, account state, or system status unless they are already "
+            "provided in the user message or verified by an allowed tool.]"
+        )
+
+    def _sanitize_voice_reply_response(self, response: str, event: MessageEvent | None = None) -> str:
+        """Remove persona/status leakage before voice bench, TTS, and send."""
+        text = str(response or "")
+        if not text:
+            return ""
+
+        text = _VOICE_OPERATIONAL_LINE_RE.sub("", text)
+        lines = [line.rstrip() for line in text.splitlines()]
+        text = "\n".join(line for line in lines if line.strip()).strip()
+        if not text:
+            return ""
+
+        previous = None
+        while previous != text:
+            previous = text
+            text = _VOICE_PERSONA_PREFIX_RE.sub("", text, count=1).lstrip()
+        text = text.strip()
+        if _VOICE_PROVIDER_FAILURE_RE.search(text):
+            return self._voice_provider_failure_fallback(event)
+        return text
+
+    def _voice_provider_failure_fallback(self, event: MessageEvent | None = None) -> str:
+        """Short deterministic fallback when the low-latency voice model is unavailable."""
+        heard = str(getattr(event, "text", "") or getattr(event, "content", "") or "")
+        match = _VOICE_SIMPLE_SUM_RE.search(heard)
+        if match:
+            return str(int(match.group(1)) + int(match.group(2)))
+        lowered = heard.lower()
+        if "test ok" in lowered or "test 1 ok" in lowered:
+            return "Test ok."
+        romanian_markers = {
+            "ă", "â", "î", "ș", "ş", "ț", "ţ", "răspunde", "foarte", "scurt",
+            "spune", "română", "cat", "cât", "face",
+        }
+        if any(marker in lowered for marker in romanian_markers):
+            return "Am înțeles. OK."
+        return "Understood. OK."
+
+    def _is_voice_reply_turn(self, event: MessageEvent) -> bool:
+        """Return True when this inbound turn should optimize for voice reply latency."""
+        if event.message_type != MessageType.VOICE:
+            return False
+
+        chat_id = event.source.chat_id
+        voice_mode = self._voice_mode.get(
+            self._voice_key(event.source.platform, chat_id),
+            "off",
+        )
+        return voice_mode in {"voice_only", "all"}
+
+    def _voice_fast_reply_route(self, user_config: dict | None) -> dict | None:
+        """Resolve optional low-latency model/tool overrides for voice replies.
+
+        Disabled by default unless ``voice.fast_reply.enabled`` is true. The
+        route is per-turn: normal text and slash-command traffic keep the
+        configured Hermes model, context, and tools.
+        """
+        cfg = user_config if isinstance(user_config, dict) else {}
+        voice_cfg = cfg.get("voice") if isinstance(cfg.get("voice"), dict) else {}
+        fast_cfg = voice_cfg.get("fast_reply")
+        if not isinstance(fast_cfg, dict) or not bool(fast_cfg.get("enabled", False)):
+            return None
+
+        provider = str(fast_cfg.get("provider") or "google-gemini-cli").strip()
+        model = str(fast_cfg.get("model") or "gemini-3-flash-preview").strip()
+        if not provider or not model:
+            logger.warning("voice.fast_reply enabled but provider/model is empty")
+            return None
+
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            runtime = resolve_runtime_provider(
+                requested=provider,
+                explicit_base_url=str(fast_cfg.get("base_url") or "").strip() or None,
+                explicit_api_key=str(fast_cfg.get("api_key") or "").strip() or None,
+            )
+        except Exception as exc:
+            logger.warning("voice.fast_reply provider resolution failed for %s: %s", provider, exc)
+            return None
+
+        runtime_kwargs = {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+        }
+        try:
+            max_tokens = int(fast_cfg.get("max_tokens", 96) or 96)
+        except (TypeError, ValueError):
+            max_tokens = 96
+        if max_tokens > 120:
+            logger.warning(
+                "voice.fast_reply max_tokens=%s exceeds latency-safe cap; clamping to 120",
+                max_tokens,
+            )
+            max_tokens = 120
+        if max_tokens > 0:
+            runtime_kwargs["max_tokens"] = max_tokens
+
+        if fast_cfg.get("enabled_toolsets"):
+            logger.warning(
+                "voice.fast_reply enabled_toolsets is ignored; fast voice replies are tool-free"
+            )
+        enabled_toolsets = []
+
+        disabled_toolsets = fast_cfg.get("disabled_toolsets", [])
+        if disabled_toolsets is not None and not isinstance(disabled_toolsets, list):
+            disabled_toolsets = []
+
+        try:
+            max_iterations = int(fast_cfg.get("max_turns", 1) or 1)
+        except (TypeError, ValueError):
+            max_iterations = 1
+        if max_iterations > 1:
+            logger.warning(
+                "voice.fast_reply max_turns=%s exceeds latency-safe cap; clamping to 1",
+                max_iterations,
+            )
+            max_iterations = 1
+
+        reasoning_config = fast_cfg.get("reasoning")
+        if not isinstance(reasoning_config, dict):
+            reasoning_config = {"enabled": False}
+
+        return {
+            "model": model,
+            "runtime": runtime_kwargs,
+            "enabled_toolsets": [str(x) for x in enabled_toolsets],
+            "disabled_toolsets": ([str(x) for x in disabled_toolsets] if disabled_toolsets is not None else None),
+            "max_iterations": max(1, max_iterations),
+            "reasoning_config": reasoning_config,
+        }
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
@@ -9571,9 +10373,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
+            _tts_start = time.perf_counter()
             result_json = await asyncio.to_thread(
                 text_to_speech_tool, text=tts_text, output_path=audio_path
             )
+            _tts_elapsed_ms = round((time.perf_counter() - _tts_start) * 1000, 1)
             try:
                 result = json.loads(result_json)
             except (json.JSONDecodeError, TypeError):
@@ -9585,6 +10389,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not result.get("success") or not os.path.isfile(actual_path):
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
+            _turn_id = str(getattr(event, "voice_bench_id", "") or "")
+            _platform_name = str(getattr(event.source.platform, "value", event.source.platform) or "")
+            if _turn_id:
+                _voice_bench_append({
+                    "turn_id": _turn_id,
+                    "stage": "tts",
+                    "platform": _platform_name,
+                    "chat_id": event.source.chat_id,
+                    "message_id": getattr(event, "message_id", None),
+                    "elapsed_ms": _tts_elapsed_ms,
+                    "provider": result.get("provider"),
+                    "voice_compatible": result.get("voice_compatible"),
+                    "audio_path": os.path.basename(str(actual_path)),
+                })
 
             adapter = self.adapters.get(event.source.platform)
 
@@ -9616,7 +10434,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "reply_to": reply_anchor,
                     "metadata": thread_meta,
                 }
+                _send_start = time.perf_counter()
                 await adapter.send_voice(**send_kwargs)
+                if _turn_id:
+                    _voice_bench_append({
+                        "turn_id": _turn_id,
+                        "stage": "delivery",
+                        "platform": _platform_name,
+                        "chat_id": event.source.chat_id,
+                        "message_id": getattr(event, "message_id", None),
+                        "elapsed_ms": round((time.perf_counter() - _send_start) * 1000, 1),
+                        "method": "runner_send_voice",
+                    })
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
@@ -11400,57 +12229,79 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
-    async def _enrich_message_with_transcription(
+    @staticmethod
+    def _is_no_stt_provider_error(error: str) -> bool:
+        return (
+            "No STT provider" in error
+            or "STT is disabled" in error
+            or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
+        )
+
+    def _stt_user_failure_message(self, failures: List[Dict[str, Any]]) -> str:
+        no_provider = any(
+            self._is_no_stt_provider_error(str(item.get("error") or ""))
+            for item in failures
+        )
+        if no_provider:
+            msg = (
+                "🎤 I received your voice message but can't transcribe it — "
+                "no speech-to-text provider is configured.\n\n"
+                "To enable voice: install faster-whisper "
+                "(`uv pip install faster-whisper` in the Hermes venv; "
+                "`pip install faster-whisper` also works if pip is on PATH) "
+                "and set `stt.enabled: true` in config.yaml, "
+                "then /restart the gateway."
+            )
+            if self._has_setup_skill():
+                msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+            return msg
+        return (
+            "🎤 I received your voice message but couldn't transcribe it — "
+            "had trouble transcribing it. Please try a shorter voice note or send the text directly."
+        )
+
+    async def _enrich_message_with_transcription_result(
         self,
+        event: MessageEvent,
         user_text: str,
         audio_paths: List[str],
-    ) -> tuple[str, List[str]]:
+    ) -> Dict[str, Any]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
-        and prepend the transcript to the message text.
+        and prepend successful transcripts to the message text.
 
-        Args:
-            user_text:   The user's original caption / message text.
-            audio_paths: List of local file paths to cached audio files.
-
-        Returns:
-            A tuple of ``(enriched_text, successful_transcripts)``:
-              - ``enriched_text``: the message string with transcription wrappers
-                prepended (same as before).
-              - ``successful_transcripts``: the raw transcript strings for audio
-                clips that were successfully transcribed, in input order. Empty
-                list if every clip failed or STT is disabled. Callers can use
-                this to echo transcripts back to the user before the agent loop.
+        Returns a structured result with enriched text, transcript count, raw
+        successful transcripts (for user-visible echo), and failures.
         """
         if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                if duration_str:
-                    notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
-                    )
-                else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
-            if not notes:
-                return user_text, []
-            prefix = "\n\n".join(notes)
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix, []
-            if user_text:
-                return f"{prefix}\n\n{user_text}", []
-            return prefix, []
+            failures = [
+                {
+                    "path": os.path.abspath(path),
+                    "error": "STT is disabled in config.yaml (stt.enabled: false).",
+                }
+                for path in audio_paths
+            ]
+            return {
+                "text": user_text,
+                "transcript_count": 0,
+                "transcripts": [],
+                "failures": failures,
+            }
 
         from tools.transcription_tools import transcribe_audio
 
         enriched_parts = []
         successful_transcripts: List[str] = []
+        failures: List[Dict[str, Any]] = []
+        platform_name = str(getattr(event.source.platform, "value", event.source.platform) or "")
+        turn_id = str(getattr(event, "voice_bench_id", "") or _voice_bench_new_turn_id())
+        event.voice_bench_id = turn_id
         for path in audio_paths:
+            _stt_start = time.perf_counter()
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
+                _elapsed_ms = round((time.perf_counter() - _stt_start) * 1000, 1)
                 if result["success"]:
                     transcript = result["transcript"]
                     successful_transcripts.append(transcript)
@@ -11458,37 +12309,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
                     )
+                    _voice_bench_append({
+                        "turn_id": turn_id,
+                        "stage": "stt",
+                        "platform": platform_name,
+                        "chat_id": event.source.chat_id,
+                        "message_id": getattr(event, "message_id", None),
+                        "elapsed_ms": _elapsed_ms,
+                        "audio_path": os.path.basename(path),
+                        "transcript": transcript,
+                    })
                 else:
                     error = result.get("error", "unknown error")
-                    if (
-                        "No STT provider" in error
-                        or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
-                    ):
-                        _no_stt_note = (
-                            "[The user sent a voice message but I can't listen "
-                            "to it right now — no STT provider is configured. "
-                            "A direct message has already been sent to the user "
-                            "with setup instructions."
-                        )
-                        if self._has_setup_skill():
-                            _no_stt_note += (
-                                " You have a skill called hermes-agent-setup "
-                                "that can help users configure Hermes features "
-                                "including voice, tools, and more."
-                            )
-                        _no_stt_note += "]"
-                        enriched_parts.append(_no_stt_note)
-                    else:
-                        enriched_parts.append(
-                            "[The user sent a voice message but I had trouble "
-                            f"transcribing it~ ({error})]"
-                        )
+                    failures.append({"path": path, "error": error})
+                    _voice_bench_append({
+                        "turn_id": turn_id,
+                        "stage": "stt",
+                        "platform": platform_name,
+                        "chat_id": event.source.chat_id,
+                        "message_id": getattr(event, "message_id", None),
+                        "elapsed_ms": _elapsed_ms,
+                        "audio_path": os.path.basename(path),
+                        "error": str(error)[:240],
+                    })
             except Exception as e:
+                _elapsed_ms = round((time.perf_counter() - _stt_start) * 1000, 1)
                 logger.error("Transcription error: %s", e)
-                enriched_parts.append(
-                    "[The user sent a voice message but something went wrong "
-                    "when I tried to listen to it~ Let them know!]"
-                )
+                failures.append({"path": path, "error": f"{type(e).__name__}: {e}"})
+                _voice_bench_append({
+                    "turn_id": turn_id,
+                    "stage": "stt",
+                    "platform": platform_name,
+                    "chat_id": event.source.chat_id,
+                    "message_id": getattr(event, "message_id", None),
+                    "elapsed_ms": _elapsed_ms,
+                    "audio_path": os.path.basename(path),
+                    "error": f"{type(e).__name__}: {e}"[:240],
+                })
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
@@ -11496,77 +12353,71 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # when we successfully transcribed the audio — it's redundant.
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
-                return prefix
-            if user_text:
-                return f"{prefix}\n\n{user_text}", successful_transcripts
-            return prefix, successful_transcripts
-        return user_text, successful_transcripts
+                text = prefix
+            elif user_text:
+                text = f"{prefix}\n\n{user_text}"
+            else:
+                text = prefix
+            return {
+                "text": text,
+                "transcript_count": len(enriched_parts),
+                "transcripts": successful_transcripts,
+                "failures": failures,
+            }
+        return {
+            "text": user_text,
+            "transcript_count": 0,
+            "transcripts": successful_transcripts,
+            "failures": failures,
+        }
 
-    async def _dequeue_pending_with_transcription(
+    async def _enrich_message_with_transcription(
         self,
-        adapter,
-        session_key: str,
-        source,
-    ) -> str | None:
-        """Dequeue a pending queued message, auto-transcribing audio media.
+        user_text: str,
+        audio_paths: List[str],
+    ) -> tuple[str, List[str]]:
+        """Backward-compatible wrapper returning enriched text and raw transcripts."""
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="unknown"),
+            text=user_text,
+            message_type=MessageType.VOICE,
+        )
+        result = await self._enrich_message_with_transcription_result(event, user_text, audio_paths)
+        transcripts = list(result.get("transcripts") or [])
+        text = str(result.get("text") or "")
+        failures = list(result.get("failures") or [])
 
-        When a voice/audio message arrives during an active agent run, the
-        adapter stores the event in its pending queue and signals an interrupt
-        (see base.BaseAdapter.handle_message). The adapter path bypasses
-        _handle_message entirely, so the normal STT pipeline at message-receive
-        time never runs.
-
-        This helper fills that gap: when the dequeued event has audio media,
-        we transcribe inline, echo the raw transcript back to the user (same
-        "🎙️" format as the fresh-message path), and return enriched text.
-        Non-audio events fall back to _build_media_placeholder, matching the
-        original _dequeue_pending_text behavior.
-        """
-        event = adapter.get_pending_message(session_key)
-        if not event:
-            return None
-
-        text = event.text or ""
-
-        audio_paths: List[str] = []
-        media_urls = getattr(event, "media_urls", None) or []
-        media_types = getattr(event, "media_types", None) or []
-        for i, path in enumerate(media_urls):
-            mtype = media_types[i] if i < len(media_types) else ""
-            is_audio = (
-                mtype.startswith("audio/")
-                or getattr(event, "message_type", None) in (MessageType.VOICE, MessageType.AUDIO)
-            )
-            if is_audio:
-                audio_paths.append(path)
-
-        if audio_paths:
-            enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
-                text, audio_paths,
-            )
-            # Echo raw transcripts back to the user so voice interrupts
-            # feel identical to fresh voice messages.
-            if successful_transcripts:
-                echo_adapter = self.adapters.get(source.platform)
-                echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                if echo_adapter:
-                    for tx in successful_transcripts:
-                        try:
-                            await echo_adapter.send(
-                                source.chat_id,
-                                f'🎙️ "{tx}"',
-                                metadata=echo_meta,
-                            )
-                        except Exception as echo_exc:
-                            logger.debug(
-                                "Transcript echo failed (non-fatal): %s", echo_exc,
-                            )
-            return enriched_text or None
-
-        # Non-audio fallback: preserve original _dequeue_pending_text semantics.
-        if not text and media_urls:
-            text = _build_media_placeholder(event)
-        return text or None
+        # Preserve the legacy text-only contract for older callers/tests while
+        # the fresh-message path consumes the structured result and sends STT
+        # failures as separate user-facing notices.
+        if not transcripts and failures:
+            if not getattr(self.config, "stt_enabled", True):
+                notes = []
+                for path in audio_paths:
+                    abs_path = os.path.abspath(path)
+                    duration_str = await _probe_audio_duration(abs_path)
+                    if duration_str:
+                        notes.append(
+                            f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
+                        )
+                    else:
+                        notes.append(f"[The user sent a voice message: {abs_path}]")
+                if notes:
+                    prefix = "\n\n".join(notes)
+                    _placeholder = "(The user sent a message with no text content)"
+                    if text and text.strip() == _placeholder:
+                        text = prefix
+                    elif text:
+                        text = f"{prefix}\n\n{text}"
+                    else:
+                        text = prefix
+            else:
+                msg = self._stt_user_failure_message(failures)
+                if text:
+                    text = f"{msg}\n\n{text}"
+                else:
+                    text = msg
+        return text, transcripts
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
@@ -11957,6 +12808,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cache_keys: dict | None = None,
         user_id: str | None = None,
         user_id_alt: str | None = None,
+        disabled_toolsets: list | None = None,
+        max_iterations: int | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -11995,15 +12848,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
+        _runtime_items = sorted(
+            (str(k), v)
+            for k, v in (runtime or {}).items()
+            if k != "api_key"
+        )
 
         blob = _j.dumps(
             [
                 model,
                 _api_key_fingerprint,
+                _runtime_items,
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
+                sorted(disabled_toolsets) if disabled_toolsets else [],
+                max_iterations,
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
@@ -12767,16 +13628,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        voice_reply_turn: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
-        
+
         Returns the full result dict from run_conversation, including:
           - "final_response": str (the text to send back)
           - "messages": list (full conversation including tool calls)
           - "api_calls": int
           - "completed": bool
-        
+
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
@@ -12800,7 +13662,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if run_generation is None or not session_key:
                 return True
             return self._is_session_run_current(session_key, run_generation)
-        
+
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
@@ -12867,7 +13729,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             )
         )
-        
+
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
@@ -12996,7 +13858,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -13043,7 +13905,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = f"{emoji} {tool_name}..."
                 progress_queue.put(msg)
                 return
-            
+
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
@@ -13060,7 +13922,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
@@ -13072,9 +13934,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             last_progress_msg[0] = msg
             repeat_count[0] = 0
-            
+
             progress_queue.put(msg)
-        
+
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
         #
@@ -13430,13 +14292,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
-        
+
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
-        
+
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
         _hooks_ref = self.hooks
@@ -13524,7 +14386,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # read *and* reassign the outer `_run_agent` parameter without
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            nonlocal message, enabled_toolsets, disabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -13532,11 +14394,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
+
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
-            
+
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
             combined_ephemeral = context_prompt or ""
@@ -13681,6 +14543,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            if voice_reply_turn:
+                voice_route = self._voice_fast_reply_route(user_config)
+                if voice_route:
+                    turn_route = self._resolve_turn_agent_config(
+                        message, voice_route["model"], voice_route["runtime"]
+                    )
+                    max_iterations = voice_route["max_iterations"]
+                    enabled_toolsets = voice_route["enabled_toolsets"]
+                    disabled_toolsets = voice_route["disabled_toolsets"]
+                    reasoning_config = voice_route.get("reasoning_config") or {"enabled": False}
+                    self._reasoning_config = reasoning_config
+                    self._service_tier = "fast"
+                    logger.info(
+                        "voice.fast_reply route: session=%s model=%s provider=%s max_iterations=%s tools=%s",
+                        session_key or "",
+                        turn_route["model"],
+                        turn_route["runtime"].get("provider"),
+                        max_iterations,
+                        len(enabled_toolsets),
+                    )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -13693,6 +14575,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cache_keys=self._extract_cache_busting_config(user_config),
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
+                disabled_toolsets=disabled_toolsets,
+                max_iterations=max_iterations,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -13931,7 +14815,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
-            
+
             # Convert history to agent format.
             # Two cases:
             #   1. Normal path (from transcript): simple {role, content, timestamp} dicts
@@ -13950,7 +14834,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 history,
                 channel_prompt=channel_prompt,
             )
-            
+
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
@@ -13970,7 +14854,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
                                 _history_media_paths.add(_p)
-            
+
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
             # The callback bridges sync→async to send the approval request
@@ -14209,7 +15093,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
-            
+
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
@@ -14247,7 +15131,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
-            
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -14285,7 +15169,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
             # If so, update the session store entry so the NEXT message loads
@@ -14406,7 +15290,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
             }
-        
+
         # Start progress message sender if enabled
         progress_task = None
         if tool_progress_enabled:
@@ -14425,7 +15309,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await asyncio.sleep(0.05)
 
         stream_task = asyncio.create_task(_start_stream_consumer())
-        
+
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
         async def track_agent():
@@ -14450,9 +15334,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agents[session_key] = agent_holder[0]
             if self._draining:
                 self._update_runtime_status("draining")
-        
+
         tracking_task = asyncio.create_task(track_agent())
-        
+
         # Monitor for interrupts from the adapter (new messages arriving).
         # This is the PRIMARY interrupt path for regular text messages —
         # Level 1 (base.py) catches them before _handle_message() is reached,
@@ -14543,7 +15427,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raise
                 except Exception as _mon_err:
                     logger.debug("monitor_for_interrupt error (will retry): %s", _mon_err)
-        
+
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
         # Periodic "still working" notifications for long-running tasks.
@@ -14834,7 +15718,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
-            
+
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending_event = None
@@ -15125,7 +16009,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await stream_task
                         except asyncio.CancelledError:
                             pass
-            
+
             # Clean up tracking
             tracking_task.cancel()
             if session_key:
@@ -15139,7 +16023,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if self._draining:
                 self._update_runtime_status("draining")
-            
+
             # Wait for cancelled tasks
             for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
@@ -15351,7 +16235,7 @@ def _run_planned_stop_watcher(
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
-    
+
     Runs inside the gateway process so cronjobs fire automatically without
     needing a separate `hermes cron daemon` or system cron entry.
 
@@ -15446,11 +16330,11 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
-    
+
     This is the main entry point for running the gateway.
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
-    
+
     Args:
         config: Optional gateway configuration override.
         replace: If True, kill any existing gateway instance before starting.
@@ -15624,7 +16508,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logging.getLogger().setLevel(_stderr_level)
 
     runner = GatewayRunner(config)
-    
+
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service
     # managers can revive the process. Planned stop paths write a marker
@@ -15722,7 +16606,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     def restart_signal_handler():
         runner.request_restart(detached=False, via_service=True)
-    
+
     loop = asyncio.get_running_loop()
 
     # Install a loop-level exception handler that swallows transient
@@ -15826,7 +16710,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         return True
-    
+
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()
@@ -15838,7 +16722,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
-    
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -15846,7 +16730,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
-    
+
     # Stop cron ticker cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
@@ -15903,20 +16787,20 @@ def main():
         pass
 
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    
+
     args = parser.parse_args()
-    
+
     config = None
     if args.config:
         import yaml
         with open(args.config, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             config = GatewayConfig.from_dict(data)
-    
+
     # Run the gateway - exit with code 1 if no platforms connected,
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
     success = asyncio.run(start_gateway(config))

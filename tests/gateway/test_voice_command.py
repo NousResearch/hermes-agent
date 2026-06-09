@@ -130,6 +130,103 @@ class TestHandleVoiceCommand:
         assert "voice reply" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_voice_smoke_runs_without_toggling_mode(self, runner):
+        runner._run_voice_smoke = AsyncMock(return_value="Voice smoke PASS\ntotal=100.0ms")
+        event = _make_event("/voice smoke")
+        result = await runner._handle_voice_command(event)
+        assert "voice smoke pass" in result.lower()
+        assert runner._voice_mode == {}
+        runner._run_voice_smoke.assert_awaited_once()
+
+    def test_voice_smoke_formatter_reports_core_metrics(self, runner):
+        result = runner._format_voice_smoke_result({
+            "passed": True,
+            "latency_ms": {"total": 7092.8, "stt": 231.0, "brain": 123.2, "tts": 3257.1},
+            "brain": {"first_content_ms": 76.2, "done_ms": 123.0},
+            "transcript": "Buna Pafi, acesta este un test Hermes Voice.",
+            "brain_response": "Salut! Totul pare in ordine.",
+            "artifacts": {"output_wav": "/home/pafi/.hermes-voice/output/run/response.wav"},
+        })
+        assert "Voice smoke PASS" in result
+        assert "total=7092.8ms" in result
+        assert "brain_stream=76.2ms first, 123.0ms done" in result
+        assert "Output: response.wav" in result
+
+    def test_voice_smoke_formatter_redacts_error_text(self, runner):
+        result = runner._format_voice_smoke_result({
+            "passed": False,
+            "error": "provider failed api_key=sk-test-secret",
+        })
+
+        assert "sk-test-secret" not in result
+        assert "api_key=[REDACTED]" in result
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_reports_current_chat(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        calls = {}
+        monkeypatch.setattr(
+            "gateway.run._voice_bench_format_recent",
+            lambda platform, chat_id, limit=5: calls.update({"platform": platform, "chat_id": chat_id, "limit": limit}) or "bench ok",
+        )
+        event = _make_event("/voice bench 3")
+        result = await runner._handle_voice_command(event)
+        assert result == "bench ok"
+        assert calls == {"platform": "telegram", "chat_id": "123", "limit": 3}
+        assert runner._voice_mode == {}
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_rejects_group_chat_allowlist_without_user(self, runner, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-1001")
+        calls = {}
+        monkeypatch.setattr(
+            "gateway.run._voice_bench_format_recent",
+            lambda *_args, **_kwargs: calls.update({"called": True}) or "bench ok",
+        )
+        event = _make_event("/voice bench 1", chat_id="-1001")
+        event.source.chat_type = "group"
+
+        result = await runner._handle_voice_command(event)
+
+        assert "restricted" in result.lower()
+        assert calls == {}
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_does_not_match_longer_command_words(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        calls = {}
+        monkeypatch.setattr(
+            "gateway.run._voice_bench_format_recent",
+            lambda *_args, **_kwargs: calls.update({"called": True}) or "bench ok",
+        )
+        event = _make_event("/voice benchmark")
+
+        result = await runner._handle_voice_command(event)
+
+        assert "unknown" in result.lower() or "usage" in result.lower()
+        assert calls == {}
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_rejects_invalid_limit(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        event = _make_event("/voice bench nope")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "Usage: /voice bench [1-20]"
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_rejects_out_of_range_limit(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        event = _make_event("/voice bench 99")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "Usage: /voice bench [1-20]"
+
+    @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)
@@ -151,6 +248,7 @@ class TestHandleVoiceCommand:
         assert runner._VOICE_MODE_PATH.exists()
         data = json.loads(runner._VOICE_MODE_PATH.read_text())
         assert data["telegram:123"] == "voice_only"
+        assert not runner._VOICE_MODE_PATH.with_suffix(".json.tmp").exists()
 
     @pytest.mark.asyncio
     async def test_persistence_loaded(self, runner):
@@ -2662,12 +2760,13 @@ class TestVoiceTTSPlayback:
         return runner
 
     def _call_should_reply(self, runner, voice_mode, msg_type, response="Hello",
-                           agent_msgs=None, already_sent=False):
+                           agent_msgs=None, already_sent=False, platform=None):
         from gateway.platforms.base import MessageEvent, SessionSource
         from gateway.config import Platform
-        runner._voice_mode["discord:ch1"] = voice_mode
+        platform = platform or Platform.DISCORD
+        runner._voice_mode[f"{platform.value}:ch1"] = voice_mode
         source = SessionSource(
-            platform=Platform.DISCORD, chat_id="ch1",
+            platform=platform, chat_id="ch1",
             user_id="1", user_name="test", chat_type="channel",
         )
         event = MessageEvent(source=source, text="test", message_type=msg_type)
@@ -2682,6 +2781,19 @@ class TestVoiceTTSPlayback:
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
+
+    def test_telegram_voice_input_runner_skips_for_adapter_auto_tts(self):
+        """Telegram voice input stays on adapter auto-TTS to avoid duplicate audio."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(
+            runner,
+            "voice_only",
+            MessageType.VOICE,
+            already_sent=False,
+            platform=Platform.TELEGRAM,
+        ) is False
 
     def test_text_input_voice_all_runner_fires(self):
         """Streaming OFF + text input + voice_mode=all: runner generates TTS."""
@@ -2730,6 +2842,19 @@ class TestVoiceTTSPlayback:
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=True) is True
 
+    def test_streaming_on_telegram_voice_input_runner_fires(self):
+        """Streaming Telegram voice input uses runner TTS because adapter has no final text."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        assert self._call_should_reply(
+            runner,
+            "voice_only",
+            MessageType.VOICE,
+            already_sent=True,
+            platform=Platform.TELEGRAM,
+        ) is True
+
     def test_streaming_on_text_input_runner_fires(self):
         """Streaming ON + text input: runner handles TTS (same as before)."""
         from gateway.platforms.base import MessageType
@@ -2758,6 +2883,219 @@ class TestVoiceTTSPlayback:
         assert self._call_should_reply(
             runner, "all", MessageType.VOICE, agent_msgs=agent_msgs, already_sent=True,
         ) is False
+
+    def test_voice_reply_context_prompt_blocks_manual_tts_tools(self):
+        """Enabled Telegram voice turns instruct the agent to let adapter TTS speak."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "voice_only"
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="test",
+            message_type=MessageType.VOICE,
+        )
+
+        prompt = runner._voice_reply_context_prompt(event)
+
+        assert "Voice reply mode is active" in prompt
+        assert "Do not call text_to_speech" in prompt
+        assert "same language as the voice transcript" in prompt
+        assert "If the user asks for only a result, return only the result" in prompt
+        assert "Never introduce yourself as Leo" in prompt
+        assert "Do not invent live/current facts" in prompt
+        assert "concise, natural text only" in prompt
+
+    def test_voice_reply_sanitizer_removes_observed_english_persona_leak(self):
+        """Voice replies strip persona/status boilerplate before TTS and bench."""
+        runner = self._make_runner()
+
+        response = runner._sanitize_voice_reply_response(
+            "Leo here - Confirmed, test 1ok.\n\nOperational for the current session."
+        )
+
+        assert response == "Confirmed, test 1ok."
+
+    def test_voice_reply_sanitizer_removes_observed_romanian_persona_leak(self):
+        """Romanian voice replies strip the leaked Leo intro only."""
+        runner = self._make_runner()
+
+        response = runner._sanitize_voice_reply_response(
+            "Leo aici. Te aud tare și clar, Pafi. OK."
+        )
+
+        assert response == "Te aud tare și clar, Pafi. OK."
+
+    def test_voice_reply_sanitizer_maps_quota_failure_for_test_prompt(self):
+        """Provider quota failures should not be spoken back to the user."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="Permis, răspunde foarte scurt. Test ok.",
+            message_type=MessageType.VOICE,
+        )
+
+        response = runner._sanitize_voice_reply_response(
+            "I reached the maximum iterations (1) but couldn't summarize. "
+            "Error: Gemini quota exhausted (You have exhausted your capacity on this model.)",
+            event,
+        )
+
+        assert response == "Test ok."
+
+    def test_voice_reply_sanitizer_maps_quota_failure_for_simple_math(self):
+        """Simple result-only arithmetic still works when the fast provider fails."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="Hermes, cât face 2 plus 3? Răspunde doar rezultatul.",
+            message_type=MessageType.VOICE,
+        )
+
+        response = runner._sanitize_voice_reply_response(
+            "Gemini quota exhausted. Check /gquota.",
+            event,
+        )
+
+        assert response == "5"
+
+    def test_voice_reply_context_prompt_absent_for_text_input(self):
+        """voice_only must not constrain normal text turns."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "voice_only"
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="test",
+            message_type=MessageType.TEXT,
+        )
+
+        assert runner._voice_reply_context_prompt(event) == ""
+
+    def test_voice_reply_context_prompt_absent_when_voice_mode_off(self):
+        """Voice messages do not get the prompt unless this chat opted in."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "off"
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="test",
+            message_type=MessageType.VOICE,
+        )
+
+        assert runner._voice_reply_context_prompt(event) == ""
+
+    def test_is_voice_reply_turn_detects_enabled_voice_messages(self):
+        """Only opted-in voice messages use the low-latency voice route."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "voice_only"
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="ch1")
+
+        assert runner._is_voice_reply_turn(
+            MessageEvent(source=source, text="test", message_type=MessageType.VOICE)
+        ) is True
+        assert runner._is_voice_reply_turn(
+            MessageEvent(source=source, text="test", message_type=MessageType.TEXT)
+        ) is False
+
+    def test_voice_fast_reply_route_disabled_by_default(self):
+        """Normal installs keep existing Hermes runtime unless config opts in."""
+        runner = self._make_runner()
+
+        assert runner._voice_fast_reply_route({"voice": {}}) is None
+
+    def test_voice_fast_reply_route_uses_configured_fast_runtime(self, monkeypatch):
+        """voice.fast_reply can route voice notes to a fast, tool-free model."""
+        from hermes_cli import runtime_provider
+        runner = self._make_runner()
+
+        def fake_resolve_runtime_provider(**kwargs):
+            assert kwargs["requested"] == "google-gemini-cli"
+            return {
+                "api_key": "key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "google-gemini-cli",
+                "api_mode": "openai",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
+
+        route = runner._voice_fast_reply_route({
+            "voice": {
+                "fast_reply": {
+                    "enabled": True,
+                    "provider": "google-gemini-cli",
+                    "model": "gemini-3-flash-preview",
+                    "max_turns": 3,
+                    "max_tokens": 512,
+                }
+            }
+        })
+
+        assert route["model"] == "gemini-3-flash-preview"
+        assert route["runtime"]["provider"] == "google-gemini-cli"
+        assert route["runtime"]["max_tokens"] == 120
+        assert route["enabled_toolsets"] == []
+        assert route["max_iterations"] == 1
+        assert route["reasoning_config"] == {"enabled": False}
+
+    def test_voice_fast_reply_route_clamps_excessive_max_turns(self, monkeypatch):
+        """Fast voice replies must keep a latency-safe iteration ceiling."""
+        from hermes_cli import runtime_provider
+        runner = self._make_runner()
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
+            "api_key": "key",
+            "base_url": "https://example.invalid/v1",
+            "provider": "google-gemini-cli",
+            "api_mode": "openai",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        })
+
+        route = runner._voice_fast_reply_route({
+            "voice": {"fast_reply": {"enabled": True, "max_turns": 99}}
+        })
+
+        assert route["max_iterations"] == 1
+
+    def test_voice_fast_reply_route_ignores_configured_toolsets(self, monkeypatch):
+        """Fast spoken replies stay tool-free even if config tries to enable tools."""
+        from hermes_cli import runtime_provider
+        runner = self._make_runner()
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
+            "api_key": "key",
+            "base_url": "https://example.invalid/v1",
+            "provider": "google-gemini-cli",
+            "api_mode": "openai",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        })
+
+        route = runner._voice_fast_reply_route({
+            "voice": {
+                "fast_reply": {
+                    "enabled": True,
+                    "enabled_toolsets": ["terminal", "web"],
+                }
+            }
+        })
+
+        assert route["enabled_toolsets"] == []
 
 
 class TestUDPKeepalive:

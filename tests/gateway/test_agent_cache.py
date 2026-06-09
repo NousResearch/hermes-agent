@@ -76,12 +76,61 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_runtime_constructor_fields_change_signature(self):
+        """All non-secret runtime kwargs are frozen on AIAgent construction."""
+        from gateway.run import GatewayRunner
+
+        rt1 = {
+            "api_key": "sk-test12345678",
+            "base_url": "cloudcode-pa://google",
+            "provider": "google-gemini-cli",
+            "api_mode": "chat_completions",
+            "command": "gemini",
+            "args": ["--profile", "voice-a"],
+            "credential_pool": "pool-a",
+            "max_tokens": 512,
+        }
+        rt2 = dict(rt1)
+        rt2["max_tokens"] = 700
+        rt2["args"] = ["--profile", "voice-b"]
+
+        sig1 = GatewayRunner._agent_config_signature("gemini-3-flash-preview", rt1, [], "")
+        sig2 = GatewayRunner._agent_config_signature("gemini-3-flash-preview", rt2, [], "")
+
+        assert sig1 != sig2
+
     def test_toolset_change_different_signature(self):
         from gateway.run import GatewayRunner
 
         runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
         sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-discord"], "")
+        assert sig1 != sig2
+
+    def test_disabled_toolset_change_different_signature(self):
+        """Disabled toolsets affect frozen tool schemas and must bust cache."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", disabled_toolsets=[]
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", disabled_toolsets=["terminal"]
+        )
+        assert sig1 != sig2
+
+    def test_max_iterations_change_different_signature(self):
+        """Iteration budget is frozen at construction and must bust cache."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", max_iterations=3
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", max_iterations=6
+        )
         assert sig1 != sig2
 
     def test_reasoning_not_in_signature(self):

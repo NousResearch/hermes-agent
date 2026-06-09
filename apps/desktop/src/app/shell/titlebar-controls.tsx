@@ -13,10 +13,15 @@ import {
   $fileBrowserOpen,
   $panesFlipped,
   $sidebarOpen,
+  PREVIEW_PANE_ID,
+  RIGHT_RAIL_PREVIEW_TAB_ID,
+  selectRightRailTab,
   toggleFileBrowserOpen,
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { $paneOpen, setPaneOpen } from '@/store/panes'
+import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
@@ -61,6 +66,10 @@ export function TitlebarControls({
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
+  const previewOpen = useStore($paneOpen(PREVIEW_PANE_ID))
+  const previewTarget = useStore($previewTarget)
+  const filePreviewTarget = useStore($filePreviewTarget)
+  const hasPreviewTarget = Boolean(previewTarget || filePreviewTarget)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -113,6 +122,23 @@ export function TitlebarControls({
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()
+    }
+  }
+
+  const previewTool: TitlebarTool = {
+    active: previewOpen && hasPreviewTarget,
+    disabled: !hasPreviewTarget,
+    icon: <Codicon name="preview" />,
+    id: 'preview-pane',
+    label: hasPreviewTarget ? 'Open preview' : 'No preview available',
+    onSelect: () => {
+      if (!hasPreviewTarget) {
+        return
+      }
+
+      triggerHaptic('open')
+      setPaneOpen(PREVIEW_PANE_ID, true)
+      selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
     }
   }
 
@@ -208,6 +234,7 @@ export function TitlebarControls({
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
+        <TitlebarToolButton navigate={navigate} tool={previewTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
     </>

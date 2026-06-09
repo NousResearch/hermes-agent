@@ -1483,6 +1483,8 @@ export const en: Translations = {
       runtimeSessionElapsed: 'Runtime session elapsed',
       yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
       yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
+      goal: 'Goal',
+      goalActive: 'Goal mode active — Hermes is working toward a standing goal.',
       modelNone: 'none',
       noModel: 'no model',
       switchModel: 'Switch model',

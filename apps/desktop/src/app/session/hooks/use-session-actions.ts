@@ -34,6 +34,7 @@ import {
   setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
+  setGoalActive,
   setIntroSeed,
   setMessages,
   setSelectedStoredSessionId,
@@ -212,12 +213,12 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
 
 function applyRuntimeInfo(
   info: SessionCreateResponse['info'] | undefined
-): Partial<Pick<ClientSessionState, 'branch' | 'cwd'>> | null {
+): Partial<Pick<ClientSessionState, 'branch' | 'cwd' | 'goalActive'>> | null {
   if (!info) {
     return null
   }
 
-  const sessionState: Partial<Pick<ClientSessionState, 'branch' | 'cwd'>> = {}
+  const sessionState: Partial<Pick<ClientSessionState, 'branch' | 'cwd' | 'goalActive'>> = {}
 
   reportBackendContract(info.desktop_contract)
 
@@ -261,6 +262,11 @@ function applyRuntimeInfo(
 
   if (typeof info.yolo === 'boolean') {
     setYoloActive(info.yolo)
+  }
+
+  if (typeof info.goal_active === 'boolean') {
+    setGoalActive(info.goal_active)
+    sessionState.goalActive = info.goal_active
   }
 
   if (info.usage) {
@@ -311,6 +317,7 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
+      setGoalActive(false)
       // New chats inherit the current workspace.
       setCurrentCwd(getRememberedWorkspaceCwd())
       setCurrentBranch('')

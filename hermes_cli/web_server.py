@@ -5503,6 +5503,15 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
             raise HTTPException(status_code=404, detail="Session not found")
         if profile:
             session["profile"] = _cron_profile_home(profile)[0]
+        # Enrich with goal state
+        try:
+            from hermes_cli.goals import load_goal
+            goal_state = load_goal(sid or session_id)
+            session["goal_active"] = goal_state is not None and goal_state.status == "active"
+            session["goal_text"] = (goal_state.goal if goal_state else "") or ""
+        except Exception:
+            session["goal_active"] = False
+            session["goal_text"] = ""
         return session
     finally:
         db.close()

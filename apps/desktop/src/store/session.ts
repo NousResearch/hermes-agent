@@ -117,6 +117,7 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
+export const $goalActive = atom(false)
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -162,6 +163,7 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+export const setGoalActive = (next: Updater<boolean>) => updateAtom($goalActive, next)
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 
 export const setCurrentCwd = (next: Updater<string>) => {

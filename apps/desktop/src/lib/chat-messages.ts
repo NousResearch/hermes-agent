@@ -45,6 +45,7 @@ export type GatewayEventPayload = {
   service_tier?: string
   fast?: boolean
   yolo?: boolean
+  goal_active?: boolean
   running?: boolean
   cwd?: string
   branch?: string

@@ -1099,7 +1099,26 @@ def build_skills_system_prompt(
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
+
+    Hierarchical skill routing (``routing_mode: l1_l2`` in config):
+    When enabled, injects a compact L1 guide with the full index served
+    on-demand via ``skills_index.yaml``.  See
+    ``docs/skill-hierarchical-routing.md`` for the protocol.
     """
+    # ── NEW: hierarchical routing gate ────────────────────────────────
+    _routing_mode = None
+    try:
+        from hermes_cli.config import get_config
+        _cfg = get_config()
+        _routing_mode = (_cfg.get("skills") or {}).get("routing_mode")
+    except Exception:
+        pass  # config unavailable → fall through to full index
+
+    if _routing_mode == "l1_l2":
+        _l1_skills = (_cfg.get("skills") or {}).get("l1_skills", [])
+        return _build_l1_skills_prompt(_l1_skills)
+    # ── end hierarchical routing gate ────────────────────────────────
+
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
@@ -1314,6 +1333,68 @@ def build_skills_system_prompt(
             _SKILLS_PROMPT_CACHE.popitem(last=False)
 
     return result
+
+
+# =========================================================================
+# Hierarchical skill routing (L1 guide)
+# =========================================================================
+
+def _build_l1_skills_prompt(l1_skills: list) -> str:
+    """Build a compact L1 skills guide for hierarchical routing mode.
+
+    This replaces the full ``<available_skills>`` block with a terse
+    directive pointing the model to on-demand loading via
+    ``skills_index.yaml`` and ``skill_view()``.
+
+    Args:
+        l1_skills: list of ``(skill_id, description)`` tuples for
+            skills that should be always-available in the
+            system prompt (typically the most frequently used).
+
+    Returns:
+        A compact prompt string (~50-100 tokens).
+    """
+    # Normalize: YAML single-key dicts -> (key, value) tuples
+    normalized = []
+    for item in l1_skills:
+        if isinstance(item, dict):
+            for k, v in item.items():
+                normalized.append((k, v))
+        else:
+            normalized.append(item)
+    l1_skills = normalized
+
+    if not l1_skills:
+        return (
+            "## Skills\n"
+            "Skills are loaded on-demand via ``skill_view(name)``. "
+            "Metadata is in ``~/.hermes/skills_index.yaml``.\n"
+        )
+
+    lines = [
+        f"- {sid}: {desc}"
+        for sid, desc in l1_skills
+    ]
+    return (
+        "## Skills (mandatory)\n"
+        "Skills are loaded on-demand via ``skill_view(name)``. "
+        "Metadata is in ``~/.hermes/skills_index.yaml``. "
+        "Use ``skills_list()`` to browse categories.\n\n"
+        "Before replying, check if your task matches any L1 skill below. "
+        "If it does, load it immediately. "
+        "If not, read ``~/.hermes/skills_index.yaml`` for the full index.\n\n"
+        "<l1_skills>\n"
+        + "\n".join(lines) + "\n"
+        "</l1_skills>\n\n"
+        "If a skill has issues, fix it with ``skill_manage(action='patch')``.\n"
+        "After difficult/iterative tasks, offer to save as a skill.\n"
+        "Only proceed without loading a skill if genuinely none are relevant.\n"
+    )
+
+
+# =========================================================================
+# Context files (SOUL.md, AGENTS.md, .cursorrules)
+# =========================================================================
 
 
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:

@@ -31,7 +31,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -165,6 +165,8 @@ _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
+_active_cron_agents: dict[str, Any] = {}
+_active_cron_agents_lock = threading.Lock()
 
 # Sequential (env/context-mutating) cron jobs — workdir/profile jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
@@ -217,6 +219,28 @@ def _shutdown_parallel_pool() -> None:
 
 
 atexit.register(_shutdown_parallel_pool)
+
+
+def interrupt_active_cron_jobs(reason: str = "Gateway shutting down") -> int:
+    """Best-effort interrupt for cron agents running inside the gateway.
+
+    The gateway ticker dispatches cron work onto persistent thread pools and
+    returns immediately. If the gateway is restarted while a cron agent is in a
+    long provider retry loop, those worker threads can keep the old process
+    alive until the provider call finishes. Interrupt the agents before teardown
+    so restart/replace flows do not kick live sessions into a long outage while
+    waiting for unrelated scheduled work.
+    """
+    with _active_cron_agents_lock:
+        agents = list(_active_cron_agents.items())
+
+    for job_id, agent in agents:
+        try:
+            if hasattr(agent, "interrupt"):
+                agent.interrupt(reason)
+        except Exception as exc:
+            logger.debug("Failed interrupting cron job %s during shutdown: %s", job_id, exc)
+    return len(agents)
 
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
@@ -1801,6 +1825,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        with _active_cron_agents_lock:
+            _active_cron_agents[job_id] = agent
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -1997,6 +2023,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
+        with _active_cron_agents_lock:
+            _active_cron_agents.pop(job_id, None)
         try:
             if agent is not None:
                 agent.close()

@@ -5662,6 +5662,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._draining = True
 
+            # Cron jobs run in gateway-owned worker threads, not in
+            # _running_agents. Interrupt them explicitly so a long provider
+            # retry in scheduled work cannot hold the old gateway process open
+            # during a restart and disconnect live local/chat sessions.
+            try:
+                from cron.scheduler import interrupt_active_cron_jobs
+                _cron_interrupted = interrupt_active_cron_jobs(
+                    _INTERRUPT_REASON_GATEWAY_RESTART
+                    if self._restart_requested
+                    else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                )
+                if _cron_interrupted:
+                    logger.info(
+                        "Shutdown phase: interrupted %d active cron job(s)",
+                        _cron_interrupted,
+                    )
+            except Exception as _cron_interrupt_exc:
+                logger.debug(
+                    "Failed interrupting active cron jobs during shutdown: %s",
+                    _cron_interrupt_exc,
+                )
+
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
             await self._notify_active_sessions_of_shutdown()

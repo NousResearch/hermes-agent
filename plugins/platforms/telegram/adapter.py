@@ -4176,6 +4176,33 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     _MODEL_PAGE_SIZE = 8
+    _MODEL_LABEL_MAX = 22
+
+    @staticmethod
+    def _shorten_model_labels(model_ids: list) -> list:
+        """Produce display labels that survive 2-column inline-keyboard truncation.
+
+        Strips any publisher prefix (e.g. "google/"), then strips the longest
+        hyphen-aligned common prefix shared across the page so the unique part
+        of each name leads the label. Anything still over the cap is truncated
+        from the front with a leading ellipsis so the distinguishing suffix
+        (`-preview`, version, etc.) is preserved instead of being hidden by
+        Telegram's middle-truncate.
+        """
+        shortened = [m.split("/")[-1] if "/" in m else m for m in model_ids]
+        common = ""
+        if len(shortened) >= 2:
+            common = os.path.commonprefix(shortened)
+            common = common[: common.rfind("-") + 1] if "-" in common else ""
+        labels: list = []
+        for short in shortened:
+            label = short[len(common):] if common and short.startswith(common) else short
+            if not label:
+                label = short
+            if len(label) > TelegramAdapter._MODEL_LABEL_MAX:
+                label = "…" + label[-(TelegramAdapter._MODEL_LABEL_MAX - 1):]
+            labels.append(label)
+        return labels
 
     def _build_provider_keyboard(self, providers: list):
         """Build the top-level provider keyboard, folding provider groups.
@@ -4238,14 +4265,13 @@ class TelegramAdapter(BasePlatformAdapter):
         end = min(start + page_size, total)
         page_models = models[start:end]
 
+        labels = self._shorten_model_labels(page_models)
+
         buttons: list = []
-        for i, model_id in enumerate(page_models):
+        for i, label in enumerate(labels):
             abs_idx = start + i
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
-                short = short[:35] + "..."
             buttons.append(
-                InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
+                InlineKeyboardButton(label, callback_data=f"mm:{abs_idx}")
             )
 
         rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]

@@ -49,7 +49,7 @@ export function ComposerControls({
   onSteer
 }: {
   busy: boolean
-  busyAction: 'queue' | 'stop'
+  busyAction: 'queue' | 'steer' | 'stop'
   canSteer: boolean
   canSubmit: boolean
   conversation: ConversationProps
@@ -104,9 +104,9 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : (
-        <Tip label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}>
+        <Tip label={busy ? (busyAction === 'queue' ? c.queueMessage : busyAction === 'steer' ? c.steer : c.stop) : c.send}>
           <Button
-            aria-label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}
+            aria-label={busy ? (busyAction === 'queue' ? c.queueMessage : busyAction === 'steer' ? c.steer : c.stop) : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
@@ -114,6 +114,8 @@ export function ComposerControls({
             {busy ? (
               busyAction === 'queue' ? (
                 <Layers3 size={16} />
+              ) : busyAction === 'steer' ? (
+                <span className="block text-[11px] leading-none font-bold">S</span>
               ) : (
                 <span className="block size-3 rounded-[0.1875rem] bg-current" />
               )

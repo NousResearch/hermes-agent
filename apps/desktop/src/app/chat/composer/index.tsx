@@ -23,6 +23,7 @@ import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { getHermesConfigRecord } from '@/hermes'
 import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
 import {
   browseBackward,
@@ -147,6 +148,18 @@ export function ChatBar({
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
+  const busyInputModeRef = useRef<string>('queue')
+
+  useEffect(() => {
+    getHermesConfigRecord()
+      .then(cfg => {
+        const c = cfg as Record<string, unknown>
+        busyInputModeRef.current = ((c['display'] as Record<string, unknown>)?.['busy_input_mode'] as string) ?? 'queue'
+      })
+      .catch(() => {
+        /* default to queue */
+      })
+  }, [])
 
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
@@ -170,7 +183,9 @@ export function ChatBar({
   const hasComposerPayload = trimmedDraft.length > 0 || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
-  const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+  const busyAction = busy && hasComposerPayload
+    ? (busyInputModeRef.current === 'steer' ? 'steer' : 'queue')
+    : 'stop'
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
@@ -1228,7 +1243,14 @@ export function ChatBar({
         clearDraft()
         void onSubmit(submitted)
       } else if (hasComposerPayload) {
-        queueCurrentDraft()
+        // In steer mode, redirect to the live run instead of adding to the
+        // queue.  steerDraft handles text-only (no attachments) and checks
+        // canSteer internally — fall through to queue if those aren't met.
+        if (busyInputModeRef.current === 'steer' && canSteer && !attachments.length) {
+          steerDraft()
+        } else {
+          queueCurrentDraft()
+        }
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).

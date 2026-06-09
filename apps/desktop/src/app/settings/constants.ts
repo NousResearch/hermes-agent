@@ -282,7 +282,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   timezone: 'Timezone',
   display: {
     personality: 'Personality',
-    showReasoning: 'Reasoning Blocks'
+    showReasoning: 'Reasoning Blocks',
+    busyInputMode: 'Message Submission While Busy'
   },
   agent: {
     maxTurns: 'Max Agent Steps',
@@ -433,7 +434,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',
-    showReasoning: 'Show reasoning sections when the backend provides them.'
+    showReasoning: 'Show reasoning sections when the backend provides them.',
+    busyInputMode: 'Choose whether new messages queue or steer the active run while the agent is working.'
   },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
   agent: {
@@ -509,7 +511,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'display.busy_input_mode', 'agent.image_input_mode']
   },
   {
     id: 'appearance',

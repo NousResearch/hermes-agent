@@ -1613,6 +1613,8 @@ export const zhHant = defineLocale({
     noProjectBody: '從狀態列設定工作目錄後即可瀏覽檔案。',
     unreadableTitle: '無法讀取',
     unreadableBody: error => `無法讀取此資料夾 (${error})。`,
+    remoteGatewayTitle: '遠端閘道',
+    remoteGatewayBody: '連接到遠端閘道時，檔案瀏覽器不可用。',
     emptyTitle: '空資料夾',
     emptyBody: '此資料夾是空的。',
     treeErrorTitle: '檔案樹錯誤',

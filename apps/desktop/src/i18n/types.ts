@@ -1181,6 +1181,8 @@ export interface Translations {
     noProjectBody: string
     unreadableTitle: string
     unreadableBody: (error: string) => string
+    remoteGatewayTitle: string
+    remoteGatewayBody: string
     emptyTitle: string
     emptyBody: string
     treeErrorTitle: string

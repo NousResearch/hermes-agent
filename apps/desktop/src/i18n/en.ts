@@ -1509,6 +1509,8 @@ export const en: Translations = {
     noProjectBody: 'Set a working directory from the status bar to browse files.',
     unreadableTitle: 'Unreadable',
     unreadableBody: error => `Could not read this folder (${error}).`,
+    remoteGatewayTitle: 'Remote gateway',
+    remoteGatewayBody: 'File browser is not available when connected to a remote gateway.',
     emptyTitle: 'Empty',
     emptyBody: 'This folder is empty.',
     treeErrorTitle: 'Tree error',

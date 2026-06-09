@@ -1652,6 +1652,8 @@ export const ja = defineLocale({
     noProjectBody: 'ステータスバーから作業ディレクトリを設定してファイルを閲覧してください。',
     unreadableTitle: '読み取り不可',
     unreadableBody: error => `このフォルダーを読み取れませんでした (${error})。`,
+    remoteGatewayTitle: 'リモートゲートウェイ',
+    remoteGatewayBody: 'リモートゲートウェイに接続中はファイルブラウザをご利用いただけません。',
     emptyTitle: '空',
     emptyBody: 'このフォルダーは空です。',
     treeErrorTitle: 'ツリーエラー',

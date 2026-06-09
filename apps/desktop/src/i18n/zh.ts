@@ -1690,6 +1690,8 @@ export const zh: Translations = {
     noProjectBody: '从状态栏设置工作目录后即可浏览文件。',
     unreadableTitle: '无法读取',
     unreadableBody: error => `无法读取此文件夹 (${error})。`,
+    remoteGatewayTitle: '远程网关',
+    remoteGatewayBody: '连接到远程网关时，文件浏览器不可用。',
     emptyTitle: '空文件夹',
     emptyBody: '此文件夹为空。',
     treeErrorTitle: '文件树错误',

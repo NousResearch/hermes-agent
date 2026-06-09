@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { isRemoteGateway } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -304,7 +305,7 @@ interface FileTreeBodyProps {
   openState: ReturnType<typeof useProjectTree>['openState']
 }
 
-function FileTreeBody({
+export function FileTreeBody({
   collapseNonce,
   cwd,
   data,
@@ -322,6 +323,10 @@ function FileTreeBody({
 
   if (!cwd) {
     return <EmptyState body={r.noProjectBody} title={r.noProjectTitle} />
+  }
+
+  if (isRemoteGateway()) {
+    return <EmptyState body={r.remoteGatewayBody} title={r.remoteGatewayTitle} />
   }
 
   if (error) {

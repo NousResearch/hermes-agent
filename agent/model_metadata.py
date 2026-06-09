@@ -1810,6 +1810,28 @@ def get_model_context_length(
         if ctx is not None:
             save_context_length(model, base_url, ctx)
             return ctx
+    # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
+    # models. OpenRouter's catalog carries per-model context_length (e.g.
+    # anthropic/claude-fable-5 -> 1M) and refreshes as new slugs ship, so it
+    # must win over both models.dev (step 5g) and the hardcoded family catch-all
+    # (step 8). Before this branch, an OpenRouter selection set
+    # effective_provider="openrouter", which (a) made the models.dev lookup miss
+    # brand-new slugs and (b) skipped the step-6 OR fallback (gated on `not
+    # effective_provider`), so a fresh slug like claude-fable-5 fell through to
+    # the generic "claude": 200K entry and under-reported a 1M window. Mirrors
+    # the dedicated Nous/Copilot/GMI branches above.
+    if effective_provider == "openrouter":
+        metadata = fetch_model_metadata()
+        entry = metadata.get(model)
+        if entry:
+            or_ctx = entry.get("context_length")
+            # Guard against the known OpenRouter Kimi-family 32k underreport
+            # (same class the hardcoded overrides exist to mitigate).
+            if isinstance(or_ctx, int) and or_ctx > 0 and not (
+                or_ctx == 32768 and _model_name_suggests_kimi(model)
+            ):
+                return or_ctx
+
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)

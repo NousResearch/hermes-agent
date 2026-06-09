@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentBranch, $currentCwd } from '@/store/session'
+import { $connection, $currentBranch, $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -47,6 +47,12 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const currentBranch = useStore($currentBranch).trim()
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
+  const isRemote = $connection.get()?.mode === 'remote'
+  // In remote mode the session cwd is a path on the remote host that does
+  // not exist locally. Use empty string so the Files panel shows "No folder
+  // selected" instead of an unreadable remote path.
+  const filesCwd = isRemote ? '' : currentCwd
+  const filesHasCwd = isRemote ? false : hasCwd
 
   const cwdName = hasCwd
     ? (currentCwd
@@ -65,7 +71,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     rootError,
     rootLoading,
     setNodeOpen
-  } = useProjectTree(currentCwd)
+  } = useProjectTree(filesCwd)
 
   const canCollapse = Object.values(openState).some(Boolean)
   const effectiveTab: RightSidebarTabId = terminalTakeover ? 'files' : activeTab
@@ -117,11 +123,13 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
         <FilesystemTab
           canCollapse={canCollapse}
           collapseNonce={collapseNonce}
-          cwd={currentCwd}
+          cwd={filesCwd}
           cwdName={cwdName}
           data={data}
           error={rootError}
-          hasCwd={hasCwd}
+          hasCwd={filesHasCwd}
+          isRemote={isRemote}
+          remoteCwd={isRemote ? currentCwd : undefined}
           loading={rootLoading}
           onActivateFile={onActivateFile}
           onActivateFolder={onActivateFolder}
@@ -192,9 +200,13 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   canCollapse: boolean
   cwdName: string
   hasCwd: boolean
+  /** True when the Desktop is connected to a remote backend. */
+  isRemote?: boolean
   onChangeFolder: () => Promise<void> | void
   onCollapseAll: () => void
   onRefresh: () => void
+  /** The remote session's cwd, shown in the info banner. */
+  remoteCwd?: string
 }
 
 // Sidebar-specific color/hover treatment only — size, radius, cursor and the
@@ -213,6 +225,7 @@ function FilesystemTab({
   data,
   error,
   hasCwd,
+  isRemote,
   loading,
   onActivateFile,
   onActivateFolder,
@@ -222,13 +235,20 @@ function FilesystemTab({
   onNodeOpenChange,
   onPreviewFile,
   onRefresh,
-  openState
+  openState,
+  remoteCwd
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
 
   return (
     <div className="group/project-header flex min-h-0 flex-1 flex-col">
+      {isRemote && (
+        <div className="flex items-center gap-1.5 px-2.5 py-1 text-[0.6875rem] text-(--ui-text-tertiary)" title={remoteCwd ? r.remoteLocalFilesTip(remoteCwd) : undefined}>
+          <Codicon className="shrink-0" name="cloud" size="0.75rem" />
+          <span>{r.remoteLocalFiles}</span>
+        </div>
+      )}
       <RightSidebarSectionHeader>
         <Tip label={hasCwd ? r.folderTip(cwd) : r.openFolder}>
           <button

@@ -1660,7 +1660,9 @@ export const ja = defineLocale({
     loadingFiles: 'ファイルを読み込み中',
     terminalFocus: 'ターミナルビューにフォーカス',
     terminalSplit: '分割ビューに戻る',
-    addToChat: 'チャットに追加'
+    addToChat: 'チャットに追加',
+    remoteLocalFiles: 'ローカルファイルを参照',
+    remoteLocalFilesTip: cwd => `リモートセッションの作業ディレクトリ (${cwd}) はローカルでは利用できません。ローカルフォルダを選択してください。`
   },
 
   preview: {

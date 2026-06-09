@@ -1698,7 +1698,9 @@ export const zh: Translations = {
     loadingFiles: '正在加载文件',
     terminalFocus: '聚焦终端视图',
     terminalSplit: '返回分栏视图',
-    addToChat: '添加到对话'
+    addToChat: '添加到对话',
+    remoteLocalFiles: '浏览本地文件',
+    remoteLocalFilesTip: cwd => `远程会话的工作目录 (${cwd}) 在本地不可用。选择本地文件夹浏览。`
   },
 
   preview: {

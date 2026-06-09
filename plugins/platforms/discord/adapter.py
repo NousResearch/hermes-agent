@@ -1797,6 +1797,50 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a Discord message by channel/thread ID and message ID.
+
+        The gateway uses this for best-effort cleanup of temporary progress
+        bubbles after the final response is delivered. Discord deletes require
+        the channel (or thread) ID that owns the message, so ``chat_id`` is
+        resolved the same way as ``send()`` resolves its target channel.
+        """
+        if not self._client:
+            return False
+
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                logger.debug("[%s] Discord delete target channel %s not found", self.name, chat_id)
+                return False
+
+            message = await channel.fetch_message(int(message_id))
+            await message.delete()
+            return True
+        except Exception as e:  # pragma: no cover - defensive logging
+            err_text = str(e)
+            if "10008" in err_text or "unknown message" in err_text.lower():
+                # Already gone: treat as successful cleanup so callers don't
+                # keep trying to delete stale progress bubbles.
+                logger.debug(
+                    "[%s] Discord message %s/%s already deleted: %s",
+                    self.name,
+                    chat_id,
+                    message_id,
+                    e,
+                )
+                return True
+            logger.debug(
+                "[%s] Failed to delete Discord message %s/%s: %s",
+                self.name,
+                chat_id,
+                message_id,
+                e,
+            )
+            return False
+
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 

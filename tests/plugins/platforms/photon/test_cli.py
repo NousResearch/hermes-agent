@@ -42,6 +42,7 @@ def test_sidecar_runtime_probe_reports_node_failure(
     monkeypatch.setattr(photon_cli, "_SIDECAR_DIR", tmp_path)
 
     def fake_run(args, **kwargs):
+        assert kwargs["timeout"] == photon_cli._SIDECAR_RUNTIME_PROBE_TIMEOUT_SECONDS
         if "--check" in args:
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="syntax bad")
         raise AssertionError("runtime import should not run after --check failure")
@@ -52,6 +53,77 @@ def test_sidecar_runtime_probe_reports_node_failure(
 
     assert ok is False
     assert "syntax bad" in detail
+
+
+def test_sidecar_runtime_probe_reports_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(photon_cli, "_SIDECAR_DIR", tmp_path)
+
+    def fake_run(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(photon_cli.subprocess, "run", fake_run)
+
+    ok, detail = photon_cli._run_sidecar_runtime_probe("node")
+
+    assert ok is False
+    assert "timed out after 20s" in detail
+
+
+def test_sidecar_runtime_probe_reports_os_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(photon_cli, "_SIDECAR_DIR", tmp_path)
+
+    def fake_run(args, **kwargs):
+        raise OSError("not executable")
+
+    monkeypatch.setattr(photon_cli.subprocess, "run", fake_run)
+
+    ok, detail = photon_cli._run_sidecar_runtime_probe("/tmp/node")
+
+    assert ok is False
+    assert "not executable" in detail
+
+
+def test_resolve_node_bin_rejects_non_executable_photon_node_bin(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    node_file = tmp_path / "node"
+    node_file.write_text("not executable")
+    monkeypatch.setenv("PHOTON_NODE_BIN", str(node_file))
+    monkeypatch.setattr(photon_cli.shutil, "which", lambda _name: None)
+
+    assert photon_cli._resolve_node_bin() is None
+
+
+def test_resolve_node_bin_rejects_directory_photon_node_bin(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    node_dir = tmp_path / "node"
+    node_dir.mkdir()
+    monkeypatch.setenv("PHOTON_NODE_BIN", str(node_dir))
+    monkeypatch.setattr(photon_cli.shutil, "which", lambda _name: None)
+
+    assert photon_cli._resolve_node_bin() is None
+
+
+def test_resolve_node_bin_accepts_executable_photon_node_bin(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    node_file = tmp_path / "node"
+    node_file.write_text("#!/bin/sh\n")
+    node_file.chmod(0o700)
+    monkeypatch.setenv("PHOTON_NODE_BIN", str(node_file))
+    monkeypatch.setattr(photon_cli.shutil, "which", lambda _name: None)
+
+    assert photon_cli._resolve_node_bin() == str(node_file)
 
 
 def test_install_sidecar_fails_when_runtime_probe_fails(monkeypatch, capsys) -> None:

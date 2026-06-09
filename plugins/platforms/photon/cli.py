@@ -297,10 +297,17 @@ def _autoconfigure_access(phone: str) -> None:
             print(f"      could not set {key}: {e}", file=sys.stderr)
 
 
+_SIDECAR_RUNTIME_PROBE_TIMEOUT_SECONDS = 20
+
+
 def _resolve_node_bin() -> str | None:
     configured = os.getenv("PHOTON_NODE_BIN")
     if configured:
-        if shutil.which(configured) or Path(configured).exists():
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+        configured_path = Path(configured)
+        if configured_path.is_file() and os.access(configured_path, os.X_OK):
             return configured
         return None
     return shutil.which("node")
@@ -308,13 +315,19 @@ def _resolve_node_bin() -> str | None:
 
 def _run_sidecar_runtime_probe(node_bin: str) -> tuple[bool, str]:
     """Verify the installed sidecar can load under the active Node runtime."""
-    check = subprocess.run(  # noqa: S603
-        [node_bin, "--check", "index.mjs"],
-        cwd=str(_SIDECAR_DIR),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        check = subprocess.run(  # noqa: S603
+            [node_bin, "--check", "index.mjs"],
+            cwd=str(_SIDECAR_DIR),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=_SIDECAR_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as e:
+        return False, _summarize_probe_timeout(e)
+    except OSError as e:
+        return False, _summarize_probe_error(e)
     if check.returncode != 0:
         return False, _summarize_probe_output(check)
 
@@ -335,16 +348,31 @@ def _run_sidecar_runtime_probe(node_bin: str) -> tuple[bool, str]:
         }
         console.log('ok');
     """
-    runtime = subprocess.run(  # noqa: S603
-        [node_bin, "--input-type=module", "-e", probe],
-        cwd=str(_SIDECAR_DIR),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        runtime = subprocess.run(  # noqa: S603
+            [node_bin, "--input-type=module", "-e", probe],
+            cwd=str(_SIDECAR_DIR),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=_SIDECAR_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as e:
+        return False, _summarize_probe_timeout(e)
+    except OSError as e:
+        return False, _summarize_probe_error(e)
     if runtime.returncode != 0:
         return False, _summarize_probe_output(runtime)
     return True, "ok"
+
+
+def _summarize_probe_timeout(exc: subprocess.TimeoutExpired) -> str:
+    cmd = " ".join(str(part) for part in exc.cmd[:2]) if exc.cmd else "node"
+    return f"{cmd} timed out after {exc.timeout:g}s"
+
+
+def _summarize_probe_error(exc: OSError) -> str:
+    return f"node probe failed: {exc}"
 
 
 def _summarize_probe_output(proc: subprocess.CompletedProcess) -> str:

@@ -288,7 +288,8 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
-      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
+      themeProfileNote: (profile: string) =>
+        `外观当前正由 ${profile} 个人资料管理。在该资料中编辑主题以全局应用更改。`
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -312,11 +313,7 @@ export const zh: Translations = {
         backend: '执行后端',
         timeout: '命令超时',
         persistentShell: '持久化 Shell',
-        envPassthrough: '环境变量透传',
-        dockerImage: 'Docker 镜像',
-        singularityImage: 'Singularity 镜像',
-        modalImage: 'Modal 镜像',
-        daytonaImage: 'Daytona 镜像'
+        envPassthrough: '环境变量透传'
       },
       fileReadMaxChars: '文件读取上限',
       toolOutput: {
@@ -357,15 +354,6 @@ export const zh: Translations = {
           model: '本地转写模型',
           language: '转写语言'
         },
-        openai: {
-          model: 'OpenAI STT 模型'
-        },
-        groq: {
-          model: 'Groq STT 模型'
-        },
-        mistral: {
-          model: 'Mistral STT 模型'
-        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 语言',
@@ -385,33 +373,6 @@ export const zh: Translations = {
         elevenlabs: {
           voiceId: 'ElevenLabs 语音',
           modelId: 'ElevenLabs 模型'
-        },
-        xai: {
-          voiceId: 'xAI (Grok) 语音',
-          language: 'xAI 语言'
-        },
-        minimax: {
-          model: 'MiniMax TTS 模型',
-          voiceId: 'MiniMax 语音'
-        },
-        mistral: {
-          model: 'Mistral TTS 模型',
-          voiceId: 'Mistral 语音'
-        },
-        gemini: {
-          model: 'Gemini TTS 模型',
-          voice: 'Gemini 语音'
-        },
-        neutts: {
-          model: 'NeuTTS 模型',
-          device: 'NeuTTS 设备'
-        },
-        kittentts: {
-          model: 'KittenTTS 模型',
-          voice: 'KittenTTS 语音'
-        },
-        piper: {
-          voice: 'Piper 语音'
         }
       },
       memory: {
@@ -513,7 +474,9 @@ export const zh: Translations = {
       cantReach: '无法连接更新服务器。',
       tapCheck: '点击"立即检查"以查找更新。',
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
-      lastChecked: age => `上次检查:${age}`,
+      rebuildNeeded: '源代码已更改 — 重建以应用本地更改。',
+      rebuildNow: '立即重建',
+      lastChecked: age => `上次检查 ${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
       automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
@@ -737,15 +700,18 @@ export const zh: Translations = {
       ready: '就绪',
       nousIncluded: '包含在 Nous 订阅中；登录 Nous Portal 即可激活。',
       noApiKeyRequired: '不需要 API 密钥。',
-      postSetupHint: step => `此后端需要一次性安装 (${step})。将在此机器上执行，可能需要几分钟。`,
+      postSetupHint: step => `此提供方需要额外设置步骤 (${step})。暂时请在 CLI 中运行 hermes tools。`,
       postSetupRun: '运行设置',
-      postSetupRunning: '安装中…',
-      postSetupStarting: '启动中…',
+      postSetupRunning: '正在运行设置…',
+      postSetupStarting: '正在开始设置…',
       postSetupCompleteTitle: '设置完成',
-      postSetupCompleteMessage: step => `已安装 ${step}。`,
-      postSetupErrorTitle: '设置完成但有错误',
-      postSetupErrorMessage: step => `请检查 ${step} 日志。`,
-      postSetupFailed: step => `运行 ${step} 设置失败`
+      postSetupCompleteMessage: (step: string) =>
+        `设置步骤 "${step}" 已成功完成。`,
+      postSetupErrorTitle: '设置失败',
+      postSetupErrorMessage: (step: string) =>
+        `设置步骤 "${step}" 失败。`,
+      postSetupFailed: (step: string) =>
+        `设置步骤 "${step}" 失败。暂时请在 CLI 中运行 hermes tools。`,
     }
   },
 
@@ -1086,6 +1052,8 @@ export const zh: Translations = {
   cron: {
     close: '关闭定时任务',
     search: '搜索定时任务…',
+    refresh: '刷新定时任务',
+    refreshing: '正在刷新定时任务',
     loading: '正在加载定时任务…',
     states: {
       enabled: '已启用',
@@ -1138,18 +1106,20 @@ export const zh: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每个整点',
     everyHourAt: minute => `每小时的 :${minute}`,
+    active: (enabled, total) => `${enabled}/${total} 个启用`,
     newCron: '新建定时任务',
+    createFirst: '创建第一个定时任务',
     emptyDescNew: '按 cron 表达式排程一个提示词。Hermes 会运行它，并把结果发送到你选择的目的地。',
     emptyDescSearch: '尝试更宽泛的搜索词。',
     emptyTitleNew: '暂无排程任务',
-    emptyTitleSearch: '无匹配项',
-    last: '上次：',
+    emptyTitleSearch: '无结果',
+    last: '上一次：',
     next: '下次：',
-    noRuns: '尚无运行',
+    noRuns: '暂无运行记录',
     manage: '管理',
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',
-    runHistory: '运行记录',
+    runHistory: '运行历史',
     actionsFor: title => `${title} 的操作`,
     actionsTitle: '定时任务操作',
     resume: '恢复定时任务',
@@ -1425,13 +1395,14 @@ export const zh: Translations = {
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
     connectionRetry: '请检查网络连接后重试。',
     latestBody: '你正在运行最新版本。',
-    latestBodyBackend: '后端正在运行最新版本。',
     allSetTitle: '已是最新',
     availableTitle: '有可用更新',
-    availableBody: '新版 Hermes 已可安装。',
+    availableBody: '新版本 Hermes 已准备好安装。',
     availableTitleBackend: '后端有可用更新',
     availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
     availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
+    rebuildTitle: '源代码已更改',
+    rebuildBody: 'Hermes 源代码自上次构建以来已更改。重建以应用本地更改。',
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
@@ -1442,18 +1413,19 @@ export const zh: Translations = {
     copied: '已复制',
     done: '完成',
     applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后重新打开 Hermes。',
-    applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: 'Hermes 将关闭以应用更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
-    notNow: '暂不',
+    notNow: '暂不更新',
+    latestBodyBackend: '后端正在运行最新版本。',
+    applyingBodyBackend: '远程后端正在应用更新并即将重启。恢复后 Hermes 会自动重新连接。',
     applyStatus: {
-      preparing: '正在更新后端…',
-      pulling: '后端更新中…',
-      restarting: '后端正在重启以加载更新…',
-      notAvailable: '此后端无法更新。',
-      failed: '后端更新失败。',
-      noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
+      preparing: '正在准备更新…',
+      pulling: '正在下载更新…',
+      restarting: '正在重启…',
+      notAvailable: '更新不可用',
+      failed: '更新失败',
+      noReturn: '更新进程无响应'
     }
   },
 
@@ -1633,12 +1605,13 @@ export const zh: Translations = {
       update: '更新',
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
+      rebuildNeeded: '源代码已更改 — 重建以应用本地更改。',
       desktopVersion: version => `Hermes Desktop v${version}`,
+      commit: sha => `提交 ${sha}`,
+      branch: branch => `分支 ${branch}`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,
       backendLabel: version => `后端 v${version}`,
-      commit: sha => `提交 ${sha}`,
-      branch: branch => `分支 ${branch}`,
       closeCommandCenter: '关闭命令中心',
       openCommandCenter: '打开命令中心',
       gateway: '网关',
@@ -1661,8 +1634,8 @@ export const zh: Translations = {
       contextUsage: '上下文用量',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
-      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
-      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。Shift+点击可全局切换。',
+      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。',
+      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。',
       modelNone: '无',
       noModel: '无模型',
       switchModel: '切换模型',

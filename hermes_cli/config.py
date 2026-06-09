@@ -1290,6 +1290,14 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        "tts_audio_tags": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
         # Triage specifier — flesh out a rough one-liner in the Kanban
         # Triage column into a concrete spec, then promote it to ``todo``.
         # Invoked by ``hermes kanban specify`` (single id or --all). Set a
@@ -1575,6 +1583,10 @@ DEFAULT_CONFIG = {
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
             "voice": "Kore",
+            # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
+            # pass to insert freeform square-bracket audio tags into the TTS
+            # script. Visible chat replies are unchanged.
+            "audio_tags": False,
             # Optional local Markdown/text file with Gemini TTS performance
             # direction. It may include AUDIO PROFILE, SCENE, DIRECTOR'S NOTES,
             # SAMPLE CONTEXT, and either a `{transcript}` placeholder or no

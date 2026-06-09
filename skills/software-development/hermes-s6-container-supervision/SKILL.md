@@ -1,7 +1,7 @@
 ---
 name: hermes-s6-container-supervision
 description: Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, the container role gate (gateway vs dashboard), the :11435 Claude proxy, and the Architecture B main-program pattern.
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -43,14 +43,20 @@ If you're just running the Hermes Agent and want to use Docker, see `website/doc
 │   │   └── walk $HERMES_HOME/profiles/<name>/gateway_state.json
 │   │       → recreate /run/service/gateway-<name>/
 │   │       → auto-start only those with prior_state == "running"
-│   └── 03-seed-data-services          ← seed volume-backed s6 services
-│       ├── ROLE GATE: dashboard role → skip (proxy is gateway-only)
-│       └── cp -a $HERMES_HOME/services/claude-proxy → /run/service/
-│           → the :11435 Claude proxy (s6-log locks logs/claude-proxy/)
+│   ├── 03-seed-data-services          ← seed OTHER volume-backed s6 services
+│   │   ├── ROLE GATE: dashboard role → skip
+│   │   └── SKIPS claude-proxy (now image-baked); seeds any other volume svc
+│   └── 04-registry-gate               ← enforce the client registry (no-op
+│       ├── ROLE GATE: dashboard role → skip   if $HERMES_CLIENTS_REGISTRY unset)
+│       ├── remove gateway-<profile> slots for isolation:container clients
+│       │   (keep isolated bots OUT of the shared gateway → no Telegram 409)
+│       └── log DRIFT: for on-disk profiles absent from the registry
 │
 ├── s6-rc.d (static services, in /etc/s6-overlay/s6-rc.d/)
 │   ├── main-hermes/run                ← exec sleep infinity (no-op slot)
-│   └── dashboard/run                  ← if HERMES_DASHBOARD=1, runs `hermes dashboard`
+│   ├── dashboard/run                  ← if HERMES_DASHBOARD=1, runs `hermes dashboard`
+│   └── claude-proxy/run               ← IMAGE-BAKED :11435 proxy; ROLE GATE:
+│                                        gateway-only (dashboard → finish 125)
 │
 ├── /run/service (s6-svscan watches; tmpfs)
 │   ├── gateway-coder/                 ← runtime-registered per-profile
@@ -72,9 +78,11 @@ If you're just running the Hermes Agent and want to use Docker, see `website/doc
 | `Dockerfile` | s6-overlay install + cont-init.d wiring + `ENTRYPOINT ["/init", "/opt/hermes/docker/main-wrapper.sh"]` |
 | `docker/stage2-hook.sh` | The "old entrypoint logic" — UID remap, chown, seed, skills sync. Runs as cont-init.d/01-hermes-setup. |
 | `docker/cont-init.d/02-reconcile-profiles` | Calls `hermes_cli.container_boot` on every boot to restore profile gateway slots from the persistent volume. Role-gated: skips the reconciler in the dashboard container. |
-| `docker/cont-init.d/03-seed-data-services` | Seeds volume-backed s6 services (the `:11435` Claude proxy) from `$HERMES_HOME/services/` into the tmpfs scandir. Role-gated: seeds nothing in the dashboard container. |
-| `docker/hermes-role.sh` | Sourceable helper printing the container role (`gateway`\|`dashboard`). Resolves `$HERMES_ROLE`, else infers from the CMD in `/proc`, defaults to `gateway`. Consulted by 02 + 03. |
-| `deploy/claude-proxy/claude_proxy.py` | The `:11435` Claude proxy. Binds **container-local** `127.0.0.1:11435`; serves `GET /health` and `POST /v1/chat/completions`. Run as the volume-backed `claude-proxy` s6 service. |
+| `docker/cont-init.d/03-seed-data-services` | Seeds **other** volume-backed s6 services from `$HERMES_HOME/services/` into the tmpfs scandir. Role-gated. **Skips `claude-proxy`** — that is now image-baked (see below). |
+| `docker/cont-init.d/04-registry-gate` | Enforces the client registry against the scandir after 02/03: removes `gateway-<profile>` slots for `isolation: container` clients (keeps isolated bots out of the shared gateway), logs `DRIFT:` for on-disk profiles missing from the registry. **Pure no-op when `$HERMES_CLIENTS_REGISTRY` is unset.** Role-gated. |
+| `docker/hermes-role.sh` | Sourceable helper printing the container role (`gateway`\|`dashboard`). Resolves `$HERMES_ROLE`, else infers from the CMD in `/proc`, defaults to `gateway`. Consulted by 02 + 03 + 04 + the `claude-proxy` service. |
+| `deploy/claude-proxy/claude_proxy.py` | The `:11435` Claude proxy. Binds **container-local** `127.0.0.1:11435`; serves `GET /health` and `POST /v1/chat/completions`. **Image-baked** at `/opt/hermes/deploy/claude-proxy/claude_proxy.py`; run as the static s6-rc service `docker/s6-rc.d/claude-proxy` (no longer volume-defined). |
+| `docker/s6-rc.d/claude-proxy/run` | IMAGE-BAKED `:11435` proxy service. `exec`s the baked `claude_proxy.py` as the hermes user. **Self-gates on the role** (static services run in both containers): dashboard role exits 0 + `finish` returns 125 so the slot stays down. Logs to the container log (no `s6-log`, so no shared log-lock). |
 | `docker/main-wrapper.sh` | The container's CMD. Routes user args, drops to hermes via `s6-setuidgid`, exec's the chosen program. |
 | `docker/s6-rc.d/main-hermes/run` | No-op `sleep infinity` — slot exists so the s6-rc user bundle is valid; main hermes runs as the CMD, not as a supervised service. |
 | `docker/s6-rc.d/dashboard/run` | Conditional service — `exec sleep infinity` unless `HERMES_DASHBOARD` is truthy. |
@@ -103,9 +111,11 @@ The standard deployment runs **two containers from the same image** (`docker-com
 | `hermes` (gateway) | `gateway run` | the bots + per-profile gateways + the `:11435` Claude proxy |
 | `hermes-dashboard` | `dashboard --host …` | the web UI on `:9119` |
 
-Both mount the **same** `~/.hermes` volume at `/opt/data`, and both run the **same** `/init` + `cont-init.d` hooks. Without a guard, `02-reconcile-profiles` and `03-seed-data-services` would start the gateways **and** the Claude proxy in *both* containers.
+Both mount the **same** `~/.hermes` volume at `/opt/data`, and both run the **same** `/init` + `cont-init.d` hooks **and the same static s6-rc services**. Without a guard, `02-reconcile-profiles` would start the gateways and the `claude-proxy` static service would start the Claude proxy in *both* containers.
 
-**Why that is catastrophic:** the proxy's `s6-log` takes an **exclusive lock** on the shared `/opt/data/logs/claude-proxy/lock`. If both containers seed the proxy, whichever container's `s6-log` wins the lock starves the other — the loser dies with `s6-log: fatal: unable to lock …/claude-proxy/lock: Resource busy` (exit 111) and **flaps forever**. The flapping logger destabilizes the proxy producer (broken stdout pipe → SIGPIPE → restart), the gateway loses its Claude provider, and **the bots go dark** — yet `docker compose up -d` and a naive deploy still report success. This was a real, recurring outage.
+**Why running the proxy twice is catastrophic:** two proxies bind the same `127.0.0.1:11435` and issue duplicate Claude calls. Historically the proxy was volume-defined with an `s6-log` that took an **exclusive lock** on the shared `/opt/data/logs/claude-proxy/lock`; if both containers ran it, the loser died with `s6-log: fatal: unable to lock …/claude-proxy/lock: Resource busy` (exit 111) and **flapped forever**, the gateway lost its Claude provider, and **the bots went dark** — yet `docker compose up -d` still reported success. This was a real, recurring outage.
+
+**Now the proxy is image-baked** (`docker/s6-rc.d/claude-proxy`, Phase 3) and logs to the **container log** (no `s6-log`, so the shared log-lock failure mode is gone by design). The role gate is still essential — two proxies would still fight over `:11435` — so the `claude-proxy` run script **self-gates on the role** (a static s6-rc service runs in both containers, unlike the volume seed that 02/03 skip): in the dashboard role it exits 0 and its `finish` returns 125, leaving the slot permanently down. The `04-registry-gate` hook (Phase 2) layers on top, removing isolated clients from the shared gateway so they don't double-run against their own container.
 
 **The fix — the role gate (`docker/hermes-role.sh`):**
 
@@ -141,11 +151,13 @@ for c in hermes hermes-dashboard; do
 done
 # Gateway: claude-proxy + gateway-* present.  Dashboard: none.
 
-# Proxy + its logger both up in the gateway (not flapping)?
+# Proxy up in the gateway (not flapping)?
 docker exec hermes /command/s6-svstat /run/service/claude-proxy
-docker exec hermes /command/s6-svstat /run/service/claude-proxy/log
-# Want: both "up (pid …) … seconds".  A flapping "down (exitcode 111) 0 seconds,
-# … want up" on the /log service == lock contention.
+# Want: "up (pid …) … seconds".  The image-baked proxy logs to the CONTAINER
+# log (no s6-log /log subservice), so there is no shared log-lock to contend
+# on — `docker logs hermes` carries the proxy's stdout. (Pre-Phase-3 volume
+# proxies had a /log subservice; a flapping "down (exitcode 111)" there meant
+# lock contention. That failure mode is retired with the image bake.)
 
 # Smoking gun in the logs:
 docker logs hermes 2>&1 | grep -iE 'resource busy|unable to lock|exitcode 111'
@@ -212,6 +224,30 @@ docker exec <c> tail -n 50 /opt/data/logs/container-boot.log
 4. Create empty `docker/s6-rc.d/user/contents.d/<name>` so it joins the user bundle.
 5. The `COPY docker/s6-rc.d/` in the Dockerfile picks it up automatically — no other changes.
 
+**Gateway-only static services:** a static s6-rc service runs in **both** the
+gateway and dashboard containers (unlike the volume seed, which 02/03 skip via
+the role gate). If the service must run only in the gateway, **self-gate inside
+the run script** and add a `finish` that returns 125 in the dashboard role so
+the slot reports permanently down. Live examples: `docker/s6-rc.d/dashboard`
+(gated on `HERMES_DASHBOARD`) and `docker/s6-rc.d/claude-proxy` (gated on
+`hermes_role` — the image-baked `:11435` proxy). Pattern:
+
+```sh
+# run
+. /opt/hermes/docker/hermes-role.sh
+[ "$(hermes_role)" = dashboard ] && exit 0   # finish returns 125 → slot down
+exec s6-setuidgid hermes <program>
+```
+
+**Baking a python service into the image:** `COPY` the script to a stable image
+path (e.g. `COPY deploy/foo/foo.py /opt/hermes/deploy/foo/foo.py`) and have the
+run script `exec`s it. This is how the `:11435` proxy moved off the data volume
+(Phase 3) — the repo is the source of truth, no more drift. If you retire a
+previously volume-defined service this way, add a one-time, idempotent migration
+to the deploy that renames the volume copy to `<name>.legacy` (reversible) and
+have `03-seed-data-services` skip the now-baked name so a stale volume copy can
+never re-seed and collide.
+
 ### Change the per-profile gateway run command
 
 Edit `S6ServiceManager._render_run_script` in `hermes_cli/service_manager.py`. The function is also called by `hermes_cli/container_boot.py::_register_service` during boot reconciliation, so it's the single source of truth. Update the corresponding assertion in `tests/hermes_cli/test_service_manager.py::test_s6_register_creates_service_dir_and_triggers_scan`.
@@ -263,9 +299,13 @@ docker exec hermes sh -c 'curl -fsS -m5 http://127.0.0.1:11435/health'
 
 A host-side `curl 127.0.0.1:11435` in a deploy gate is a **false negative** and will red a healthy deploy (this happened — the proxy logged "Proxy ready" while the host probe failed for 10 min). The `deploy-contabo.yml` health gate runs the probe via `docker exec` for exactly this reason.
 
-### Two containers fighting over the proxy log lock
+### Two containers fighting over the proxy log lock (legacy / pre-Phase-3)
 
-If you see `s6-log: … unable to lock …/claude-proxy/lock: Resource busy` (exit 111) flapping, a second container (almost always `hermes-dashboard`) is seeding/running the proxy against the shared `~/.hermes` volume. This is the role-gate failure mode — see "Multi-container deployments" above. Do **not** "fix" it by moving the lock or giving each container its own logs dir; the correct invariant is that only the gateway runs the proxy.
+If you see `s6-log: … unable to lock …/claude-proxy/lock: Resource busy` (exit 111) flapping, a second container (almost always `hermes-dashboard`) is running a **volume-defined** proxy with an `s6-log` against the shared `~/.hermes` volume. The Phase 3 image-baked proxy logs to the container log (no `s6-log`), so this lock cannot occur for it — seeing this means a stale volume `claude-proxy` survived: confirm the deploy migration ran (`$HERMES_HOME/services/claude-proxy.legacy` should exist, `claude-proxy` should not) and that `03-seed-data-services` skipped it. The standing invariant is unchanged: only the gateway runs the proxy (the `claude-proxy` run script self-gates on the role).
+
+### Proxy runs the wrong code / a fix didn't take effect
+
+The proxy is **image-baked** (Phase 3): the running code is `/opt/hermes/deploy/claude-proxy/claude_proxy.py` from the image, i.e. whatever `deploy/claude-proxy/claude_proxy.py` was at build time. To ship a proxy change you rebuild + redeploy the image — editing the data volume does nothing. If a stale volume copy still exists it is **ignored** (03 skips `claude-proxy`; the deploy renames it to `.legacy`). Verify the running code's commit with `docker exec hermes cat /opt/hermes/.hermes_build_sha`.
 
 ### "Help, the container exits 143!"
 

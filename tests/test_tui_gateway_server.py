@@ -902,7 +902,10 @@ def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
     )
 
 
-def test_load_fallback_model_prefers_fallback_providers(monkeypatch):
+def test_load_fallback_model_merges_chain_providers_first(monkeypatch):
+    # Parity with HermesCLI / gateway: fallback_providers stays first and keeps
+    # its order, with any distinct legacy fallback_model entry merged in after
+    # (deduped on provider/model/base_url).
     fallback_chain = [
         {"provider": "openrouter", "model": "openai/gpt-5.5"},
         {"provider": "anthropic", "model": "claude-sonnet-4-6"},
@@ -916,7 +919,11 @@ def test_load_fallback_model_prefers_fallback_providers(monkeypatch):
         },
     )
 
-    assert server._load_fallback_model() == fallback_chain
+    assert server._load_fallback_model() == [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+        {"provider": "legacy", "model": "legacy-model"},
+    ]
 
 
 def test_make_agent_passes_configured_fallback_chain(monkeypatch):

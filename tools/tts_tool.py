@@ -49,7 +49,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, List, Optional
 from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
@@ -1394,42 +1394,39 @@ def _wrap_pcm_as_wav(
     return riff_header + fmt_chunk + data_chunk_header + pcm_bytes
 
 
-def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate audio using Google Gemini TTS.
+def _resolve_gemini_models(gemini_config: Dict[str, Any]) -> List[str]:
+    """Return the ordered Gemini TTS model candidates to try.
 
-    Gemini's generateContent endpoint with responseModalities=["AUDIO"] returns
-    raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
-    header to produce a playable file, then ffmpeg-convert to MP3 / Opus if
-    the caller requested those formats (same pattern as NeuTTS).
+    The configured ``model`` (or the default) is always first, followed by
+    each entry in ``tts.gemini.fallback_models`` in declared order. List
+    order is priority: Hermes tries the first model and only falls through
+    to the next on a request failure. Blank entries and duplicates (including
+    a fallback that repeats the primary) are dropped so the same model is
+    never retried twice. An empty or absent ``fallback_models`` yields just
+    the primary model, leaving single-model behavior unchanged.
+    """
+    primary = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
+    models: List[str] = [primary]
+    raw = gemini_config.get("fallback_models")
+    if isinstance(raw, list):
+        for item in raw:
+            name = str(item).strip()
+            if name and name not in models:
+                models.append(name)
+    return models
 
-    Args:
-        text: Text to convert (prompt-style; supports inline direction like
-              "Say cheerfully:" and audio tags like [whispers]).
-        output_path: Where to save the audio file (.wav, .mp3, or .ogg).
-        tts_config: TTS config dict.
 
-    Returns:
-        Path to the saved audio file.
+def _gemini_synth_pcm(req_text: str, model: str, voice: str, base_url: str, api_key: str) -> bytes:
+    """Synthesize one text chunk via Gemini TTS and return the decoded PCM bytes.
+
+    Posts a single generateContent request and decodes the base64 L16 PCM from
+    the response. Raised errors mirror the documented Gemini TTS failure modes
+    (HTTP error, malformed response, empty audio).
     """
     import requests
 
-    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
-    if not api_key:
-        raise ValueError(
-            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
-        )
-
-    gemini_config = tts_config.get("gemini", {})
-    model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
-    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-    base_url = str(
-        gemini_config.get("base_url")
-        or get_env_value("GEMINI_BASE_URL")
-        or DEFAULT_GEMINI_TTS_BASE_URL
-    ).strip().rstrip("/")
-
     payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": text}]}],
+        "contents": [{"parts": [{"text": req_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
@@ -1473,7 +1470,62 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     if not audio_b64:
         raise RuntimeError("Gemini TTS returned empty audio data")
 
-    pcm_bytes = base64.b64decode(audio_b64)
+    return base64.b64decode(audio_b64)
+
+
+def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Google Gemini TTS.
+
+    Gemini's generateContent endpoint with responseModalities=["AUDIO"] returns
+    raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
+    header to produce a playable file, then ffmpeg-convert to MP3 / Opus if
+    the caller requested those formats (same pattern as NeuTTS).
+
+    Args:
+        text: Text to convert (prompt-style; supports inline direction like
+              "Say cheerfully:" and audio tags like [whispers]).
+        output_path: Where to save the audio file (.wav, .mp3, or .ogg).
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+        )
+
+    gemini_config = tts_config.get("gemini", {})
+    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+    base_url = str(
+        gemini_config.get("base_url")
+        or get_env_value("GEMINI_BASE_URL")
+        or DEFAULT_GEMINI_TTS_BASE_URL
+    ).strip().rstrip("/")
+
+    # Try the primary model first, then each configured fallback in order.
+    # ``fallback_models`` defaults to empty, so the common single-model path
+    # is unchanged. A model is retried only on the documented Gemini TTS
+    # failure modes (HTTP error incl. 429, malformed response, empty audio);
+    # the final failure is surfaced when every candidate is exhausted.
+    models = _resolve_gemini_models(gemini_config)
+    pcm_bytes: Optional[bytes] = None
+    last_error: Optional[Exception] = None
+    for candidate in models:
+        try:
+            pcm_bytes = _gemini_synth_pcm(text, candidate, voice, base_url, api_key)
+            break
+        except RuntimeError as exc:
+            last_error = exc
+            if len(models) > 1:
+                logger.warning(
+                    "Gemini TTS model '%s' failed; trying next fallback: %s",
+                    candidate, exc,
+                )
+    if pcm_bytes is None:
+        raise last_error  # every model candidate failed
+
     wav_bytes = _wrap_pcm_as_wav(pcm_bytes)
 
     # Fast path: caller wants WAV directly, just write.

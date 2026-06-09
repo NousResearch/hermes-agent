@@ -285,3 +285,109 @@ class TestGeminiInCheckRequirements:
 
         with patch("builtins.__import__", side_effect=fake_import):
             assert check_tts_requirements() is True
+
+
+class TestResolveGeminiModels:
+    def test_default_is_single_primary(self):
+        from tools.tts_tool import DEFAULT_GEMINI_TTS_MODEL, _resolve_gemini_models
+
+        assert _resolve_gemini_models({}) == [DEFAULT_GEMINI_TTS_MODEL]
+
+    def test_primary_then_fallbacks_in_order(self):
+        from tools.tts_tool import _resolve_gemini_models
+
+        cfg = {"model": "m-primary", "fallback_models": ["m-a", "m-b"]}
+        assert _resolve_gemini_models(cfg) == ["m-primary", "m-a", "m-b"]
+
+    def test_dedup_primary_and_duplicates(self):
+        from tools.tts_tool import _resolve_gemini_models
+
+        cfg = {"model": "m-primary", "fallback_models": ["m-primary", "m-a", "m-a", "m-b"]}
+        assert _resolve_gemini_models(cfg) == ["m-primary", "m-a", "m-b"]
+
+    def test_blank_entries_dropped(self):
+        from tools.tts_tool import _resolve_gemini_models
+
+        cfg = {"model": "m-primary", "fallback_models": ["", "   ", "m-a"]}
+        assert _resolve_gemini_models(cfg) == ["m-primary", "m-a"]
+
+    def test_non_list_fallback_ignored(self):
+        from tools.tts_tool import DEFAULT_GEMINI_TTS_MODEL, _resolve_gemini_models
+
+        assert _resolve_gemini_models({"fallback_models": "nope"}) == [DEFAULT_GEMINI_TTS_MODEL]
+
+
+class TestGeminiFallbackModels:
+    def _err_resp(self, status=429, message="rate limited"):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.json.return_value = {"error": {"message": message}}
+        return resp
+
+    def test_single_model_makes_one_request(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "out.wav"), {})
+        assert mock_post.call_count == 1
+
+    def test_falls_back_on_http_error(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"model": "m-primary", "fallback_models": ["m-fallback"]}}
+        with patch(
+            "requests.post",
+            side_effect=[self._err_resp(429), mock_gemini_response],
+        ) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "out.wav"), config)
+
+        assert mock_post.call_count == 2
+        # Primary is tried first, fallback second.
+        assert "m-primary" in mock_post.call_args_list[0][0][0]
+        assert "m-fallback" in mock_post.call_args_list[1][0][0]
+        assert (tmp_path / "out.wav").read_bytes()[:4] == b"RIFF"
+
+    def test_falls_back_on_empty_audio(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        empty = MagicMock()
+        empty.status_code = 200
+        empty.json.return_value = {
+            "candidates": [{"content": {"parts": [{"inlineData": {"data": ""}}]}}]
+        }
+        config = {"gemini": {"model": "m-primary", "fallback_models": ["m-fallback"]}}
+        with patch(
+            "requests.post",
+            side_effect=[empty, mock_gemini_response],
+        ) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "out.wav"), config)
+
+        assert mock_post.call_count == 2
+
+    def test_all_models_fail_raises_last_error(self, tmp_path, monkeypatch):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"model": "m-primary", "fallback_models": ["m-fallback"]}}
+        with patch(
+            "requests.post",
+            side_effect=[self._err_resp(500, "first"), self._err_resp(503, "last")],
+        ) as mock_post:
+            with pytest.raises(RuntimeError, match="HTTP 503.*last"):
+                _generate_gemini_tts("Hi", str(tmp_path / "out.wav"), config)
+        assert mock_post.call_count == 2
+
+    def test_no_fallback_does_not_retry(self, tmp_path, monkeypatch):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        with patch(
+            "requests.post",
+            side_effect=[self._err_resp(400, "bad")],
+        ) as mock_post:
+            with pytest.raises(RuntimeError, match="HTTP 400.*bad"):
+                _generate_gemini_tts("Hi", str(tmp_path / "out.wav"), {})
+        assert mock_post.call_count == 1

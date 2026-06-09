@@ -104,6 +104,7 @@ AUTHOR_MAP = {
     "metalclaudbot@gmail.com": "HashClawAI",
     "tonybear55665566@gmail.com": "TonyPepeBear",
     "kaspersniels@gmail.com": "nielskaspers",
+    "daxxpasquini@gmail.com": "bpasquini",
     "kurobaryo@gmail.com": "kurobaryo",
     "scubamount@users.noreply.github.com": "scubamount",
     "251514042+youngstar-eth@users.noreply.github.com": "youngstar-eth",

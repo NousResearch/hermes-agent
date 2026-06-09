@@ -55,16 +55,20 @@ function Harness({
   onReady,
   onSeedState,
   refreshSessions,
-  requestGateway
+  requestGateway,
+  storedSessionId
 }: {
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  storedSessionId?: null | string
 }) {
   const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
-  const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+  const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
+    current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
+  }
   const localBusyRef = busyRef ?? { current: false }
 
   const actions = usePromptActions({
@@ -408,3 +412,109 @@ describe('usePromptActions file attachment sync', () => {
     })
   })
 })
+
+describe('usePromptActions sleep/wake session recovery', () => {
+  const STORED_SESSION_ID = 'stored-db-xyz789'
+  const RECOVERED_SESSION_ID = 'rt-recovered-456'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('resumes the stored session and retries once when prompt.submit reports "session not found"', async () => {
+    // After sleep/wake the gateway's in-memory session table is cleared, so the
+    // first prompt.submit with the stale runtime id fails. The hook resumes the
+    // durable stored id (which survives gateway restarts), gets a fresh live id,
+    // and retries the send transparently.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+        return {} as never
+      }
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const ok = await handle!.submitText('message after wake')
+
+    expect(ok).toBe(true)
+    // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
+    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+  })
+
+  it('surfaces the original error (no resume) when the failure is not "session not found"', async () => {
+    const calls: string[] = []
+    const states: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+      if (method === 'prompt.submit') {
+        throw new Error('session busy')
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    // submitText swallows the error into an inline bubble and returns false.
+    expect(await handle!.submitText('message')).toBe(false)
+    // No resume attempt for a non-recoverable error.
+    expect(calls).not.toContain('session.resume')
+  })
+
+  it('surfaces "session not found" (no resume) when there is no stored session id', async () => {
+    const calls: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+      if (method === 'prompt.submit') {
+        throw new Error('session not found')
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={null}
+      />
+    )
+
+    // With a null stored ref, the `&& selectedStoredSessionIdRef.current` guard
+    // short-circuits — no resume is attempted and the error surfaces normally.
+    expect(await handle!.submitText('message')).toBe(false)
+    expect(calls).not.toContain('session.resume')
+  })
+})
+

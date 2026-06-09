@@ -19,6 +19,14 @@ import {
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@nous-research/ui/ui/components/dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -91,6 +99,7 @@ export default function FilesPage() {
   const [uploading, setUploading] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [pendingDelete, setPendingDelete] = useState<ManagedFileEntry | null>(null);
@@ -169,6 +178,10 @@ export default function FilesPage() {
 
   const createDirectory = async () => {
     const name = folderName.trim();
+    if (!activePath) {
+      showToast("Directory unavailable", "error");
+      return;
+    }
     if (!name) {
       showToast("Folder name required", "error");
       return;
@@ -177,6 +190,7 @@ export default function FilesPage() {
     try {
       await api.createDirectory(joinPath(activePath, name));
       setFolderName("");
+      setCreateDialogOpen(false);
       showToast("Folder created", "success");
       await load();
     } catch (e) {
@@ -300,7 +314,7 @@ export default function FilesPage() {
           <Button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={uploading || !activePath}
+            disabled={!canUpload}
             size="sm"
             outlined
             className="uppercase"
@@ -308,23 +322,14 @@ export default function FilesPage() {
           >
             Upload
           </Button>
-          <Input
-            value={folderName}
-            onChange={(event) => setFolderName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void createDirectory();
-            }}
-            placeholder="New folder"
-            className="h-9 w-44"
-          />
           <Button
             type="button"
-            onClick={() => void createDirectory()}
-            disabled={creating || !activePath}
+            onClick={() => setCreateDialogOpen(true)}
+            disabled={!activePath}
             size="sm"
             outlined
             className="uppercase"
-            prefix={creating ? <Spinner /> : <FolderPlus />}
+            prefix={<FolderPlus />}
           >
             Create
           </Button>
@@ -464,6 +469,57 @@ export default function FilesPage() {
       </Card>
 
       <PluginSlot name="files:bottom" />
+
+      <Dialog
+        open={createDialogOpen}
+        onOpenChange={(open) => {
+          if (creating) return;
+          setCreateDialogOpen(open);
+          if (!open) setFolderName("");
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Create folder</DialogTitle>
+            <DialogDescription>
+              Target: {activePath || "Loading"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="p-4">
+            <Input
+              autoFocus
+              value={folderName}
+              onChange={(event) => setFolderName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void createDirectory();
+              }}
+              placeholder="Folder name"
+              disabled={creating}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              outlined
+              onClick={() => {
+                setCreateDialogOpen(false);
+                setFolderName("");
+              }}
+              disabled={creating}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void createDirectory()}
+              disabled={creating}
+              prefix={creating ? <Spinner /> : <FolderPlus />}
+            >
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <DeleteConfirmDialog
         open={Boolean(pendingDelete)}

@@ -137,6 +137,15 @@ export const $availablePersonalities = atom<string[]>([])
 export const $introSeed = atom(0)
 export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
+// Transient gateway lifecycle status for the ACTIVE session (auto-compression
+// progress, background-process notices). Mirrors `status.update` events and is
+// cleared by the next stream activity, so it only shows while nothing else
+// (deltas, tool events) is moving.
+export interface SessionActivityStatus {
+  kind: string
+  text: string
+}
+export const $sessionActivityStatus = atom<SessionActivityStatus | null>(null)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
@@ -181,6 +190,8 @@ export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
+export const setSessionActivityStatus = (next: Updater<SessionActivityStatus | null>) =>
+  updateAtom($sessionActivityStatus, next)
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)

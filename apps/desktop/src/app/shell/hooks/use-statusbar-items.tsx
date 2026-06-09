@@ -32,6 +32,7 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $currentUsage,
+  $sessionActivityStatus,
   $sessionStartedAt,
   $turnStartedAt,
   $workingSessionIds,
@@ -91,6 +92,7 @@ export function useStatusbarItems({
   const currentUsage = useStore($currentUsage)
   const desktopActionTasks = useStore($desktopActionTasks)
   const previewServerRestartStatus = useStore($previewServerRestartStatus)
+  const sessionActivityStatus = useStore($sessionActivityStatus)
   const sessionStartedAt = useStore($sessionStartedAt)
   const turnStartedAt = useStore($turnStartedAt)
   const workingSessionIds = useStore($workingSessionIds)
@@ -303,6 +305,15 @@ export function useStatusbarItems({
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
+        className: 'max-w-72',
+        hidden: !sessionActivityStatus,
+        icon: <Loader2 className="size-3 animate-spin" />,
+        id: 'activity-status',
+        label: <span className="truncate">{sessionActivityStatus?.text ?? ''}</span>,
+        title: sessionActivityStatus?.text,
+        variant: 'text'
+      },
+      {
         detail: <LiveDuration since={turnStartedAt} />,
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
@@ -383,6 +394,7 @@ export function useStatusbarItems({
       currentProvider,
       currentReasoningEffort,
       modelMenuContent,
+      sessionActivityStatus,
       sessionStartedAt,
       showYoloToggle,
       toggleYolo,

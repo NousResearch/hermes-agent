@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $currentUsage } from '@/store/session'
+import { $currentUsage, $sessionActivityStatus } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
@@ -105,5 +105,68 @@ describe('useMessageStream token usage events', () => {
     )
 
     expect($currentUsage.get()).toEqual({ calls: 1, input: 10, output: 5, total: 15 })
+  })
+})
+
+describe('useMessageStream status.update events', () => {
+  beforeEach(() => {
+    handleEvent = () => undefined
+    $sessionActivityStatus.set(null)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $sessionActivityStatus.set(null)
+    vi.restoreAllMocks()
+  })
+
+  const statusEvent = (text: string, kind = 'lifecycle', sessionId = 'session-1') =>
+    ({
+      payload: { kind, text },
+      session_id: sessionId,
+      type: 'status.update'
+    }) as RpcEvent
+
+  it('surfaces lifecycle statuses for the active session', () => {
+    render(<MessageStreamHarness />)
+
+    act(() => handleEvent(statusEvent('📦 Preflight compression: ~90,000 tokens. This may take a moment.')))
+
+    expect($sessionActivityStatus.get()).toEqual({
+      kind: 'lifecycle',
+      text: '📦 Preflight compression: ~90,000 tokens. This may take a moment.'
+    })
+  })
+
+  it('ignores statuses from inactive sessions and unknown kinds', () => {
+    render(<MessageStreamHarness />)
+
+    act(() => handleEvent(statusEvent('background noise', 'lifecycle', 'session-2')))
+    expect($sessionActivityStatus.get()).toBeNull()
+
+    act(() => handleEvent(statusEvent('voice things', 'voice')))
+    expect($sessionActivityStatus.get()).toBeNull()
+  })
+
+  it('clears on ready kind and on stream activity', () => {
+    render(<MessageStreamHarness />)
+
+    act(() => handleEvent(statusEvent('⠋ compressing 120 messages', 'compressing')))
+    expect($sessionActivityStatus.get()).not.toBeNull()
+
+    act(() => handleEvent(statusEvent('ready', 'ready')))
+    expect($sessionActivityStatus.get()).toBeNull()
+
+    act(() => handleEvent(statusEvent('📦 Compression complete: ~90,000 → ~30,000 tokens.')))
+    expect($sessionActivityStatus.get()).not.toBeNull()
+
+    act(() =>
+      handleEvent({
+        payload: { text: 'hello' },
+        session_id: 'session-1',
+        type: 'message.delta'
+      } as RpcEvent)
+    )
+    expect($sessionActivityStatus.get()).toBeNull()
   })
 })

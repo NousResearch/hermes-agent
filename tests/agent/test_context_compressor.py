@@ -1576,20 +1576,27 @@ class TestSummaryTargetRatio:
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.95)
         assert c.summary_target_ratio == 0.80
 
-    def test_default_threshold_is_50_percent(self):
-        """Default compression threshold should be 50%, with a 64K floor."""
+    def test_default_threshold_is_85_percent(self):
+        """Default compression threshold should be 85%."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.threshold_percent == 0.50
-        # 50% of 100K = 50K, but the floor is 64K
+        assert c.threshold_percent == 0.85
+        # 85% of 100K = 85K, comfortably above the 64K floor
+        assert c.threshold_tokens == 85_000
+
+    def test_threshold_floor_applies_on_small_contexts(self):
+        """The 64K floor wins when the percentage lands below it."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=70_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        # 85% of 70K = 59.5K, raised to the 64K floor
         assert c.threshold_tokens == 64_000
 
     def test_threshold_floor_does_not_apply_above_128k(self):
-        """On large-context models the 50% percentage is used directly."""
+        """On large-context models the 85% percentage is used directly."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        # 50% of 200K = 100K, which is above the 64K floor
-        assert c.threshold_tokens == 100_000
+        # 85% of 200K = 170K, far above the 64K floor
+        assert c.threshold_tokens == 170_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""

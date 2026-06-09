@@ -240,6 +240,35 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
+def _context_usage_for_tool_events(agent, messages: list) -> dict:
+    """Build the usage payload attached to tool.start/complete events.
+
+    Context numbers come from ``ContextCompressor.live_context_tokens`` so the
+    UI context bar keeps moving while tool results pile up mid-turn instead of
+    freezing at the last API call's prompt size.
+    """
+    usage = {
+        "model": getattr(agent, "model", ""),
+        "input": getattr(agent, "session_input_tokens", 0) or 0,
+        "output": getattr(agent, "session_output_tokens", 0) or 0,
+        "total": getattr(agent, "session_total_tokens", 0) or 0,
+        "calls": getattr(agent, "session_api_calls", 0) or 0,
+    }
+    comp = getattr(agent, "context_compressor", None)
+    if comp:
+        try:
+            ctx_used = comp.live_context_tokens(messages)
+        except Exception:
+            ctx_used = getattr(comp, "last_prompt_tokens", 0) or 0
+        ctx_used = ctx_used or usage["total"] or 0
+        ctx_max = getattr(comp, "context_length", 0) or 0
+        if ctx_max:
+            usage["context_used"] = ctx_used
+            usage["context_max"] = ctx_max
+            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+    return usage
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -440,21 +469,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # Inject context usage into tool events so frontend can update
     # the context bar in real-time during tool execution.
-    usage = {
-        "model": getattr(agent, "model", ""),
-        "input": getattr(agent, "session_input_tokens", 0) or 0,
-        "output": getattr(agent, "session_output_tokens", 0) or 0,
-        "total": getattr(agent, "session_total_tokens", 0) or 0,
-        "calls": getattr(agent, "session_api_calls", 0) or 0,
-    }
-    comp = getattr(agent, "context_compressor", None)
-    if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
-        ctx_max = getattr(comp, "context_length", 0) or 0
-        if ctx_max:
-            usage["context_used"] = ctx_used
-            usage["context_max"] = ctx_max
-            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+    usage = _context_usage_for_tool_events(agent, messages)
     for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
             continue
@@ -732,21 +747,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
 
         # Inject context usage into tool.complete events for real-time updates.
-        _comp = getattr(agent, "context_compressor", None)
-        _usage = {
-            "model": getattr(agent, "model", ""),
-            "input": getattr(agent, "session_input_tokens", 0) or 0,
-            "output": getattr(agent, "session_output_tokens", 0) or 0,
-            "total": getattr(agent, "session_total_tokens", 0) or 0,
-            "calls": getattr(agent, "session_api_calls", 0) or 0,
-        }
-        if _comp:
-            _ctx_used = getattr(_comp, "last_prompt_tokens", 0) or _usage["total"] or 0
-            _ctx_max = getattr(_comp, "context_length", 0) or 0
-            if _ctx_max:
-                _usage["context_used"] = _ctx_used
-                _usage["context_max"] = _ctx_max
-                _usage["context_percent"] = max(0, min(100, round(_ctx_used / _ctx_max * 100)))
+        _usage = _context_usage_for_tool_events(agent, messages)
 
         if not blocked and agent.tool_complete_callback:
             try:
@@ -932,21 +933,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_start_callback:
             # Inject context usage for real-time context bar updates.
-            _t_usage = {
-                "model": getattr(agent, "model", ""),
-                "input": getattr(agent, "session_input_tokens", 0) or 0,
-                "output": getattr(agent, "session_output_tokens", 0) or 0,
-                "total": getattr(agent, "session_total_tokens", 0) or 0,
-                "calls": getattr(agent, "session_api_calls", 0) or 0,
-            }
-            _t_comp = getattr(agent, "context_compressor", None)
-            if _t_comp:
-                _t_ctx_used = getattr(_t_comp, "last_prompt_tokens", 0) or _t_usage["total"] or 0
-                _t_ctx_max = getattr(_t_comp, "context_length", 0) or 0
-                if _t_ctx_max:
-                    _t_usage["context_used"] = _t_ctx_used
-                    _t_usage["context_max"] = _t_ctx_max
-                    _t_usage["context_percent"] = max(0, min(100, round(_t_ctx_used / _t_ctx_max * 100)))
+            _t_usage = _context_usage_for_tool_events(agent, messages)
             try:
                 agent.tool_start_callback(tool_call.id, function_name, function_args, usage=_t_usage)
             except Exception as cb_err:
@@ -1385,21 +1372,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_complete_callback:
             # Inject context usage for real-time context bar updates.
-            _sc_usage = {
-                "model": getattr(agent, "model", ""),
-                "input": getattr(agent, "session_input_tokens", 0) or 0,
-                "output": getattr(agent, "session_output_tokens", 0) or 0,
-                "total": getattr(agent, "session_total_tokens", 0) or 0,
-                "calls": getattr(agent, "session_api_calls", 0) or 0,
-            }
-            _sc_comp = getattr(agent, "context_compressor", None)
-            if _sc_comp:
-                _sc_ctx_used = getattr(_sc_comp, "last_prompt_tokens", 0) or _sc_usage["total"] or 0
-                _sc_ctx_max = getattr(_sc_comp, "context_length", 0) or 0
-                if _sc_ctx_max:
-                    _sc_usage["context_used"] = _sc_ctx_used
-                    _sc_usage["context_max"] = _sc_ctx_max
-                    _sc_usage["context_percent"] = max(0, min(100, round(_sc_ctx_used / _sc_ctx_max * 100)))
+            _sc_usage = _context_usage_for_tool_events(agent, messages)
             try:
                 agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result, usage=_sc_usage)
             except Exception as cb_err:

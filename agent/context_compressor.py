@@ -650,6 +650,10 @@ class ContextCompressor(ContextEngine):
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_real_prompt_tokens = 0
+        # How many conversation messages ``last_prompt_tokens`` accounts for.
+        # Lets ``live_context_tokens`` price only the tail appended since the
+        # last API call instead of freezing or re-estimating the whole list.
+        self.last_prompt_messages_len: Optional[int] = None
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
@@ -681,9 +685,16 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
 
-    def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
+    def update_from_response(self, usage: Dict[str, Any], messages_len: Optional[int] = None):
+        """Update tracked token usage from API response.
+
+        ``messages_len`` is the length of the conversation list the prompt was
+        built from, recorded so mid-turn estimates know where the
+        provider-counted prefix ends.
+        """
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        if messages_len is not None:
+            self.last_prompt_messages_len = messages_len
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
@@ -694,6 +705,36 @@ class ContextCompressor(ContextEngine):
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+
+    def live_context_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        """Best-effort size of the context *right now*, mid-turn.
+
+        ``last_prompt_tokens`` is exact but frozen at the last API call (or
+        preflight estimate); assistant text and tool results appended since
+        aren't in it, so consumers that poll it mid-turn — the desktop context
+        bar during a long tool batch — appear stuck. Price the tail appended
+        since the snapshot on top of the known base instead.
+        """
+        base = self.last_prompt_tokens or 0
+        snap = self.last_prompt_messages_len
+        if base > 0 and snap is not None and 0 <= snap <= len(messages):
+            tail = 0
+            if snap < len(messages):
+                try:
+                    tail = estimate_messages_tokens_rough(messages[snap:])
+                except Exception:
+                    tail = 0
+            return base + tail
+        try:
+            rough = estimate_messages_tokens_rough(messages)
+        except Exception:
+            rough = 0
+        if self.awaiting_real_usage_after_compression:
+            # Right after compression the stale pre-compression base would
+            # overstate a freshly shrunk conversation; trust the rough
+            # estimate of the compressed list until real usage arrives.
+            return rough or base
+        return max(base, rough)
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
@@ -2074,5 +2115,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        # The conversation list is being replaced wholesale; the old
+        # messages-length snapshot no longer maps onto the new list.
+        self.last_prompt_messages_len = None
 
         return compressed

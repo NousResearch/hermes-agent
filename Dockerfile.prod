@@ -6,6 +6,7 @@ FROM hub.kaolayouran.cn:5000/dev/hermes-base:shenshan-v1.0
 ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV UV_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ENV PYTHONUNBUFFERED=1
+ENV LANG=C.UTF-8
 
 # Install extra system dependencies not in base
 RUN apt-get update && \

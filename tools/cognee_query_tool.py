@@ -113,9 +113,16 @@ def _candidate_lab_roots() -> list[Path]:
     return roots
 
 
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _resolve_lab_root() -> Path | None:
     for root in _candidate_lab_roots():
-        if (root / QUERY_SCRIPT).exists() and (root / ".venv" / "bin" / "python").exists():
+        if _path_exists(root / QUERY_SCRIPT) and _path_exists(root / ".venv" / "bin" / "python"):
             return root
     return None
 
@@ -256,12 +263,63 @@ def _truncate_text(text: str, limit: int = MAX_RESULT_CHARS) -> tuple[str, bool]
     return text[:limit] + "\n...[truncated]", True
 
 
+def _run_query_script(
+    lab_root: Path,
+    question: str,
+    search_type: str,
+    top_k: int,
+    answer: bool,
+) -> tuple[subprocess.CompletedProcess[str], Any]:
+    py = lab_root / ".venv" / "bin" / "python"
+    cmd = [
+        str(py),
+        str(lab_root / QUERY_SCRIPT),
+        question,
+        "--search-type",
+        search_type,
+        "--top-k",
+        str(top_k),
+        "--envelope",
+    ]
+    if answer:
+        cmd.append("--answer")
+
+    proc = subprocess.run(
+        cmd,
+        cwd=str(lab_root),
+        text=True,
+        capture_output=True,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+    )
+    parsed = _normalize_source_fields(_safe_json_loads(proc.stdout or ""))
+    return proc, parsed
+
+
+def _extract_answer_text(parsed: Any) -> str:
+    if not isinstance(parsed, dict):
+        return ""
+    results = parsed.get("results")
+    if isinstance(results, list):
+        for item in results:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    if isinstance(results, str):
+        return results.strip()
+    items = parsed.get("result_items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and str(item.get("text_preview", "")).strip():
+                return str(item.get("text_preview", "")).strip()
+    return ""
+
+
 def cognee_query(
     question: str,
     search_type: str = "GRAPH_COMPLETION",
     answer: bool = False,
     top_k: int = 5,
     include_raw: bool = True,
+    answer_with_sources: bool = False,
 ) -> str:
     """Query the isolated cognee-lab PoC read-only and return JSON."""
     lab_root = _resolve_lab_root()
@@ -294,30 +352,51 @@ def cognee_query(
         top_k_int = 5
     top_k_int = max(1, min(top_k_int, 20))
 
-    py = lab_root / ".venv" / "bin" / "python"
-    cmd = [
-        str(py),
-        str(lab_root / QUERY_SCRIPT),
-        question,
-        "--search-type",
-        search_type,
-        "--top-k",
-        str(top_k_int),
-        "--envelope",
-    ]
-    if answer:
-        cmd.append("--answer")
-
-    proc = subprocess.run(
-        cmd,
-        cwd=str(lab_root),
-        text=True,
-        capture_output=True,
-        timeout=DEFAULT_TIMEOUT_SECONDS,
+    proc, parsed = _run_query_script(
+        lab_root=lab_root,
+        question=question,
+        search_type=search_type,
+        top_k=top_k_int,
+        answer=answer,
     )
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
-    parsed = _normalize_source_fields(_safe_json_loads(stdout))
+    answer_parsed = parsed
+    source_parsed = parsed
+    source_proc: subprocess.CompletedProcess[str] | None = None
+
+    if answer_with_sources and answer:
+        source_proc, source_parsed = _run_query_script(
+            lab_root=lab_root,
+            question=question,
+            search_type="CHUNKS",
+            top_k=top_k_int,
+            answer=False,
+        )
+        source_stderr = source_proc.stderr or ""
+        if source_stderr.strip():
+            stderr = (stderr + "\n" + source_stderr).strip()
+        if source_proc.returncode == 0:
+            parsed = {
+                "ok": proc.returncode == 0,
+                "query_meta": {
+                    "question": question,
+                    "answer_with_sources": True,
+                    "answer_search_type": search_type,
+                    "source_search_type": "CHUNKS",
+                    "answer_mode": True,
+                    "top_k": top_k_int,
+                },
+                "answer": _extract_answer_text(answer_parsed),
+                "answer_results": answer_parsed.get("results") if isinstance(answer_parsed, dict) else answer_parsed,
+                "source_results": source_parsed.get("results") if isinstance(source_parsed, dict) else source_parsed,
+                "source_files": source_parsed.get("source_files", []) if isinstance(source_parsed, dict) else [],
+                "sources": source_parsed.get("sources", []) if isinstance(source_parsed, dict) else [],
+                "source_count": source_parsed.get("source_count", 0) if isinstance(source_parsed, dict) else 0,
+                "result_items": source_parsed.get("result_items", []) if isinstance(source_parsed, dict) else [],
+                "answer_raw": answer_parsed,
+                "source_raw": source_parsed,
+            }
     rendered = json.dumps(parsed, ensure_ascii=False, indent=2) if not isinstance(parsed, str) else parsed
     truncated_rendered, truncated = _truncate_text(rendered)
 
@@ -338,15 +417,20 @@ def cognee_query(
         "sources": sources,
         "source_count": source_count,
         "result_items": result_items[:20],
+        "answer_with_sources": bool(answer_with_sources and answer),
         "result_text": truncated_rendered,
         "truncated": truncated,
         "returncode": proc.returncode,
     }
+    if answer_with_sources and answer:
+        result["answer_text"] = _extract_answer_text(answer_parsed)
+        if source_proc is not None:
+            result["source_returncode"] = source_proc.returncode
     if include_raw and not truncated:
         result["raw"] = parsed
     if stderr.strip():
         result["stderr_preview"] = stderr[-4000:]
-    if proc.returncode != 0:
+    if proc.returncode != 0 or (source_proc is not None and source_proc.returncode != 0):
         result["error"] = "query.py returned non-zero exit status"
 
     return json.dumps(result, ensure_ascii=False, indent=2)
@@ -385,6 +469,11 @@ COGNEE_QUERY_SCHEMA = {
                 "minimum": 1,
                 "maximum": 20,
             },
+            "answer_with_sources": {
+                "type": "boolean",
+                "description": "If true together with answer=true, also run CHUNKS retrieval and attach source_files/sources from source-bearing context.",
+                "default": False,
+            },
             "include_raw": {
                 "type": "boolean",
                 "description": "Include parsed raw JSON when output is not truncated. Defaults to true.",
@@ -406,6 +495,7 @@ registry.register(
         answer=args.get("answer", False),
         top_k=args.get("top_k", 5),
         include_raw=args.get("include_raw", True),
+        answer_with_sources=args.get("answer_with_sources", False),
     ),
     check_fn=check_cognee_query_requirements,
     emoji="🧠",

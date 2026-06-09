@@ -7,6 +7,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from gateway.config import Platform
 from gateway.channel_directory import (
     build_channel_directory,
     lookup_channel_type,
@@ -69,6 +70,25 @@ class TestBuildChannelDirectoryWrites:
             result = load_directory()
 
         assert result == previous
+
+    def test_uses_adapter_list_channels_when_available(self, tmp_path):
+        class AdapterWithChannels:
+            async def list_channels(self):
+                return [
+                    {"id": "default", "name": "主对话", "type": "dm"},
+                    {"id": "family_1", "name": "达拉崩吧", "type": "group"},
+                    {"id": "", "name": "ignored", "type": "dm"},
+                    {"id": "family_1", "name": "duplicate", "type": "group"},
+                ]
+
+        cache_file = tmp_path / "channel_directory.json"
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: AdapterWithChannels()}))
+
+        assert directory["platforms"]["telegram"] == [
+            {"id": "default", "name": "主对话", "type": "dm"},
+            {"id": "family_1", "name": "达拉崩吧", "type": "group"},
+        ]
 
 
 class TestBuildChannelDirectoryOffload:

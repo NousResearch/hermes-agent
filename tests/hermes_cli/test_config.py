@@ -1399,6 +1399,11 @@ class TestUserMessagePreviewConfig:
         assert preview["last_lines"] == 2
 
 
+class TestBedrockDefaultConfig:
+    def test_default_config_declares_profile(self):
+        assert DEFAULT_CONFIG["bedrock"]["profile"] == ""
+
+
 class TestEnvWriteDenylist:
     """``save_env_value`` refuses to persist env-var names that
     influence how subprocesses execute — ``LD_PRELOAD``, ``PYTHONPATH``,
@@ -2034,5 +2039,4 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
 

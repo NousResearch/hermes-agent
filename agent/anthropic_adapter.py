@@ -851,6 +851,7 @@ def build_anthropic_bedrock_client(region: str):
     serves them with 1M natively.
 
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
+    Respects config.yaml bedrock.profile if set.
     """
     _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
@@ -865,14 +866,22 @@ def build_anthropic_bedrock_client(region: str):
         )
     from httpx import Timeout
 
-    return _anthropic_sdk.AnthropicBedrock(
-        aws_region=region,
-        timeout=Timeout(timeout=900.0, connect=10.0),
-        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
-        # default max_retries=2 ignores it and double-retries. (#26293)
-        max_retries=0,
-        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
-    )
+    client_kwargs = {
+        "aws_region": region,
+        "timeout": Timeout(timeout=900.0, connect=10.0),
+        "default_headers": {"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
+    }
+
+    from agent.bedrock_adapter import resolve_bedrock_profile
+    profile_name = resolve_bedrock_profile()
+    if profile_name:
+        client_kwargs["aws_profile"] = profile_name
+
+    # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
+    # default max_retries=2 ignores it and double-retries. (#26293)
+    client_kwargs["max_retries"] = 0
+
+    return _anthropic_sdk.AnthropicBedrock(**client_kwargs)
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:

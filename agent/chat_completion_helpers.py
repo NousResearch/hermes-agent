@@ -271,17 +271,19 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
             invalidate_runtime_client,
             is_stale_connection_error,
             normalize_converse_response,
+            resolve_bedrock_profile,
         )
         region = api_kwargs.pop("__bedrock_region__", "us-east-1")
         api_kwargs.pop("__bedrock_converse__", None)
-        client = _get_bedrock_runtime_client(region)
+        profile_name = resolve_bedrock_profile()
+        client = _get_bedrock_runtime_client(region, profile_name)
         try:
             raw_response = client.converse(**api_kwargs)
         except Exception as _bedrock_exc:
             # Evict the cached client on stale-connection failures
             # so the outer retry loop builds a fresh client/pool.
             if is_stale_connection_error(_bedrock_exc):
-                invalidate_runtime_client(region)
+                invalidate_runtime_client(region, profile_name)
             raise
         return normalize_converse_response(raw_response)
     if agent.provider == "moa":
@@ -2072,11 +2074,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     is_stale_connection_error,
                     is_streaming_access_denied_error,
                     normalize_converse_response,
+                    resolve_bedrock_profile,
                     stream_converse_with_callbacks,
                 )
                 region = api_kwargs.pop("__bedrock_region__", "us-east-1")
                 api_kwargs.pop("__bedrock_converse__", None)
-                client = _get_bedrock_runtime_client(region)
+                profile_name = resolve_bedrock_profile()
+                client = _get_bedrock_runtime_client(region, profile_name)
                 try:
                     raw_response = client.converse_stream(**api_kwargs)
                 except Exception as _bedrock_exc:
@@ -2106,7 +2110,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     # Evict the cached client on stale-connection failures
                     # so the outer retry loop builds a fresh client/pool.
                     if is_stale_connection_error(_bedrock_exc):
-                        invalidate_runtime_client(region)
+                        invalidate_runtime_client(region, profile_name)
                     raise
 
                 def _on_text(text):

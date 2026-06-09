@@ -1534,6 +1534,7 @@ DEFAULT_CONFIG = {
     # Only used when model.provider is "bedrock".
     "bedrock": {
         "region": "",  # AWS region for Bedrock API calls (empty = AWS_REGION env var → us-east-1)
+        "profile": "",  # AWS named profile for Bedrock auth (empty = AWS_PROFILE/default chain)
         "discovery": {
             "enabled": True,           # Auto-discover models via ListFoundationModels
             "provider_filter": [],     # Only show models from these providers (e.g. ["anthropic", "amazon"])

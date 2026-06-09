@@ -154,6 +154,23 @@ class TestBuildAnthropicClient:
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
 
+    def test_bedrock_client_uses_configured_profile(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+                patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="prod"):
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            assert kwargs["aws_profile"] == "prod"
+            assert kwargs["max_retries"] == 0
+
+    def test_bedrock_client_omits_empty_profile(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+                patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value=""):
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            assert "aws_profile" not in kwargs
+
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(

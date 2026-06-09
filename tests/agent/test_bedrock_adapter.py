@@ -147,6 +147,175 @@ class TestResolveBedrocRegion:
             assert resolve_bedrock_region({}) == "us-east-1"
 
 
+class TestBedrockConfiguredProfile:
+    def test_resolves_profile_from_config(self):
+        from agent.bedrock_adapter import resolve_bedrock_profile
+
+        with patch("hermes_cli.config.load_config", return_value={"bedrock": {"profile": " prod "}}):
+            assert resolve_bedrock_profile() == "prod"
+
+    def test_profile_resolution_falls_back_to_empty_string(self):
+        from agent.bedrock_adapter import resolve_bedrock_profile
+
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
+            assert resolve_bedrock_profile() == ""
+
+    def test_configured_profile_region_uses_botocore_profile_session(self):
+        from agent.bedrock_adapter import resolve_bedrock_region
+
+        botocore_mod = ModuleType("botocore")
+        session_mod = ModuleType("botocore.session")
+        profile_session = MagicMock()
+        profile_session.get_config_variable.return_value = "eu-central-1"
+        session_mod.Session = MagicMock(return_value=profile_session)
+        session_mod.get_session = MagicMock()
+        botocore_mod.session = session_mod
+
+        with patch.dict("sys.modules", {"botocore": botocore_mod, "botocore.session": session_mod}), \
+                patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="prod"):
+            assert resolve_bedrock_region({}) == "eu-central-1"
+
+        session_mod.Session.assert_called_once_with(profile="prod")
+        session_mod.get_session.assert_not_called()
+
+    def test_runtime_client_uses_configured_profile(self):
+        from agent import bedrock_adapter as br
+
+        br.reset_client_cache()
+        profile_client = object()
+        profile_session = MagicMock()
+        profile_session.client.return_value = profile_client
+        boto3 = MagicMock()
+        boto3.Session.return_value = profile_session
+
+        with patch.object(br, "_require_boto3", return_value=boto3), \
+                patch.object(br, "resolve_bedrock_profile", return_value="prod"):
+            assert br._get_bedrock_runtime_client("us-east-1") is profile_client
+
+        boto3.Session.assert_called_once_with(profile_name="prod")
+        profile_session.client.assert_called_once_with("bedrock-runtime", region_name="us-east-1")
+        boto3.client.assert_not_called()
+
+    def test_control_client_uses_configured_profile(self):
+        from agent import bedrock_adapter as br
+
+        br.reset_client_cache()
+        profile_client = object()
+        profile_session = MagicMock()
+        profile_session.client.return_value = profile_client
+        boto3 = MagicMock()
+        boto3.Session.return_value = profile_session
+
+        with patch.object(br, "_require_boto3", return_value=boto3), \
+                patch.object(br, "resolve_bedrock_profile", return_value="prod"):
+            assert br._get_bedrock_control_client("us-east-1") is profile_client
+
+        boto3.Session.assert_called_once_with(profile_name="prod")
+        profile_session.client.assert_called_once_with("bedrock", region_name="us-east-1")
+        boto3.client.assert_not_called()
+
+    def test_runtime_client_without_profile_uses_default_boto3_chain(self):
+        from agent import bedrock_adapter as br
+
+        br.reset_client_cache()
+        default_client = object()
+        boto3 = MagicMock()
+        boto3.client.return_value = default_client
+
+        with patch.object(br, "_require_boto3", return_value=boto3), \
+                patch.object(br, "resolve_bedrock_profile", return_value=""):
+            assert br._get_bedrock_runtime_client("us-east-1") is default_client
+
+        boto3.client.assert_called_once_with("bedrock-runtime", region_name="us-east-1")
+        boto3.Session.assert_not_called()
+
+    def test_runtime_client_cache_is_profile_scoped(self):
+        from agent import bedrock_adapter as br
+
+        br.reset_client_cache()
+        clients = {"alpha": object(), "beta": object()}
+        boto3 = MagicMock()
+
+        def session_factory(profile_name):
+            session = MagicMock()
+            session.client.return_value = clients[profile_name]
+            return session
+
+        boto3.Session.side_effect = session_factory
+
+        with patch.object(br, "_require_boto3", return_value=boto3), \
+                patch.object(br, "resolve_bedrock_profile", side_effect=["alpha", "beta", "alpha"]):
+            alpha_first = br._get_bedrock_runtime_client("us-east-1")
+            beta = br._get_bedrock_runtime_client("us-east-1")
+            alpha_second = br._get_bedrock_runtime_client("us-east-1")
+
+        assert alpha_first is clients["alpha"]
+        assert beta is clients["beta"]
+        assert alpha_second is alpha_first
+        assert boto3.Session.call_count == 2
+
+    def test_runtime_client_invalidation_is_profile_scoped(self):
+        from agent import bedrock_adapter as br
+
+        br.reset_client_cache()
+        clients = {"alpha": object(), "beta": object()}
+        boto3 = MagicMock()
+
+        def session_factory(profile_name):
+            session = MagicMock()
+            session.client.return_value = clients[profile_name]
+            return session
+
+        boto3.Session.side_effect = session_factory
+        with patch.object(br, "_require_boto3", return_value=boto3), \
+                patch.object(br, "resolve_bedrock_profile", side_effect=["alpha", "beta"]):
+            br._get_bedrock_runtime_client("us-east-1")
+            br._get_bedrock_runtime_client("us-east-1")
+
+        with patch.object(br, "resolve_bedrock_profile", return_value="alpha"):
+            assert br.invalidate_runtime_client("us-east-1") is True
+
+        assert ("us-east-1", "alpha") not in br._bedrock_runtime_client_cache
+        assert ("us-east-1", "beta") in br._bedrock_runtime_client_cache
+
+    def test_discovery_cache_is_profile_scoped(self):
+        from agent import bedrock_adapter as br
+
+        def discovery_client(model_id):
+            client = MagicMock()
+            client.list_foundation_models.return_value = {
+                "modelSummaries": [{
+                    "modelId": model_id,
+                    "modelName": model_id,
+                    "providerName": "Anthropic",
+                    "inputModalities": ["TEXT"],
+                    "outputModalities": ["TEXT"],
+                    "responseStreamingSupported": True,
+                    "modelLifecycle": {"status": "ACTIVE"},
+                }],
+            }
+            client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+            return client
+
+        br.reset_discovery_cache()
+        alpha_client = discovery_client("anthropic.alpha")
+        beta_client = discovery_client("anthropic.beta")
+
+        with patch.object(br, "resolve_bedrock_profile", side_effect=["alpha", "beta", "alpha"]), \
+                patch.object(br, "_get_bedrock_control_client", side_effect=[alpha_client, beta_client]) as get_client:
+            alpha_models = br.discover_bedrock_models("us-east-1")
+            beta_models = br.discover_bedrock_models("us-east-1")
+            alpha_again = br.discover_bedrock_models("us-east-1")
+
+        assert [m["id"] for m in alpha_models] == ["anthropic.alpha"]
+        assert [m["id"] for m in beta_models] == ["anthropic.beta"]
+        assert alpha_again == alpha_models
+        assert [args.args for args in get_client.call_args_list] == [
+            ("us-east-1", "alpha"),
+            ("us-east-1", "beta"),
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Tool conversion
 # ---------------------------------------------------------------------------
@@ -949,8 +1118,8 @@ class TestClientCache:
             _bedrock_control_client_cache,
             reset_client_cache,
         )
-        _bedrock_runtime_client_cache["test"] = "dummy"
-        _bedrock_control_client_cache["test"] = "dummy"
+        _bedrock_runtime_client_cache[("test", "")] = "dummy"
+        _bedrock_control_client_cache[("test", "")] = "dummy"
         reset_client_cache()
         assert len(_bedrock_runtime_client_cache) == 0
         assert len(_bedrock_control_client_cache) == 0
@@ -1329,11 +1498,11 @@ class TestEmptyTextBlockFix:
 
 
 # ---------------------------------------------------------------------------
-# Stale-connection detection and per-region client invalidation
+# Stale-connection detection and profile-scoped client invalidation
 # ---------------------------------------------------------------------------
 
 class TestInvalidateRuntimeClient:
-    """Per-region eviction used to discard dead/stale bedrock-runtime clients."""
+    """Profile-scoped eviction used to discard dead/stale bedrock-runtime clients."""
 
     def test_evicts_only_the_target_region(self):
         from agent.bedrock_adapter import (
@@ -1342,14 +1511,14 @@ class TestInvalidateRuntimeClient:
             reset_client_cache,
         )
         reset_client_cache()
-        _bedrock_runtime_client_cache["us-east-1"] = "dead-client"
-        _bedrock_runtime_client_cache["us-west-2"] = "live-client"
+        _bedrock_runtime_client_cache[("us-east-1", "")] = "dead-client"
+        _bedrock_runtime_client_cache[("us-west-2", "")] = "live-client"
 
         evicted = invalidate_runtime_client("us-east-1")
 
         assert evicted is True
-        assert "us-east-1" not in _bedrock_runtime_client_cache
-        assert _bedrock_runtime_client_cache["us-west-2"] == "live-client"
+        assert ("us-east-1", "") not in _bedrock_runtime_client_cache
+        assert _bedrock_runtime_client_cache[("us-west-2", "")] == "live-client"
 
     def test_returns_false_when_region_not_cached(self):
         from agent.bedrock_adapter import invalidate_runtime_client, reset_client_cache
@@ -1449,7 +1618,7 @@ class TestCallConverseInvalidatesOnStaleError:
         dead_client.converse.side_effect = ConnectionClosedError(
             endpoint_url="https://bedrock.example",
         )
-        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+        _bedrock_runtime_client_cache[("us-east-1", "")] = dead_client
 
         with pytest.raises(ConnectionClosedError):
             call_converse(
@@ -1458,7 +1627,7 @@ class TestCallConverseInvalidatesOnStaleError:
                 messages=[{"role": "user", "content": "hi"}],
             )
 
-        assert "us-east-1" not in _bedrock_runtime_client_cache, (
+        assert ("us-east-1", "") not in _bedrock_runtime_client_cache, (
             "stale client should have been evicted so the retry reconnects"
         )
 
@@ -1476,7 +1645,7 @@ class TestCallConverseInvalidatesOnStaleError:
         dead_client.converse_stream.side_effect = ConnectionClosedError(
             endpoint_url="https://bedrock.example",
         )
-        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+        _bedrock_runtime_client_cache[("us-east-1", "")] = dead_client
 
         with pytest.raises(ConnectionClosedError):
             call_converse_stream(
@@ -1485,7 +1654,7 @@ class TestCallConverseInvalidatesOnStaleError:
                 messages=[{"role": "user", "content": "hi"}],
             )
 
-        assert "us-east-1" not in _bedrock_runtime_client_cache
+        assert ("us-east-1", "") not in _bedrock_runtime_client_cache
 
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
@@ -1503,7 +1672,7 @@ class TestCallConverseInvalidatesOnStaleError:
             error_response={"Error": {"Code": "ValidationException", "Message": "bad"}},
             operation_name="Converse",
         )
-        _bedrock_runtime_client_cache["us-east-1"] = live_client
+        _bedrock_runtime_client_cache[("us-east-1", "")] = live_client
 
         with pytest.raises(ClientError):
             call_converse(
@@ -1512,7 +1681,7 @@ class TestCallConverseInvalidatesOnStaleError:
                 messages=[{"role": "user", "content": "hi"}],
             )
 
-        assert _bedrock_runtime_client_cache.get("us-east-1") is live_client, (
+        assert _bedrock_runtime_client_cache.get(("us-east-1", "")) is live_client, (
             "validation errors do not indicate a dead connection — keep the client"
         )
 
@@ -1530,7 +1699,7 @@ class TestCallConverseInvalidatesOnStaleError:
             "stopReason": "end_turn",
             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         }
-        _bedrock_runtime_client_cache["us-east-1"] = live_client
+        _bedrock_runtime_client_cache[("us-east-1", "")] = live_client
 
         call_converse(
             region="us-east-1",
@@ -1538,7 +1707,7 @@ class TestCallConverseInvalidatesOnStaleError:
             messages=[{"role": "user", "content": "hi"}],
         )
 
-        assert _bedrock_runtime_client_cache.get("us-east-1") is live_client
+        assert _bedrock_runtime_client_cache.get(("us-east-1", "")) is live_client
 
 
 class TestStreamingAccessDeniedDetection:
@@ -1651,7 +1820,7 @@ class TestCallConverseStreamIamFallback:
             "stopReason": "end_turn",
             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         }
-        _bedrock_runtime_client_cache["us-east-1"] = client
+        _bedrock_runtime_client_cache[("us-east-1", "")] = client
 
         result = call_converse_stream(
             region="us-east-1",
@@ -1662,7 +1831,7 @@ class TestCallConverseStreamIamFallback:
         client.converse.assert_called_once()
         assert result.choices[0].message.content == "hi"
         # Not a stale connection — client stays cached.
-        assert _bedrock_runtime_client_cache.get("us-east-1") is client
+        assert _bedrock_runtime_client_cache.get(("us-east-1", "")) is client
 
 
 # ---------------------------------------------------------------------------

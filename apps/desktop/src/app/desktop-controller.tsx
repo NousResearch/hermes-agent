@@ -1095,7 +1095,7 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      disabled={!chatOpen}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}

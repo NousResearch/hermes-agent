@@ -14,14 +14,12 @@ import {
   $panesFlipped,
   $sidebarOpen,
   PREVIEW_PANE_ID,
-  RIGHT_RAIL_PREVIEW_TAB_ID,
-  selectRightRailTab,
   toggleFileBrowserOpen,
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
 import { $paneOpen, setPaneOpen } from '@/store/panes'
-import { $filePreviewTarget, $previewTarget } from '@/store/preview'
+import { $filePreviewTabs, $previewTarget } from '@/store/preview'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
@@ -68,8 +66,8 @@ export function TitlebarControls({
   const panesFlipped = useStore($panesFlipped)
   const previewOpen = useStore($paneOpen(PREVIEW_PANE_ID))
   const previewTarget = useStore($previewTarget)
-  const filePreviewTarget = useStore($filePreviewTarget)
-  const hasPreviewTarget = Boolean(previewTarget || filePreviewTarget)
+  const filePreviewTabs = useStore($filePreviewTabs)
+  const hasPreviewContent = Boolean(previewTarget || filePreviewTabs.length > 0)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -126,19 +124,14 @@ export function TitlebarControls({
   }
 
   const previewTool: TitlebarTool = {
-    active: previewOpen && hasPreviewTarget,
-    disabled: !hasPreviewTarget,
+    active: previewOpen,
+    className: hasPreviewContent ? 'text-sky-600 dark:text-sky-300' : undefined,
     icon: <Codicon name="preview" />,
     id: 'preview-pane',
-    label: hasPreviewTarget ? 'Open preview' : 'No preview available',
+    label: previewOpen ? 'Hide preview' : 'Open preview',
     onSelect: () => {
-      if (!hasPreviewTarget) {
-        return
-      }
-
-      triggerHaptic('open')
-      setPaneOpen(PREVIEW_PANE_ID, true)
-      selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+      triggerHaptic(previewOpen ? 'tap' : 'open')
+      setPaneOpen(PREVIEW_PANE_ID, !previewOpen)
     }
   }
 

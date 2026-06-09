@@ -8,10 +8,12 @@ import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $rightRailActiveTabId,
+  PREVIEW_PANE_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
 } from '@/store/layout'
+import { setPaneOpen } from '@/store/panes'
 import {
   $filePreviewTabs,
   $previewReloadRequest,
@@ -65,6 +67,11 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
 
+  const closePreviewPane = () => {
+    closeRightRail()
+    setPaneOpen(PREVIEW_PANE_ID, false)
+  }
+
   useEffect(() => {
     if (activeTab && activeTab.id !== activeTabId) {
       selectRightRailTab(activeTab.id)
@@ -72,7 +79,24 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   }, [activeTab, activeTabId])
 
   if (!activeTab) {
-    return null
+    return (
+      <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) text-(--ui-text-tertiary)">
+        <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 items-center justify-between border-b border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) pl-3">
+          <span className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{t.preview.tab}</span>
+          <button
+            aria-label={t.preview.closePane}
+            className="mr-1.5 grid size-6 shrink-0 place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
+            onClick={closePreviewPane}
+            type="button"
+          >
+            <Codicon name="close" size="0.75rem" />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-xs text-(--ui-text-tertiary)">
+          Open a file or preview link to show it here.
+        </div>
+      </aside>
+    )
   }
 
   const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID
@@ -146,7 +170,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
         <button
           aria-label={t.preview.closePane}
           className="mr-1.5 grid size-6 shrink-0 self-center place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
-          onClick={closeRightRail}
+          onClick={closePreviewPane}
           type="button"
         >
           <Codicon name="close" size="0.75rem" />

@@ -837,8 +837,16 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     if output.get("tool_calls"):
         state.turn_tool_calls.extend(output["tool_calls"])
 
-    # Extract usage: prefer response object, fall back to usage dict from post_api_request
-    if response is not None:
+    # Extract usage: prefer a real response object that carries usage, else
+    # fall back to the usage summary dict from post_api_request.
+    #
+    # post_api_request passes `response` as a SANITIZED dict (no ``.usage``
+    # attribute) alongside a separate `usage` summary dict. Gating on
+    # ``response is not None`` here took the response-object path on that dict,
+    # where ``getattr(response, "usage", None)`` is always None — so usage and
+    # cost were silently dropped for every gateway turn. Gate on a real
+    # ``.usage`` attribute instead so the usage-dict fallback below is reached.
+    if getattr(response, "usage", None) is not None:
         usage_details, cost_details = _usage_and_cost(
             response,
             provider=provider,

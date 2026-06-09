@@ -141,7 +141,85 @@ export const zh: Translations = {
     showRightSidebar: '显示右侧栏',
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
-    openSettings: '打开设置'
+    openSettings: '打开设置',
+    openKeybinds: '键盘快捷键'
+  },
+
+  keybinds: {
+    title: '键盘快捷键',
+    subtitle: open => `点击快捷键即可重新绑定 · ${open} 可重新打开此面板。`,
+    rebind: '重新绑定',
+    reset: '恢复默认',
+    resetAll: '全部重置',
+    pressKey: '请按下按键…',
+    set: '设置',
+    conflictWith: label => `已绑定到“${label}”`,
+    categories: {
+      composer: '输入框',
+      profiles: '配置',
+      session: '会话',
+      navigation: '导航',
+      view: '视图'
+    },
+    actions: {
+      'keybinds.openPanel': '打开键盘快捷键',
+      'nav.commandPalette': '打开命令面板',
+      'nav.commandCenter': '打开命令中心',
+      'nav.settings': '打开设置',
+      'nav.profiles': '打开配置',
+      'nav.skills': '打开技能',
+      'nav.messaging': '打开消息',
+      'nav.artifacts': '打开制品',
+      'nav.cron': '打开定时任务',
+      'nav.agents': '打开智能体',
+      'session.new': '新建会话',
+      'session.next': '下一个会话',
+      'session.prev': '上一个会话',
+      'session.focusSearch': '搜索会话',
+      'session.togglePin': '固定/取消固定当前会话',
+      'composer.focus': '聚焦输入框',
+      'composer.modelPicker': '打开模型选择器',
+      'view.toggleSidebar': '切换会话侧边栏',
+      'view.toggleRightSidebar': '切换文件浏览器',
+      'view.showFiles': '显示文件浏览器',
+      'view.showTerminal': '显示终端',
+      'view.terminalSelection': '将终端选区发送到输入框',
+      'view.closePreviewTab': '关闭预览标签',
+      'view.flipPanes': '交换侧边栏位置',
+      'appearance.toggleMode': '切换浅色/深色',
+      'profile.default': '切换到默认配置',
+      'profile.switch.1': '切换到配置 1',
+      'profile.switch.2': '切换到配置 2',
+      'profile.switch.3': '切换到配置 3',
+      'profile.switch.4': '切换到配置 4',
+      'profile.switch.5': '切换到配置 5',
+      'profile.switch.6': '切换到配置 6',
+      'profile.switch.7': '切换到配置 7',
+      'profile.switch.8': '切换到配置 8',
+      'profile.switch.9': '切换到配置 9',
+      'profile.switch.10': '切换到配置 10',
+      'profile.switch.11': '切换到配置 11',
+      'profile.switch.12': '切换到配置 12',
+      'profile.switch.13': '切换到配置 13',
+      'profile.switch.14': '切换到配置 14',
+      'profile.switch.15': '切换到配置 15',
+      'profile.switch.16': '切换到配置 16',
+      'profile.switch.17': '切换到配置 17',
+      'profile.switch.18': '切换到配置 18',
+      'profile.next': '下一个配置',
+      'profile.prev': '上一个配置',
+      'profile.toggleAll': '切换全部配置视图',
+      'profile.create': '创建配置',
+      'composer.send': '发送消息',
+      'composer.newline': '插入换行',
+      'composer.steer': '引导正在运行的回合',
+      'composer.sendQueued': '发送下一条排队消息',
+      'composer.mention': '引用文件、文件夹、网址',
+      'composer.slash': '斜杠命令面板',
+      'composer.help': '快速帮助',
+      'composer.history': '切换弹窗/历史',
+      'composer.cancel': '关闭弹窗·取消运行'
+    }
   },
 
   language: {
@@ -209,7 +287,8 @@ export const zh: Translations = {
       technical: '技术',
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
-      themeDesc: '仅桌面端调色板。所选模式叠加其上。'
+      themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -233,7 +312,11 @@ export const zh: Translations = {
         backend: '执行后端',
         timeout: '命令超时',
         persistentShell: '持久化 Shell',
-        envPassthrough: '环境变量透传'
+        envPassthrough: '环境变量透传',
+        dockerImage: 'Docker 镜像',
+        singularityImage: 'Singularity 镜像',
+        modalImage: 'Modal 镜像',
+        daytonaImage: 'Daytona 镜像'
       },
       fileReadMaxChars: '文件读取上限',
       toolOutput: {
@@ -274,6 +357,15 @@ export const zh: Translations = {
           model: '本地转写模型',
           language: '转写语言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 语言',
@@ -293,6 +385,33 @@ export const zh: Translations = {
         elevenlabs: {
           voiceId: 'ElevenLabs 语音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 语音',
+          language: 'xAI 语言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 语音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 语音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 语音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 设备'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 语音'
+        },
+        piper: {
+          voice: 'Piper 语音'
         }
       },
       memory: {
@@ -618,7 +737,15 @@ export const zh: Translations = {
       ready: '就绪',
       nousIncluded: '包含在 Nous 订阅中；登录 Nous Portal 即可激活。',
       noApiKeyRequired: '不需要 API 密钥。',
-      postSetup: step => `此提供方需要额外设置步骤 (${step})。暂时请在 CLI 中运行 hermes tools。`
+      postSetupHint: step => `此后端需要一次性安装 (${step})。将在此机器上执行，可能需要几分钟。`,
+      postSetupRun: '运行设置',
+      postSetupRunning: '安装中…',
+      postSetupStarting: '启动中…',
+      postSetupCompleteTitle: '设置完成',
+      postSetupCompleteMessage: step => `已安装 ${step}。`,
+      postSetupErrorTitle: '设置完成但有错误',
+      postSetupErrorMessage: step => `请检查 ${step} 日志。`,
+      postSetupFailed: step => `运行 ${step} 设置失败`
     }
   },
 
@@ -959,8 +1086,6 @@ export const zh: Translations = {
   cron: {
     close: '关闭定时任务',
     search: '搜索定时任务…',
-    refresh: '刷新定时任务',
-    refreshing: '正在刷新定时任务',
     loading: '正在加载定时任务…',
     states: {
       enabled: '已启用',
@@ -1013,15 +1138,18 @@ export const zh: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每个整点',
     everyHourAt: minute => `每小时的 :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} 个启用`,
     newCron: '新建定时任务',
-    createFirst: '创建第一个定时任务',
     emptyDescNew: '按 cron 表达式排程一个提示词。Hermes 会运行它，并把结果发送到你选择的目的地。',
     emptyDescSearch: '尝试更宽泛的搜索词。',
     emptyTitleNew: '暂无排程任务',
     emptyTitleSearch: '无匹配项',
     last: '上次：',
     next: '下次：',
+    noRuns: '尚无运行',
+    manage: '管理',
+    showRuns: '显示运行记录',
+    hideRuns: '隐藏运行记录',
+    runHistory: '运行记录',
     actionsFor: title => `${title} 的操作`,
     actionsTitle: '定时任务操作',
     resume: '恢复定时任务',
@@ -1113,6 +1241,7 @@ export const zh: Translations = {
     results: '结果',
     pinned: '已置顶',
     sessions: '会话',
+    cronJobs: '定时任务',
     groupAriaGrouped: '以单一列表显示会话',
     groupAriaUngrouped: '按工作区分组会话',
     groupTitleGrouped: '取消分组',
@@ -1296,9 +1425,13 @@ export const zh: Translations = {
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
     connectionRetry: '请检查网络连接后重试。',
     latestBody: '你正在运行最新版本。',
+    latestBodyBackend: '后端正在运行最新版本。',
     allSetTitle: '已是最新',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安装。',
+    availableTitleBackend: '后端有可用更新',
+    availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
+    availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
@@ -1309,10 +1442,19 @@ export const zh: Translations = {
     copied: '已复制',
     done: '完成',
     applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后重新打开 Hermes。',
+    applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: 'Hermes 将关闭以应用更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
-    notNow: '暂不'
+    notNow: '暂不',
+    applyStatus: {
+      preparing: '正在更新后端…',
+      pulling: '后端更新中…',
+      restarting: '后端正在重启以加载更新…',
+      notAvailable: '此后端无法更新。',
+      failed: '后端更新失败。',
+      noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
+    }
   },
 
   install: {
@@ -1392,7 +1534,7 @@ export const zh: Translations = {
     },
     startingSignIn: provider => `正在为 ${provider} 启动登录...`,
     verifyingCode: provider => `正在通过 ${provider} 验证你的代码...`,
-    connectedProvider: provider => `${provider} 已连接。`,
+    connectedProvider: provider => `${provider} 已连接`,
     connectedPicking: provider => `${provider} 已连接。正在选择默认模型...`,
     signInFailed: '登录失败，请重试。',
     pickDifferentProvider: '选择其他提供方',
@@ -1416,7 +1558,7 @@ export const zh: Translations = {
     free: '免费',
     price: (input, output) => `${input} 输入 / ${output} 输出每 Mtok`,
     change: '更改',
-    startChatting: '开始对话',
+    startChatting: '开始',
     docs: provider => `${provider} 文档`
   },
 
@@ -1492,6 +1634,9 @@ export const zh: Translations = {
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `后端 v${version}`,
+      clientLabel: version => `客户端 v${version}`,
+      backendLabel: version => `后端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '关闭命令中心',
@@ -1516,8 +1661,8 @@ export const zh: Translations = {
       contextUsage: '上下文用量',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
-      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。',
-      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。',
+      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
+      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。Shift+点击可全局切换。',
       modelNone: '无',
       noModel: '无模型',
       switchModel: '切换模型',

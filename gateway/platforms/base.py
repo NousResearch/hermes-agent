@@ -1792,7 +1792,16 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
-    
+
+    # Whether this platform renders triple-backtick fenced code blocks (i.e.
+    # ``format_message`` translates/preserves markdown fences into a real code
+    # block).  Capability flag for markdown-aware presentation choices.
+    # Default False (plain-text platforms); markdown-rendering adapters set True.
+    # Note: tool-progress deliberately does NOT use this to render a terminal
+    # command as a ```bash block — that exposed full commands in chat. Progress
+    # shows a short truncated preview only (see gateway/run.py progress_callback).
+    supports_code_blocks: bool = False
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform

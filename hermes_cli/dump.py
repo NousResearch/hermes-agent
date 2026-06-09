@@ -318,6 +318,17 @@ def run_dump(args):
             display = _redact(val)
         else:
             display = "set" if val else "not set"
+        # A credential added via `hermes auth add openrouter` lives in the
+        # credential pool, not as an env var — surface it so the dump doesn't
+        # misleadingly read "not set" while `hermes auth list` shows it (#42130).
+        if not val and label == "openrouter":
+            try:
+                from agent.credential_pool import load_pool as _load_pool
+
+                if _load_pool("openrouter").has_credentials():
+                    display = "set (auth pool)"
+            except Exception:
+                pass
         lines.append(f"  {label:<20} {display}")
 
     # Features summary

@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
+import { toggleKeybindPanel } from '@/store/keybinds'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -115,6 +116,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       id: 'haptics',
       label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
       onSelect: toggleHaptics
+    },
+    {
+      icon: <Codicon name="keyboard" />,
+      id: 'keybinds',
+      label: t.titlebar.openKeybinds,
+      onSelect: () => {
+        triggerHaptic('open')
+        toggleKeybindPanel()
+      }
     },
     {
       icon: <Codicon name="settings-gear" />,

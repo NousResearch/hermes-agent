@@ -104,20 +104,51 @@ All env vars are documented in `plugin.yaml`. The most important are:
 | `PHOTON_HOME_CHANNEL`    | (unset)            | Default space ID for cron delivery     |
 | `PHOTON_ALLOWED_USERS`   | (unset)            | Comma-separated E.164 allowlist        |
 
-## Limitations (current Photon API)
+## Capability coverage
 
-- **Inbound attachments are metadata only.** Inbound webhooks include the
-  filename + MIME type but no download URL. The plugin surfaces a
-  text marker (`[Photon attachment received: …]`) so the agent knows
-  something arrived, but cannot read the bytes.  Photon's docs note
-  an attachment retrieval endpoint is on the roadmap.
-- **Outbound attachments are supported.** Images, voice notes, video,
-  and documents are sent via `space.send(attachment(...))` /
-  `space.send(voice(...))` through the sidecar's `/send-attachment`
-  endpoint. A caption is delivered as a separate text bubble after the
-  media.
-- **Reactions, message effects, polls** — not exposed yet; the
-  `spectrum-ts` SDK supports them, and the sidecar is the natural
-  place to add them when the agent has reason to use them.
+This plugin exposes the **full reachable surface** of the `spectrum-ts`
+iMessage provider — the layer Photon's managed (incl. free shared-line)
+service makes available. Mapped against the SDK:
+
+**Covered (in / out, end to end):**
+
+| Capability | How |
+|---|---|
+| Send text (+ native link previews) | `/send` → `space.send(text)` |
+| Screen/bubble effects | `/send` `effect` → `space.send(effect(...))` |
+| Send image / GIF / video / voice / sticker / document | `/send-attachment` → `space.send(attachment()/voice())`; documents use an `application/octet-stream` MIME fallback |
+| Multiple attachments (paced) | `/send-attachments` |
+| Bot → user tapbacks (👀/✅/❌ acks) | `/react` → `space.send(reaction(...))` |
+| Typing indicator (tracks compute) | `/typing` → `space.send(typing(...))` |
+| Read receipts | auto on every inbound → `space.read(message)` |
+| Inbound text | gRPC stream → adapter |
+| Inbound photo → vision | `attachments.downloadStream` → temp file → `media_urls` |
+| Inbound video → keyframes + audio transcript | ffmpeg keyframes + WAV → vision routing + STT |
+| Inbound voice memo → transcription | `.caf` → `.wav` transcode → STT |
+| Inbound reactions (observe) | gRPC stream (unreliable on the free shared line) |
+
+Outbound text is markdown-stripped and split into paragraph bubbles
+(BlueBubbles-parity); attachments over `PHOTON_MAX_ATTACHMENT_MB` forward
+a note instead of blocking.
+
+**Reliability:** `spectrum-ts` tracks a cursor and runs
+`catchUpThenConsumeLive()` internally, so the live `app.messages` stream
+replays missed events on a gRPC reconnect — no message loss within a
+process. The stream takes no resume cursor, so messages during a full
+sidecar *restart* (a brief window) aren't recovered.
+
+**Not reachable from this layer.** `edit`, `unsend`, threaded `reply`,
+`sendMultipart`, `placeSticker`, `listRecent` (history), `polls`,
+`groups`, `addresses` (`isIMessageAvailable`), `getEmbeddedMedia`,
+`locations`, and `chats.create` (proactive cold-start DM to a new
+handle) live on the lower `@photon-ai/advanced-imessage` client, which
+`spectrum-ts` holds as internal context (`client: AdvancedIMessage`) and
+does **not** expose — the provider only surfaces `getAttachment`,
+`getMessage`, `read`, `background`. Reaching them would require a
+*separate* direct advanced-imessage connection (its own auth, likely a
+paid/dedicated line, not the free shared tier). When that's wired, the
+SOTA exposure is a few **semantic** agent tools (send / manage-message /
+manage-chat / history) with capability-gating and confirmation for
+destructive ops (`unsend`, group changes) — not raw 1:1 endpoints.
 
 [photon]: https://photon.codes/

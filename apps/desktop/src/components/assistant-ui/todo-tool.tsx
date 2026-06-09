@@ -39,14 +39,22 @@ const headerLabel = (todos: readonly TodoItem[]): string =>
   todos.at(-1)?.content ??
   'Tasks'
 
-const Checkmark: FC<{ status: TodoStatus; label: string }> = ({ status, label }) => {
+const Checkmark: FC<{ isLive: boolean; label: string; status: TodoStatus }> = ({
+  isLive,
+  label,
+  status,
+}) => {
   if (status === 'in_progress') {
     return (
       <span
         aria-label={`In progress: ${label}`}
         className="grid size-[1.1rem] shrink-0 place-items-center rounded-full border border-ring/65 bg-[color-mix(in_srgb,var(--dt-ring)_14%,transparent)]"
       >
-        <Loader2Icon className="size-3 animate-spin text-ring" />
+        {isLive ? (
+          <Loader2Icon className="size-3 animate-spin text-ring" />
+        ) : (
+          <span className="size-1.5 rounded-full bg-ring/70" />
+        )}
       </span>
     )
   }
@@ -68,7 +76,10 @@ const Checkmark: FC<{ status: TodoStatus; label: string }> = ({ status, label })
   )
 }
 
-export const HoistedTodoPanel: FC<{ todos: TodoItem[] }> = ({ todos }) => {
+export const HoistedTodoPanel: FC<{ isLive?: boolean; todos: TodoItem[] }> = ({
+  isLive = true,
+  todos,
+}) => {
   if (!todos.length) {
     return null
   }
@@ -95,11 +106,15 @@ export const HoistedTodoPanel: FC<{ todos: TodoItem[] }> = ({ todos }) => {
             // the row so the checkbox glyph dims with the text.
             className={cn(
               'flex min-w-0 items-center gap-3 py-1.5 transition-opacity',
-              todo.status === 'in_progress' ? 'opacity-100' : 'opacity-45'
+              todo.status === 'in_progress' && isLive
+                ? 'opacity-100'
+                : todo.status === 'in_progress' && !isLive
+                  ? 'opacity-70'
+                  : 'opacity-45'
             )}
             key={todo.id}
           >
-            <Checkmark label={todo.content} status={todo.status} />
+            <Checkmark isLive={isLive} label={todo.content} status={todo.status} />
             <span className="min-w-0 wrap-anywhere text-[0.8rem] leading-[1.2rem] text-foreground">{todo.content}</span>
           </li>
         ))}

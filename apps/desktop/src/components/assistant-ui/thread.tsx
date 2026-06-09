@@ -237,7 +237,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
         className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
-        {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
+        {hoistedTodos.length > 0 && <HoistedTodoPanel isLive={messageStatus === 'running'} todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
         {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
         {previewTargets.length > 0 && (

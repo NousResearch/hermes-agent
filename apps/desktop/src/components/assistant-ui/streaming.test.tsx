@@ -743,4 +743,39 @@ describe('assistant-ui streaming renderer', () => {
     expect(thinkingDisclosure).toBeTruthy()
     expect(Boolean(thinkingDisclosure?.contains(todoPanel as Node))).toBe(false)
   })
+
+  it('shows static dot for archived in_progress items after turn completes', () => {
+    const { container } = render(
+      <TodoHarness
+        message={assistantTodoMessage([
+          { content: 'Step one', id: 's1', status: 'completed' },
+          { content: 'Step two', id: 's2', status: 'in_progress' },
+          { content: 'Step three', id: 's3', status: 'pending' }
+        ], false)}
+      />
+    )
+
+    const todoPanel = container.querySelector('[data-slot="aui_todo-hoisted"]')
+    expect(todoPanel).toBeTruthy()
+
+    // After turn completion, in_progress items should NOT show spinning icon
+    const spinningIcon = container.querySelector('.animate-spin')
+    expect(spinningIcon).toBeNull()
+
+    // The in_progress item should still be rendered with its label
+    expect(container.textContent).toContain('Step two')
+  })
+
+  it('shows spinning icon for in_progress items during live streaming', () => {
+    const { container } = render(
+      <TodoHarness
+        message={assistantTodoMessage([
+          { content: 'Working on it', id: 'w1', status: 'in_progress' }
+        ], true)}
+      />
+    )
+
+    const spinningIcon = container.querySelector('.animate-spin')
+    expect(spinningIcon).toBeTruthy()
+  })
 })

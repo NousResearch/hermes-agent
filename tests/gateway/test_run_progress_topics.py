@@ -1297,8 +1297,10 @@ class TerminalCommandAgent:
 @pytest.mark.asyncio
 async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
     """Terminal progress on a markdown-capable (supports_code_blocks) gateway
-    renders the full command in a bare fenced code block — no language tag
-    (Slack mrkdwn would print 'bash' as a literal first code line)."""
+    renders a bare fenced code block — no language tag (Slack mrkdwn would print
+    'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
+    command is collapsed to a single line capped at tool_preview_length so a long
+    or multi-line command doesn't render as a huge block (#42634)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1338,10 +1340,61 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     # Bare fenced block, no language tag (no '```bash').
     assert "```" in all_content
     assert "```bash" not in all_content
-    # The full multi-line command body IS present in the block.
-    assert "npm install -g hyperframes@latest" in all_content
+    # Non-verbose collapses to the first line + truncation marker — the later
+    # command lines must NOT appear (this was the "huge block" regression).
+    assert "set -euo pipefail" in all_content
+    assert "npm install -g hyperframes@latest" not in all_content
+    assert "node --version" not in all_content
     # No truncated quoted preview for the terminal command.
     assert 'terminal: "' not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_path):
+    """Verbose mode on a markdown-capable gateway renders the FULL multi-line
+    command in a bare fenced block (no truncation, no 'bash' tag).  This is the
+    parity guarantee for #42634: verbose keeps full detail, non-verbose caps."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-code-block-verbose",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "```" in all_content
+    assert "```bash" not in all_content
+    # Full command body present — verbose is uncapped.
+    assert "npm install -g hyperframes@latest" in all_content
+    assert "node --version" in all_content
 
 
 @pytest.mark.asyncio

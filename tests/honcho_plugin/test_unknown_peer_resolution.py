@@ -78,8 +78,27 @@ class TestUnknownPeerResolution:
         s = _session()
         assert mgr._resolve_peer_id(s, "captain") == mgr._sanitize_id("captain")
         assert mgr._resolve_peer_id(s, "first-mate") == mgr._sanitize_id("first-mate")
+        # Case-insensitive: a configured alias referenced in a different case
+        # still resolves to its canonical id (review fix — the alias matching
+        # must be as case-insensitive as the built-in 'user'/'ai' aliases).
+        assert mgr._resolve_peer_id(s, "First-Mate") == mgr._sanitize_id("first-mate")
+        assert mgr._resolve_peer_id(s, "CAPTAIN") == mgr._sanitize_id("captain")
         # an unconfigured name still collapses to the user peer
         assert mgr._resolve_peer_id(s, "stowaway") == s.user_peer_id
+
+    def test_real_peer_named_like_reserved_alias_is_not_hijacked(self):
+        """A real peer whose id matches a reserved alias must win over the alias
+        fallback — known peers are checked first (review regression fix)."""
+        mgr = HonchoSessionManager()
+        s = HonchoSession(
+            key="x:1",
+            user_peer_id="AI",  # pathological but legal: user peer literally "AI"
+            assistant_peer_id="hermes-assistant",
+            honcho_session_id="x-1",
+        )
+        # Without known-peers-first, "AI" would be hijacked to the assistant.
+        assert mgr._resolve_peer_id(s, "AI") == "AI"
+        assert mgr._resolve_peer_id(s, "ai") == "AI"
 
     def test_create_conclusion_for_unknown_peer_writes_to_user_scope(self):
         """End-to-end through the WRITE path: a conclusion for an invented name
@@ -101,13 +120,33 @@ class TestUnknownPeerResolution:
         called_with = [c.args[0] for c in mgr._get_or_create_peer.call_args_list]
         assert mgr._sanitize_id("JackOnDiscord") not in called_with
 
-    def test_resolved_peer_label_reports_collapsed_target(self):
-        """The conclude tool response must report the RESOLVED peer, so it never
-        confirms a write against a peer name the model invented (#42980 review)."""
+    def test_create_conclusion_unknown_peer_without_ai_observe_others(self):
+        """The ai_observe_others=False branch is the actual mint site a
+        non-collapsing resolver would hit: it calls _get_or_create_peer on the
+        TARGET peer. An invented name must still target the user peer, so no new
+        peer is minted there either (review coverage gap)."""
         mgr = HonchoSessionManager()
         s = _session()
         mgr._cache[s.key] = s
-        assert mgr.resolved_peer_label(s.key, "JackOnDiscord") == s.user_peer_id
-        assert mgr.resolved_peer_label(s.key, "ai") == s.assistant_peer_id
+        mgr._ai_observe_others = False
+        target = MagicMock()
+        mgr._get_or_create_peer = MagicMock(return_value=target)
+
+        assert mgr.create_conclusion(s.key, "fact", peer="MadeUpName") is True
+
+        mgr._get_or_create_peer.assert_called_once_with(s.user_peer_id)
+        target.conclusions_of.assert_called_once_with(s.user_peer_id)
+
+    def test_resolved_peer_label_uses_friendly_aliases(self):
+        """The conclude response reports the RESOLVED peer, but as the friendly
+        'user'/'ai' label for the session peers rather than leaking the raw
+        internal peer id into the model's context (#42980 review)."""
+        mgr = HonchoSessionManager()
+        s = _session()
+        mgr._cache[s.key] = s
+        # Invented name collapses to the user -> reported as "user", not the raw id.
+        assert mgr.resolved_peer_label(s.key, "JackOnDiscord") == "user"
+        assert mgr.resolved_peer_label(s.key, "user") == "user"
+        assert mgr.resolved_peer_label(s.key, "ai") == "ai"
         # No session cached -> falls back to the sanitized request, never raises.
         assert mgr.resolved_peer_label("missing:key", "Whoever") == mgr._sanitize_id("Whoever")

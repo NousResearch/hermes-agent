@@ -292,7 +292,7 @@ All 5 tools accept an optional `peer` parameter:
 Unrecognized free-form values resolve to the user peer rather than creating a
 new peer, so the model can't fragment one user's memory across display-name
 variants. To target additional peers deliberately, declare them via
-`user_peer_aliases` in the Honcho config.
+`userPeerAliases` in `honcho.json`.
 
 Examples:
 ```

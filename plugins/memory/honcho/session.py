@@ -1064,24 +1064,33 @@ class HonchoSessionManager:
         if not candidate:
             return session.user_peer_id
 
-        # Match the built-in aliases case-insensitively so plausible model
-        # guesses ("AI", "Assistant") route to the assistant rather than
-        # silently collapsing into the user peer.
+        # Honor an explicit, already-known peer FIRST: the session's own peers or
+        # an operator-configured peer id/alias (case-insensitively, so a
+        # lowercased userPeerAliases value still resolves). Checking known peers
+        # before the reserved-word aliases means a real peer that happens to be
+        # named "ai"/"user" is never hijacked to the wrong session peer.
+        normalized = self._sanitize_id(candidate)
+        known_ids = {session.user_peer_id, session.assistant_peer_id}
+        known_ids |= self._explicit_user_peer_ids()
+        if normalized in known_ids:
+            return normalized
+        known_by_lower = {k.lower(): k for k in known_ids}
+        match = known_by_lower.get(normalized.lower())
+        if match is not None:
+            return match
+
+        # Built-in aliases, case-insensitive, so plausible model guesses
+        # ("AI", "Assistant") route to the assistant rather than silently
+        # collapsing into the user peer.
         lowered = candidate.lower()
         if lowered == "user":
             return session.user_peer_id
         if lowered in ("ai", "assistant"):
             return session.assistant_peer_id
 
-        # Honor an explicit, already-known peer: the session's own peers or an
-        # operator-configured peer id/alias. Anything else is an unrecognized
-        # free-form name — collapse it to the user peer rather than create a
-        # new peer (single-user-safe default; prevents #42980 fragmentation).
-        normalized = self._sanitize_id(candidate)
-        known_ids = {session.user_peer_id, session.assistant_peer_id}
-        known_ids |= self._explicit_user_peer_ids()
-        if normalized in known_ids:
-            return normalized
+        # Anything else is an unrecognized free-form name — collapse it to the
+        # user peer rather than create a new peer (single-user-safe default;
+        # prevents #42980 fragmentation).
 
         # Log the length, not the value: the unrecognized name is typically a
         # display name / handle the model invented for the user — exactly the
@@ -1097,14 +1106,22 @@ class HonchoSessionManager:
     def resolved_peer_label(self, session_key: str, peer: str | None) -> str:
         """Human-facing label for the peer a tool call actually targeted.
 
-        Returns the *resolved* peer id (after alias / unknown-name collapse) so a
+        Resolves the requested peer (after alias / unknown-name collapse) so a
         tool response never confirms a write against a peer name the model
-        invented. Falls back to the sanitized request when no session is cached.
+        invented. Returns the friendly alias ``"user"``/``"ai"`` for the two
+        session peers — rather than leaking the raw internal peer id into the
+        model's context — and the resolved id for any other (configured) peer.
+        Falls back to the sanitized request when no session is cached.
         """
         session = self._cache.get(session_key)
         if session is None:
             return self._sanitize_id((peer or "user").strip()) or "user"
-        return self._resolve_peer_id(session, peer)
+        resolved = self._resolve_peer_id(session, peer)
+        if resolved == session.user_peer_id:
+            return "user"
+        if resolved == session.assistant_peer_id:
+            return "ai"
+        return resolved
 
     def _resolve_observer_target(
         self,

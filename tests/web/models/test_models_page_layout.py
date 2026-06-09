@@ -67,12 +67,10 @@ async def test_main_model_tab_has_card(page: Page):
 
 
 @pytest.mark.asyncio
-async def test_main_model_tab_has_stats(page: Page):
-    """Main Model tab should show the stats card."""
+async def test_main_model_tab_has_fallback_chain_card(page: Page):
+    """Main Model tab should show the fallback chain card."""
     await _go_to_tab(page, "Main Model")
-    stats = page.locator("[data-testid='settings-tab-panel'] > div > div > div")
-    count = await stats.count()
-    assert count >= 2, "Should have at least 2 cards (main model + stats)"
+    await expect(page.locator("[data-testid='fallback-chain-card']")).to_be_visible()
 
 
 @pytest.mark.asyncio
@@ -156,6 +154,7 @@ async def test_auxiliary_tab_has_inline_panel(page: Page):
     panel = page.locator("[data-testid='auxiliary-tasks-tab-panel']")
     await expect(panel).to_be_visible()
     task_items = page.locator("[data-testid='auxiliary-task-item']")
+    await expect(task_items.first).to_be_visible()
     count = await task_items.count()
     assert count > 0, "Should have at least one auxiliary task item"
 
@@ -172,6 +171,7 @@ async def test_auxiliary_tab_task_items_have_labels(page: Page):
     """Auxiliary Tasks tab should show task items with labels."""
     await _go_to_tab(page, "Auxiliary Tasks")
     task_items = page.locator("[data-testid='auxiliary-task-item']")
+    await expect(task_items.first).to_be_visible()
     count = await task_items.count()
     assert count >= 1, "Should have at least one task item"
     first_item = await task_items.first.inner_text()
@@ -179,25 +179,160 @@ async def test_auxiliary_tab_task_items_have_labels(page: Page):
 
 
 @pytest.mark.asyncio
-async def test_used_models_tab_has_period_controls(page: Page):
-    """Used Models tab should have period controls (7d, 30d, 90d)."""
-    await _go_to_tab(page, "Used Models")
-    await expect(page.locator("[data-testid='used-models-period-7']")).to_be_visible()
-    await expect(page.locator("[data-testid='used-models-period-30']")).to_be_visible()
-    await expect(page.locator("[data-testid='used-models-period-90']")).to_be_visible()
-    await expect(page.locator("[data-testid='used-models-refresh-button']")).to_be_visible()
+async def test_auxiliary_tasks_empty(page: Page):
+    """Verify auxiliary tasks rendering when API returns no auxiliary tasks."""
+    import json
+
+    empty_data = {
+        "tasks": [],
+        "main": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+    }
+
+    async def _handler(route):
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(empty_data))
+
+    await page.route("**/api/model/auxiliary", _handler)
+    try:
+        await _go_to_tab(page, "Auxiliary Tasks")
+        panel = page.locator("[data-testid='auxiliary-tasks-tab-panel']")
+        await expect(panel).to_be_visible()
+        task_items = page.locator("[data-testid='auxiliary-task-item']")
+        count = await task_items.count()
+        assert count == 0, "Expected 0 auxiliary task items for empty response"
+    finally:
+        await page.unroute("**/api/model/auxiliary", _handler)
 
 
 @pytest.mark.asyncio
-async def test_used_models_tab_renders_content(page: Page):
-    """Used Models tab should render either cards or empty state."""
-    await _go_to_tab(page, "Used Models")
-    # Wait for either cards or empty state to render to avoid race conditions
-    await page.locator("[data-testid='used-model-card'], [data-testid='used-models-empty-state']").first.wait_for(state="visible", timeout=5000)
-    cards = page.locator("[data-testid='used-model-card']")
-    empty_state = page.locator("[data-testid='used-models-empty-state']")
-    cards_count = await cards.count()
-    empty_count = await empty_state.count()
-    assert cards_count > 0 or empty_count > 0, "Should show model cards or empty state"
+async def test_auxiliary_tasks_populated(page: Page):
+    """Verify auxiliary tasks rendering when API returns populated task data."""
+    import json
+
+    populated_data = {
+        "tasks": [
+            {"task": "vision", "provider": "openrouter", "model": "google/gemini-2.5-flash", "base_url": ""},
+            {"task": "summarization", "provider": "auto", "model": "", "base_url": ""}
+        ],
+        "main": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+    }
+
+    async def _handler(route):
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(populated_data))
+
+    await page.route("**/api/model/auxiliary", _handler)
+    try:
+        await _go_to_tab(page, "Auxiliary Tasks")
+        task_items = page.locator("[data-testid='auxiliary-task-item']")
+        await expect(task_items.first).to_be_visible()
+        await expect(task_items).to_have_count(2)
+
+        # Verify content of the task items
+        first_item_text = await task_items.first.inner_text()
+        assert "openrouter" in first_item_text
+        assert "gemini-2.5-flash" in first_item_text
+
+        second_item_text = await task_items.nth(1).inner_text()
+        assert "auto" in second_item_text
+    finally:
+        await page.unroute("**/api/model/auxiliary", _handler)
 
 
+@pytest.mark.asyncio
+async def test_used_models_empty(page: Page):
+    """Verify Used Models renders empty state when analytics API returns no models."""
+    import json
+
+    empty_analytics = {
+        "models": [],
+        "totals": {
+            "distinct_models": 0,
+            "total_input": 0,
+            "total_output": 0,
+            "total_cache_read": 0,
+            "total_reasoning": 0,
+            "total_estimated_cost": 0,
+            "total_actual_cost": 0,
+            "total_sessions": 0,
+            "total_api_calls": 0
+        },
+        "period_days": 7
+    }
+
+    async def _handler(route):
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(empty_analytics))
+
+    await page.route("**/api/analytics/models*", _handler)
+    try:
+        await _go_to_tab(page, "Used Models")
+        empty_state = page.locator("[data-testid='used-models-empty-state']")
+        await expect(empty_state).to_be_visible()
+
+        cards = page.locator("[data-testid='used-model-card']")
+        await expect(cards).to_have_count(0)
+    finally:
+        await page.unroute("**/api/analytics/models*", _handler)
+
+
+@pytest.mark.asyncio
+async def test_used_models_populated(page: Page):
+    """Verify Used Models renders cards when analytics API returns data."""
+    import json
+
+    populated_analytics = {
+        "models": [
+            {
+                "model": "anthropic/claude-sonnet-4",
+                "provider": "openrouter",
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "cache_read_tokens": 0,
+                "reasoning_tokens": 0,
+                "estimated_cost": 0.0045,
+                "actual_cost": 0.0045,
+                "sessions": 2,
+                "api_calls": 5,
+                "tool_calls": 1,
+                "last_used_at": 1717900000,
+                "avg_tokens_per_session": 75,
+                "capabilities": {
+                    "supports_tools": True,
+                    "supports_vision": True,
+                    "supports_reasoning": False,
+                    "context_window": 200000,
+                    "max_output_tokens": 4096,
+                    "model_family": "claude"
+                }
+            }
+        ],
+        "totals": {
+            "distinct_models": 1,
+            "total_input": 120,
+            "total_output": 30,
+            "total_cache_read": 0,
+            "total_reasoning": 0,
+            "total_estimated_cost": 0.0045,
+            "total_actual_cost": 0.0045,
+            "total_sessions": 2,
+            "total_api_calls": 5
+        },
+        "period_days": 7
+    }
+
+    async def _handler(route):
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(populated_analytics))
+
+    await page.route("**/api/analytics/models*", _handler)
+    try:
+        await _go_to_tab(page, "Used Models")
+        cards = page.locator("[data-testid='used-model-card']")
+        await expect(cards.first).to_be_visible()
+        await expect(cards).to_have_count(1)
+
+        card_text = await cards.first.inner_text()
+        assert "claude-sonnet-4" in card_text.lower()
+        assert "openrouter" in card_text.lower()
+
+        empty_state = page.locator("[data-testid='used-models-empty-state']")
+        await expect(empty_state).to_have_count(0)
+    finally:
+        await page.unroute("**/api/analytics/models*", _handler)

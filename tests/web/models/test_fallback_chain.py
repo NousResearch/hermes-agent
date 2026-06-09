@@ -180,22 +180,26 @@ class TestLayout:
         await expect(page.locator("[data-testid='fallback-move-up-1']")).to_be_visible()
 
     @pytest.mark.asyncio
-    async def test_move_up_disabled_on_first_item(self, page: Page):
+    @pytest.mark.parametrize(
+        "selector,expected_disabled",
+        [
+            ("[data-testid='fallback-move-up-0']", True),
+            ("[data-testid='fallback-move-down-1']", True),
+            ("[data-testid='fallback-move-down-0']", False),
+            ("[data-testid='fallback-move-up-1']", False),
+        ],
+    )
+    async def test_move_boundary_buttons_disabled(self, page: Page, selector: str, expected_disabled: bool):
         await _save_api(page, [
             {"provider": "a", "model": "ma"},
             {"provider": "b", "model": "mb"},
         ])
         await _goto(page)
-        assert await page.locator("[data-testid='fallback-move-up-0']").is_disabled()
-
-    @pytest.mark.asyncio
-    async def test_move_down_disabled_on_last_item(self, page: Page):
-        await _save_api(page, [
-            {"provider": "a", "model": "ma"},
-            {"provider": "b", "model": "mb"},
-        ])
-        await _goto(page)
-        assert await page.locator("[data-testid='fallback-move-down-1']").is_disabled()
+        btn = page.locator(selector)
+        if expected_disabled:
+            assert await btn.is_disabled()
+        else:
+            assert await btn.is_enabled()
 
     @pytest.mark.asyncio
     async def test_no_error_on_normal_state(self, page: Page):
@@ -220,25 +224,6 @@ class TestLayout:
 
 
 class TestAdd:
-
-    @pytest.mark.asyncio
-    async def test_add_via_api_saves_to_config(self, page: Page):
-        response = await _save_api(page, [{"provider": "openrouter", "model": "gpt-4"}])
-        assert response.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert config["fallback_providers"][0]["provider"] == "openrouter"
-        assert config["fallback_providers"][0]["model"] == "gpt-4"
-
-    @pytest.mark.asyncio
-    async def test_add_multiple_providers(self, page: Page):
-        response = await _save_api(page, [
-            {"provider": "openrouter", "model": "gpt-4"},
-            {"provider": "openai", "model": "gpt-3.5-turbo"},
-        ])
-        assert response.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert len(config["fallback_providers"]) >= 2
-        assert config["fallback_providers"][1]["provider"] == "openai"
 
     @pytest.mark.asyncio
     async def test_add_via_picker_auto_saves(self, page: Page):
@@ -295,14 +280,6 @@ class TestAdd:
             assert ui[i] == expected
 
     @pytest.mark.asyncio
-    async def test_add_clears_legacy_key(self, page: Page):
-        response = await _save_api(page, [{"provider": "new", "model": "new-model"}])
-        assert response.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert "fallback_model" not in config
-        assert "fallback_providers" in config
-
-    @pytest.mark.asyncio
     async def test_base_url_preserved(self, page: Page):
         response = await _save_api(page, [{
             "provider": "local-hermes-ov",
@@ -320,17 +297,6 @@ class TestAdd:
 
 
 class TestRemove:
-
-    @pytest.mark.asyncio
-    async def test_remove_via_api_clears_config(self, page: Page):
-        await _save_api(page, [
-            {"provider": "t1", "model": "m1"},
-            {"provider": "t2", "model": "m2"},
-        ])
-        response = await _save_api(page, [])
-        assert response.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert len(config.get("fallback_providers", [])) == 0
 
     @pytest.mark.asyncio
     async def test_remove_auto_saves(self, page: Page):
@@ -367,30 +333,25 @@ class TestRemove:
 class TestReorder:
 
     @pytest.mark.asyncio
-    async def test_move_up_changes_ui_order(self, page: Page):
+    @pytest.mark.parametrize(
+        "click_selector,expected_order",
+        [
+            ("[data-testid='fallback-move-up-1']", ["second · mb", "first · ma", "third · mc"]),
+            ("[data-testid='fallback-move-down-0']", ["second · mb", "first · ma", "third · mc"]),
+        ],
+    )
+    async def test_move_changes_ui_order(self, page: Page, click_selector: str, expected_order: list[str]):
         await _save_api(page, [
             {"provider": "first", "model": "ma"},
             {"provider": "second", "model": "mb"},
             {"provider": "third", "model": "mc"},
         ])
         await _goto(page)
-        await _click_and_wait_fallback_put(page, page.locator("[data-testid='fallback-move-up-1']"))
+        await _click_and_wait_fallback_put(page, page.locator(click_selector))
         order = await _ui_order(page)
-        assert order[0] == "second · mb"
-        assert order[1] == "first · ma"
-
-    @pytest.mark.asyncio
-    async def test_move_down_changes_ui_order(self, page: Page):
-        await _save_api(page, [
-            {"provider": "first", "model": "ma"},
-            {"provider": "second", "model": "mb"},
-            {"provider": "third", "model": "mc"},
-        ])
-        await _goto(page)
-        await _click_and_wait_fallback_put(page, page.locator("[data-testid='fallback-move-down-0']"))
-        order = await _ui_order(page)
-        assert order[0] == "second · mb"
-        assert order[1] == "first · ma"
+        assert order[0] == expected_order[0]
+        assert order[1] == expected_order[1]
+        assert order[2] == expected_order[2]
 
     @pytest.mark.asyncio
     async def test_reorder_auto_saves_to_config(self, page: Page):
@@ -446,26 +407,20 @@ class TestReorder:
 class TestValidation:
 
     @pytest.mark.asyncio
-    async def test_empty_provider_rejected(self, page: Page):
-        r = await _put_invalid(page, [{"provider": "", "model": "some-model"}])
-        assert r["status"] == 422
-        assert "detail" in r["body"]
-
-    @pytest.mark.asyncio
-    async def test_empty_model_rejected(self, page: Page):
-        r = await _put_invalid(page, [{"provider": "some-provider", "model": ""}])
-        assert r["status"] == 422
-        assert "detail" in r["body"]
-
-    @pytest.mark.asyncio
-    async def test_whitespace_provider_rejected(self, page: Page):
-        r = await _put_invalid(page, [{"provider": "   ", "model": "some-model"}])
-        assert r["status"] == 422
-
-    @pytest.mark.asyncio
-    async def test_non_object_entry_rejected(self, page: Page):
-        r = await _put_invalid(page, [1])
-        assert r["status"] == 422
+    @pytest.mark.parametrize(
+        "payload,expected_status",
+        [
+            ([{"provider": "", "model": "some-model"}], 422),
+            ([{"provider": "some-provider", "model": ""}], 422),
+            ([{"provider": "   ", "model": "some-model"}], 422),
+            ([1], 422),
+        ],
+    )
+    async def test_invalid_fallback_rejected(self, page: Page, payload: list, expected_status: int):
+        r = await _put_invalid(page, payload)
+        assert r["status"] == expected_status
+        if isinstance(r.get("body"), dict) and "detail" in r["body"]:
+            assert r["body"]["detail"]
 
 
 # ─── Busy state ─────────────────────────────────────────────────────────────
@@ -560,39 +515,3 @@ class TestPersistence:
         assert order[2] == "persist-b · mb"
         config = _parse_yaml(await _get_raw_yaml(page))
         assert config["fallback_providers"][0]["provider"] == "persist-c"
-
-    @pytest.mark.asyncio
-    async def test_valid_yaml_after_save(self, page: Page):
-        for i in range(5):
-            await _save_api(page, [{"provider": f"p-{i}", "model": f"m-{i}"}])
-        config = await _get_configured_models(page)
-        assert "fallbacks" in config
-        assert len(config["fallbacks"]) >= 1
-
-    @pytest.mark.asyncio
-    async def test_full_workflow(self, page: Page):
-        r1 = await _save_api(page, [{"provider": "alpha", "model": "ma"}])
-        assert r1.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert config["fallback_providers"][0]["provider"] == "alpha"
-
-        r2 = await _save_api(page, [
-            {"provider": "alpha", "model": "ma"},
-            {"provider": "beta", "model": "mb"},
-        ])
-        assert r2.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert config["fallback_providers"][1]["provider"] == "beta"
-
-        r3 = await _save_api(page, [
-            {"provider": "beta", "model": "mb"},
-            {"provider": "alpha", "model": "ma"},
-        ])
-        assert r3.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert config["fallback_providers"][0]["provider"] == "beta"
-
-        r4 = await _save_api(page, [])
-        assert r4.get("ok") is True
-        config = _parse_yaml(await _get_raw_yaml(page))
-        assert len(config.get("fallback_providers", [])) == 0

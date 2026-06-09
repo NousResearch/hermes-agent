@@ -247,8 +247,14 @@ def _find_bash() -> str:
             or "/bin/sh"
         )
 
+    def _is_windowsapps_bash_shim(path: str | None) -> bool:
+        if not path:
+            return False
+        normalized = path.replace("/", "\\").casefold()
+        return "\\microsoft\\windowsapps\\bash.exe" in normalized
+
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
-    if custom and os.path.isfile(custom):
+    if custom and os.path.isfile(custom) and not _is_windowsapps_bash_shim(custom):
         return custom
 
     # Prefer our own portable Git install first — this way a broken or
@@ -270,10 +276,6 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -281,6 +283,10 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found and not _is_windowsapps_bash_shim(found):
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

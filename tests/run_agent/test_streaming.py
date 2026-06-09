@@ -472,8 +472,9 @@ class TestStreamingFallback:
     Previously, streaming errors triggered an inline fallback to
     non-streaming.  Now they propagate so the main retry loop can apply
     richer recovery (credential rotation, provider fallback, backoff).
-    The only special case: 'stream not supported' sets _disable_streaming
-    so the *next* main-loop retry uses non-streaming automatically.
+    The only special cases: 'stream not supported' and zero-chunk
+    empty-stream failures set _disable_streaming so the *next* main-loop
+    retry uses non-streaming automatically.
     """
 
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -530,6 +531,37 @@ class TestStreamingFallback:
 
         with pytest.raises(Exception, match="Connection reset by peer"):
             agent._interruptible_streaming_api_call({})
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_empty_stream_without_finish_reason_sets_flag_and_raises(
+        self, mock_close, mock_create
+    ):
+        """Zero-chunk stream errors switch the next retry to non-streaming."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.greenpt.ai/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with pytest.raises(
+            RuntimeError,
+            match="Provider returned an empty stream with no finish_reason",
+        ):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._disable_streaming is True
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

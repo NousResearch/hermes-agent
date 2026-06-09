@@ -2384,14 +2384,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
-                        if _is_stream_unsupported:
+                        _is_empty_stream_no_finish = (
+                            "provider returned an empty stream with no finish_reason"
+                            in _err_lower
+                        )
+                        if _is_stream_unsupported or _is_empty_stream_no_finish:
                             agent._disable_streaming = True
-                            agent._safe_print(
-                                "\n⚠  Streaming is not supported for this "
-                                "model/provider. Switching to non-streaming.\n"
-                                "   To avoid this delay, set display.streaming: false "
-                                "in config.yaml\n"
-                            )
+                            if _is_stream_unsupported:
+                                agent._safe_print(
+                                    "\n⚠  Streaming is not supported for this "
+                                    "model/provider. Switching to non-streaming.\n"
+                                    "   To avoid this delay, set display.streaming: false "
+                                    "in config.yaml\n"
+                                )
                         logger.info(
                             "Streaming failed before delivery: %s",
                             e,

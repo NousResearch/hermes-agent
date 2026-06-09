@@ -78,6 +78,7 @@ Thread safety:
 """
 
 import asyncio
+import contextvars
 import concurrent.futures
 import inspect
 import json
@@ -176,6 +177,7 @@ _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
+_MCP_ELICITATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
@@ -221,6 +223,16 @@ try:
         _MCP_SAMPLING_TYPES = True
     except ImportError:
         logger.debug("MCP sampling types not available -- sampling disabled")
+    # Elicitation types -- gated separately for the same reason as sampling.
+    # Added in mcp Python SDK 1.11.0 (Jul 2025); servers use elicitation to
+    # ask the client for structured input mid-tool-call (e.g. payment
+    # authorization). Missing types just disable the feature; everything
+    # else keeps working.
+    try:
+        from mcp.types import ElicitRequestParams, ElicitResult
+        _MCP_ELICITATION_TYPES = True
+    except ImportError:
+        logger.debug("MCP elicitation types not available -- elicitation disabled")
     # Notification types for dynamic tool discovery (tools/list_changed)
     try:
         from mcp.types import (
@@ -1142,6 +1154,193 @@ class SamplingHandler:
 
 
 # ---------------------------------------------------------------------------
+# Elicitation handler
+# ---------------------------------------------------------------------------
+
+def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
+    """Render a JSON-schema-ish requested_schema to a human-readable field list.
+
+    Elicitation schemas are restricted to a flat object with named top-level
+    properties. We surface field names, types, and descriptions so the user
+    can tell what the server is asking for before approving.
+    """
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict) or not props:
+        return f"Approval requested by MCP server '{server_name}'."
+
+    lines = [f"Fields requested by MCP server '{server_name}':"]
+    for field_name, field_spec in props.items():
+        field_type = ""
+        field_desc = ""
+        if isinstance(field_spec, dict):
+            field_type = str(field_spec.get("type", "") or "")
+            field_desc = str(field_spec.get("description", "") or "")
+        suffix = f" ({field_type})" if field_type else ""
+        if field_desc:
+            lines.append(f"  - {field_name}{suffix}: {field_desc}")
+        else:
+            lines.append(f"  - {field_name}{suffix}")
+    return "\n".join(lines)
+
+
+class ElicitationHandler:
+    """Handles ``elicitation/create`` requests for a single MCP server.
+
+    Each ``MCPServerTask`` that has elicitation enabled creates one handler.
+    The handler is callable and passed directly to ``ClientSession`` as the
+    ``elicitation_callback`` (added in mcp Python SDK 1.11.0).
+
+    Elicitation lets a server ask the client to collect structured input from
+    the user mid-tool-call (e.g. payment authorization, OAuth confirmation).
+    Form-mode elicitations are routed through Hermes' existing approval
+    system (``tools.approval.prompt_dangerous_approval``), which surfaces
+    the prompt on whichever surface the active session uses -- CLI, TUI,
+    Telegram, Slack, etc. URL-mode elicitations are declined as unsupported.
+
+    Failure modes are fail-closed: any timeout, exception, or unexpected
+    state returns ``decline``/``cancel`` rather than silently accepting.
+    The server treats this as the user not approving.
+    """
+
+    # Outer cap for the approval await. ``prompt_dangerous_approval`` runs
+    # its own input() timeout via the approval-config value; this is an
+    # asyncio-side safety net so the MCP event loop never blocks
+    # indefinitely if the inner timeout machinery is bypassed.
+    _OUTER_TIMEOUT_GRACE_SECONDS = 5
+
+    def __init__(self, server_name: str, config: dict, owner: Optional["MCPServerTask"] = None):
+        self.server_name = server_name
+        # Per-elicitation timeout. Default 5 min mirrors the gateway approval
+        # default so users on async surfaces (Telegram, Slack) have time to
+        # respond before the server gives up.
+        self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
+        # Back-reference to the MCPServerTask so we can read the agent's
+        # captured contextvars snapshot at elicitation time. Optional so
+        # the handler stays unit-testable in isolation.
+        self.owner = owner
+        self.metrics = {
+            "requests": 0,
+            "accepted": 0,
+            "declined": 0,
+            "errors": 0,
+        }
+
+    def session_kwargs(self) -> dict:
+        """Return kwargs to pass to ClientSession for elicitation support."""
+        return {"elicitation_callback": self}
+
+    async def __call__(self, context, params):
+        """Elicitation callback invoked by the MCP SDK.
+
+        Conforms to ``ElicitationFnT`` protocol. Returns ``ElicitResult``
+        or ``ErrorData``.
+        """
+        self.metrics["requests"] += 1
+
+        # URL-mode elicitations point the user to an external URL for
+        # sensitive out-of-band flows (OAuth, payment processing). Honouring
+        # them requires opening a browser to that URL and waiting for the
+        # server's notifications/elicitation/complete -- out of scope for
+        # the initial implementation. Decline cleanly so the server does
+        # not hang.
+        mode = getattr(params, "mode", "form")
+        if mode == "url":
+            logger.info(
+                "MCP server '%s' requested URL-mode elicitation; "
+                "declining (URL-mode elicitation not implemented)",
+                self.server_name,
+            )
+            self.metrics["declined"] += 1
+            return ElicitResult(action="decline")
+
+        message = getattr(params, "message", "") or (
+            f"MCP server '{self.server_name}' is requesting your approval"
+        )
+        schema = getattr(params, "requested_schema", {}) or {}
+        description = _format_elicitation_schema_summary(schema, self.server_name)
+
+        logger.info(
+            "MCP server '%s' elicitation request: %s",
+            self.server_name, _sanitize_error(message)[:200],
+        )
+
+        # Lazy import: tools.approval is imported very early during process
+        # bootstrap; matching the lazy pattern used by _fire_approval_hook
+        # avoids any chance of import-order coupling.
+        try:
+            from tools.approval import request_elicitation_consent
+        except Exception as exc:  # pragma: no cover -- defensive
+            logger.error(
+                "MCP server '%s' elicitation: approval system unavailable: %s",
+                self.server_name, exc,
+            )
+            self.metrics["errors"] += 1
+            return ElicitResult(action="decline")
+
+        # Offload the sync consent flow to a worker thread. Running it
+        # inline would freeze the MCP background event loop, blocking every
+        # other RPC on this session. request_elicitation_consent() routes
+        # itself to the right surface (gateway notify_cb for Telegram /
+        # Slack / etc., prompt_dangerous_approval for CLI / TUI) and
+        # normalizes the answer to one of accept / decline / cancel.
+        #
+        # The recv-loop task that fires this callback does NOT inherit
+        # the agent's contextvars (HERMES_SESSION_PLATFORM etc.). When
+        # the MCP tool wrapper captured the agent's context onto
+        # owner._pending_call_context we replay it here via
+        # contextvars.Context.run so the gateway-platform detection in
+        # request_elicitation_consent picks up the right session.
+        captured = getattr(self.owner, "_pending_call_context", None) if self.owner else None
+
+        def _invoke_consent() -> str:
+            if captured is None:
+                return request_elicitation_consent(
+                    message,
+                    description,
+                    timeout_seconds=int(self.timeout),
+                    surface=f"mcp-elicitation/{self.server_name}",
+                )
+            # Context.run can only execute a context once — copy to allow
+            # multiple elicitations within a single tool call.
+            return captured.copy().run(
+                request_elicitation_consent,
+                message,
+                description,
+                timeout_seconds=int(self.timeout),
+                surface=f"mcp-elicitation/{self.server_name}",
+            )
+
+        try:
+            answer = await asyncio.wait_for(
+                asyncio.to_thread(_invoke_consent),
+                timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "MCP server '%s' elicitation timed out after %ds",
+                self.server_name, int(self.timeout),
+            )
+            self.metrics["errors"] += 1
+            return ElicitResult(action="cancel")
+        except Exception as exc:
+            logger.error(
+                "MCP server '%s' elicitation failed: %s",
+                self.server_name, exc, exc_info=True,
+            )
+            self.metrics["errors"] += 1
+            return ElicitResult(action="decline")
+
+        if answer == "accept":
+            self.metrics["accepted"] += 1
+            return ElicitResult(action="accept", content={})
+        if answer == "cancel":
+            self.metrics["errors"] += 1
+            return ElicitResult(action="cancel")
+        self.metrics["declined"] += 1
+        return ElicitResult(action="decline")
+
+
+# ---------------------------------------------------------------------------
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
@@ -1159,8 +1358,10 @@ class MCPServerTask:
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
-        "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
+        "_sampling", "_elicitation",
+        "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
+        "_pending_call_context",
         "initialize_result",
     )
 
@@ -1181,6 +1382,7 @@ class MCPServerTask:
         self._error: Optional[Exception] = None
         self._config: dict = {}
         self._sampling: Optional[SamplingHandler] = None
+        self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
@@ -1192,6 +1394,16 @@ class MCPServerTask:
         # transports for conservative per-server ordering.
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
+        # contextvars snapshot of the agent task that's currently in
+        # session.call_tool(). The MCP recv loop dispatches incoming
+        # elicitation/create requests on a SEPARATE asyncio task whose
+        # context doesn't inherit HERMES_SESSION_PLATFORM, so the
+        # elicitation handler has no way to detect the gateway session
+        # that triggered the call. Capturing the agent's context here
+        # and replaying it inside the elicitation callback restores
+        # gateway-platform attribution and routes the approval prompt
+        # to the right surface (Telegram, Slack, etc.).
+        self._pending_call_context: Optional[contextvars.Context] = None
         # Captures the ``InitializeResult`` returned by
         # ``await session.initialize()`` so downstream code can inspect the
         # server's real advertised capabilities (``.capabilities.resources``,
@@ -1463,6 +1675,8 @@ class MCPServerTask:
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
+        if self._elicitation:
+            sampling_kwargs.update(self._elicitation.session_kwargs())
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
 
@@ -1664,6 +1878,8 @@ class MCPServerTask:
                 raise
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
+        if self._elicitation:
+            sampling_kwargs.update(self._elicitation.session_kwargs())
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
 
@@ -1858,6 +2074,16 @@ class MCPServerTask:
             self._sampling = SamplingHandler(self.name, sampling_config)
         else:
             self._sampling = None
+
+        # Set up elicitation handler if enabled and SDK types are available.
+        # Servers use elicitation/create to ask the client for structured
+        # input mid-tool-call (e.g. payment authorization). The handler
+        # routes those requests through Hermes' approval system.
+        elicitation_config = config.get("elicitation", {})
+        if elicitation_config.get("enabled", True) and _MCP_ELICITATION_TYPES:
+            self._elicitation = ElicitationHandler(self.name, elicitation_config, owner=self)
+        else:
+            self._elicitation = None
 
         # Validate: warn if both url and command are present
         if "url" in config and "command" in config:
@@ -2817,7 +3043,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         async def _call():
             async with server._rpc_lock:
-                result = await server.session.call_tool(tool_name, arguments=args)
+                # Snapshot the agent's context so an elicitation callback
+                # triggered during this call (fired on the MCP recv loop
+                # task, which doesn't inherit our contextvars) can replay
+                # it and detect the gateway platform / session for routing.
+                server._pending_call_context = contextvars.copy_context()
+                try:
+                    result = await server.session.call_tool(tool_name, arguments=args)
+                finally:
+                    server._pending_call_context = None
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

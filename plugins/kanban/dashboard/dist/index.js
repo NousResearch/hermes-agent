@@ -86,27 +86,32 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  // Order matches BOARD_COLUMNS in plugin_api.py. These backend statuses are
+  // labelled as Jose's Workboard workflow in the UI.
+  const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
-    triage: "Triage",
-    todo: "Todo",
+    triage: "Inbox",
+    todo: "Plan",
+    scheduled: "Scheduled",
     ready: "Ready",
     running: "In Progress",
     blocked: "Blocked",
-    done: "Done",
+    review: "Preview",
+    done: "Verified/Done",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
-    triage: "Raw ideas — a specifier will flesh out the spec",
-    todo: "Waiting on dependencies or unassigned",
+    triage: "Chats and raw asks — 'pásalo al Kanban' lands here before spec",
+    todo: "Plan, owner, scope, acceptance criteria, and dependencies",
+    scheduled: "Waiting on a known time delay or follow-up window",
     ready: "Dependencies satisfied; assign a profile to dispatch",
-    running: "Claimed by a worker — in-flight",
-    blocked: "Worker asked for human input",
-    done: "Completed",
+    running: "Claimed by a worker — in-flight implementation",
+    blocked: "Worker asked for human input or hit a real blocker",
+    review: "Preview/evidence lane: URL, screenshots, tests, smoke, branch/PR",
+    done: "Verified by smoke/test/live evidence and ready to close",
     archived: "Archived",
   };
   const FALLBACK_DESTRUCTIVE = {
@@ -135,10 +140,19 @@
   };
 
   function getColumnLabel(t, status) {
-    return tx(t, "columnLabels." + status, FALLBACK_COLUMN_LABEL[status] || status);
+    // Jose's Workboard labels intentionally override the generic host i18n
+    // catalog (Triage/Todo/Done) so this plugin presents one consistent
+    // workflow even when the surrounding dashboard locale is English.
+    if (Object.prototype.hasOwnProperty.call(FALLBACK_COLUMN_LABEL, status)) {
+      return FALLBACK_COLUMN_LABEL[status];
+    }
+    return tx(t, "columnLabels." + status, status);
   }
   function getColumnHelp(t, status) {
-    return tx(t, "columnHelp." + status, FALLBACK_COLUMN_HELP[status] || "");
+    if (Object.prototype.hasOwnProperty.call(FALLBACK_COLUMN_HELP, status)) {
+      return FALLBACK_COLUMN_HELP[status];
+    }
+    return tx(t, "columnHelp." + status, "");
   }
   function getDestructiveConfirm(t, status) {
     const key = DESTRUCTIVE_KEYS[status];
@@ -154,9 +168,11 @@
   const COLUMN_DOT = {
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
+    scheduled: "hermes-kanban-dot-scheduled",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
     blocked: "hermes-kanban-dot-blocked",
+    review: "hermes-kanban-dot-review",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
@@ -1005,6 +1021,7 @@
           boardData,
           onOpen: setSelectedTaskId,
         }),
+        h(WorkboardOverview, { boardData: filteredBoard }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -1056,6 +1073,42 @@
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
+      ),
+    );
+  }
+
+  function WorkboardOverview(props) {
+    const board = props.boardData;
+    const columns = (board && board.columns) || [];
+    const counts = {};
+    let total = 0;
+    for (const col of columns) {
+      const n = (col.tasks || []).length;
+      counts[col.name] = n;
+      total += n;
+    }
+    const live = (counts.running || 0) + (counts.review || 0);
+    const waiting = (counts.triage || 0) + (counts.todo || 0) + (counts.scheduled || 0) + (counts.ready || 0);
+    return h("section", { className: "hermes-kanban-workboard", "aria-label": "Hermes Workboard overview" },
+      h("div", { className: "hermes-kanban-workboard-copy" },
+        h("div", { className: "hermes-kanban-eyebrow" }, "Hermes Workboard"),
+        h("h2", { className: "hermes-kanban-workboard-title" }, "Chats → Tasks → Previews → Verified evidence"),
+        h("p", { className: "hermes-kanban-workboard-text" },
+          "Usa este tablero como la superficie visual del trabajo: cuando Jose diga ‘pásalo al Kanban’, crea/actualiza una card con scope, owner, preview URL, screenshots, test/smoke output, branch/commit/PR y evidencia externa cuando aplique."),
+      ),
+      h("div", { className: "hermes-kanban-workboard-stats" },
+        h("div", { className: "hermes-kanban-workboard-stat" }, h("strong", null, total), h("span", null, "cards")),
+        h("div", { className: "hermes-kanban-workboard-stat" }, h("strong", null, waiting), h("span", null, "waiting")),
+        h("div", { className: "hermes-kanban-workboard-stat" }, h("strong", null, live), h("span", null, "active/review")),
+        h("div", { className: "hermes-kanban-workboard-stat" }, h("strong", null, counts.done || 0), h("span", null, "verified")),
+      ),
+      h("div", { className: "hermes-kanban-workboard-flow" },
+        ["Inbox", "Plan", "In Progress", "Preview", "Verified/Done"].map(function (label, idx) {
+          return h("span", { key: label, className: "hermes-kanban-workboard-step" },
+            idx > 0 ? h("span", { className: "hermes-kanban-workboard-arrow" }, "→") : null,
+            label,
+          );
+        }),
       ),
     );
   }
@@ -2267,6 +2320,34 @@
     );
   }
 
+  function emptyTitle(status) {
+    const map = {
+      triage: "No incoming asks",
+      todo: "No plans waiting",
+      scheduled: "No scheduled follow-ups",
+      ready: "Nothing ready to dispatch",
+      running: "No workers active",
+      blocked: "No blockers",
+      review: "No previews to verify",
+      done: "No verified work yet",
+    };
+    return map[status] || "No cards";
+  }
+
+  function emptyHint(status) {
+    const map = {
+      triage: "Drop rough chat asks here; the next step is scope + owner.",
+      todo: "Planned cards should include acceptance criteria and evidence needed.",
+      scheduled: "Time-based reminders and follow-ups appear here.",
+      ready: "Assign a Hermes profile, then nudge dispatcher.",
+      running: "Active workers will show owner lanes and live evidence.",
+      blocked: "Human-input blockers will surface here instead of disappearing.",
+      review: "Attach preview URL, screenshots, build/test/smoke output, commit/PR.",
+      done: "Only close after verification evidence is attached or summarized.",
+    };
+    return map[status] || "Create a card to start.";
+  }
+
   function Column(props) {
     const { t } = useI18n();
     const [dragOver, setDragOver] = useState(false);
@@ -2372,7 +2453,15 @@
       }) : null,
       h("div", { className: "hermes-kanban-column-body" },
         props.column.tasks.length === 0
-          ? h("div", { className: "hermes-kanban-empty" }, tx(t, "noTasks", "— no tasks —"))
+          ? h("div", { className: "hermes-kanban-empty" },
+              h("strong", null, emptyTitle(props.column.name)),
+              h("span", null, emptyHint(props.column.name)),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-empty-action",
+                onClick: function () { setShowCreate(true); },
+              }, props.column.name === "triage" ? "Pásalo al Kanban" : tx(t, "createTask", "Create task")),
+            )
           : lanes
             ? lanes.map(function (lane) {
                 return h("div", { key: lane.assignee, className: "hermes-kanban-lane" },
@@ -2568,6 +2657,9 @@
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
+          t.latest_summary
+            ? h("div", { className: "hermes-kanban-card-summary", title: t.latest_summary }, t.latest_summary)
+            : null,
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",
@@ -2580,6 +2672,14 @@
             t.comment_count > 0
               ? h("span", { className: "hermes-kanban-count",
                             title: `${t.comment_count} comment${t.comment_count === 1 ? "" : "s"} on this task` }, "💬 ", t.comment_count)
+              : null,
+            t.attachment_count > 0
+              ? h("span", { className: "hermes-kanban-count hermes-kanban-evidence-count",
+                            title: `${t.attachment_count} attached artifact${t.attachment_count === 1 ? "" : "s"}: screenshots, previews, test logs, files` }, "📎 ", t.attachment_count)
+              : null,
+            t.latest_summary
+              ? h("span", { className: "hermes-kanban-count hermes-kanban-evidence-count",
+                            title: "Latest worker summary is available in the card drawer" }, "✓ evidence")
               : null,
             t.link_counts && (t.link_counts.parents + t.link_counts.children) > 0
               ? h("span", { className: "hermes-kanban-count",

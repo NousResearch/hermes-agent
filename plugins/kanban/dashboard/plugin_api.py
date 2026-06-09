@@ -140,13 +140,14 @@ def _conn(board: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 # Columns shown by the dashboard, in left-to-right order. "archived" is
-# available via a filter toggle rather than a visible column.
+# available via a filter toggle rather than a visible column. The frontend
+# labels these statuses as Jose's Workboard workflow:
+# Inbox -> Plan -> Scheduled -> Ready -> In Progress -> Blocked -> Preview -> Verified/Done.
 #
 # Keep this in sync with kanban_db.VALID_STATUSES.  In particular,
-# ``scheduled`` is a first-class waiting column used for time-based follow-ups;
-# if it is omitted here, the board-level fallback below mis-buckets scheduled
-# tasks into ``todo`` and makes the dashboard look like the Scheduled column
-# disappeared.
+# ``scheduled`` and ``review`` are first-class columns: scheduled follow-ups
+# should not fall back to planning, and review is the preview/evidence lane
+# before Verified/Done.
 BOARD_COLUMNS: list[str] = [
     "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
 ]
@@ -418,11 +419,19 @@ def get_board(
                 "parents"
             ] += 1
 
-        # Comment + event counts (both cheap aggregates).
+        # Comment + attachment counts (cheap aggregates). Attachments are
+        # treated as Workboard evidence chips on cards (screenshots, preview
+        # files, smoke output, PR artifacts).
         comment_counts: dict[str, int] = {
             r["task_id"]: r["n"]
             for r in conn.execute(
                 "SELECT task_id, COUNT(*) AS n FROM task_comments GROUP BY task_id"
+            )
+        }
+        attachment_counts: dict[str, int] = {
+            r["task_id"]: r["n"]
+            for r in conn.execute(
+                "SELECT task_id, COUNT(*) AS n FROM task_attachments GROUP BY task_id"
             )
         }
 
@@ -467,6 +476,8 @@ def get_board(
             d = _task_dict(t, latest_summary=preview)
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
+            d["attachment_count"] = attachment_counts.get(t.id, 0)
+            d["evidence_count"] = d["comment_count"] + d["attachment_count"]
             d["progress"] = progress.get(t.id)  # None when the task has no children
             diags = diagnostics_per_task.get(t.id)
             if diags:

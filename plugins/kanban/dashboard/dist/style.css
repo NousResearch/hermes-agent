@@ -60,24 +60,102 @@
   color: var(--color-muted-foreground) !important;
 }
 
+
+/* ---- Jose Workboard overview ----------------------------------------- */
+
+.hermes-kanban-workboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(220px, 0.85fr);
+  gap: 0.9rem;
+  align-items: stretch;
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: calc(var(--radius) + 4px);
+  padding: 0.9rem;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--color-ring) 16%, transparent), transparent 38%),
+    color-mix(in srgb, var(--color-card) 82%, transparent);
+}
+.hermes-kanban-eyebrow {
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.65rem;
+  margin-bottom: 0.25rem;
+}
+.hermes-kanban-workboard-title {
+  margin: 0;
+  font-size: clamp(1.05rem, 2vw, 1.5rem);
+  line-height: 1.1;
+}
+.hermes-kanban-workboard-text {
+  margin: 0.45rem 0 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.82rem;
+  max-width: 75ch;
+}
+.hermes-kanban-workboard-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+.hermes-kanban-workboard-stat {
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.35rem);
+  padding: 0.55rem;
+  background: color-mix(in srgb, var(--color-background) 35%, transparent);
+}
+.hermes-kanban-workboard-stat strong {
+  display: block;
+  font-size: 1.05rem;
+}
+.hermes-kanban-workboard-stat span {
+  color: var(--color-muted-foreground);
+  font-size: 0.68rem;
+}
+.hermes-kanban-workboard-flow {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.72rem;
+}
+.hermes-kanban-workboard-step {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem;
+  background: color-mix(in srgb, var(--color-card) 70%, transparent);
+}
+.hermes-kanban-workboard-arrow { color: var(--color-ring); }
+@media (max-width: 900px) {
+  .hermes-kanban-workboard { grid-template-columns: 1fr; }
+}
+
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
   display: flex;
-  gap: 0.75rem;
+  gap: 0.65rem;
   align-items: start;
   overflow-x: auto;
+  padding-bottom: 0.35rem;
+  scroll-snap-type: x proximity;
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  flex: 0 0 clamp(220px, 16vw, 260px);
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  padding: 0.5rem;
-  min-height: 200px;
+  padding: 0.48rem;
+  min-height: 220px;
+  scroll-snap-align: start;
   max-height: calc(100vh - 220px);
   transition: border-color 120ms ease, background-color 120ms ease;
 }
@@ -144,12 +222,34 @@
 }
 
 .hermes-kanban-empty {
-  padding: 1.5rem 0.5rem;
-  text-align: center;
+  padding: 1rem 0.6rem;
+  text-align: left;
   font-size: 0.75rem;
   color: var(--color-muted-foreground);
   border: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
   border-radius: var(--radius-sm, 0.25rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 118px;
+}
+.hermes-kanban-empty strong {
+  color: var(--color-foreground);
+  font-size: 0.78rem;
+}
+.hermes-kanban-empty-action {
+  align-self: flex-start;
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
+  color: var(--color-foreground);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+.hermes-kanban-empty-action:hover {
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 12%, transparent);
 }
 
 /* ---- Status dots ----------------------------------------------------- */
@@ -163,9 +263,11 @@
 }
 .hermes-kanban-dot-triage   { background: #b47dd6; }  /* lilac — fresh/unspecified */
 .hermes-kanban-dot-todo     { background: var(--color-muted-foreground); }
+.hermes-kanban-dot-scheduled{ background: #c59a5b; }  /* warm queue */
 .hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
 .hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
 .hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
+.hermes-kanban-dot-review   { background: #7fb7ff; }  /* preview */
 .hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
 .hermes-kanban-dot-archived { background: var(--color-border); }
 
@@ -254,6 +356,21 @@
   font-size: 0.65rem;
   color: var(--color-muted-foreground);
   letter-spacing: 0.03em;
+}
+
+.hermes-kanban-card-summary {
+  border-left: 2px solid color-mix(in srgb, var(--color-ring) 55%, transparent);
+  padding-left: 0.45rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hermes-kanban-evidence-count {
+  color: color-mix(in srgb, var(--color-ring) 70%, var(--color-foreground));
 }
 
 .hermes-kanban-card-title {

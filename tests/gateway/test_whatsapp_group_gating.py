@@ -5,7 +5,8 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  group_sender_allow_from=None):
     from gateway.platforms.whatsapp import WhatsAppAdapter
 
     extra = {}
@@ -23,6 +24,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_policy"] = group_policy
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if group_sender_allow_from is not None:
+        extra["group_sender_allow_from"] = group_sender_allow_from
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -32,6 +35,7 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter._allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("allow_from"))
     adapter._group_policy = str(extra.get("group_policy", "open")).strip().lower()
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
+    adapter._group_sender_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_sender_allow_from"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()
     return adapter
@@ -370,3 +374,121 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+# --- Group sender allowlist tests (#41371) ---
+
+def test_group_sender_allowlist_not_configured_allows_all():
+    """When group_sender_allow_from is empty, all senders in allowed groups are processed."""
+    adapter = _make_adapter(require_mention=False)
+    msg = _group_message("hello", senderId="random@s.whatsapp.net")
+    assert adapter._should_process_message(msg) is True
+
+
+def test_group_sender_allowlist_blocks_unlisted_sender():
+    """Sender not on group_sender_allow_from is silently dropped."""
+    adapter = _make_adapter(
+        require_mention=False,
+        group_sender_allow_from=["111@s.whatsapp.net", "222@s.whatsapp.net"],
+    )
+    # Allowed sender
+    msg_allowed = _group_message("hello", senderId="111@s.whatsapp.net")
+    assert adapter._should_process_message(msg_allowed) is True
+
+    # Blocked sender
+    msg_blocked = _group_message("hello", senderId="999@s.whatsapp.net")
+    assert adapter._should_process_message(msg_blocked) is False
+
+
+def test_group_sender_allowlist_allows_listed_sender_with_mention():
+    """Listed sender can invoke bot via @mention even when allowlist is set."""
+    adapter = _make_adapter(
+        require_mention=True,
+        group_sender_allow_from=["111@s.whatsapp.net"],
+    )
+    msg = _group_message(
+        "@bot help me",
+        senderId="111@s.whatsapp.net",
+        mentionedIds=["15551230000@s.whatsapp.net"],
+    )
+    assert adapter._should_process_message(msg) is True
+
+
+def test_group_sender_allowlist_blocks_unlisted_sender_even_with_mention():
+    """Unlisted sender cannot invoke bot even with @mention."""
+    adapter = _make_adapter(
+        require_mention=True,
+        group_sender_allow_from=["111@s.whatsapp.net"],
+    )
+    msg = _group_message(
+        "@bot help me",
+        senderId="999@s.whatsapp.net",
+        mentionedIds=["15551230000@s.whatsapp.net"],
+    )
+    assert adapter._should_process_message(msg) is False
+
+
+def test_group_sender_allowlist_does_not_affect_dms():
+    """group_sender_allow_from only applies to group messages, not DMs."""
+    adapter = _make_adapter(
+        dm_policy="open",
+        group_sender_allow_from=["111@s.whatsapp.net"],
+    )
+    msg = _dm_message("hello", senderId="999@s.whatsapp.net")
+    assert adapter._should_process_message(msg) is True
+
+
+def test_group_sender_allowlist_with_group_policy_allowlist():
+    """Both group JID and sender checks must pass."""
+    adapter = _make_adapter(
+        group_policy="allowlist",
+        group_allow_from=["120363001234567890@g.us"],
+        group_sender_allow_from=["111@s.whatsapp.net"],
+        require_mention=False,
+    )
+    # Allowed group + allowed sender
+    msg_ok = _group_message("hello", senderId="111@s.whatsapp.net")
+    assert adapter._should_process_message(msg_ok) is True
+
+    # Allowed group + blocked sender
+    msg_bad_sender = _group_message("hello", senderId="999@s.whatsapp.net")
+    assert adapter._should_process_message(msg_bad_sender) is False
+
+    # Blocked group + allowed sender
+    msg_bad_group = _group_message("hello", senderId="111@s.whatsapp.net",
+                                   chatId="other@g.us")
+    assert adapter._should_process_message(msg_bad_group) is False
+
+
+def test_group_sender_allowlist_with_free_response_chat():
+    """Sender allowlist is checked before free-response chat shortcut."""
+    adapter = _make_adapter(
+        free_response_chats=["120363001234567890@g.us"],
+        group_sender_allow_from=["111@s.whatsapp.net"],
+    )
+    # Allowed sender in free-response chat
+    msg_ok = _group_message("hello", senderId="111@s.whatsapp.net")
+    assert adapter._should_process_message(msg_ok) is True
+
+    # Blocked sender in free-response chat — still blocked
+    msg_bad = _group_message("hello", senderId="999@s.whatsapp.net")
+    assert adapter._should_process_message(msg_bad) is False
+
+
+def test_group_sender_allowlist_from_env_var():
+    """WHATSAPP_GROUP_SENDER_ALLOWED_USERS env var populates the allowlist."""
+    import os
+    from unittest.mock import patch as mock_patch
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from gateway.config import PlatformConfig
+
+    with mock_patch.dict(os.environ, {"WHATSAPP_GROUP_SENDER_ALLOWED_USERS": "aaa@s.whatsapp.net,bbb@s.whatsapp.net"}):
+        adapter = object.__new__(WhatsAppAdapter)
+        adapter.config = PlatformConfig(enabled=True, extra={})
+        adapter._group_sender_allow_from = WhatsAppAdapter._coerce_allow_list(
+            os.getenv("WHATSAPP_GROUP_SENDER_ALLOWED_USERS", "")
+        )
+        assert "aaa@s.whatsapp.net" in adapter._group_sender_allow_from
+        assert "bbb@s.whatsapp.net" in adapter._group_sender_allow_from
+        assert adapter._is_group_sender_allowed("aaa@s.whatsapp.net") is True
+        assert adapter._is_group_sender_allowed("ccc@s.whatsapp.net") is False

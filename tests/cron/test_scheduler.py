@@ -2122,6 +2122,25 @@ class TestRunJobWakeGate:
         assert "Script gate returned `wakeAgent=false`" in doc
         agent_cls.assert_not_called()
 
+    def test_empty_script_output_returns_nonempty_doc(self):
+        """When the script produces no output, run_job returns a non-empty
+        status doc (not a blank string) so the run log file is consistent
+        with the wakeAgent=false path.  Regression test for #42851."""
+        from cron.scheduler import SILENT_MARKER
+        import cron.scheduler as scheduler
+
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, "")), \
+             patch("run_agent.AIAgent") as agent_cls:
+            success, doc, final, err = scheduler.run_job(self._make_job())
+
+        assert success is True
+        assert err is None
+        assert final == SILENT_MARKER
+        assert doc  # must be non-empty
+        assert "no output" in doc.lower() or "produced no output" in doc.lower()
+        agent_cls.assert_not_called()
+
     def test_wake_true_runs_agent_with_injected_output(self):
         """When the script returns {wakeAgent: true, data: ...}, the agent is
         invoked and the data line still shows up in the prompt."""

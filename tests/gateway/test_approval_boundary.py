@@ -33,8 +33,9 @@ def consumer_config():
 
 
 @pytest.mark.asyncio
-async def test_approval_boundary_cancelled_sends_invisible_finalize(mock_adapter, consumer_config):
-    """Test that cancelled boundary sends invisible finalize, not visible placeholder."""
+async def test_approval_boundary_cancelled_finalizes_with_accumulated_text(mock_adapter, consumer_config):
+    """Test that cancelled boundary still sends finalize to close WeCom thinking bubble,
+    using accumulated text (not zero-width space which renders as empty bubble)."""
     consumer = GatewayStreamConsumer(
         adapter=mock_adapter,
         chat_id="test_chat",
@@ -70,22 +71,21 @@ async def test_approval_boundary_cancelled_sends_invisible_finalize(mock_adapter
     except asyncio.CancelledError:
         pass
 
-    # Verify finalize was called with invisible content (not "⏸ 等待审批中...")
+    # Verify finalize WAS sent (to close the thinking bubble on WeCom client)
     finalize_calls = [
         call for call in mock_adapter.send_stream_frame.call_args_list
         if call.kwargs.get("finalize") is True
     ]
-    assert len(finalize_calls) >= 1, "Should have called finalize"
+    assert len(finalize_calls) >= 1, (
+        "Cancelled boundary must still send finalize to close WeCom thinking bubble"
+    )
 
-    # Check the finalize call for boundary
-    finalize_text = finalize_calls[0].args[0] if finalize_calls[0].args else finalize_calls[0].kwargs.get("text", "")
-
-    # Should NOT be the visible placeholder
-    assert finalize_text != "⏸ 等待审批中...", "Cancelled boundary should not send visible placeholder"
-    assert finalize_text != "✅", "Cancelled boundary should not send visible checkmark"
-    # Should be invisible (zero-width space or truly empty)
-    assert finalize_text in ("​", ""), \
-        f"Cancelled boundary should use invisible finalize (zero-width space or empty), got: {repr(finalize_text)}"
+    # Finalize content should be the accumulated text, NOT zero-width space
+    finalize_text = finalize_calls[0].args[0]
+    assert finalize_text == "Some partial text", (
+        f"Should finalize with accumulated text, got: {repr(finalize_text)}"
+    )
+    assert finalize_text != "​", "Must NOT use zero-width space (renders as empty bubble)"
 
 
 @pytest.mark.asyncio

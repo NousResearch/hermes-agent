@@ -4764,7 +4764,11 @@ class GatewaySlashCommandsMixin:
                 await _adapter.send(
                     source.chat_id,
                     confirmation_text,
-                    metadata={"is_approval_prompt": True},
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
                 )
             except Exception as exc:
                 logger.warning(
@@ -4845,7 +4849,11 @@ class GatewaySlashCommandsMixin:
                 await _adapter.send(
                     source.chat_id,
                     confirmation_text,
-                    metadata={"is_approval_prompt": True},
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
                 )
             except Exception as exc:
                 logger.warning(

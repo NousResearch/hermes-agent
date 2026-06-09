@@ -649,6 +649,136 @@ class TestSend:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_approval_confirmation_uses_proactive_send(self):
+        """Regression: force_proactive_send=True must use APP_CMD_SEND to avoid
+        consuming the req_id that the post-approval stream needs. Passive reply
+        on the same req_id causes WeCom to render the stream seed as empty bubble."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # Simulate a cached req_id from the user's /approve message
+        adapter._last_chat_req_ids["chat-123"] = "req-approve"
+        adapter._send_request = AsyncMock(return_value={"headers": {"req_id": "req-approve"}, "errcode": 0})
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-approve"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "✅ Approved 1 command. Continuing...",
+            metadata={"is_approval_prompt": True, "force_proactive_send": True},
+        )
+
+        assert result.success is True
+        # Must use APP_CMD_SEND (proactive), NOT _send_reply_request (passive)
+        adapter._send_request.assert_awaited_once_with(
+            APP_CMD_SEND,
+            {
+                "chatid": "chat-123",
+                "msgtype": "markdown",
+                "markdown": {"content": "✅ Approved 1 command. Continuing..."},
+            },
+        )
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_approval_request_prompt_uses_passive_reply(self):
+        """is_approval_prompt alone (without force_proactive_send) must still use
+        passive reply. The initial approval *request* prompt needs passive reply
+        because groups cannot use APP_CMD_SEND."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-chat"] = "req-user-msg"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-user-msg"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send(
+            "group-chat",
+            "⚠️ Dangerous command requires approval...",
+            metadata={"is_approval_prompt": True},  # No force_proactive_send
+        )
+
+        assert result.success is True
+        # Should use passive reply (preserving req_id for group delivery)
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_with_active_stream_still_uses_passive_reply(self):
+        """send() should NOT force proactive when a stream is active —
+        that's too broad and breaks group delivery. Only explicit
+        force_proactive_send metadata triggers proactive mode."""
+        from gateway.platforms.wecom import WeComAdapter, StreamTurn
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-123"] = "req-latest"
+        # Simulate an active stream turn for this chat
+        turn = StreamTurn("chat-123", "req-latest")
+        adapter._stream_turns["chat-123:turn-1"] = turn
+
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-latest"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send("chat-123", "Some status message")
+
+        assert result.success is True
+        # Should still use passive reply — active stream doesn't force proactive
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_force_proactive_falls_back_to_passive_for_groups(self):
+        """Regression: force_proactive_send must NOT use APP_CMD_SEND in group chats.
+        WeCom AI Bots cannot initiate APP_CMD_SEND in groups — only passive reply
+        (APP_CMD_RESPONSE) bound to a req_id works."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-chat"] = "req-approve"
+        # Mark this chat as a group
+        adapter._group_chat_ids.add("group-chat")
+
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-approve"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send(
+            "group-chat",
+            "✅ Approved 1 command. Continuing...",
+            metadata={"is_approval_prompt": True, "force_proactive_send": True},
+        )
+
+        assert result.success is True
+        # Group chats must fall back to passive reply even with force_proactive_send
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_group_send_fails_early_without_req_id(self):
+        """Group chats with no cached req_id must fail with a clear error
+        instead of attempting APP_CMD_SEND (which WeCom will reject)."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # No req_id cached for this group
+        adapter._group_chat_ids.add("group-no-req")
+        adapter._send_request = AsyncMock(return_value={"errcode": 0})
+
+        result = await adapter.send("group-no-req", "hello group")
+
+        assert result.success is False
+        assert "req_id" in (result.error or "").lower()
+        # Should NOT attempt APP_CMD_SEND
+        adapter._send_request.assert_not_awaited()
+
+
 class TestInboundMessages:
     @pytest.mark.asyncio
     async def test_on_message_builds_event(self):

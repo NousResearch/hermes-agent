@@ -308,6 +308,11 @@ class WeComAdapter(BasePlatformAdapter):
         # stream channel becomes usable again.
         self._stream_expired_chats: set[str] = set()
 
+        # Track which chat_ids are group chats. Populated in _on_message
+        # when chattype=="group". Used by _send_inner to avoid APP_CMD_SEND
+        # for groups (WeCom AI Bots cannot initiate proactive sends in groups).
+        self._group_chat_ids: set[str] = set()
+
         # Per-chat FIFO send queue with token-bucket rate limiting.
         # Mirrors OpenClaw's chat-queue.ts (serial per chat) plus a
         # token bucket to stay within WeCom's 30 msgs/min/chat limit.
@@ -1058,6 +1063,7 @@ class WeComAdapter(BasePlatformAdapter):
 
         is_group = str(body.get("chattype") or "").lower() == "group"
         if is_group:
+            self._group_chat_ids.add(chat_id)
             if not self._is_group_allowed(chat_id, sender_id):
                 logger.debug("[%s] Group %s / sender %s blocked by policy", self.name, chat_id, sender_id)
                 return
@@ -2122,12 +2128,21 @@ class WeComAdapter(BasePlatformAdapter):
 
         # Check if this is an approval prompt (should use control lane)
         is_control = False
+        force_proactive = False
         if metadata:
             is_control = metadata.pop("is_approval_prompt", False)
+            # Explicit opt-in for proactive send: used by approval
+            # *confirmation* messages (post-/approve) that must not consume
+            # the req_id the stream consumer needs for resumed output.
+            # Distinct from is_approval_prompt which only routes to the
+            # control lane — the initial approval *request* prompt still
+            # uses passive reply (required for groups where APP_CMD_SEND
+            # is blocked).
+            force_proactive = bool(metadata.pop("force_proactive_send", False))
 
         return await self._enqueue_chat_send(
             chat_id,
-            lambda: self._send_inner(chat_id, content, reply_to),
+            lambda: self._send_inner(chat_id, content, reply_to, force_proactive=force_proactive),
             is_control=is_control,
         )
 
@@ -2136,6 +2151,8 @@ class WeComAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
+        *,
+        force_proactive: bool = False,
     ) -> SendResult:
         """Actual send logic, called under the per-chat lock.
 
@@ -2145,6 +2162,11 @@ class WeComAdapter(BasePlatformAdapter):
 
         This aligns with the official wecom-openclaw-plugin model where
         send() and streaming are independent operations.
+
+        Args:
+            force_proactive: When True, always use APP_CMD_SEND instead of
+                passive reply. Used for approval confirmations to avoid
+                consuming the req_id needed by the post-approval stream.
         """
         try:
             # Directly send the message without touching any active streams.
@@ -2155,6 +2177,9 @@ class WeComAdapter(BasePlatformAdapter):
 
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
+
+            if force_proactive and chat_id not in self._group_chat_ids:
+                reply_req_id = None
 
             if reply_req_id:
                 try:
@@ -2176,6 +2201,20 @@ class WeComAdapter(BasePlatformAdapter):
                         },
                     )
             else:
+                # No req_id available — must use proactive APP_CMD_SEND.
+                # Group chats cannot use APP_CMD_SEND (WeCom blocks it),
+                # so fail early with a clear error instead of making a
+                # doomed network request.
+                if chat_id in self._group_chat_ids:
+                    logger.warning(
+                        "[%s] No cached req_id for group chat %s — "
+                        "cannot send (groups require passive reply via req_id)",
+                        self.name, chat_id,
+                    )
+                    return SendResult(
+                        success=False,
+                        error="No req_id available for group chat (passive reply required)",
+                    )
                 response = await self._send_request(
                     APP_CMD_SEND,
                     {

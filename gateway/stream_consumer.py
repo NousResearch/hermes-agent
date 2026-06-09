@@ -600,7 +600,13 @@ class GatewayStreamConsumer:
                 # Dedup handling (zero-width space append) is done in the adapter
                 # layer (wecom.py send_stream_frame) to cover all finalize paths.
                 if is_cancelled:
-                    finalize_text = "​"  # zero-width space: invisible but non-empty
+                    # Caller timed out and already moved on. We still MUST send
+                    # finalize=true to close the WeCom client's thinking bubble
+                    # (opened by the seed frame). Without it the bubble stays
+                    # visible indefinitely. Use accumulated text (what the user
+                    # already saw) — NOT a zero-width space which WeCom renders
+                    # as an empty message bubble.
+                    finalize_text = self._accumulated or "⏸"
                 else:
                     finalize_text = self._accumulated or "⏸ 等待审批中..."
                 try:
@@ -620,6 +626,12 @@ class GatewayStreamConsumer:
                     logger.warning("Approval boundary: finalize failed: %s", e)
                     # Don't raise — we still need to reset state below to prevent
                     # post-approval output from being trapped in old stream
+                    #
+                    # Clean up the StreamTurn in the adapter so
+                    # _find_active_turn_for_chat() doesn't keep finding it.
+                    _turn_key = f"{self.chat_id}:{self._turn_id}"
+                    if hasattr(self.adapter, "_stream_turns"):
+                        self.adapter._stream_turns.pop(_turn_key, None)
 
             # Step 3: Reset native stream state
             # Do this even if finalize failed to prevent post-approval output

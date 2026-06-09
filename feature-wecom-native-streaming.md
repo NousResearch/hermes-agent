@@ -1,7 +1,7 @@
 # WeCom Native Streaming 改造记录
 
 > **分支**：`feat/wecom-native-streaming`  
-> **日期**：2026-06-04 ~ 2026-06-07  
+> **日期**：2026-06-04 ~ 2026-06-09  
 > **基于**：hermes-agent main (`40420a619`)  
 > **最新 commit**：`c747fb17b`
 
@@ -108,14 +108,32 @@ consumer.close_for_approval_prompt()
 
 # consumer run() (async task, serial processing):
 _handle_approval_boundary():
-  1. Flush accumulated text
-  2. Finalize stream (visible placeholder or invisible if cancelled)
+  1. Finalize stream with accumulated text (closes WeCom thinking bubble)
+     - 正常路径: self._accumulated or "⏸ 等待审批中..."
+     - cancelled 路径: self._accumulated or "⏸" (不用零宽字符，避免空气泡)
+  2. If finalize failed: clean up adapter StreamTurn, disable native streaming
   3. Reset: _native_stream_opened=False, new turn_id, clear _initial_reply_to_id
-  4. If finalize failed: disable native streaming → fallback to send()
-  5. Resolve future with boundary_ok status
+  4. Resolve future with boundary_ok status
 ```
 
-**Post-approval**：`_initial_reply_to_id = None` 让 adapter 使用 `_last_chat_req_ids[chat]`（由 `/approve` 消息更新），避免绑定过期 req_id。
+**Post-approval req_id 分离**：
+
+确认消息（"✅ Approved..."）通过 `force_proactive_send` metadata 强制走 `APP_CMD_SEND`（DM）或绑定 `reply_to=event.message_id` 精确定位 req_id（群聊 fallback）。这确保确认消息不消费 `_last_chat_req_ids[chat]` 的 req_id，留给 stream consumer post-approval 重开 stream。
+
+```python
+# slash_commands.py _handle_approve_command:
+await _adapter.send(
+    source.chat_id,
+    confirmation_text,
+    reply_to=event.message_id,  # 绑定 /approve 入站消息的 req_id
+    metadata={
+        "is_approval_prompt": True,       # → control lane (高优先级)
+        "force_proactive_send": True,     # → DM 走 APP_CMD_SEND
+    },
+)
+```
+
+**群聊安全**：`force_proactive_send` 对群聊不生效（`_group_chat_ids` 检测），群聊仍走 passive reply。群聊若无可用 req_id 则 fail-early 并记 warning（不尝试已知会失败的 `APP_CMD_SEND`）。
 
 ### 错误处理
 
@@ -151,8 +169,12 @@ stream frame 失败 → _use_native_streaming=False
 try:
     response = await self._send_reply_markdown(reply_req_id, content)
 except (asyncio.TimeoutError, RuntimeError):
-    # Passive failed (stale req_id) → proactive send
+    # Passive failed (stale req_id) → proactive send (DM only)
     response = await self._send_request(APP_CMD_SEND, {...})
+
+# Group chats: no req_id → fail early (APP_CMD_SEND is blocked)
+if chat_id in self._group_chat_ids:
+    return SendResult(success=False, error="No req_id for group")
 ```
 
 ## send_message 工具跨 loop 死锁修复（2026-06-07）
@@ -208,19 +230,21 @@ tests/tools/test_send_message_cross_loop.py — 4 passed
 
 | 文件 | 说明 |
 |------|------|
-| `gateway/platforms/wecom.py` | Per-turn model, priority queue, stream protocol, fallback |
-| `gateway/stream_consumer.py` | Approval boundary, segment break, seed lifecycle, re-seed |
-| `gateway/run.py` | Approval callback, /approve /deny handlers |
+| `gateway/platforms/wecom.py` | Per-turn model, priority queue, stream protocol, fallback, `force_proactive_send` + group safety |
+| `gateway/stream_consumer.py` | Approval boundary, segment break, seed lifecycle, re-seed, cancelled finalize fix |
+| `gateway/slash_commands.py` | /approve /deny confirmation: `reply_to=event.message_id` + `force_proactive_send` |
+| `gateway/run.py` | Approval callback, native stream gate, approval boundary integration |
 | `tools/send_message_tool.py` | 跨 loop dispatch 修复（`_send_via_adapter`） |
 | `cron/scheduler.py` | Delivery diagnostic logging |
 | `tests/gateway/test_stream_consumer_wecom_native.py` | Native streaming + segment break tests |
+| `tests/gateway/test_wecom.py` | Proactive send regression, group safety tests |
 | `tests/gateway/test_wecom_per_turn.py` | Per-turn isolation + multi-user tests |
-| `tests/gateway/test_approval_boundary.py` | Approval boundary regression tests |
+| `tests/gateway/test_approval_boundary.py` | Approval boundary: cancelled finalize, failure handling |
 | `tests/tools/test_send_message_cross_loop.py` | 跨 loop dispatch regression tests |
 
 ## 测试覆盖
 
-**总计：35 tests passed**
+**总计：102 tests passed**
 
 ### test_wecom.py::TestSendStreamFrame (5 tests)
 - Seed frame sends `<think></think>` ✓
@@ -228,6 +252,13 @@ tests/tools/test_send_message_cross_loop.py — 4 passed
 - Throttle skip within 200ms window ✓
 - Frame cap drops excess intermediate frames ✓
 - Finalize sends finish=true and resets state ✓
+
+### test_wecom.py::TestSend (5 new tests)
+- Approval confirmation uses proactive send (DM) ✓
+- Approval request prompt keeps passive reply ✓
+- Active stream doesn't force all send() to proactive ✓
+- force_proactive falls back to passive for groups ✓
+- Group send fails early without req_id ✓
 
 ### test_stream_consumer_wecom_native.py (13 tests)
 - Seed frame, full run, throttling, fallback
@@ -241,11 +272,11 @@ tests/tools/test_send_message_cross_loop.py — 4 passed
 - Native fallback closes stream
 
 ### test_approval_boundary.py (5 tests)
-- Cancelled sends invisible finalize
-- Finalize failure returns False
-- Clears initial_reply_to for fresh req_id
-- Re-seed uses new turn_id
-- Success path sends visible placeholder
+- **Cancelled boundary finalizes with accumulated text (not zero-width space)** ✓
+- Finalize failure returns False ✓
+- Clears initial_reply_to for fresh req_id ✓
+- Re-seed uses new turn_id ✓
+- Success path sends visible placeholder ✓
 
 ### test_send_message_cross_loop.py (4 tests)
 - Cross-loop dispatches to gateway loop ✓

@@ -4951,13 +4951,18 @@ def test_write_txn_post_commit_check_fires_every_call(tmp_path):
     conn.close()
 
 
-def test_connect_sets_wal_autocheckpoint_100(tmp_path):
-    """connect() sets wal_autocheckpoint to 100."""
+def test_connect_sets_wal_autocheckpoint_1000(tmp_path):
+    """connect() sets wal_autocheckpoint to 1000 (the SQLite default,
+    asserted explicitly): every checkpoint rewrites main-DB pages — the
+    torn-write window on a weak-durability FS and the contention window
+    integrity probes race against. 100 forced near-constant checkpoint
+    churn under a worker swarm; durability is unchanged because
+    synchronous=FULL fsyncs the WAL at commit."""
     from hermes_cli.kanban_db import connect
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
     val = conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
-    assert val == 100
+    assert val == 1000
     conn.close()
 
 

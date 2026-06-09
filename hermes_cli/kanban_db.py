@@ -1929,7 +1929,15 @@ def connect(
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("PRAGMA wal_autocheckpoint=100")
+                # 1000 (SQLite default; was 100): every checkpoint rewrites
+                # main-DB pages, which is exactly the torn-write window on a
+                # weak-durability FS — and the contention window the health
+                # probes race against. 100 forced a checkpoint roughly every
+                # ~400KB written, i.e. near-constant churn under a worker
+                # swarm. Fewer, larger checkpoints shrink both windows; the
+                # WAL staying a few MB longer costs nothing (synchronous=FULL
+                # fsyncs the WAL at commit, so durability is unchanged).
+                conn.execute("PRAGMA wal_autocheckpoint=1000")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
                 # cell content; persisted in the DB header for new DBs.

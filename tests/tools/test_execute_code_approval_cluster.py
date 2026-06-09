@@ -394,3 +394,42 @@ def test_env_scrub_no_log_when_nothing_dropped(caplog):
             is_windows=False,
         )
     assert "dropped" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+
+# ---------------------------------------------------------------------------
+# 6. code_execution.auto_approve config bypass (#42921)
+# ---------------------------------------------------------------------------
+
+def test_auto_approve_config_bypasses_guard(gw_session, monkeypatch):
+    """When code_execution.auto_approve is True, skip the approval prompt."""
+    _register_resolver(gw_session, "deny")  # would deny if prompt fires
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"code_execution": {"auto_approve": True}},
+    )
+    result = A.check_execute_code_guard("import os", "local")
+    assert result["approved"] is True
+
+
+def test_auto_approve_false_does_not_bypass(gw_session, monkeypatch):
+    """When code_execution.auto_approve is False (default), the guard proceeds normally."""
+    _register_resolver(gw_session, "deny")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"code_execution": {"auto_approve": False}},
+    )
+    # In gateway context with a denier, the guard should block.
+    result = A.check_execute_code_guard("import os", "local")
+    assert result["approved"] is False
+
+
+def test_auto_approve_missing_config_does_not_bypass(gw_session, monkeypatch):
+    """When code_execution section is absent, the guard proceeds normally."""
+    _register_resolver(gw_session, "deny")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {},
+    )
+    result = A.check_execute_code_guard("import os", "local")
+    assert result["approved"] is False

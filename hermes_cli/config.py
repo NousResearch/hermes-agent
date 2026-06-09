@@ -2078,6 +2078,13 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        # Skip the execute_code approval prompt in gateway/ask sessions.
+        # When true, scripts run without an interactive approval step —
+        # equivalent to per-session YOLO for execute_code only.  Terminal
+        # commands *inside* the script still go through their own guards.
+        # Useful for trusted autonomous deployments (e.g. always-on gateway
+        # bots) where no human is present to click "Approve".
+        "auto_approve": False,
     },
 
     # Tool Search (progressive disclosure for large tool surfaces).

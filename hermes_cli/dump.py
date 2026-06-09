@@ -190,6 +190,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("display", "show_reasoning"),
         ("privacy", "redact_pii"),
         ("tts", "provider"),
+        ("code_execution", "auto_approve"),
     ]
 
     for section, key in interesting_paths:

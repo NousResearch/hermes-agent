@@ -1599,6 +1599,16 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
+    # code_execution.auto_approve: per-tool opt-out of the approval prompt.
+    # Terminal commands *inside* the script still go through their own guards.
+    try:
+        from hermes_cli.config import load_config
+        _ce_cfg = load_config().get("code_execution", {})
+        if isinstance(_ce_cfg, dict) and _ce_cfg.get("auto_approve"):
+            return {"approved": True, "message": None}
+    except Exception:
+        pass
+
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 

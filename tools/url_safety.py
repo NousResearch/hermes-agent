@@ -27,11 +27,53 @@ import ipaddress
 import logging
 import os
 import socket
-from urllib.parse import urlparse
+import asyncio
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_url_for_request(url: str) -> str:
+    """Return an ASCII-safe HTTP URL for Hermes-owned URL tools.
+
+    Browsers and HTTP clients expect URIs, but users and models often provide
+    IRIs such as ``https://wttr.in/Köln``.  Preserve URL syntax and existing
+    percent escapes while encoding non-ASCII host/path/query/fragment text.
+    This is intentionally for URL tool inputs only; arbitrary shell commands
+    must not be rewritten.
+    """
+    if not isinstance(url, str):
+        return url
+
+    raw = url.strip()
+    if not raw:
+        return raw
+
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw
+
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return raw
+
+    netloc = parsed.netloc
+    hostname = parsed.hostname
+    if hostname:
+        try:
+            ascii_host = hostname.encode("idna").decode("ascii")
+        except UnicodeError:
+            ascii_host = hostname
+        if ascii_host != hostname:
+            netloc = netloc.replace(hostname, ascii_host, 1)
+
+    path = quote(parsed.path, safe="/%:@!$&'()*+,;=")
+    query = quote(parsed.query, safe="/%:@!$&'()*+,;=?")
+    fragment = quote(parsed.fragment, safe="/%:@!$&'()*+,;=?")
+
+    return urlunsplit((parsed.scheme, netloc, path, query, fragment))
 
 # Hostnames that should always be blocked regardless of IP resolution
 # or any config toggle.  These are cloud metadata endpoints that an
@@ -349,3 +391,12 @@ def is_safe_url(url: str) -> bool:
         # become SSRF bypass vectors
         logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
         return False
+
+
+async def async_is_safe_url(url: str) -> bool:
+    """Same rules as :func:`is_safe_url`, but run the DNS work off the event loop.
+
+    ``socket.getaddrinfo`` can block; call this from async code paths (gateway,
+    ``web_extract_tool``, vision download hooks) instead of ``is_safe_url``.
+    """
+    return await asyncio.to_thread(is_safe_url, url)

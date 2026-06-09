@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
+import { translateNow } from '@/i18n'
+import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -9,9 +11,27 @@ import {
   failDesktopBoot,
   setDesktopBootStep
 } from '@/store/boot'
-import { setGateway } from '@/store/gateway'
+import {
+  $gateway,
+  closeSecondaryGateways,
+  configureGatewayRegistry,
+  ensureGatewayForProfile,
+  pruneSecondaryGateways,
+  reconnectSecondaryGateways,
+  reportPrimaryGatewayState,
+  setPrimaryGateway,
+  touchSecondaryGateways
+} from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $connection, setConnection, setGatewayState, setSessionsLoading } from '@/store/session'
+import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import {
+  $attentionSessionIds,
+  $connection,
+  $sessions,
+  $workingSessionIds,
+  setConnection,
+  setSessionsLoading
+} from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 interface GatewayBootOptions {
@@ -75,6 +95,10 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Surface "sign in again" once per disconnect episode, not on every backoff
+    // tick — a stale OAuth ticket fails every attempt and would otherwise stack
+    // identical error toasts (and their haptics). Reset on the next clean open.
+    let reauthNotified = false
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
     // `connectionState` to a constant across the early-return guards (the state
@@ -96,14 +120,29 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
-        const conn = await desktop.getConnection()
+        // Drop a stale REMOTE backend cache before re-dialing. After sleep/wake a
+        // remote backend can become unreachable, but it has no child process
+        // whose 'exit' would clear the main process's cached descriptor — without
+        // this the renderer re-dials the same dead endpoint forever and stays on
+        // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
+        await desktop.revalidateConnection?.().catch(() => undefined)
+
+        const conn = await desktop.getConnection($activeGatewayProfile.get())
 
         if (cancelled) {
           return
         }
 
         publish(conn)
-        await gateway.connect(conn.wsUrl)
+        // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
+        // with a short TTL, so the ticket baked into the cached conn.wsUrl is
+        // dead on every reconnect after the initial boot — reusing it surfaces
+        // as an opaque "Could not connect to Hermes gateway". resolveGatewayWsUrl
+        // mints a fresh ticket (or throws a reauth error in OAuth mode rather
+        // than connecting with a stale one). For local/token gateways the URL
+        // carries a long-lived token and the re-mint is a cheap no-op.
+        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        await gateway.connect(wsUrl)
 
         if (cancelled) {
           return
@@ -113,8 +152,15 @@ export function useGatewayBoot({
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
-      } catch {
-        // Fall through to scheduleReconnect's backoff below.
+      } catch (err) {
+        // OAuth session expired mid-reconnect: surface the actionable "sign in
+        // again" message once instead of silently looping the backoff against a
+        // ticket that can never succeed. Transport failures fall through to the
+        // backoff in the finally block below.
+        if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
+          reauthNotified = true
+          notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+        }
       } finally {
         reconnecting = false
 
@@ -145,6 +191,7 @@ export function useGatewayBoot({
 
       clearReconnectTimer()
       reconnectAttempt = 0
+      reconnectSecondaryGateways()
 
       if (!gatewayOpen()) {
         void attemptReconnect()
@@ -159,26 +206,41 @@ export function useGatewayBoot({
 
     setDesktopBootStep({
       phase: 'renderer.boot',
-      message: 'Starting desktop connection',
+      message: translateNow('boot.steps.startingDesktopConnection'),
       progress: 6
     })
 
     const gateway = new HermesGateway()
     callbacksRef.current.onGatewayReady(gateway)
-    setGateway(gateway)
+    setPrimaryGateway(gateway, normalizeProfileKey($activeGatewayProfile.get()))
+    // Secondary (background-profile) sockets funnel into the same handler.
+    configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
 
     const offState = gateway.onState(st => {
-      setGatewayState(st)
+      // Mirror to the composer only while the primary is the active profile —
+      // a background secondary reconnect mustn't flip the foreground state.
+      reportPrimaryGatewayState(st)
 
       if (st === 'open') {
         reconnectAttempt = 0
+        reauthNotified = false
         clearReconnectTimer()
+
+        // A revalidate-driven reconnect can rebuild the backend in place when the
+        // cached remote was found dead, which re-drives the boot-progress overlay.
+        // Unlike the initial boot, nothing calls completeDesktopBoot() afterwards,
+        // so dismiss it here once we're open again — otherwise the overlay sticks
+        // at ~94%. A no-op on a normal (non-rebuild) reconnect.
+        if (bootCompleted) {
+          completeDesktopBoot()
+        }
       } else if (bootCompleted && (st === 'closed' || st === 'error')) {
         // The socket dropped after a healthy boot (typically sleep/wake). Try
         // to bring it back instead of leaving the composer stuck disabled.
         scheduleReconnect()
       }
     })
+
     const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent(event))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
@@ -186,6 +248,7 @@ export function useGatewayBoot({
     const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
 
     const onOnline = () => reconnectNow()
+
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         reconnectNow()
@@ -194,6 +257,34 @@ export function useGatewayBoot({
 
     window.addEventListener('online', onOnline)
     document.addEventListener('visibilitychange', onVisible)
+
+    // Keep live pool backends alive while this window is open (the main process
+    // can't observe the direct renderer↔backend WS). No-op for the primary.
+    const keepaliveTimer = setInterval(() => {
+      touchActiveGatewayBackend()
+      touchSecondaryGateways()
+    }, 60_000)
+
+    // Bound concurrency cost to live work: keep a background socket only while
+    // its profile has a running (working) or blocked (needs-input) session.
+    // Once that profile goes idle its socket is dropped and its backend is free
+    // to idle-reap. The active profile is always spared.
+    const recomputeKeptGateways = () => {
+      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
+      const keep = new Set<string>()
+
+      for (const session of $sessions.get()) {
+        if (live.has(session.id)) {
+          keep.add(normalizeProfileKey(session.profile))
+        }
+      }
+
+      pruneSecondaryGateways(keep)
+    }
+
+    const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
+    const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
+    const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -205,13 +296,13 @@ export function useGatewayBoot({
 
     const offExit = desktop.onBackendExit(() => {
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
-        failDesktopBoot('Hermes background process exited during startup.')
+        failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
       }
 
       notify({
         kind: 'error',
-        title: 'Backend stopped',
-        message: 'Hermes background process exited.',
+        title: translateNow('boot.errors.backendStopped'),
+        message: translateNow('boot.errors.backgroundExited'),
         durationMs: 0
       })
     })
@@ -226,19 +317,38 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.gateway.connect',
-          message: 'Connecting live desktop gateway',
+          message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
         publish(conn)
-        await gateway.connect(conn.wsUrl)
+        // Mint a fresh WS URL right before connecting. For OAuth gateways the
+        // ticket is single-use with a short TTL, so the ticket baked into
+        // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
+        // failure, throws a reauth error rather than connecting with a dead
+        // ticket (which would surface as an opaque "connection closed").
+        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        await gateway.connect(wsUrl)
 
         if (cancelled) {
           return
         }
 
+        // Record which profile the primary (window) backend booted as, so
+        // same-profile resumes are no-op swaps and any reconnect targets the
+        // right backend. Best-effort: a missing preference means "default".
+        try {
+          const pref = await desktop.profile?.get?.()
+          const profileKey = (pref?.profile ?? '').trim() || 'default'
+          $activeGatewayProfile.set(profileKey)
+          setPrimaryGateway(gateway, profileKey)
+          void ensureGatewayForProfile(profileKey)
+        } catch {
+          $activeGatewayProfile.set('default')
+        }
+
         setDesktopBootStep({
           phase: 'renderer.config',
-          message: 'Loading Hermes settings',
+          message: translateNow('boot.steps.loadingSettings'),
           progress: 97
         })
         await callbacksRef.current.refreshHermesConfig()
@@ -249,7 +359,7 @@ export function useGatewayBoot({
 
         setDesktopBootStep({
           phase: 'renderer.sessions',
-          message: 'Loading recent sessions',
+          message: translateNow('boot.steps.loadingSessions'),
           progress: 99
         })
         await callbacksRef.current.refreshSessions()
@@ -259,7 +369,7 @@ export function useGatewayBoot({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          notifyError(err, 'Desktop boot failed')
+          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)
         }
       }
@@ -270,6 +380,10 @@ export function useGatewayBoot({
     return () => {
       cancelled = true
       clearReconnectTimer()
+      clearInterval(keepaliveTimer)
+      offWorking()
+      offAttention()
+      offActiveProfile()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       offPowerResume?.()
@@ -278,10 +392,12 @@ export function useGatewayBoot({
       offExit()
       offWindowState?.()
       offBootProgress()
+      closeSecondaryGateways()
       gateway.close()
       publish(null)
       callbacksRef.current.onGatewayReady(null)
-      setGateway(null)
+      setPrimaryGateway(null)
+      $gateway.set(null)
     }
   }, [])
 }

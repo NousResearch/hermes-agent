@@ -274,6 +274,7 @@ def _platform_asset_name() -> str:
                 capture_output=True,
                 text=True,
                 timeout=2,
+                stdin=subprocess.DEVNULL,
             )
             if "musl" in (res.stdout + res.stderr).lower():
                 libc = "musl"
@@ -324,8 +325,11 @@ def install_bws(*, force: bool = False) -> Path:
 
         with zipfile.ZipFile(zip_path) as zf:
             member = _pick_zip_member(zf, _platform_binary_name())
-            zf.extract(member, tmp)
-            extracted = tmp / member
+            # Zip-slip guard: a malicious archive can carry member names like
+            # ``../../etc/cron.d/x`` or absolute paths.  ``ZipFile.extract``
+            # joins the member onto ``tmp`` without verifying the result stays
+            # inside it, so validate containment before touching the disk.
+            extracted = _safe_extract_member(zf, member, tmp)
 
         # Move into place atomically.  We write to a sibling tempfile in
         # the final directory so the rename can't cross filesystems.
@@ -393,6 +397,33 @@ def _pick_zip_member(zf: zipfile.ZipFile, binary_name: str) -> str:
     # Prefer the shortest path (i.e. root over nested) for determinism.
     candidates.sort(key=len)
     return candidates[0]
+
+
+def _safe_extract_member(
+    zf: zipfile.ZipFile, member: str, dest_dir: Path
+) -> Path:
+    """Extract a single archive member, refusing path traversal.
+
+    ``ZipFile.extract`` will happily honour member names containing
+    ``../`` or absolute paths, letting a malicious archive write outside
+    ``dest_dir`` (a "zip-slip").  We resolve the would-be target and
+    confirm it stays within ``dest_dir`` before extracting.
+    """
+    dest_root = os.path.realpath(dest_dir)
+    target = os.path.realpath(os.path.join(dest_root, member))
+    # ``commonpath`` raises ValueError for e.g. different drives on
+    # Windows; treat that as an escape too.
+    try:
+        contained = os.path.commonpath([dest_root, target]) == dest_root
+    except ValueError:
+        contained = False
+    if not contained or target == dest_root:
+        raise RuntimeError(
+            f"Refusing to extract unsafe archive member {member!r}: "
+            f"it escapes the extraction directory"
+        )
+    zf.extract(member, dest_root)
+    return Path(target)
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +526,7 @@ def _run_bws_list(
             capture_output=True,
             text=True,
             timeout=_BWS_RUN_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

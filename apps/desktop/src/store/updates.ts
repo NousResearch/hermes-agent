@@ -13,8 +13,12 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
+import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
+import { $connection } from '@/store/session'
+import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
 export interface UpdateApplyState {
   applying: boolean
@@ -44,8 +48,24 @@ export const $updateChecking = atom<boolean>(false)
 export const $updateOverlayOpen = atom<boolean>(false)
 export const $updateStatus = atom<DesktopUpdateStatus | null>(null)
 
+// Client and backend are independently updatable; each keeps its own state.
+export const $backendUpdateStatus = atom<DesktopUpdateStatus | null>(null)
+export const $backendUpdateApply = atom<UpdateApplyState>(IDLE)
+export const $backendUpdateChecking = atom<boolean>(false)
+
+export type UpdateTarget = 'client' | 'backend'
+export const $updateOverlayTarget = atom<UpdateTarget>('client')
+
 export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(open)
-export const resetUpdateApplyState = () => $updateApply.set(IDLE)
+export const openUpdateOverlayFor = (target: UpdateTarget) => {
+  $updateOverlayTarget.set(target)
+  $updateOverlayOpen.set(true)
+  void (target === 'backend' ? checkBackendUpdates() : checkUpdates())
+}
+export const resetUpdateApplyState = () => {
+  $updateApply.set(IDLE)
+  $backendUpdateApply.set(IDLE)
+}
 
 const UPDATE_TOAST_ID = 'desktop-update-available'
 // Time-based snooze instead of per-sha dismissal: this repo lands ~100 commits
@@ -68,7 +88,8 @@ function isUpdateToastSnoozed(): boolean {
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
 // against. The backend reports its own value in session runtime info; a lower
 // value (or none — a pre-GUI checkout) means GUI<->backend skew.
-const REQUIRED_BACKEND_CONTRACT = 1
+// v2: requires the file.attach RPC (remote-gateway non-image file upload).
+const REQUIRED_BACKEND_CONTRACT = 2
 const SKEW_TOAST_ID = 'backend-contract-skew'
 
 /**
@@ -85,12 +106,12 @@ export function reportBackendContract(contract: number | undefined): void {
   }
 
   notify({
-    action: { label: 'Update Hermes', onClick: () => void applyUpdates() },
+    action: { label: translateNow('notifications.updateHermes'), onClick: () => void applyBackendUpdate() },
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
-    message: 'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
-    title: 'Backend out of date'
+    message: translateNow('notifications.backendOutOfDateMessage'),
+    title: translateNow('notifications.backendOutOfDateTitle')
   })
 }
 
@@ -121,7 +142,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 
   notify({
     action: {
-      label: "See what's new",
+      label: translateNow('notifications.seeWhatsNew'),
       onClick: () => {
         snoozeUpdateToast()
         openUpdatesWindow()
@@ -130,19 +151,14 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     durationMs: 0,
     id: UPDATE_TOAST_ID,
     kind: 'info',
-    message: `${behind} new change${behind === 1 ? '' : 's'} available.`,
+    message: translateNow('notifications.updateReadyMessage', behind),
     onDismiss: () => snoozeUpdateToast(),
-    title: 'Update ready'
+    title: translateNow('notifications.updateReadyTitle')
   })
 }
 
-/**
- * Opens the updates dialog and kicks off a fresh check so the user always
- * sees current state, even if a stale status is cached from earlier.
- */
 export function openUpdatesWindow(): void {
-  $updateOverlayOpen.set(true)
-  void checkUpdates()
+  openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
 }
 
 /** Re-read the running app's version from the Electron main process and
@@ -173,6 +189,52 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   }
 }
 
+function isRemoteMode(): boolean {
+  return $connection.get()?.mode === 'remote'
+}
+
+function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
+  const behind = res.behind ?? 0
+
+  return {
+    supported: res.can_apply,
+    message: res.message ?? undefined,
+    behind: behind > 0 ? behind : 0,
+    targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
+    commits: res.commits,
+    fetchedAt: Date.now()
+  }
+}
+
+export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null> {
+  if (!isRemoteMode() || $backendUpdateChecking.get()) {
+    return $backendUpdateStatus.get()
+  }
+
+  $backendUpdateChecking.set(true)
+
+  try {
+    const status = mapBackendCheck(await checkHermesUpdate(true))
+    $backendUpdateStatus.set(status)
+    maybeNotifyUpdateAvailable(status)
+
+    return status
+  } catch (error) {
+    const fallback: DesktopUpdateStatus = {
+      supported: $backendUpdateStatus.get()?.supported ?? true,
+      error: 'check-failed',
+      message: error instanceof Error ? error.message : String(error),
+      fetchedAt: Date.now()
+    }
+
+    $backendUpdateStatus.set(fallback)
+
+    return fallback
+  } finally {
+    $backendUpdateChecking.set(false)
+  }
+}
+
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   const bridge = window.hermesDesktop?.updates
 
@@ -186,9 +248,6 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
     const status = await bridge.check()
     $updateStatus.set(status)
     maybeNotifyUpdateAvailable(status)
-    // The update check pulls the latest hermes_cli + bundled package metadata
-    // into place. Re-read the running version so About reflects the now-fresh
-    // checkout rather than the one captured at process start.
     void refreshDesktopVersion()
 
     return status
@@ -246,6 +305,107 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 }
 
+const BACKEND_RETURN_POLL_MS = 1500
+const BACKEND_RETURN_MAX_ATTEMPTS = 40
+
+async function waitForBackendReturn(): Promise<boolean> {
+  for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
+    await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
+    try {
+      await checkHermesUpdate()
+
+      return true
+    } catch {
+      continue
+    }
+  }
+
+  return false
+}
+
+function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
+  if (returned) {
+    $backendUpdateApply.set(IDLE)
+    setUpdateOverlayOpen(false)
+    void checkBackendUpdates()
+
+    return { ok: true, message: 'Backend update applied.' }
+  }
+
+  $backendUpdateApply.set({
+    ...$backendUpdateApply.get(),
+    applying: false,
+    stage: 'error',
+    error: 'apply-failed',
+    message: translateNow('updates.applyStatus.noReturn')
+  })
+
+  return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
+}
+
+export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+  dismissNotification(UPDATE_TOAST_ID)
+  $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: translateNow('updates.applyStatus.preparing') })
+
+  try {
+    const started = await updateHermes()
+
+    if (!started.ok) {
+      const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
+      const command = (started as { update_command?: string }).update_command || 'hermes update'
+      $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
+
+      return { ok: false, error: 'manual', manual: true, message, command }
+    }
+
+    $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'pull', message: translateNow('updates.applyStatus.pulling') })
+
+    let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
+      try {
+        last = await getActionStatus(started.name, 200)
+      } catch {
+        // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
+        $backendUpdateApply.set({
+          ...$backendUpdateApply.get(),
+          applying: true,
+          stage: 'restart',
+          message: translateNow('updates.applyStatus.restarting')
+        })
+
+        return finishBackendApply(await waitForBackendReturn())
+      }
+
+      if (last && !last.running) {
+        break
+      }
+    }
+
+    const ok = !!last && (last.exit_code ?? 1) === 0
+    if (ok) {
+      $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: translateNow('updates.applyStatus.restarting') })
+
+      return finishBackendApply(await waitForBackendReturn())
+    }
+
+    $backendUpdateApply.set({
+      ...$backendUpdateApply.get(),
+      applying: false,
+      stage: 'error',
+      error: 'apply-failed',
+      message: translateNow('updates.applyStatus.failed')
+    })
+
+    return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
+
+    return { ok: false, error: 'apply-failed', message }
+  }
+}
+
 function ingestProgress(payload: DesktopUpdateProgress): void {
   const current = $updateApply.get()
   const log = [...current.log, { stage: payload.stage, message: payload.message, at: payload.at }].slice(-50)
@@ -266,6 +426,8 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let lastFocusAt = 0
+let connectionUnsub: (() => void) | null = null
+let lastConnectionMode: string | undefined
 
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
@@ -281,11 +443,28 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   void checkUpdates()
+  void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
+  // The poller starts at mount, before the gateway connects — so the first
+  // backend check above sees mode≠remote and no-ops. Re-check once the
+  // connection resolves to remote.
+  connectionUnsub = $connection.subscribe(conn => {
+    if (conn?.mode === lastConnectionMode) {
+      return
+    }
+    lastConnectionMode = conn?.mode
+    if (conn?.mode === 'remote') {
+      void checkBackendUpdates()
+    }
+  })
+
   window.addEventListener('focus', onFocus)
-  backgroundTimer = setInterval(() => void checkUpdates(), 30 * 60 * 1000)
+  backgroundTimer = setInterval(() => {
+    void checkUpdates()
+    void checkBackendUpdates()
+  }, 30 * 60 * 1000)
 }
 
 export function stopUpdatePoller(): void {
@@ -294,6 +473,9 @@ export function stopUpdatePoller(): void {
     backgroundTimer = null
   }
 
+  connectionUnsub?.()
+  connectionUnsub = null
+  lastConnectionMode = undefined
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }
@@ -307,8 +489,6 @@ function onFocus() {
 
   lastFocusAt = now
   void checkUpdates()
-  // Cheap and safe to re-read on every (throttled) focus: the user may have
-  // updated Hermes from another window/CLI between focuses, and About should
-  // catch up without forcing a restart.
+  void checkBackendUpdates()
   void refreshDesktopVersion()
 }

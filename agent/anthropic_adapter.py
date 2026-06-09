@@ -821,6 +821,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
             capture_output=True,
             text=True,
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
@@ -1163,7 +1164,10 @@ def run_oauth_setup_token() -> Optional[str]:
             "Install it with: npm install -g @anthropic-ai/claude-code"
         )
 
-    # Run interactively — stdin/stdout/stderr inherited so user can interact
+    # Run interactively — stdin/stdout/stderr inherited so the user can
+    # complete the OAuth login prompt. Must keep inherited stdin; the TUI-EOF
+    # concern does not apply to an interactive login the user explicitly
+    # invokes.  noqa: subprocess-stdin
     try:
         subprocess.run([claude_path, "setup-token"])
     except (KeyboardInterrupt, EOFError):
@@ -2301,3 +2305,43 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
+
+
+# Keys that belong exclusively to the OpenAI Responses / Codex API shape.
+# The Anthropic Messages SDK (``messages.create()`` / ``messages.stream()``)
+# raises ``TypeError: ... got an unexpected keyword argument`` on any of them.
+_RESPONSES_ONLY_KWARGS = frozenset(
+    {"instructions", "input", "store", "parallel_tool_calls"}
+)
+
+
+def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
+    """Drop Responses-API-only keys before an Anthropic Messages SDK call.
+
+    Defensive boundary guard for #31673: under rare api_mode-flip races
+    (e.g. a concurrent auxiliary call mutating a shared agent between the
+    kwargs build and the stream dispatch), a Responses-shaped payload
+    carrying ``instructions=`` can reach ``messages.stream()`` /
+    ``messages.create()``. The Anthropic SDK rejects it with a
+    non-retryable ``TypeError`` that nukes the whole turn and propagates
+    the entire fallback chain.
+
+    Mutates ``api_kwargs`` in place and returns it. When a foreign key is
+    present we log a WARNING so the underlying race stays visible in the
+    wild instead of being silently papered over.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    leaked = _RESPONSES_ONLY_KWARGS.intersection(api_kwargs)
+    if leaked:
+        for _key in leaked:
+            api_kwargs.pop(_key, None)
+        logger.warning(
+            "%sStripped Responses-only kwarg(s) %s from an Anthropic Messages "
+            "call (api_mode flip race — see #31673). The call will proceed; "
+            "this breadcrumb means a kwargs build ran under a Responses "
+            "api_mode while dispatch ran under anthropic_messages.",
+            log_prefix,
+            sorted(leaked),
+        )
+    return api_kwargs

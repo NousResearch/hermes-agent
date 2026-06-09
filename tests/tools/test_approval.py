@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
+from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
     _smart_approve,
@@ -424,9 +425,91 @@ class TestHermesConfigWriteProtection:
         dangerous, key, desc = detect_dangerous_command("sed --in-place 's/manual/off/' ~/.hermes/config.yaml")
         assert dangerous is True
 
+    def test_sed_in_place_absolute_hermes_home_config(self):
+        config_path = get_hermes_home() / "config.yaml"
+        dangerous, key, desc = detect_dangerous_command(
+            f"sed -i 's/manual/off/' {config_path}"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_sed_in_place_absolute_hermes_home_env(self):
+        env_path = get_hermes_home() / ".env"
+        dangerous, key, desc = detect_dangerous_command(
+            f"sed -i 's/API_KEY=.*/API_KEY=x/' {env_path}"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
     def test_custom_hermes_home(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/config.yaml")
         assert dangerous is True
+
+    def test_perl_in_place_config(self):
+        # perl -i performs the same in-place mutation as sed -i but was not
+        # caught by the -e/-c pattern (which targets code evaluation).
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "perl" in desc.lower()
+
+    def test_perl_in_place_absolute_hermes_home_config(self):
+        config_path = get_hermes_home() / "config.yaml"
+        dangerous, key, desc = detect_dangerous_command(
+            f"perl -i -pe 's/approvals.mode: on/approvals.mode: off/' {config_path}"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "perl" in desc.lower()
+
+    def test_ruby_in_place_config(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "ruby -i -pe 'gsub(/manual/, \"off\")' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_ruby_in_place_absolute_hermes_home_env(self):
+        env_path = get_hermes_home() / ".env"
+        dangerous, key, desc = detect_dangerous_command(
+            f"ruby -i -pe 'gsub(/API_KEY=.*/, \"API_KEY=x\")' {env_path}"
+        )
+        assert dangerous is True
+
+    def test_regular_absolute_config_path_still_uses_project_rule(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed -i 's/a/b/' /srv/app/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_perl_in_place_env(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/SECRET=old/SECRET=new/' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_separate_flag_token(self):
+        # The -i flag does not have to be the first token. `perl -p -i -e`
+        # splits the in-place flag out as its own token after -p; the pattern
+        # must catch it the same as `perl -i -pe`.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -p -i -e 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_backup_suffix(self):
+        # `perl -i.bak` keeps a backup but still mutates the file in place.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i.bak -pe 's/x/y/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_eval_no_inplace_safe(self):
+        # `perl -e` with no -i flag is code evaluation, not file mutation —
+        # the perl/ruby -i pattern must not fire on it.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -wne 'print' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
 
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.

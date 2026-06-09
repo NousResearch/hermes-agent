@@ -442,6 +442,18 @@ class TestDeleteProfile:
         with pytest.raises(FileNotFoundError):
             delete_profile("nonexistent", yes=True)
 
+    def test_rmtree_failure_raises(self, profile_env):
+        profile_dir = create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
+            with pytest.raises(RuntimeError, match="Could not remove profile directory"):
+                delete_profile("coder", yes=True)
+
+        assert profile_dir.is_dir()
+        assert get_active_profile() == "default"
+
 
 # ===================================================================
 # TestListProfiles
@@ -707,6 +719,63 @@ class TestWrapperScript:
         assert "hermes -p redqueen" in content
         assert "%*" in content
         assert "#!/bin/sh" not in content
+
+
+# ===================================================================
+# TestFindAliasForProfile — display-side reverse lookup
+# ===================================================================
+
+class TestFindAliasForProfile:
+    """Tests for find_alias_for_profile() and alias display in list/show."""
+
+    def test_profile_named_alias(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("steve")
+        assert find_alias_for_profile("steve") == "steve"
+
+    def test_custom_alias_name_preferred(self, profile_env, monkeypatch):
+        # qiaobusi -> steve-jobs: the custom alias name must surface, not the
+        # profile name, because that's the command the user actually typed.
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("qiaobusi", target="steve")
+        assert find_alias_for_profile("steve") == "qiaobusi"
+
+    def test_no_alias_returns_none(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import find_alias_for_profile
+        assert find_alias_for_profile("steve") is None
+
+    def test_ignores_unrelated_files(self, profile_env, monkeypatch):
+        # ~/.local/bin commonly holds unrelated binaries; they must not match.
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
+        assert find_alias_for_profile("steve") is None
+
+    def test_custom_alias_on_windows(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("qiaobusi", target="steve")
+        # The .bat extension must be stripped from the returned alias name.
+        assert find_alias_for_profile("steve") == "qiaobusi"
+
+    def test_list_profiles_surfaces_custom_alias(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import (
+            create_profile,
+            create_wrapper_script,
+            list_profiles,
+        )
+        create_profile("steve", no_alias=True)
+        create_wrapper_script("qiaobusi", target="steve")
+        info = next(p for p in list_profiles() if p.name == "steve")
+        assert info.alias_name == "qiaobusi"
+        assert info.alias_path is not None
+        assert info.alias_path.name == "qiaobusi"
 
 
 # ===================================================================

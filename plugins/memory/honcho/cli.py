@@ -416,6 +416,7 @@ def _ensure_sdk_installed() -> bool:
         [sys.executable, "-m", "pip", "install", "honcho-ai>=2.0.1"],
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode == 0:
         print("  Installed.\n")
@@ -878,9 +879,21 @@ def cmd_status(args) -> None:
     write_path = _local_config_path()
 
     if not cfg:
-        print(f"  No Honcho config found at {active_path}")
-        print("  Run 'hermes honcho setup' to configure.\n")
-        return
+        # Config file missing — try env var fallback before giving up.
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig
+            _env_cfg = HonchoClientConfig.from_global_config(host=_host_key())
+            if _env_cfg.api_key or _env_cfg.base_url:
+                # Env var fallback worked — use that config instead.
+                cfg = {"apiKey": _env_cfg.api_key, "enabled": _env_cfg.enabled}
+            else:
+                print(f"  No Honcho config found at {active_path}")
+                print("  Run 'hermes honcho setup' to configure.\n")
+                return
+        except Exception:
+            print(f"  No Honcho config found at {active_path}")
+            print("  Run 'hermes honcho setup' to configure.\n")
+            return
 
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client

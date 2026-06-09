@@ -8,6 +8,8 @@ import requests
 import json
 import time
 import os
+import subprocess
+import sys
 
 
 def safe_nested_get(data, *keys, default="未知"):
@@ -32,9 +34,92 @@ def safe_nested_get(data, *keys, default="未知"):
     return current
 
 
+def call_qwen_api_via_powershell(api_key, model, messages, max_tokens=2000, temperature=0.7):
+    """
+    使用PowerShell调用Qwen API（备用方法，用于解决Python SSL库版本问题）
+    
+    Args:
+        api_key (str): API密钥
+        model (str): 模型名称
+        messages (list): 消息列表
+        max_tokens (int): 最大token数
+        temperature (float): 温度参数
+        
+    Returns:
+        dict: 统一包装格式 {"success": bool, "data": ..., "error": ...}
+    """
+    url = "https://ai-pool.evebattery.com/v1/chat/completions"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature
+    }
+    
+    import tempfile
+    temp_file = None
+    ps_script_file = None
+    try:
+        # 写入payload到临时文件
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=True)
+            temp_file = f.name
+        
+        # 构建PowerShell脚本（使用字符串拼接避免f-string大括号转义问题）
+        ps_script = (
+            "$headers = @{\n"
+            '    "Content-Type" = "application/json"\n'
+            '    "Authorization" = "Bearer ' + api_key + '"\n'
+            "}\n"
+            '$body = Get-Content -Path "' + temp_file + '" -Raw\n'
+            "try {\n"
+            '    $response = Invoke-WebRequest -Uri "' + url + '" -Method POST -Headers $headers -Body $body -TimeoutSec 120\n'
+            "    Write-Output $response.Content\n"
+            "} catch {\n"
+            "    Write-Error $_.Exception.Message\n"
+            "    exit 1\n"
+            "}\n"
+        )
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.ps1', delete=False, encoding='utf-8') as f:
+            f.write(ps_script)
+            ps_script_file = f.name
+        
+        # 执行PowerShell脚本文件
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_script_file],
+            capture_output=True,
+            text=True,
+            timeout=180
+        )
+        
+        if result.returncode == 0:
+            response_data = json.loads(result.stdout)
+            return {"success": True, "data": response_data, "error": None}
+        else:
+            return {"success": False, "data": None, "error": f"PowerShell调用失败: {result.stderr}"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "data": None, "error": "PowerShell调用超时"}
+    except json.JSONDecodeError as e:
+        return {"success": False, "data": None, "error": f"JSON解析失败: {e}"}
+    except Exception as e:
+        return {"success": False, "data": None, "error": f"PowerShell调用异常: {str(e)}"}
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
+        if ps_script_file and os.path.exists(ps_script_file):
+            try:
+                os.unlink(ps_script_file)
+            except:
+                pass
+
+
 def call_qwen_api(api_key, model, messages, max_tokens=2000, temperature=0.7):
     """
-    调用Qwen API
+    调用Qwen API（优先使用requests库，失败时使用PowerShell备用方法）
     
     Args:
         api_key (str): API密钥
@@ -58,12 +143,16 @@ def call_qwen_api(api_key, model, messages, max_tokens=2000, temperature=0.7):
         "temperature": temperature
     }
     
+    # 首先尝试使用requests库
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         response.raise_for_status()
         return {"success": True, "data": response.json(), "error": None}
     except requests.exceptions.RequestException as e:
-        return {"success": False, "data": None, "error": str(e)}
+        # requests库失败，使用PowerShell备用方法
+        print(f"requests库调用失败: {e}")
+        print("尝试使用PowerShell备用方法...")
+        return call_qwen_api_via_powershell(api_key, model, messages, max_tokens, temperature)
     except ValueError as e:
         return {"success": False, "data": None, "error": f"JSON解析失败: {e}"}
 

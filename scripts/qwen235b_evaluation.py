@@ -56,8 +56,8 @@ def main():
         print("\n[3/4] 调用Qwen235B API...")
         api_response = call_qwen_api(api_key, model, messages, max_tokens=2000)
         
-        if "error" in api_response:
-            print(f"[WARN] API调用失败: {api_response['error']}")
+        if not api_response.get("success"):
+            print(f"[WARN] API调用失败: {api_response.get('error', '未知错误')}")
             print("继续使用模拟响应进行评估...")
             # 使用模拟响应
             model_response = """
@@ -93,6 +93,8 @@ def main():
             }
         else:
             print("[OK] API调用成功")
+            # 从成功响应中提取data部分
+            api_response = api_response["data"]
         
         # 步骤4: 评估模型响应
         print("\n[4/4] 评估模型响应...")

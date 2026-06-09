@@ -27,6 +27,7 @@ interface HermesConfigOptions {
 
 export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: HermesConfigOptions) {
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
+  const [voiceTranslateToLanguage, setVoiceTranslateToLanguage] = useState('')
   const [sttEnabled, setSttEnabled] = useState(true)
 
   const refreshHermesConfig = useCallback(async () => {
@@ -64,11 +65,14 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       setCurrentFastMode(prev => (activeSessionIdRef.current ? prev : FAST_TIERS.has(tier.toLowerCase())))
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
+      setVoiceTranslateToLanguage(
+        typeof config.voice?.translate_to_language === 'string' ? config.voice.translate_to_language : ''
+      )
       setSttEnabled(config.stt?.enabled !== false)
     } catch {
       // Config is nice-to-have; chat still works without it.
     }
   }, [activeSessionIdRef, refreshProjectBranch])
 
-  return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
+  return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds, voiceTranslateToLanguage }
 }

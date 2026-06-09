@@ -323,6 +323,30 @@ interface PromptActionsOptions {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+  voiceTranslateToLanguage?: string
+}
+
+function voiceTranslationPrompt(transcript: string, targetLanguage?: string): string {
+  const target = targetLanguage?.trim().toLowerCase()
+
+  if (!target) {
+    return transcript
+  }
+
+  const languageName = target === 'bg' || target === 'bg-bg' || target === 'bulgarian' ? 'български' : targetLanguage
+
+  return [
+    `Действай като професионален преводач и редактор. Преведи следния разпознат от микрофон текст на ${languageName}.`,
+    'Изисквания:',
+    '- Отговори само с крайния превод — без обяснения, увод или кавички.',
+    '- Българският трябва да звучи естествено, граматически правилно и разговорно, не буквално машинно.',
+    '- Запази смисъла, тона, обръщенията, числата, имената и техническите термини.',
+    '- Коригирай очевидни грешки от speech-to-text разпознаването, ако контекстът ги прави ясни.',
+    '- Не използвай руски, освен ако в оригинала има руска дума/име като цитат.',
+    '',
+    'Текст за превод:',
+    transcript
+  ].join('\n')
 }
 
 interface SubmitTextOptions {
@@ -393,7 +417,8 @@ export function usePromptActions({
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
   sttEnabled,
-  updateSessionState
+  updateSessionState,
+  voiceTranslateToLanguage
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
@@ -1371,9 +1396,9 @@ export function usePromptActions({
       const dataUrl = await blobToDataUrl(audio)
       const result = await transcribeAudio(dataUrl, audio.type)
 
-      return result.transcript
+      return voiceTranslationPrompt(result.transcript, voiceTranslateToLanguage)
     },
-    [copy.sttDisabled, sttEnabled]
+    [copy.sttDisabled, sttEnabled, voiceTranslateToLanguage]
   )
 
   const cancelRun = useCallback(async () => {

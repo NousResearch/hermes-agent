@@ -2646,10 +2646,12 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
             tmp.write(audio_bytes)
             temp_path = tmp.name
 
-        from tools.transcription_tools import transcribe_audio
+        from tools.voice_mode import transcribe_recording
 
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, transcribe_audio, temp_path)
+        # Route Desktop dictation through the voice-mode wrapper so silence and
+        # near-silence use the existing Whisper hallucination filter.
+        result = await loop.run_in_executor(None, transcribe_recording, temp_path)
     except HTTPException:
         raise
     except Exception as exc:

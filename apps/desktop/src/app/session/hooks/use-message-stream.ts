@@ -800,7 +800,33 @@ export function useMessageStream({
               }
 
               if (state.awaitingResponse && !state.sawAssistantPayload) {
-                return state
+                // Recovery path for dropped/missed terminal stream events. The
+                // backend is authoritative here: running=false means the turn is
+                // over, so leaving the composer busy would permanently lock the
+                // chat until the Desktop app is restarted. Surface a visible
+                // inline error instead of silently spinning forever.
+                return {
+                  ...state,
+                  messages: [
+                    ...state.messages,
+                    {
+                      id: `assistant-missing-complete-${Date.now()}`,
+                      role: 'assistant' as const,
+                      parts: [],
+                      error:
+                        'Hermes finished this turn without delivering a response event. The chat was unlocked; please retry the message or switch models if this repeats.',
+                      pending: false,
+                      branchGroupId: state.pendingBranchGroup ?? undefined
+                    }
+                  ],
+                  awaitingResponse: false,
+                  busy: false,
+                  pendingBranchGroup: null,
+                  streamId: null,
+                  sawAssistantPayload: true,
+                  needsInput: false,
+                  turnStartedAt: null
+                }
               }
 
               return {

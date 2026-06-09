@@ -564,7 +564,7 @@ export function DesktopController() {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
+  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds, voiceTranslateToLanguage } = useHermesConfig({
     activeSessionIdRef,
     refreshProjectBranch
   })
@@ -848,7 +848,8 @@ export function DesktopController() {
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
     sttEnabled,
-    updateSessionState
+    updateSessionState,
+    voiceTranslateToLanguage
   })
 
   useGatewayBoot({

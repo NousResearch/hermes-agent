@@ -752,7 +752,10 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     body: {
       data_url: dataUrl,
       mime_type: mimeType
-    }
+    },
+    // Accurate local STT models such as large-v3 can take longer than the
+    // default Desktop bridge timeout on CPU-only Windows machines.
+    timeoutMs: 600_000
   })
 }
 

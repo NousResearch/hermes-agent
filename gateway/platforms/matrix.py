@@ -36,6 +36,7 @@ import time
 from dataclasses import dataclass
 
 from html import escape as _html_escape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -415,6 +416,122 @@ class _CryptoStateStore:
     async def find_shared_rooms(self, user_id: str) -> list:
         # Return all joined rooms — simple but correct for a single-user bot.
         return list(self._joined_rooms)
+
+
+class _MatrixHTMLSanitizer(HTMLParser):
+    """Sanitize HTML for Matrix org.matrix.custom.html format.
+
+    Allowed tags and their permitted attributes (based on Matrix spec
+    and the fallback renderer):
+    - a: href
+    - b, strong, i, em, code, pre, blockquote, u, s, strike, del: none
+    - h1-h6, hr, br, p: none
+    - ul, ol, li: none
+    - span, div: none (no style/class allowed)
+    - table, thead, tbody, tr, th, td: none
+    - img: src, alt (but we don't generate img, so we strip it)
+    """
+
+    ALLOWED_TAGS = {
+        "a", "b", "strong", "i", "em", "code", "pre", "blockquote",
+        "u", "s", "strike", "del", "h1", "h2", "h3", "h4", "h5", "h6",
+        "hr", "br", "p", "ul", "ol", "li", "span", "div",
+        "table", "thead", "tbody", "tr", "th", "td",
+    }
+
+    ALLOWED_ATTRS = {
+        "a": {"href"},
+    }
+
+    # Dangerous URL schemes to strip
+    DANGEROUS_SCHEMES = {"javascript", "data", "vbscript"}
+
+    def __init__(self):
+        super().__init__()
+        self.result = []
+        self.tag_stack = []
+
+    def _sanitize_url(self, url: str) -> str:
+        """Strip dangerous URL schemes."""
+        stripped = url.strip()
+        if ":" in stripped:
+            scheme = stripped.split(":", 1)[0].lower().strip()
+            if scheme in self.DANGEROUS_SCHEMES:
+                return ""
+        return stripped.replace('"', "&quot;")
+
+    def handle_starttag(self, tag: str, attrs: list):
+        tag_lower = tag.lower()
+        if tag_lower not in self.ALLOWED_TAGS:
+            return  # Drop disallowed tags entirely
+
+        # Filter attributes
+        safe_attrs = []
+        for name, value in attrs:
+            name_lower = name.lower()
+            if name_lower in self.ALLOWED_ATTRS.get(tag_lower, set()):
+                if name_lower == "href":
+                    value = self._sanitize_url(value)
+                    if value:  # Only keep if not stripped to empty
+                        safe_attrs.append((name, value))
+            elif name_lower == "alt" and tag_lower == "code":
+                # Allow alt on code (pre/code blocks sometimes have it)
+                safe_attrs.append((name, value))
+            # Drop all other attributes (style, class, onclick, etc.)
+
+        # Build tag
+        if safe_attrs:
+            attr_str = " ".join(f'{n}="{v}"' for n, v in safe_attrs)
+            self.result.append(f"<{tag} {attr_str}>")
+        else:
+            self.result.append(f"<{tag}>")
+        self.tag_stack.append(tag_lower)
+
+    def handle_endtag(self, tag: str):
+        tag_lower = tag.lower()
+        if tag_lower in self.ALLOWED_TAGS:
+            self.result.append(f"</{tag}>")
+        if self.tag_stack and self.tag_stack[-1] == tag_lower:
+            self.tag_stack.pop()
+
+    def handle_startendtag(self, tag: str, attrs: list):
+        tag_lower = tag.lower()
+        if tag_lower not in self.ALLOWED_TAGS:
+            return
+        safe_attrs = []
+        for name, value in attrs:
+            name_lower = name.lower()
+            if name_lower in self.ALLOWED_ATTRS.get(tag_lower, set()):
+                if name_lower == "href":
+                    value = self._sanitize_url(value)
+                    if value:
+                        safe_attrs.append((name, value))
+        if safe_attrs:
+            attr_str = " ".join(f'{n}="{v}"' for n, v in safe_attrs)
+            self.result.append(f"<{tag} {attr_str}/>")
+        else:
+            self.result.append(f"<{tag}/>")
+
+    def handle_data(self, data: str):
+        self.result.append(_html_escape(data))
+
+    def handle_entityref(self, name: str):
+        self.result.append(f"&{name};")
+
+    def handle_charref(self, name: str):
+        self.result.append(f"&#{name};")
+
+    def sanitize(self, html: str) -> str:
+        self.result = []
+        self.tag_stack = []
+        self.feed(html)
+        self.close()
+        return "".join(self.result)
+
+
+def _sanitize_matrix_html(html: str) -> str:
+    """Sanitize HTML output for Matrix org.matrix.custom.html format."""
+    return _MatrixHTMLSanitizer().sanitize(html)
 
 
 class MatrixAdapter(BasePlatformAdapter):
@@ -2821,7 +2938,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
-            return html
+            return _sanitize_matrix_html(html)
         except ImportError:
             pass
 

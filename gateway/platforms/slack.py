@@ -1709,12 +1709,19 @@ class SlackAdapter(BasePlatformAdapter):
             return user_id
 
     async def _resolve_channel_info(self, channel_id: str, team_id: str = "") -> Dict[str, Any]:
-        """Resolve a Slack channel ID to its name and privacy flag, with caching."""
+        """Resolve a Slack channel ID to its name and privacy flag, with caching.
+
+        Cache is capped at 100 entries; oldest 50 are evicted when full so stale
+        channel renames eventually cycle out without requiring a restart.
+        """
         if channel_id in self._channel_info_cache:
             return self._channel_info_cache[channel_id]
         default: Dict[str, Any] = {"name": channel_id, "is_private": False}
         if not channel_id or not self._app:
             return default
+        if len(self._channel_info_cache) >= 100:
+            for k in list(self._channel_info_cache)[:50]:
+                del self._channel_info_cache[k]
         try:
             client = self._get_client(team_id) if team_id else self._app.client
             result = await client.conversations_info(channel=channel_id)

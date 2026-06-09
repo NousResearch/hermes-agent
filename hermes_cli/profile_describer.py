@@ -28,13 +28,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from hermes_cli import profiles as profiles_mod
+from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +109,7 @@ def _collect_skills(profile_dir: Path) -> list[str]:
         return []
     names: list[str] = []
     for md in skills_dir.rglob("SKILL.md"):
-        path_str = str(md)
-        if "/.hub/" in path_str or "/.git/" in path_str:
+        if is_excluded_skill_path(md):
             continue
         try:
             rel = md.relative_to(skills_dir)
@@ -201,7 +200,7 @@ def describe_profile(
     skill_list = "\n".join(f"  - {n}" for n in skill_names) or "  (no skills installed)"
     skill_count = sum(
         1 for _ in (profile_dir / "skills").rglob("SKILL.md")
-        if "/.hub/" not in str(_) and "/.git/" not in str(_)
+        if not is_excluded_skill_path(_)
     ) if (profile_dir / "skills").is_dir() else 0
 
     # Read model + provider from the profile's config.

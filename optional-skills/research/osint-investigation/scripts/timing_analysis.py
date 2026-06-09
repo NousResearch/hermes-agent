@@ -19,7 +19,6 @@ import argparse
 import csv
 import datetime as dt
 import json
-import math
 import random
 import statistics
 from collections import defaultdict

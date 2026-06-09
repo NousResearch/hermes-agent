@@ -222,9 +222,12 @@ gateway:
     no_named_sessions:     "Aucune session nommée trouvée.\nUtilisez `/title Ma session` pour nommer la session actuelle, puis `/resume Ma session` pour y revenir plus tard."
     list_header:           "📋 **Sessions nommées**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUsage : `/resume <nom de session>`"
+    list_footer_numbered:  "\nUtilisation : `/resume <nom de session>` ou `/resume <numéro>` (par exemple `/resume 1` pour la plus récente)"
     list_failed:           "Impossible de lister les sessions : {error}"
+    out_of_range:          "L'index de reprise {index} est hors limites.\nUtilisez `/resume` sans arguments pour voir les sessions disponibles."
     not_found:             "Aucune session correspondant à '**{name}**' trouvée.\nUtilisez `/resume` sans argument pour voir les sessions disponibles."
     already_on:            "📌 Déjà sur la session **{name}**."
     switch_failed:         "Échec du changement de session."
@@ -287,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Rien à annuler."
-    removed:               "↩️ {count} message(s) annulé(s).\nSupprimé : « {preview} »"
+    removed:               "↩️ {turns} tour(s) annulé(s) ({count} message(s)).\nSauvegardé dans : « {preview} »\nCopiez/modifiez le texte ci-dessus et envoyez-le pour relancer à partir d'ici."
+    invalid_count:         "Nombre invalide « {arg} » — utilisez /undo ou /undo N."
 
   update:
     platform_not_messaging:  "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."
@@ -339,6 +343,8 @@ gateway:
     label_off:             "Désactivé (texte seulement)"
     label_voice_only:      "Activé (réponse vocale aux messages vocaux)"
     label_all:             "TTS (réponse vocale à tous les messages)"
+    help:                  "{toggle}\n\n**Comment fonctionne /voice**\n• `/voice on` — réponse vocale quand vous envoyez un message vocal\n• `/voice tts` — réponse vocale à *chaque* message\n• `/voice off` — retour aux réponses texte uniquement\n• `/voice status` — afficher le mode actuel\n• `/voice` (sans argument) — bascule rapide entre activé et désactivé{channels}"
+    help_channels:         "\n\n**Salons vocaux en direct (Discord)**\n• Rejoignez d'abord un salon vocal, puis `/voice channel` — je rejoins, j'écoute et je parle mes réponses\n• `/voice leave` — se déconnecter du salon vocal"
 
   yolo:
     disabled:                   "⚠️ Mode YOLO **DÉSACTIVÉ** pour cette session — les commandes dangereuses nécessiteront une approbation."

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.discord import ModelPickerView
+from plugins.platforms.discord.adapter import ModelPickerView
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ async def test_model_picker_clears_controls_before_running_switch_callback():
         current_provider="copilot",
         session_key="session-1",
         on_model_selected=on_model_selected,
-        allowed_user_ids=set(),
+        allowed_user_ids={"123"},  # matches the interaction user; empty = fail-closed
     )
     view._selected_provider = "copilot"
 

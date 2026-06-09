@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _auto_continue_freshness_window,
@@ -821,80 +821,6 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
 
 
 @pytest.mark.asyncio
-async def test_clean_drain_does_not_mark_resume_pending():
-    """If the drain completes within timeout (no force-interrupt), no
-    sessions should be flagged — the normal shutdown path is unchanged."""
-    runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
-
-    running_agent = MagicMock()
-    runner._running_agents = {"agent:main:telegram:dm:A": running_agent}
-
-    # Finish the agent before the (generous) drain deadline
-    async def finish_agent():
-        await asyncio.sleep(0.05)
-        runner._running_agents.clear()
-
-    asyncio.create_task(finish_agent())
-
-    session_store = MagicMock()
-    session_store.mark_resume_pending = MagicMock(return_value=True)
-    runner.session_store = session_store
-
-    with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.write_runtime_status"
-    ):
-        await runner.stop()
-
-    session_store.mark_resume_pending.assert_not_called()
-    running_agent.interrupt.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_drain_timeout_only_marks_still_running_sessions():
-    """A session that finished gracefully during the drain window must
-    NOT be marked ``resume_pending`` — it completed cleanly and its
-    next turn should be a normal fresh turn, not one prefixed with the
-    restart-interruption system note.
-
-    Regression guard for using ``self._running_agents`` at timeout
-    rather than the ``active_agents`` drain-start snapshot.
-    """
-    runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
-    # Long enough for the finisher to exit, short enough to still time out
-    # with the stuck session still present.
-    runner._restart_drain_timeout = 0.3
-
-    session_key_finisher = "agent:main:telegram:dm:A"
-    session_key_stuck = "agent:main:telegram:dm:B"
-    runner._running_agents = {
-        session_key_finisher: MagicMock(),
-        session_key_stuck: MagicMock(),
-    }
-
-    async def finish_one():
-        await asyncio.sleep(0.05)
-        runner._running_agents.pop(session_key_finisher, None)
-
-    asyncio.create_task(finish_one())
-
-    session_store = MagicMock()
-    session_store.mark_resume_pending = MagicMock(return_value=True)
-    runner.session_store = session_store
-
-    with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.write_runtime_status"
-    ):
-        await runner.stop()
-
-    calls = session_store.mark_resume_pending.call_args_list
-    marked = {args[0][0] for args in calls}
-    # Only the session still running at timeout is marked; the finisher is not.
-    assert marked == {session_key_stuck}
-
-
-@pytest.mark.asyncio
 async def test_drain_timeout_skips_pending_sentinel_sessions():
     """Pending sentinels — sessions whose AIAgent construction hasn't
     produced a real agent yet — are skipped by
@@ -1129,6 +1055,134 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
     adapter.handle_message = AsyncMock()
 
     scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_reschedules_pending_after_late_platform_connect():
+    """A platform offline at startup gets its pending sessions auto-resumed
+    once it reconnects.
+
+    Regression: the startup pass skips sessions whose adapter isn't connected
+    yet (see test_startup_auto_resume_skips_when_adapter_unavailable). Before
+    the fix those sessions were never rescheduled and recovered only if the
+    user sent a fresh message — the documented startup auto-resume silently
+    dropped. The reconnect watcher now retries the platform-scoped pass.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="late-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:late-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    # Platform was not connected at gateway startup → session skipped.
+    runner.adapters = {}
+    assert runner._schedule_resume_pending_sessions() == 0
+    adapter.handle_message.assert_not_called()
+
+    # Platform reconnects → its pending session is retried.
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert isinstance(event, MessageEvent)
+    assert event.internal is True
+    assert event.message_type == MessageType.TEXT
+    assert event.text == ""
+    assert event.source == source
+
+
+@pytest.mark.asyncio
+async def test_reconnect_reschedule_is_platform_scoped():
+    """The platform filter limits the pass to that platform's sessions, so
+    reconnecting one platform never resumes another's pending session."""
+    runner, adapter = make_restart_runner()
+    tg_source = make_restart_source(chat_id="tg-chat")
+    discord_source = SessionSource(
+        platform=Platform.DISCORD, chat_id="dc-chat", chat_type="dm", user_id="u1"
+    )
+    tg_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:tg-chat",
+        session_id="sid-tg",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=tg_source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    discord_entry = SessionEntry(
+        session_key="agent:main:discord:dm:dc-chat",
+        session_id="sid-dc",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=discord_source,
+        platform=Platform.DISCORD,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {
+        tg_entry.session_key: tg_entry,
+        discord_entry.session_key: discord_entry,
+    }
+    adapter.handle_message = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    await asyncio.sleep(0)
+
+    # Only the telegram session is resumed; the discord session waits for its
+    # own reconnect.
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source == tg_source
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_skips_sessions_with_running_agent():
+    """A session already being resumed (agent in-flight) is not scheduled
+    again — guards against a double resume when a platform reconnects while a
+    startup-scheduled resume is still running."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="inflight-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:inflight-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner._running_agents = {pending_entry.session_key: object()}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()

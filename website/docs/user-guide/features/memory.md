@@ -128,7 +128,7 @@ When you try to add an entry that would exceed the limit, the tool returns an er
 ```json
 {
   "success": false,
-  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Replace or remove existing entries first.",
+  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Consolidate now: use 'replace' to merge overlapping entries into shorter ones or 'remove' stale or less important entries (see current_entries below), then retry this add — all in this turn.",
   "current_entries": ["..."],
   "usage": "2,100/2,200"
 }
@@ -185,7 +185,7 @@ Beyond MEMORY.md and USER.md, the agent can search its past conversations using 
 hermes sessions list    # Browse past sessions
 ```
 
-See [Session Search Tool](/docs/user-guide/sessions#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
+See [Session Search Tool](/user-guide/sessions#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
 
 ### session_search vs memory
 

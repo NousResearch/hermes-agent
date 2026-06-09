@@ -7,7 +7,8 @@ const {
   bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
-  isWslEnvironment
+  isWslEnvironment,
+  resolveGitBash
 } = require('./bootstrap-platform.cjs')
 
 test('isWslEnvironment detects WSL2 env vars on linux', () => {
@@ -108,4 +109,68 @@ test('packaged electron entrypoints do not require unpackaged npm modules', () =
 
     assert.deepEqual(bareRequires, [], `${entrypoint} has unpackaged runtime requires`)
   }
+})
+
+test('resolveGitBash honors HERMES_GIT_BASH_PATH before probing defaults', () => {
+  const explicit = 'F:\\Git\\bin\\bash.exe'
+  const systemPath = 'C:\\Program Files\\Git\\bin\\bash.exe'
+  const seen = []
+  const result = resolveGitBash({
+    platform: 'win32',
+    env: {
+      HERMES_GIT_BASH_PATH: explicit,
+      ProgramFiles: 'C:\\Program Files'
+    },
+    fileExists(candidate) {
+      seen.push(candidate)
+      return candidate === explicit || candidate === systemPath
+    },
+    findOnPath() {
+      throw new Error('PATH fallback should not run when explicit override exists')
+    }
+  })
+
+  assert.equal(result, explicit)
+  assert.deepEqual(seen, [explicit])
+})
+
+test('resolveGitBash checks installer-managed and standard Windows locations before PATH', () => {
+  const portable = 'C:\\Users\\alice\\AppData\\Local\\hermes\\git\\usr\\bin\\bash.exe'
+  const result = resolveGitBash({
+    platform: 'win32',
+    env: {
+      LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local',
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)'
+    },
+    fileExists(candidate) {
+      return candidate === portable
+    },
+    findOnPath() {
+      throw new Error('PATH fallback should not run when a probed location exists')
+    }
+  })
+
+  assert.equal(result, portable)
+})
+
+test('resolveGitBash falls back to PATH when no known Windows location exists', () => {
+  const pathBash = 'D:\\Tools\\bash.exe'
+  const result = resolveGitBash({
+    platform: 'win32',
+    env: {
+      LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local',
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)'
+    },
+    fileExists() {
+      return false
+    },
+    findOnPath(command) {
+      assert.equal(command, 'bash')
+      return pathBash
+    }
+  })
+
+  assert.equal(result, pathBash)
 })

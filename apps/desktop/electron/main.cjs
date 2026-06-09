@@ -24,7 +24,7 @@ const net = require('node:net')
 const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
-const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
+const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment, resolveGitBash } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
@@ -1165,35 +1165,12 @@ function findSystemPython() {
 // On non-Windows hosts bash is part of the OS and this just returns the
 // first bash on PATH.
 function findGitBash() {
-  if (!IS_WINDOWS) {
-    return findOnPath('bash')
-  }
-
-  // install.ps1 drops PortableGit at %LOCALAPPDATA%\hermes\git\... — checked
-  // first so users who installed via install.ps1 are detected before we
-  // start probing system-wide locations.
-  const localAppData = process.env.LOCALAPPDATA || ''
-  const candidates = []
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'bash.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
-  }
-
-  // Standard Git for Windows install locations.
-  candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'))
-  candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'))
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
-  }
-
-  for (const candidate of candidates) {
-    if (fileExists(candidate)) return candidate
-  }
-
-  // Last resort — bash on PATH (covers WSL bash, MSYS2, custom installs).
-  // On WSL hosts findOnPath itself filters out Windows-binary paths via
-  // isWindowsBinaryPathInWsl, so we won't hand back a wsl.exe shim either.
-  return findOnPath('bash')
+  return resolveGitBash({
+    env: process.env,
+    platform: process.platform,
+    fileExists,
+    findOnPath
+  })
 }
 
 function getVenvPython(venvRoot) {

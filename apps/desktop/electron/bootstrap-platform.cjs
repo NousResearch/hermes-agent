@@ -1,4 +1,5 @@
 const fs = require('node:fs')
+const path = require('node:path')
 
 function isWslEnvironment(env = process.env, platform = process.platform, kernelRelease = null) {
   if (platform !== 'linux') return false
@@ -83,9 +84,45 @@ function detectRemoteDisplay(options = {}) {
   return null
 }
 
+function resolveGitBash(options = {}) {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  const fileExists = options.fileExists ?? fs.existsSync
+  const findOnPath = options.findOnPath ?? (() => null)
+
+  if (platform !== 'win32') {
+    return findOnPath('bash')
+  }
+
+  const pathModule = options.pathModule ?? path.win32
+
+  const custom = String(env.HERMES_GIT_BASH_PATH || '').trim()
+  if (custom && fileExists(custom)) return custom
+
+  const localAppData = env.LOCALAPPDATA || ''
+  const candidates = []
+  if (localAppData) {
+    candidates.push(pathModule.join(localAppData, 'hermes', 'git', 'bin', 'bash.exe'))
+    candidates.push(pathModule.join(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
+  }
+
+  candidates.push(pathModule.join(env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'))
+  candidates.push(pathModule.join(env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'))
+  if (localAppData) {
+    candidates.push(pathModule.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
+  }
+
+  for (const candidate of candidates) {
+    if (fileExists(candidate)) return candidate
+  }
+
+  return findOnPath('bash')
+}
+
 module.exports = {
   bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
-  isWslEnvironment
+  isWslEnvironment,
+  resolveGitBash
 }

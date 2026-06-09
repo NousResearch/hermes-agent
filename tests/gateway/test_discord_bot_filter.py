@@ -4,6 +4,8 @@ import os
 import unittest
 from unittest.mock import MagicMock
 
+from plugins.platforms.discord.adapter import _discord_message_mentions_user
+
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
     """Create a mock Discord author."""
@@ -51,7 +53,7 @@ class TestDiscordBotFilter(unittest.TestCase):
             if allow == "none":
                 return False
             elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+                if not _discord_message_mentions_user(message, client_user):
                     return False
             # "all" falls through
         
@@ -96,6 +98,27 @@ class TestDiscordBotFilter(unittest.TestCase):
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_mentions_accepts_visible_mention_token(self):
+        """Visible <@id> tokens count even when Discord parsed mentions is empty."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content=f"<@{our_user.id}> help", mentions=[])
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_mentions_accepts_visible_nickname_mention_token(self):
+        """Legacy <@!id> Discord mention tokens also count."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content=f"<@!{our_user.id}> help", mentions=[])
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_mentions_rejects_other_visible_mention_token(self):
+        """A visible mention for another user must not wake this bot."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="<@11111> help", mentions=[])
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""

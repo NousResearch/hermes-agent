@@ -125,8 +125,8 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
-    author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
+def make_message(*, channel, content: str, mentions=None, msg_type=None, author=None):
+    author = author or SimpleNamespace(id=42, display_name="Jezza", name="Jezza", bot=False)
     return SimpleNamespace(
         id=123,
         content=content,
@@ -823,6 +823,30 @@ async def test_discord_shared_channel_backfill_prepends_context(adapter, monkeyp
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
     assert event.channel_context == "[Recent channel messages]\n[Alice] context"
+
+
+@pytest.mark.asyncio
+async def test_discord_visible_mention_token_without_parsed_mentions_counts(adapter, monkeypatch):
+    """Bot-authored messages may render <@id> while Discord leaves mentions empty."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["history_backfill"] = False
+
+    bot_user = adapter._client.user
+    other_bot = SimpleNamespace(id=43, display_name="FreeMoney", name="FreeMoney", bot=True)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content=f"<@{bot_user.id}> reconnect the bridge",
+        mentions=[],
+        author=other_bot,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "reconnect the bridge"
 
 
 @pytest.mark.asyncio

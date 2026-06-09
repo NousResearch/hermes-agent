@@ -43,6 +43,14 @@ class TestResolvePath:
         # After expanduser, ~/notes.txt becomes absolute → TERMINAL_CWD ignored
         assert result == Path.home() / "notes.txt"
 
+    def test_shell_escaped_spaces_are_normalized(self, monkeypatch, tmp_path):
+        """macOS shell-style ``\\ `` path input resolves to the literal-space path."""
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        from tools.file_tools import _resolve_path
+
+        result = _resolve_path("Obsidian\\ Vault/notes.txt")
+        assert result == tmp_path / "Obsidian Vault" / "notes.txt"
+
     def test_result_is_resolved(self, monkeypatch, tmp_path):
         """Output path has no '..' components."""
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))

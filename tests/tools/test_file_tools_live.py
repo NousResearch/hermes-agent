@@ -275,6 +275,16 @@ class TestWriteFile:
         assert "charlie" in result.content
         _assert_clean(result.content)
 
+    def test_shell_escaped_space_path_writes_to_literal_space_directory(self, ops, tmp_path):
+        target_dir = tmp_path / "Obsidian Vault"
+        escaped_path = str(target_dir / "note.md").replace(" ", "\\ ")
+
+        result = ops.write_file(escaped_path, "vault note\n")
+
+        assert result.error is None
+        assert (target_dir / "note.md").read_text() == "vault note\n"
+        assert not (tmp_path / "Obsidian\\ Vault").exists()
+
 
 # ── patch_replace ────────────────────────────────────────────────────────
 
@@ -299,6 +309,19 @@ class TestPatchReplace:
         result = ops.patch_replace(path, "line2", "REPLACED")
         assert result.error is None
         assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
+
+    def test_shell_escaped_space_path_patches_literal_space_directory(self, ops, tmp_path):
+        target_dir = tmp_path / "Obsidian Vault"
+        target_dir.mkdir()
+        path = target_dir / "note.md"
+        path.write_text("hello\n")
+        escaped_path = str(path).replace(" ", "\\ ")
+
+        result = ops.patch_replace(escaped_path, "hello", "updated")
+
+        assert result.error is None
+        assert path.read_text() == "updated\n"
+        assert not (tmp_path / "Obsidian\\ Vault").exists()
 
 
 # ── search ───────────────────────────────────────────────────────────────
@@ -372,6 +395,19 @@ class TestExpandPath:
 
     def test_relative_unchanged(self, ops):
         assert ops._expand_path("relative/path.txt") == "relative/path.txt"
+
+    def test_shell_escaped_spaces_are_normalized(self, ops):
+        result = ops._expand_path("~/Obsidian\\ Vault/test.txt")
+        expected = f"{Path.home()}/Obsidian Vault/test.txt"
+        assert result == expected
+        _assert_clean(result)
+
+    def test_native_windows_backslash_space_is_not_unescaped(self, monkeypatch, ops):
+        import tools.file_operations as file_operations
+
+        monkeypatch.setattr(file_operations.sys, "platform", "win32")
+        path = r"C:\dir\ file.txt"
+        assert ops._expand_path(path) == path
 
     def test_bare_tilde(self, ops):
         result = ops._expand_path("~")

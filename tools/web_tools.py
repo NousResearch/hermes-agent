@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "serper"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -162,6 +162,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("serper", _has_env("SERPER_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -237,6 +238,8 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "serper":
+        return _has_env("SERPER_API_KEY")
     return False
 
 
@@ -280,6 +283,7 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "SERPER_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
@@ -837,9 +841,10 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
+        # Dispatch through the web search registry. All providers
+        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl,
+        # xai, serper) now live as plugins; the dispatcher is just a
+        # registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
@@ -975,8 +980,9 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # All web providers (including brave-free, ddgs, searxng, exa,
+            # parallel, tavily, firecrawl, xai, serper) now live as plugins.
+            # The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
             # async (parallel, firecrawl), others sync (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
@@ -1182,11 +1188,11 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "serper"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "serper")
     )
 
 

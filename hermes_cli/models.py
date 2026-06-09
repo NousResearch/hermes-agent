@@ -2618,39 +2618,21 @@ _copilot_context_cache: dict[str, int] = {}
 _copilot_context_cache_time: float = 0.0
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
-# ── Copilot catalog under-report correction ─────────────────────────────────
-# GitHub's Copilot /models catalog advertises ``max_prompt_tokens: 200000`` for
-# the Claude family, but the API does NOT enforce that value — it enforces the
-# model's true ~1M input window. Verified empirically (real POSTs to
-# api.githubcopilot.com/chat/completions, the exact endpoint Hermes uses):
-#
-#     claude-opus-4.8   980,024 tok -> 200 OK   |  1,000,048 tok -> 400 ">1000000 maximum"
-#     claude-opus-4.7   980,019 tok -> 200 OK
-#     claude-opus-4.6   825,011 tok -> 200 OK   (catalog said 200k)
-#     claude-sonnet-4.6 825,012 tok -> 200 OK   (catalog said 200k)
-#
-# Trusting the catalog makes Hermes self-impose a ~5x context handicap that the
-# provider never asked for. We correct the known-false value to the real window.
-#
-# TIER SAFETY: the correction is deliberately narrow. It fires ONLY when the
-# catalog reports the EXACT under-reported value we verified wrong (200000) for a
-# matched model. If a Copilot tier ever reports a different number, or GitHub
-# fixes the catalog, this becomes inert and the catalog value passes through
-# untouched — we never inflate a value GitHub might actually be enforcing.
+# GitHub's Copilot /models catalog reports max_prompt_tokens: 200000 for the
+# Claude family, but the API does not enforce it — it serves the model's true
+# ~1M input window (verified Jun 2026 via live chat/completions probes: opus-4.8
+# accepts 980k tokens, rejects at >1,000,000; opus-4.6/4.7 and sonnet-4.6 accept
+# 800k+). Trusting the catalog self-imposes a ~5x context handicap, so we correct
+# the known-false value. Narrow by design: only the exact under-reported value
+# (200000) for a matched model is lifted, so a tier that reports a different
+# number — or a catalog fix — passes through untouched and is never inflated.
 _COPILOT_UNDERREPORTED_PROMPT = 200000
 _COPILOT_TRUE_PROMPT_WINDOW = 1000000
-# Substrings (lowercased) of model ids known to carry the ~1M window on Copilot.
 _COPILOT_1M_MODEL_MARKERS = ("claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8", "claude-sonnet-4.6")
 
 
 def _correct_copilot_max_prompt(model_id: str, max_prompt: int) -> int:
-    """Correct GitHub's known-false ``max_prompt_tokens`` under-report for Claude.
-
-    Returns the true input window when ``max_prompt`` is the exact verified-wrong
-    catalog value (200000) for a known-1M Claude model; otherwise returns
-    ``max_prompt`` unchanged. See the module-level note for the empirical basis
-    and the tier-safety rationale.
-    """
+    """Lift GitHub's known-false 200000 max_prompt under-report to the real 1M window."""
     if max_prompt != _COPILOT_UNDERREPORTED_PROMPT:
         return max_prompt
     mid = (model_id or "").lower()

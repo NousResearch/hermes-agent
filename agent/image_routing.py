@@ -446,12 +446,22 @@ def _lookup_configured_model_supports_vision(
 def _scan_configured_models_for_vision(models: Any, model: str) -> Optional[bool]:
     if isinstance(models, dict):
         # Supports either {"gpt-5.5": {...}} or {"gpt-5.5": ["text", "image"]}.
+        per_model = models.get(model)
+        if isinstance(per_model, dict):
+            explicit = _coerce_capability_bool(per_model.get("supports_vision"))
+            if explicit is not None:
+                return explicit
+            return _entry_declares_image_input({"id": model, **per_model})
+        if per_model is not None:
+            return _entry_declares_image_input({"id": model, "input": per_model})
         for key, value in models.items():
-            if str(key).strip() != str(model).strip():
+            entry = {"id": key, **value} if isinstance(value, dict) else {"id": key, "input": value}
+            if not _model_slug_matches(entry, model):
                 continue
-            if isinstance(value, dict):
-                return _entry_declares_image_input({"id": key, **value})
-            return _entry_declares_image_input({"id": key, "input": value})
+            explicit = _coerce_capability_bool(entry.get("supports_vision"))
+            if explicit is not None:
+                return explicit
+            return _entry_declares_image_input(entry)
         return None
 
     if isinstance(models, list):
@@ -460,6 +470,9 @@ def _scan_configured_models_for_vision(models: Any, model: str) -> Optional[bool
                 continue
             if not isinstance(entry, dict) or not _model_slug_matches(entry, model):
                 continue
+            explicit = _coerce_capability_bool(entry.get("supports_vision"))
+            if explicit is not None:
+                return explicit
             return _entry_declares_image_input(entry)
     return None
 

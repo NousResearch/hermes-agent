@@ -151,6 +151,12 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
     for platform, adapter in adapters.items():
         try:
+            list_channels = getattr(adapter, "list_channels", None)
+            if callable(list_channels):
+                platform_channels = await list_channels()
+                if platform_channels is not None:
+                    platforms[platform.value] = _normalize_adapter_channels(platform_channels)
+                    continue
             if platform == Platform.DISCORD:
                 platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:
@@ -257,6 +263,34 @@ def _slack_api_error_code(error: Exception) -> Optional[str]:
         except Exception:
             pass
     return None
+
+
+def _normalize_adapter_channels(raw_channels: Any) -> List[Dict[str, Any]]:
+    """Validate and dedupe channel entries returned by an adapter's
+    ``list_channels()`` hook (see ``build_channel_directory``)."""
+    channels: List[Dict[str, Any]] = []
+    seen_ids = set()
+    if not isinstance(raw_channels, list):
+        return channels
+    for raw in raw_channels:
+        if not isinstance(raw, dict):
+            continue
+        channel_id = str(raw.get("id") or "").strip()
+        name = str(raw.get("name") or channel_id).strip()
+        if not channel_id or not name or channel_id in seen_ids:
+            continue
+        entry: Dict[str, Any] = {
+            "id": channel_id,
+            "name": name,
+            "type": str(raw.get("type") or "dm"),
+        }
+        if raw.get("thread_id"):
+            entry["thread_id"] = str(raw.get("thread_id"))
+        if raw.get("guild"):
+            entry["guild"] = str(raw.get("guild"))
+        channels.append(entry)
+        seen_ids.add(channel_id)
+    return channels
 
 
 async def _build_slack(adapter) -> List[Dict[str, Any]]:

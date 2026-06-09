@@ -407,6 +407,21 @@ class CLIAgentSetupMixin:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
+            # Spawn background thread to auto-refresh MCP tools once slow
+            # servers finish connecting (lark ~8s, redis ~10s, ssh ~4s).
+            # Non-blocking — agent starts immediately with whatever tools
+            # were ready; late arrivals are merged in automatically.
+            try:
+                from hermes_cli.mcp_startup import spawn_late_mcp_refresh
+                from model_tools import get_tool_definitions as _gtd
+                from cli import logger as _cli_logger
+                spawn_late_mcp_refresh(
+                    agent=self.agent,
+                    logger=_cli_logger,
+                    get_tool_definitions_fn=_gtd,
+                )
+            except Exception:
+                pass
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),

@@ -943,6 +943,28 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
             _emit("session.info", sid, info)
+            # Spawn background thread to auto-refresh MCP tools once slow
+            # servers finish connecting (lark ~8s, redis ~10s, ssh ~4s).
+            # Non-blocking — agent starts immediately with whatever tools
+            # were ready; late arrivals are merged in automatically.
+            try:
+                from hermes_cli.mcp_startup import spawn_late_mcp_refresh
+                from model_tools import get_tool_definitions as _gtd
+
+                def _on_mcp_refreshed(added: int, total: int) -> None:
+                    try:
+                        _emit("session.info", sid, _session_info(agent, current))
+                    except Exception:
+                        pass
+
+                spawn_late_mcp_refresh(
+                    agent=agent,
+                    logger=logger,
+                    get_tool_definitions_fn=_gtd,
+                    on_refreshed=_on_mcp_refreshed,
+                )
+            except Exception:
+                pass
         except Exception as e:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})

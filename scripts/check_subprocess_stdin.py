@@ -134,6 +134,11 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     fix_mode = "--fix" in sys.argv
     repo_root = Path(__file__).resolve().parent.parent
     os.chdir(repo_root)
@@ -146,7 +151,7 @@ def main() -> int:
             continue
 
         for py_file in dirpath.rglob("*.py"):
-            rel = str(py_file.relative_to(repo_root))
+            rel = py_file.relative_to(repo_root).as_posix()
 
             # Skip known-safe files.
             if rel in KNOWN_SAFE:
@@ -157,19 +162,19 @@ def main() -> int:
             if any(skip.rstrip("/") in parts for skip in SKIP_DIRS):
                 continue
 
-            content = py_file.read_text()
+            content = py_file.read_text(encoding="utf-8")
             violations = find_subprocess_calls(content, rel)
             all_violations.extend(violations)
 
     if all_violations:
-        print(f"❌ {len(all_violations)} subprocess calls missing stdin=:")
+        print(f"[FAIL] {len(all_violations)} subprocess calls missing stdin=:")
         for v in all_violations:
             print(f"  {v['file']}:{v['line']}: {v['snippet']}")
         if fix_mode:
             print("\nAdd stdin=subprocess.DEVNULL to each call above.")
         return 1
     else:
-        print("✅ All TUI-context subprocess calls have explicit stdin=")
+        print("[PASS] All TUI-context subprocess calls have explicit stdin=")
         return 0
 
 

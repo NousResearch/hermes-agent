@@ -175,10 +175,14 @@ def _path_from_file_uri(uri: str) -> Path | None:
 
     # file:///C:/Users/... or C:\Users\...
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+        if os.name == "nt":
+            return Path(path_text[1:])
         drive = path_text[1].lower()
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
         return Path("/mnt") / drive / rest
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+        if os.name == "nt":
+            return Path(path_text)
         drive = path_text[0].lower()
         rest = path_text[2:].lstrip("/\\").replace("\\", "/")
         return Path("/mnt") / drive / rest
@@ -190,12 +194,16 @@ def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
     """Decode resource bytes if they are probably text; return None for binary."""
     if b"\x00" in data and not _is_text_resource(mime_type):
         return None
+    decoded = None
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
-            return data.decode(encoding)
+            decoded = data.decode(encoding)
+            break
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+    if decoded is None:
+        decoded = data.decode("utf-8", errors="replace")
+    return decoded.replace("\r\n", "\n")
 
 
 def _format_resource_text(

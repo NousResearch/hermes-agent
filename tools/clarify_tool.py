@@ -17,7 +17,7 @@ from typing import List, Optional, Callable
 
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
-MAX_CHOICES = 4
+MAX_CHOICES = 6
 
 
 def clarify_tool(
@@ -30,7 +30,7 @@ def clarify_tool(
 
     Args:
         question: The question text to present.
-        choices:  Up to 4 predefined answer choices. When omitted the
+        choices:  Up to 6 predefined answer choices. When omitted the
                   question is purely open-ended.
         callback: Platform-provided function that handles the actual UI
                   interaction. Signature: callback(question, choices) -> str.
@@ -52,7 +52,7 @@ def clarify_tool(
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
-            choices = None  # empty list → open-ended
+            choices = None  # empty list -> open-ended
 
     if callback is None:
         return json.dumps(
@@ -79,7 +79,6 @@ def check_clarify_requirements() -> bool:
     """Clarify tool has no external requirements -- always available."""
     return True
 
-
 # =============================================================================
 # OpenAI Function-Calling Schema
 # =============================================================================
@@ -89,8 +88,8 @@ CLARIFY_SCHEMA = {
     "description": (
         "Ask the user a question when you need clarification, feedback, or a "
         "decision before proceeding. Supports two modes:\n\n"
-        "1. **Multiple choice** — provide up to 4 choices. The user picks one "
-        "or types their own answer via a 5th 'Other' option.\n"
+        "1. **Multiple choice** — provide up to 6 choices. The user picks one "
+        "or types their own answer via a 7th 'Other' option.\n"
         "2. **Open-ended** — omit choices entirely. The user types a free-form "
         "response.\n\n"
         "Use this tool when:\n"
@@ -114,7 +113,7 @@ CLARIFY_SCHEMA = {
                 "items": {"type": "string"},
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "Up to 4 answer choices. Omit this parameter entirely to "
+                    "Up to 6 answer choices. Omit this parameter entirely to "
                     "ask an open-ended question. When provided, the UI "
                     "automatically appends an 'Other (type your answer)' option."
                 ),

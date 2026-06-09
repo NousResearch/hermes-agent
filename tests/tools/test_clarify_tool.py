@@ -190,5 +190,5 @@ class TestClarifySchema:
         assert choices_spec.get("maxItems") == MAX_CHOICES
 
     def test_max_choices_is_four(self):
-        """MAX_CHOICES constant should be 4."""
-        assert MAX_CHOICES == 4
+        """MAX_CHOICES constant should be 6."""
+        assert MAX_CHOICES == 6

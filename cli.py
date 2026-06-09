@@ -461,6 +461,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
+            "max_choices": 6,  # Max predefined choices (plus 'Other' option appended by UI)
         },
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)

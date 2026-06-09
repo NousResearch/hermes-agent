@@ -362,6 +362,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/blockchain/blockchain-evm',
                     'user-guide/skills/optional/blockchain/blockchain-hyperliquid',
+                    'user-guide/skills/optional/blockchain/blockchain-privy',
                     'user-guide/skills/optional/blockchain/blockchain-solana',
                   ],
                 },

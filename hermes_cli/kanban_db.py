@@ -90,6 +90,13 @@ from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
 
+from hermes_cli.kanban_completion_gates import (
+    CompletionGateError,
+    verify_no_stray_artifacts,
+    verify_runtime_floor,
+    verify_workspace_diff,
+)
+
 _log = logging.getLogger(__name__)
 
 
@@ -3559,6 +3566,64 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _v6_7_run_completion_gates(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str],
+    metadata: Optional[dict],
+    now: int,
+) -> list:
+    """Run the v6.7 Tranche 1 completion gates and return any violations.
+
+    Reads task assignee / workspace / started_at from the tasks row and
+    delegates to the pure gate functions in ``kanban_completion_gates``.
+    Returns an empty list when all gates pass.
+
+    Workers may opt out of individual gates via per-call metadata keys
+    (``x_fast_justified``, ``x_no_code``, ``x_stray_ok``) which surface as
+    the gate functions' ``allow_*`` kwargs. Opt-outs are recorded as part
+    of the completed event for audit.
+    """
+    row = conn.execute(
+        "SELECT assignee, workspace_kind, workspace_path, started_at "
+        "  FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return []
+    md = metadata or {}
+    fast_ok = bool(md.get("x_fast_justified"))
+    no_code = bool(md.get("x_no_code"))
+    stray_ok = bool(md.get("x_stray_ok"))
+    violations: list = []
+    floor = verify_runtime_floor(
+        assignee=row["assignee"],
+        started_at=row["started_at"],
+        completed_at=now,
+        allow_below_floor=fast_ok,
+    )
+    if floor is not None:
+        violations.append(floor)
+    diff = verify_workspace_diff(
+        assignee=row["assignee"],
+        workspace_kind=row["workspace_kind"],
+        workspace_path=row["workspace_path"],
+        summary=summary,
+        allow_no_code=no_code,
+    )
+    if diff is not None:
+        violations.append(diff)
+    stray = verify_no_stray_artifacts(
+        workspace_kind=row["workspace_kind"],
+        workspace_path=row["workspace_path"],
+        allow_stray=stray_ok,
+    )
+    if stray is not None:
+        violations.append(stray)
+    return violations
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3625,6 +3690,30 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # v6.7 Tranche 1: kanban_complete verification gates.
+    # See hermes-jarvis#61, #62, #28, #64. Same pre-write-txn pattern as
+    # _verify_created_cards: any violation raises before state changes, so
+    # the worker can retry after fixing the underlying issue.
+    _violations = _v6_7_run_completion_gates(
+        conn, task_id, summary=summary, metadata=metadata, now=now,
+    )
+    if _violations:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_v6_7_gates",
+                {
+                    "violations": [
+                        {"kind": type(v).__name__, "message": v.message()}
+                        for v in _violations
+                    ],
+                    "summary_preview": (
+                        (summary or result or "").strip().splitlines()[0][:200]
+                        if (summary or result) else None
+                    ),
+                },
+            )
+        raise CompletionGateError(_violations, task_id)
 
     with write_txn(conn):
         if expected_run_id is None:

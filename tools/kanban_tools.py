@@ -580,6 +580,16 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.CompletionGateError as gate_err:
+                # v6.7 verification gates rejected. Task state unchanged —
+                # the worker retries kanban_complete after fixing the
+                # underlying issue, OR calls kanban_block honestly. See
+                # hermes-jarvis#61 for why these gates exist.
+                return tool_error(
+                    f"{gate_err}\n"
+                    f"Your task is still in-flight (no state change). "
+                    f"Address each violation above and retry kanban_complete."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"

@@ -623,6 +623,20 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
+            # Fire on_task_block plugin hook — best-effort, never raises.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_task_block",
+                task_id=tid,
+                reason=reason,
+                board=board,
+                db_path=os.environ.get("HERMES_KANBAN_DB"),
+                run_id=run_id,
+                source="tool",
+            )
+        except Exception:
+            logger.warning("on_task_block hook failed", exc_info=True)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()

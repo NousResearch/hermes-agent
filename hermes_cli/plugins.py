@@ -167,6 +167,11 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Kanban task-block lifecycle hook. Fired by tools/kanban_tools.py and
+    # hermes_cli/kanban.py after a task's status is set to blocked.
+    # Kwargs: task_id, reason, board, db_path, run_id, source ("tool" | "cli").
+    # Return value is ignored; failures are logged and swallowed.
+    "on_task_block",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

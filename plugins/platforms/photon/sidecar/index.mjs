@@ -11,21 +11,21 @@
 //   loopback `GET /inbound` (NDJSON). We pause pulling from the stream while
 //   no consumer is attached so a backlog isn't pulled-and-lost before the
 //   gateway connects.
-// Outbound (Hermes -> gRPC): `/send` and `/typing` drive `space.send(...)` /
-//   `space.startTyping()` on the SDK.
+// Outbound (Hermes -> gRPC): `/send` drives `space.send(...)`; `/typing`
+//   sends the documented `typing("start" | "stop")` content builder.
 //
 // Protocol (all requests require `X-Hermes-Sidecar-Token: ${TOKEN}`):
 //   - GET  /inbound    -> 200 NDJSON stream; one JSON event per line, blank
 //                         lines are heartbeats. One consumer at a time.
 //   - POST /healthz     -> {"ok": true}
 //   - POST /send        -> {"ok": true, "messageId": "..."}
-//       body: {"spaceId": "...", "text": "...", "replyTo": "..." | null}
+//       body: {"spaceId": "...", "text": "..."}
 //   - POST /send-attachment -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
-//              "kind": "attachment" | "voice", "replyTo": "..." | null}
+//              "kind": "attachment" | "voice"}
 //   - POST /typing      -> {"ok": true}
-//       body: {"spaceId": "..."}
+//       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
 //
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
@@ -69,14 +69,14 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice, spectrumReply, spectrumText;
+let Spectrum, imessage, attachment, voice, spectrumText, spectrumTyping;
 try {
   ({
     Spectrum,
     attachment,
     voice,
-    reply: spectrumReply,
     text: spectrumText,
+    typing: spectrumTyping,
   } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
@@ -401,28 +401,6 @@ async function resolveSpace(spaceId) {
   throw new Error(`unable to resolve space id ${spaceId}`);
 }
 
-async function maybeReplyContent(space, builder, replyTo) {
-  if (!replyTo) return builder;
-  if (typeof space.getMessage !== "function") {
-    console.error("photon-sidecar: reply requested but space.getMessage is unavailable");
-    return builder;
-  }
-  try {
-    const target = await space.getMessage(replyTo);
-    if (!target) {
-      console.error(`photon-sidecar: reply target ${replyTo} not found; sending normally`);
-      return builder;
-    }
-    return spectrumReply(builder, target);
-  } catch (e) {
-    console.error(
-      "photon-sidecar: failed to resolve reply target; sending normally: " +
-        (e && e.stack ? e.stack : String(e))
-    );
-    return builder;
-  }
-}
-
 const server = http.createServer(async (req, res) => {
   if (req.headers["x-hermes-sidecar-token"] !== sharedToken) {
     return unauthorized(res);
@@ -446,17 +424,16 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, replyTo } = body || {};
+      const { spaceId, text } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
       const space = await resolveSpace(spaceId);
-      const content = await maybeReplyContent(space, spectrumText(text), replyTo);
-      const result = await space.send(content);
+      const result = await space.send(spectrumText(text));
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/send-attachment") {
-      const { spaceId, path, name, mimeType, caption, kind, replyTo } =
+      const { spaceId, path, name, mimeType, caption, kind } =
         body || {};
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
@@ -474,8 +451,7 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const content = await maybeReplyContent(space, builder, replyTo);
-      const result = await space.send(content);
+      const result = await space.send(builder);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.
@@ -492,16 +468,13 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/typing") {
-      const { spaceId } = body || {};
+      const { spaceId, state = "start" } = body || {};
       if (!spaceId) return badRequest(res, "spaceId is required");
-      const space = await resolveSpace(spaceId);
-      if (typeof space.startTyping === "function") {
-        await space.startTyping();
-      } else if (typeof space.typing === "function") {
-        await space.typing();
-      } else if (typeof space.setTyping === "function") {
-        await space.setTyping(true);
+      if (state !== "start" && state !== "stop") {
+        return badRequest(res, "state must be start or stop");
       }
+      const space = await resolveSpace(spaceId);
+      await space.send(spectrumTyping(state));
       return ok(res, {});
     }
     res.statusCode = 404;

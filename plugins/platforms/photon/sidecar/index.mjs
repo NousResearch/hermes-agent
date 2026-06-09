@@ -52,9 +52,9 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice;
+let Spectrum, imessage, attachment, textContent, voice;
 try {
-  ({ Spectrum, attachment, voice } = await import("spectrum-ts"));
+  ({ Spectrum, attachment, text: textContent, voice } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
@@ -131,6 +131,15 @@ function ok(res, data) {
 }
 
 async function resolveSpace(spaceId) {
+  if (imessage && typeof spaceId === "string" && spaceId.startsWith("any;-;")) {
+    const address = spaceId.slice("any;-;".length);
+    if (address) {
+      const im = imessage(app);
+      if (typeof im.space === "function") {
+        return await im.space(address);
+      }
+    }
+  }
   // spectrum-ts exposes the same Space methods via `app.space(spaceId)` /
   // narrowed helpers; we fall back through a few accessor shapes to
   // tolerate small SDK API drift.
@@ -178,9 +187,8 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "spaceId and text are required");
       }
       const space = await resolveSpace(spaceId);
-      const result = replyTo
-        ? await space.send(text, { replyTo })
-        : await space.send(text);
+      const content = textContent ? textContent(text) : text;
+      const result = await space.send(content);
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/send-attachment") {
@@ -202,16 +210,13 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const sendOpts = replyTo ? { replyTo } : undefined;
-      const result = sendOpts
-        ? await space.send(builder, sendOpts)
-        : await space.send(builder);
+      const result = await space.send(builder);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.
       if (caption && typeof caption === "string") {
         try {
-          await space.send(caption);
+          await space.send(textContent ? textContent(caption) : caption);
         } catch (e) {
           console.error(
             "photon-sidecar: attachment sent but caption failed: " +

@@ -105,6 +105,8 @@ _DEFAULT_MENTION_PATTERNS = [
     r"(?<![\w@])@?hermes\b[,:\-]?",
 ]
 
+_PHONE_SPACE_RE = re.compile(r"^\+?\d{7,15}$")
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers — also used by check_fn / standalone send
@@ -670,7 +672,9 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, content, reply_to=reply_to)
+        return await self._sidecar_send(
+            self._normalize_space_id(chat_id), content, reply_to=reply_to
+        )
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -696,7 +700,10 @@ class PhotonAdapter(BasePlatformAdapter):
             # Couldn't fetch the URL — fall back to sending it as text.
             return await super().send_image(chat_id, image_url, caption, reply_to)
         return await self._sidecar_send_attachment(
-            chat_id, local_path, caption=caption, reply_to=reply_to,
+            self._normalize_space_id(chat_id),
+            local_path,
+            caption=caption,
+            reply_to=reply_to,
         )
 
     async def send_image_file(
@@ -709,7 +716,10 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, image_path, caption=caption, reply_to=reply_to,
+            self._normalize_space_id(chat_id),
+            image_path,
+            caption=caption,
+            reply_to=reply_to,
         )
 
     async def send_voice(
@@ -722,7 +732,11 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, audio_path, caption=caption, reply_to=reply_to, kind="voice",
+            self._normalize_space_id(chat_id),
+            audio_path,
+            caption=caption,
+            reply_to=reply_to,
+            kind="voice",
         )
 
     async def send_video(
@@ -735,7 +749,10 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, video_path, caption=caption, reply_to=reply_to,
+            self._normalize_space_id(chat_id),
+            video_path,
+            caption=caption,
+            reply_to=reply_to,
         )
 
     async def send_document(
@@ -749,7 +766,11 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, file_path, name=file_name, caption=caption, reply_to=reply_to,
+            self._normalize_space_id(chat_id),
+            file_path,
+            name=file_name,
+            caption=caption,
+            reply_to=reply_to,
         )
 
     async def send_animation(
@@ -767,7 +788,9 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         try:
-            await self._sidecar_call("/typing", {"spaceId": chat_id})
+            await self._sidecar_call(
+                "/typing", {"spaceId": self._normalize_space_id(chat_id)}
+            )
         except Exception as e:
             logger.debug("[photon] send_typing failed: %s", e)
 
@@ -778,8 +801,20 @@ class PhotonAdapter(BasePlatformAdapter):
         `any;+;<guid>` for groups). We surface that shape directly so
         the gateway has something to show in session pickers / logs.
         """
+        chat_id = self._normalize_space_id(chat_id)
         chat_type = "group" if ";+;" in chat_id else "dm"
         return {"name": chat_id, "type": chat_type, "id": chat_id}
+
+    @staticmethod
+    def _normalize_space_id(chat_id: str) -> str:
+        """Accept E.164/raw phone targets and convert them to Photon DM ids."""
+        value = str(chat_id or "").strip()
+        if not value or ";" in value:
+            return value
+        if _PHONE_SPACE_RE.fullmatch(value):
+            digits = value.lstrip("+")
+            return f"any;-;+{digits}"
+        return value
 
     async def _sidecar_send(
         self, space_id: str, text: str, *, reply_to: Optional[str] = None,

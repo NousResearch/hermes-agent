@@ -447,3 +447,73 @@ class TestTickProfilePartition:
             assert seq_thread.startswith("cron-seq"), seq_thread
         par_thread = next(t for job_id, t in calls if job_id == "c")
         assert par_thread.startswith("cron-parallel"), par_thread
+
+
+class TestProfileHomeThreadIsolation:
+    """Regression tests for the race where a profile job's home leaked to
+    parallel-pool threads via the module-level _hermes_home global.
+
+    When a profile job (sequential pool) runs at the same time as a non-profile
+    job (parallel pool), the parallel job must still resolve scripts and config
+    from the default HERMES_HOME, not from the profile's home directory.
+    """
+
+    def test_parallel_thread_sees_default_home_during_profile_job(
+        self, tmp_path, monkeypatch
+    ):
+        """A parallel job must see the default HERMES_HOME even while a profile
+        job's ContextVar override is active on another thread."""
+        import contextvars
+        import threading
+        import cron.scheduler as sched
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        default_home = tmp_path / "default"
+        profile_home = tmp_path / "profile"
+        default_home.mkdir()
+        profile_home.mkdir()
+
+        # Leave _hermes_home=None so the ContextVar / env-var path is exercised.
+        monkeypatch.setattr(sched, "_hermes_home", None)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+        seen_in_parallel: list = []
+        profile_active = threading.Event()
+        parallel_done = threading.Event()
+
+        def profile_job():
+            # Mirror the real execution model: run inside ctx.run() and set
+            # the ContextVar within that context, as _job_profile_context does.
+            ctx = contextvars.copy_context()
+
+            def _inner():
+                token = set_hermes_home_override(profile_home)
+                try:
+                    profile_active.set()   # signal: override active on this thread
+                    parallel_done.wait(timeout=5)
+                finally:
+                    reset_hermes_home_override(token)
+
+            ctx.run(_inner)
+
+        def parallel_job():
+            profile_active.wait(timeout=5)
+            # Must resolve the default home, not the profile home
+            seen_in_parallel.append(sched._get_hermes_home())
+            parallel_done.set()
+
+        t1 = threading.Thread(target=profile_job, name="seq-profile")
+        t2 = threading.Thread(target=parallel_job, name="parallel-job")
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert len(seen_in_parallel) == 1, "parallel job did not run"
+        assert seen_in_parallel[0] == default_home, (
+            f"Parallel job saw {seen_in_parallel[0]!r} instead of "
+            f"{default_home!r} — profile home leaked across threads"
+        )

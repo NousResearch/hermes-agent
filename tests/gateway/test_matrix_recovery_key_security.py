@@ -178,6 +178,12 @@ class TestRecoveryKeySecurity:
         key_in_logs = any("test-recovery-key-abc123" in c for c in warning_calls)
         assert not key_in_logs, "Recovery key leaked into logs on file write failure"
 
+        # Warning should mention setting MATRIX_RECOVERY_KEY as remediation
+        has_remediation = any("MATRIX_RECOVERY_KEY" in c for c in warning_calls)
+        assert has_remediation, (
+            "Warning should tell user to set MATRIX_RECOVERY_KEY on write failure"
+        )
+
         await adapter.disconnect()
 
     @pytest.mark.asyncio
@@ -213,7 +219,7 @@ class TestRecoveryKeySecurity:
 
     @pytest.mark.asyncio
     async def test_escape_hatch_env_prints_key_to_stderr(self, tmp_path):
-        """HERMES_PRINT_GENERATED_SECRETS_ONCE=1 should print key to stderr."""
+        """HERMES_PRINT_GENERATED_SECRETS=1 should print key to stderr."""
         adapter, _, _, fake_mautrix = _setup_adapter_and_stubs(tmp_path)
         from gateway.platforms import matrix as matrix_mod
 
@@ -222,7 +228,7 @@ class TestRecoveryKeySecurity:
              patch.object(matrix_mod, "_STORE_DIR", tmp_path), \
              patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
              patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
-             patch.dict(os.environ, {"HERMES_PRINT_GENERATED_SECRETS_ONCE": "1"}), \
+             patch.dict(os.environ, {"HERMES_PRINT_GENERATED_SECRETS": "1"}), \
              patch("builtins.print") as mock_print:
             await adapter.connect()
 
@@ -235,13 +241,36 @@ class TestRecoveryKeySecurity:
         await adapter.disconnect()
 
     @pytest.mark.asyncio
-    async def test_no_escape_hatch_no_stderr_print(self, tmp_path):
-        """Without HERMES_PRINT_GENERATED_SECRETS_ONCE, key should NOT go to stderr."""
+    async def test_escape_hatch_legacy_once_suffix_still_works(self, tmp_path):
+        """HERMES_PRINT_GENERATED_SECRETS_ONCE (legacy) should still work."""
         adapter, _, _, fake_mautrix = _setup_adapter_and_stubs(tmp_path)
         from gateway.platforms import matrix as matrix_mod
 
-        # Ensure the env var is NOT set
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+             patch.dict("sys.modules", fake_mautrix), \
+             patch.object(matrix_mod, "_STORE_DIR", tmp_path), \
+             patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
+             patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
+             patch.dict(os.environ, {"HERMES_PRINT_GENERATED_SECRETS_ONCE": "1"}), \
+             patch("builtins.print") as mock_print:
+            await adapter.connect()
+
+        key_printed = any(
+            "test-recovery-key-abc123" in str(c) for c in mock_print.call_args_list
+        )
+        assert key_printed, "Legacy _ONCE suffix should still trigger escape hatch"
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_no_escape_hatch_no_stderr_print(self, tmp_path):
+        """Without escape hatch env vars, key should NOT go to stderr."""
+        adapter, _, _, fake_mautrix = _setup_adapter_and_stubs(tmp_path)
+        from gateway.platforms import matrix as matrix_mod
+
+        # Ensure both env vars are NOT set
         env = os.environ.copy()
+        env.pop("HERMES_PRINT_GENERATED_SECRETS", None)
         env.pop("HERMES_PRINT_GENERATED_SECRETS_ONCE", None)
 
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \

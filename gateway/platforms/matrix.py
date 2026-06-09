@@ -956,15 +956,11 @@ class MatrixAdapter(BasePlatformAdapter):
                             except OSError as write_exc:
                                 logger.warning(
                                     "Matrix: could not write recovery key to "
-                                    "file (%s). Printing to stderr as fallback.",
+                                    "file (%s). The key has NOT been persisted — "
+                                    "set MATRIX_RECOVERY_KEY in your environment "
+                                    "before the next restart to avoid losing "
+                                    "cross-signing state.",
                                     write_exc,
-                                )
-                                import sys
-                                print(
-                                    f"\nMatrix RECOVERY KEY for {client.mxid}: "
-                                    f"{new_recovery_key}\nSet MATRIX_RECOVERY_KEY "
-                                    f"and delete this output from your terminal.\n",
-                                    file=sys.stderr,
                                 )
                             else:
                                 logger.warning(
@@ -975,8 +971,14 @@ class MatrixAdapter(BasePlatformAdapter):
                                     client.mxid,
                                     secret_file,
                                 )
-                            # Escape hatch: print to stderr if explicitly opted in
-                            if os.environ.get("HERMES_PRINT_GENERATED_SECRETS_ONCE"):
+                            # Escape hatch: print to stderr if explicitly opted in.
+                            # Accepts both HERMES_PRINT_GENERATED_SECRETS and the
+                            # legacy _ONCE suffix for backward compatibility.
+                            if os.environ.get(
+                                "HERMES_PRINT_GENERATED_SECRETS"
+                            ) or os.environ.get(
+                                "HERMES_PRINT_GENERATED_SECRETS_ONCE"
+                            ):
                                 import sys
                                 print(
                                     f"\nMatrix RECOVERY KEY for {client.mxid}: "

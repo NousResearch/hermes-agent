@@ -476,6 +476,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._forum_command_registered: set[int] = set()
         # Lock per la registrazione sicura dei comandi nei forum supergroup
         self._forum_lock = asyncio.Lock()
+        # chat_id → guest_query_id for Bot API 10.0 guest replies
+        self._pending_guest_queries: Dict[str, str] = {}
+        # chat IDs that are guest-mode only (bot not a member)
+        self._guest_only_chats: set = set()
+        # accumulated send() content for guest chats; flushed via answerGuestQuery in on_processing_complete
+        self._guest_reply_buffer: Dict[str, str] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
@@ -1591,7 +1597,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             try:
                 await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=[*Update.ALL_TYPES, "guest_message"],
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
                 )
@@ -2098,6 +2104,15 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle guest_message updates (Bot API 10.0 — not yet in PTB typed layer;
+            # the raw payload arrives in update.api_kwargs["guest_message"]).
+            try:
+                from telegram.ext import TypeHandler as _TypeHandler
+                self._app.add_handler(
+                    _TypeHandler(Update, self._handle_guest_message_update), group=1
+                )
+            except Exception as _th_err:
+                logger.warning("[%s] Could not register guest_message TypeHandler: %s", self.name, _th_err)
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -2160,7 +2175,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     url_path=webhook_path,
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=[*Update.ALL_TYPES, "guest_message"],
                     drop_pending_updates=True,
                 )
                 self._webhook_mode = True
@@ -2193,7 +2208,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_error_callback_ref = _polling_error_callback
 
                 await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
+                    allowed_updates=[*Update.ALL_TYPES, "guest_message"],
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
@@ -2368,6 +2383,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     for chunk in chunks
                 ]
             
+            # Bot API 10.0 guest reply: keep only the last send() content (the final answer).
+            # Earlier send() calls carry thinking/tool-progress text; the stream consumer
+            # always issues one final send() with the complete response, which overwrites them.
+            if self._pending_guest_queries.get(chat_id) is not None or chat_id in self._guest_only_chats:
+                self._guest_reply_buffer[chat_id] = content
+                return SendResult(success=True, message_id=None)
+
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
@@ -2628,6 +2650,10 @@ class TelegramAdapter(BasePlatformAdapter):
         message in place. If the edit fails (message deleted, too old, etc.)
         we drop the cached id and send fresh.
         """
+        # Guest chats have no existing message to edit and status messages would
+        # consume the one-shot query_id before the real answer is ready.
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
         key = (str(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
@@ -3062,6 +3088,10 @@ class TelegramAdapter(BasePlatformAdapter):
         final ``sendMessage``/``sendRichMessage`` is what the user receives in
         their history).
         """
+        # Guest chats: draft streaming requires an existing message to animate;
+        # the bot is not a member, so suppress silently.
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
         if not self._bot:
             return SendResult(success=False, error="not_connected")
 
@@ -5897,6 +5927,56 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _handle_guest_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle guest_message updates (Bot API 10.0 guest bot feature).
+
+        Telegram delivers @mentions from chats the bot hasn't joined via the
+        ``guest_message`` update field.  PTB doesn't know this field yet so it
+        lands in ``update.api_kwargs``.  We parse the raw payload, store the
+        ``guest_query_id`` so ``send()`` can call ``answerGuestQuery``, then
+        route the message through the normal text-processing pipeline.
+        """
+        if not self._telegram_guest_mode():
+            return
+        raw_gm = update.api_kwargs.get("guest_message") if update.api_kwargs else None
+        if not raw_gm or not isinstance(raw_gm, dict):
+            return
+        logger.info("[%s] guest_message update received (update_id=%s)", self.name, update.update_id)
+
+        guest_query_id = raw_gm.get("guest_query_id")
+        if not guest_query_id:
+            logger.warning("[%s] guest_message missing guest_query_id, skipping", self.name)
+            return
+
+        try:
+            msg = Message.de_json(raw_gm, self._bot)
+        except Exception as exc:
+            logger.warning("[%s] Failed to parse guest_message payload: %s", self.name, exc)
+            return
+        if not msg:
+            return
+
+        text = msg.text or getattr(msg, "caption", None) or ""
+        if not text.strip():
+            return
+
+        chat_id_str = str(msg.chat.id) if msg.chat else ""
+        if not chat_id_str:
+            return
+
+        # Store guest_query_id so send() uses answerGuestQuery for the reply.
+        self._pending_guest_queries[chat_id_str] = guest_query_id
+        self._guest_only_chats.add(chat_id_str)
+
+        if not self._should_process_message(msg):
+            self._pending_guest_queries.pop(chat_id_str, None)
+            return
+
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(event.text)
+        event = self._apply_telegram_group_observe_attribution(event)
+        self._enqueue_text_event(event)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -6809,6 +6889,36 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
+        # Flush buffered guest reply via answerGuestQuery (Bot API 10.0).
+        # All send() / send_draft() / send_or_update_status() calls during processing
+        # were silently buffered; we fire a single answerGuestQuery here with the
+        # complete response so the user sees the full answer, not a status fragment.
+        _gc_id = str(getattr(event.source, "chat_id", None) or "")
+        if _gc_id:
+            _guest_qid = self._pending_guest_queries.pop(_gc_id, None)
+            _buffered = self._guest_reply_buffer.pop(_gc_id, "")
+            self._guest_only_chats.discard(_gc_id)
+            if _guest_qid and self._bot:
+                _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
+                _plain = _plain[:4096] or "​"  # zero-width space if somehow empty
+                _gq_result = {
+                    "type": "article",
+                    "id": "reply",
+                    "title": "Reply",
+                    "input_message_content": {"message_text": _plain},
+                }
+                try:
+                    await self._bot.do_api_request(
+                        "answerGuestQuery",
+                        api_kwargs={"guest_query_id": _guest_qid, "result": _gq_result},
+                    )
+                    logger.info("[%s] answerGuestQuery flushed (chat=%s)", self.name, _gc_id)
+                except Exception as _flush_err:
+                    logger.warning(
+                        "[%s] answerGuestQuery flush failed (chat=%s): %s",
+                        self.name, _gc_id, _flush_err,
+                    )
+
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)

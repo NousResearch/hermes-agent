@@ -233,6 +233,48 @@ class GatewayStreamConsumer:
                 pass
         return await self.adapter.edit_message(**kwargs)
 
+    def _l2_guard_blocked(self, content: str):
+        """Helm L2 outbound secret simulation guard for direct adapter sends.
+
+        LOCAL, DEFAULT-OFF. Returns a ``SendResult``-shaped blocked result when
+        the gate is armed (``HERMES_L2_SECRET_SIMULATION``) and the fake
+        sentinel is present in ``content``; otherwise ``None`` so streaming
+        delivery proceeds untouched. Every direct ``adapter.send``/
+        ``adapter.send_draft`` in this consumer routes through here so the
+        streaming path can't bypass the chokepoint that guards DeliveryRouter.
+        """
+        from gateway.outbound_secret_simulation import (
+            blocked_send_result,
+            guard_outbound,
+        )
+
+        verdict = guard_outbound(
+            content,
+            platform=getattr(getattr(self.adapter, "platform", None), "value", None),
+            target=self.chat_id,
+            metadata=self.metadata,
+        )
+        if verdict is None:
+            return None
+        logger.warning(
+            "L2 secret simulation blocked streaming send (chat=%s)", self.chat_id
+        )
+        return blocked_send_result(verdict)
+
+    async def _adapter_send(self, *, content: str, **kwargs):
+        """``adapter.send`` wrapped with the L2 secret-simulation guard."""
+        blocked = self._l2_guard_blocked(content)
+        if blocked is not None:
+            return blocked
+        return await self.adapter.send(content=content, **kwargs)
+
+    async def _adapter_send_draft(self, *, content: str, **kwargs):
+        """``adapter.send_draft`` wrapped with the L2 secret-simulation guard."""
+        blocked = self._l2_guard_blocked(content)
+        if blocked is not None:
+            return blocked
+        return await self.adapter.send_draft(content=content, **kwargs)
+
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
@@ -693,7 +735,7 @@ class GatewayStreamConsumer:
             return reply_to_id
         try:
             meta = dict(self.metadata) if self.metadata else {}
-            result = await self.adapter.send(
+            result = await self._adapter_send(
                 chat_id=self.chat_id,
                 content=text,
                 reply_to=reply_to_id,
@@ -812,7 +854,7 @@ class GatewayStreamConsumer:
             # Try sending with one retry on flood-control errors.
             result = None
             for attempt in range(2):
-                result = await self.adapter.send(
+                result = await self._adapter_send(
                     chat_id=self.chat_id,
                     content=chunk,
                     metadata=self.metadata,
@@ -941,7 +983,7 @@ class GatewayStreamConsumer:
             self._use_draft_streaming = False
             return False
         try:
-            result = await self.adapter.send_draft(
+            result = await self._adapter_send_draft(
                 chat_id=self.chat_id,
                 draft_id=self._draft_id,
                 content=text,
@@ -989,7 +1031,7 @@ class GatewayStreamConsumer:
         if not tail.strip():
             return
         try:
-            result = await self.adapter.send(
+            result = await self._adapter_send(
                 chat_id=self.chat_id,
                 content=tail,
                 metadata=self.metadata,
@@ -1025,7 +1067,7 @@ class GatewayStreamConsumer:
         if not text.strip():
             return False
         try:
-            result = await self.adapter.send(
+            result = await self._adapter_send(
                 chat_id=self.chat_id,
                 content=text,
                 metadata=self.metadata,
@@ -1082,7 +1124,7 @@ class GatewayStreamConsumer:
         """
         old_message_id = self._message_id
         try:
-            result = await self.adapter.send(
+            result = await self._adapter_send(
                 chat_id=self.chat_id,
                 content=text,
                 metadata=self.metadata,
@@ -1307,7 +1349,7 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
-                result = await self.adapter.send(
+                result = await self._adapter_send(
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,

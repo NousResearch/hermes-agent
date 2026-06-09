@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Dict, Optional, Any, List, Union, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -394,10 +394,71 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
+    # Helm L2 outbound secret simulation (LOCAL, DEFAULT-OFF). No-op unless
+    # HERMES_L2_SECRET_SIMULATION is armed; when armed and the fake sentinel is
+    # present, block here — before any send_or_update_status/adapter send — and
+    # return a SendResult-shaped blocked result so this direct path can't bypass
+    # the same chokepoint that guards DeliveryRouter and send_message_tool.
+    from gateway.outbound_secret_simulation import (
+        blocked_send_result as _l2_blocked_result,
+        guard_outbound as _l2_guard,
+    )
+    _l2 = _l2_guard(
+        content,
+        platform=getattr(getattr(adapter, "platform", None), "value", None),
+        target=chat_id,
+        metadata=metadata,
+    )
+    if _l2 is not None:
+        logger.warning(
+            "L2 secret simulation blocked status send (chat=%s, status_key=%s)",
+            chat_id,
+            status_key,
+        )
+        return _l2_blocked_result(_l2)
+
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
     return await adapter.send(chat_id, content, metadata=metadata)
+
+
+_L2_METADATA_UNSET = object()
+
+
+async def _adapter_send_with_l2_guard(adapter, chat_id, content, *, metadata=_L2_METADATA_UNSET, **kwargs):
+    """adapter.send wrapper enforcing the Helm L2 outbound secret simulation.
+
+    LOCAL, DEFAULT-OFF: a no-op unless HERMES_L2_SECRET_SIMULATION is armed. When
+    armed and the fake sentinel is present in ``content``, block here — before any
+    live adapter/platform send — and return a SendResult-shaped blocked result so
+    direct run.py text-send paths can't bypass the same chokepoint that already
+    guards DeliveryRouter, send_message_tool, and the status seam above.
+    Otherwise call ``adapter.send`` exactly as before, preserving positional and
+    keyword behavior (``metadata`` plus any extra kwargs such as ``reply_to``).
+    """
+    from gateway.outbound_secret_simulation import (
+        blocked_send_result as _l2_blocked_result,
+        guard_outbound as _l2_guard,
+    )
+    _guard_metadata = (
+        None
+        if metadata is _L2_METADATA_UNSET
+        else cast(Optional[Dict[str, Any]], metadata)
+    )
+    _l2 = _l2_guard(
+        content,
+        platform=getattr(getattr(adapter, "platform", None), "value", None),
+        target=chat_id,
+        metadata=_guard_metadata,
+    )
+    if _l2 is not None:
+        logger.warning("L2 secret simulation blocked adapter send (chat=%s)", chat_id)
+        return _l2_blocked_result(_l2)
+    send_kwargs = dict(kwargs)
+    if metadata is not _L2_METADATA_UNSET:
+        send_kwargs["metadata"] = metadata
+    return await adapter.send(chat_id, content, **send_kwargs)
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -3785,7 +3846,7 @@ class GatewayRunner:
                     adapter=adapter,
                 )
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                result = await _adapter_send_with_l2_guard(adapter, chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -3840,9 +3901,9 @@ class GatewayRunner:
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await _adapter_send_with_l2_guard(adapter, str(home.chat_id), msg, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await _adapter_send_with_l2_guard(adapter, str(home.chat_id), msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
@@ -5045,7 +5106,8 @@ class GatewayRunner:
         if effective_thread_id:
             send_metadata["thread_id"] = effective_thread_id
         try:
-            result = await adapter.send(
+            result = await _adapter_send_with_l2_guard(
+                adapter,
                 chat_id=str(home.chat_id),
                 content=response_text,
                 metadata=send_metadata or None,
@@ -5500,8 +5562,8 @@ class GatewayRunner:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
+                            await _adapter_send_with_l2_guard(
+                                adapter, sub["chat_id"], msg, metadata=metadata,
                             )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
@@ -7367,7 +7429,7 @@ class GatewayRunner:
                     exc_info=True,
                 )
 
-        await adapter.send(source.chat_id, content, metadata=metadata)
+        await _adapter_send_with_l2_guard(adapter, source.chat_id, content, metadata=metadata)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -7457,7 +7519,8 @@ class GatewayRunner:
                 if code:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
-                        await adapter.send(
+                        await _adapter_send_with_l2_guard(
+                            adapter,
                             source.chat_id,
                             f"Hi~ I don't recognize you yet!\n\n"
                             f"Here's your pairing code: `{code}`\n\n"
@@ -7467,7 +7530,8 @@ class GatewayRunner:
                 else:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
-                        await adapter.send(
+                        await _adapter_send_with_l2_guard(
+                            adapter,
                             source.chat_id,
                             "Too many pairing requests right now~ "
                             "Please try again later!"
@@ -8655,7 +8719,8 @@ class GatewayRunner:
                             )
                             if self._has_setup_skill():
                                 _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
-                            await _stt_adapter.send(
+                            await _adapter_send_with_l2_guard(
+                                _stt_adapter,
                                 source.chat_id,
                                 _stt_msg,
                                 metadata=_stt_meta,
@@ -8762,7 +8827,8 @@ class GatewayRunner:
                 if _ctx_result.blocked:
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
-                        await _adapter.send(
+                        await _adapter_send_with_l2_guard(
+                            _adapter,
                             source.chat_id,
                             "\n".join(_ctx_result.warnings) or "Context injection refused.",
                         )
@@ -9000,7 +9066,8 @@ class GatewayRunner:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
                             pass
-                        await adapter.send(
+                        await _adapter_send_with_l2_guard(
+                            adapter,
                             source.chat_id, notice,
                             metadata=self._thread_metadata_for_source(source),
                         )
@@ -9325,7 +9392,7 @@ class GatewayRunner:
                                         try:
                                             _adapter = self.adapters.get(source.platform)
                                             if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
+                                                await _adapter_send_with_l2_guard(_adapter, source.chat_id, _warn_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
                                             logger.warning(
                                                 "Failed to deliver compression-failure warning to user: %s",
@@ -9349,7 +9416,7 @@ class GatewayRunner:
                                         try:
                                             _adapter = self.adapters.get(source.platform)
                                             if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
+                                                await _adapter_send_with_l2_guard(_adapter, source.chat_id, _aux_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
                                             logger.warning(
                                                 "Failed to deliver aux-model-fallback notice to user: %s",
@@ -9831,7 +9898,8 @@ class GatewayRunner:
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
-                            await _foot_adapter.send(
+                            await _adapter_send_with_l2_guard(
+                                _foot_adapter,
                                 source.chat_id,
                                 _footer_line,
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
@@ -11714,7 +11782,7 @@ class GatewayRunner:
         except Exception:
             metadata = None
 
-        result = await adapter.send(source.chat_id, message, metadata=metadata)
+        result = await _adapter_send_with_l2_guard(adapter, source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):
             logger.warning(
                 "goal continuation: status send failed: %s",
@@ -12179,7 +12247,21 @@ class GatewayRunner:
             channel = adapter._client.get_channel(text_ch_id)
             if channel:
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+                voice_echo = f"**[Voice]** <@{user_id}>: {safe_text}"
+                # Discord channel object, not an adapter send seam \u2014 outside the
+                # _adapter_send_with_l2_guard helper's (adapter, chat_id, content)
+                # shape. Call the shared L2 guard directly so this direct
+                # channel.send can't bypass the outbound secret simulation.
+                # LOCAL, DEFAULT-OFF: no-op unless HERMES_L2_SECRET_SIMULATION is
+                # armed and the fake sentinel is present in the echoed content.
+                from gateway.outbound_secret_simulation import guard_outbound as _l2_guard
+                if _l2_guard(voice_echo, platform="discord", target=str(text_ch_id)) is None:
+                    await channel.send(voice_echo)
+                else:
+                    logger.warning(
+                        "L2 secret simulation blocked voice transcript echo (channel=%s)",
+                        text_ch_id,
+                    )
         except Exception:
             pass
 
@@ -12571,7 +12653,8 @@ class GatewayRunner:
                 user_config=user_config,
             )
             if not runtime_kwargs.get("api_key"):
-                await adapter.send(
+                await _adapter_send_with_l2_guard(
+                    adapter,
                     source.chat_id,
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
                     metadata=_thread_metadata,
@@ -12664,13 +12747,15 @@ class GatewayRunner:
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
 
                 if text_content:
-                    await adapter.send(
+                    await _adapter_send_with_l2_guard(
+                        adapter,
                         chat_id=source.chat_id,
                         content=header + text_content,
                         metadata=_thread_metadata,
                     )
                 elif not images and not media_files:
-                    await adapter.send(
+                    await _adapter_send_with_l2_guard(
+                        adapter,
                         chat_id=source.chat_id,
                         content=header + "(No response generated)",
                         metadata=_thread_metadata,
@@ -12727,7 +12812,8 @@ class GatewayRunner:
                         pass
             else:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                await adapter.send(
+                await _adapter_send_with_l2_guard(
+                    adapter,
                     chat_id=source.chat_id,
                     content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
                     metadata=_thread_metadata,
@@ -12736,7 +12822,8 @@ class GatewayRunner:
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
             try:
-                await adapter.send(
+                await _adapter_send_with_l2_guard(
+                    adapter,
                     chat_id=source.chat_id,
                     content=f"❌ Background task {task_id} failed: {e}",
                     metadata=_thread_metadata,
@@ -13292,7 +13379,8 @@ class GatewayRunner:
 
         message_id = None
         try:
-            send_result = await adapter.send(
+            send_result = await _adapter_send_with_l2_guard(
+                adapter,
                 source.chat_id,
                 "System topic for Hermes commands and status.",
                 metadata={"thread_id": str(thread_id)},
@@ -15176,7 +15264,7 @@ class GatewayRunner:
             chunks = [clean[i:i + max_chunk] for i in range(0, len(clean), max_chunk)]
             for chunk in chunks:
                 try:
-                    await adapter.send(chat_id, f"```\n{chunk}\n```", metadata=metadata)
+                    await _adapter_send_with_l2_guard(adapter, chat_id, f"```\n{chunk}\n```", metadata=metadata)
                 except Exception as e:
                     logger.debug("Update stream send failed: %s", e)
 
@@ -15199,9 +15287,10 @@ class GatewayRunner:
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
-                        await adapter.send(chat_id, "✅ Hermes update finished.", metadata=metadata)
+                        await _adapter_send_with_l2_guard(adapter, chat_id, "✅ Hermes update finished.", metadata=metadata)
                     else:
-                        await adapter.send(
+                        await _adapter_send_with_l2_guard(
+                            adapter,
                             chat_id,
                             "❌ Hermes update failed (exit code {}).".format(exit_code),
                             metadata=metadata,
@@ -15262,7 +15351,8 @@ class GatewayRunner:
                                 logger.debug("Button-based update prompt failed: %s", btn_err)
                         if not sent_buttons:
                             default_hint = f" (default: {default})" if default else ""
-                            await adapter.send(
+                            await _adapter_send_with_l2_guard(
+                                adapter,
                                 chat_id,
                                 f"⚕ **Update needs your input:**\n\n"
                                 f"{prompt_text}{default_hint}\n\n"
@@ -15289,7 +15379,8 @@ class GatewayRunner:
             exit_code_path.write_text("124")
             await _flush_buffer()
             try:
-                await adapter.send(
+                await _adapter_send_with_l2_guard(
+                    adapter,
                     chat_id,
                     "❌ Hermes update timed out after 30 minutes.",
                     metadata=metadata,
@@ -15380,7 +15471,7 @@ class GatewayRunner:
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(chat_id, msg, metadata=metadata)
+                await _adapter_send_with_l2_guard(adapter, chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
                     platform_str,
@@ -15440,7 +15531,8 @@ class GatewayRunner:
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
+            result = await _adapter_send_with_l2_guard(
+                adapter,
                 str(chat_id),
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=metadata,
@@ -15510,9 +15602,9 @@ class GatewayRunner:
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                    result = await _adapter_send_with_l2_guard(adapter, str(home.chat_id), message, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), message)
+                    result = await _adapter_send_with_l2_guard(adapter, str(home.chat_id), message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
@@ -16006,7 +16098,7 @@ class GatewayRunner:
                     if adapter and chat_id:
                         try:
                             send_meta = {"thread_id": thread_id} if thread_id else None
-                            await adapter.send(chat_id, message_text, metadata=send_meta)
+                            await _adapter_send_with_l2_guard(adapter, chat_id, message_text, metadata=send_meta)
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
                 break
@@ -16027,7 +16119,7 @@ class GatewayRunner:
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None
-                        await adapter.send(chat_id, message_text, metadata=send_meta)
+                        await _adapter_send_with_l2_guard(adapter, chat_id, message_text, metadata=send_meta)
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
 
@@ -17247,9 +17339,10 @@ class GatewayRunner:
                     _cleanup_msg_ids.append(str(result.message_id))
 
             async def _send_progress_text(text: str):
-                result = await adapter.send(
-                    chat_id=source.chat_id,
-                    content=text,
+                result = await _adapter_send_with_l2_guard(
+                    adapter,
+                    source.chat_id,
+                    text,
                     reply_to=_progress_reply_to,
                     metadata=_progress_metadata,
                 )
@@ -17394,9 +17487,10 @@ class GatewayRunner:
                                 _last_edit_ts = time.monotonic()
                             else:
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
+                            _flood_result = await _adapter_send_with_l2_guard(
+                                adapter,
+                                source.chat_id,
+                                msg,
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
@@ -17410,17 +17504,19 @@ class GatewayRunner:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=full_text,
+                            result = await _adapter_send_with_l2_guard(
+                                adapter,
+                                source.chat_id,
+                                full_text,
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
+                            result = await _adapter_send_with_l2_guard(
+                                adapter,
+                                source.chat_id,
+                                msg,
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
@@ -17721,7 +17817,8 @@ class GatewayRunner:
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 safe_schedule_threadsafe(
-                    _status_adapter.send(
+                    _adapter_send_with_l2_guard(
+                        _status_adapter,
                         _status_chat_id,
                         text,
                         metadata=_status_thread_metadata,
@@ -17822,7 +17919,8 @@ class GatewayRunner:
                 if not _status_adapter or not _run_still_current():
                     return
                 safe_schedule_threadsafe(
-                    _status_adapter.send(
+                    _adapter_send_with_l2_guard(
+                        _status_adapter,
                         _status_chat_id,
                         message,
                         metadata=_status_thread_metadata,
@@ -18058,7 +18156,8 @@ class GatewayRunner:
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
-                        _status_adapter.send(
+                        _adapter_send_with_l2_guard(
+                            _status_adapter,
                             _status_chat_id,
                             msg,
                             metadata=_status_thread_metadata,
@@ -18591,7 +18690,8 @@ class GatewayRunner:
                             logger.debug("Heartbeat edit failed: %s", _ee)
                             _notify_res = None
                     if not (_notify_res and getattr(_notify_res, "success", False)):
-                        _notify_res = await _notify_adapter.send(
+                        _notify_res = await _adapter_send_with_l2_guard(
+                            _notify_adapter,
                             source.chat_id,
                             _heartbeat_text,
                             metadata=_status_thread_metadata,
@@ -18688,7 +18788,8 @@ class GatewayRunner:
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
                             try:
-                                await _warn_adapter.send(
+                                await _adapter_send_with_l2_guard(
+                                    _warn_adapter,
                                     source.chat_id,
                                     f"⚠️ No activity for {_elapsed_warn} min. "
                                     f"If the agent does not respond soon, it will "
@@ -18926,7 +19027,8 @@ class GatewayRunner:
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
+                            await _adapter_send_with_l2_guard(
+                                adapter,
                                 source.chat_id,
                                 first_response,
                                 metadata=_status_thread_metadata,

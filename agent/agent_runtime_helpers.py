@@ -48,7 +48,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "delegate_task", "tool_search"}
 )
 
 

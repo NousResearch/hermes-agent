@@ -14,12 +14,13 @@ pkgs.buildNpmPackage (npm // {
 
   buildPhase = ''
     # Build from web/ so vite.config.ts and tsconfig resolve correctly.
-    # The workspace root's node_modules/ is at ../node_modules/.
     cd web
     node ../node_modules/typescript/bin/tsc -b
+    # npm keeps vite under the web workspace's node_modules because the
+    # root workspace does not depend on it. Use the workspace-local binary.
     # outDir in vite.config.ts points to ../hermes_cli/web_dist for the
     # monorepo layout.  Override with --outDir dist for the nix build.
-    node ../node_modules/vite/bin/vite.js build --outDir dist
+    node node_modules/vite/bin/vite.js build --outDir dist
 
     # Return to source root so installPhase paths are correct.
     cd ..

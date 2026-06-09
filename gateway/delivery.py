@@ -315,7 +315,26 @@ class DeliveryRouter:
         
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
-        
+
+        # Helm L2 outbound secret simulation (LOCAL, DEFAULT-OFF). No-op unless
+        # HERMES_L2_SECRET_SIMULATION is armed; when armed and the fake sentinel
+        # is present, block here — before any adapter send — and return a
+        # redacted result.
+        from gateway.outbound_secret_simulation import evaluate_outbound as _l2_eval
+        _l2 = _l2_eval(
+            content,
+            platform=target.platform.value,
+            target=target.chat_id,
+            metadata=metadata,
+        )
+        if _l2.blocked:
+            logger.warning(
+                "L2 secret simulation blocked delivery to %s (chat=%s)",
+                target.platform.value,
+                target.chat_id,
+            )
+            return _l2.to_delivery_result()
+
         # Guard: truncate oversized cron output to stay within platform limits
         if len(content) > MAX_PLATFORM_OUTPUT:
             job_id = (metadata or {}).get("job_id", "unknown")

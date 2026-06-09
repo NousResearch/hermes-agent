@@ -138,6 +138,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+        _record_block(id="core.task_completion_guidance", content=TASK_COMPLETION_GUIDANCE, surface="core", tier="stable", authority=1000, scope="global", origin="agent.prompt_builder.TASK_COMPLETION_GUIDANCE", trust="trusted", cache_policy="stable", labels={"tool", "workflow", "safety"})
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
@@ -268,6 +269,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _probe_line = get_environment_probe_line()
             if _probe_line:
                 stable_parts.append(_probe_line)
+                _record_block(id="environment.python_toolchain_probe", content=_probe_line, surface="environment", tier="stable", authority=925, scope="session", origin="tools.env_probe.get_environment_probe_line", trust="derived", cache_policy="stable", labels={"environment", "python", "toolchain"})
         except Exception:
             # Probe failure must never block prompt build.
             pass

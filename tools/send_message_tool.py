@@ -183,6 +183,16 @@ def _handle_send(args):
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
+
+    # Helm L2 outbound secret simulation (LOCAL, DEFAULT-OFF). No-op unless
+    # HERMES_L2_SECRET_SIMULATION is armed. When armed and the fake sentinel is
+    # present in the outbound text, block here — before any channel resolution
+    # or live platform send — and return a redacted repair payload.
+    from gateway.outbound_secret_simulation import evaluate_outbound as _l2_eval
+    _l2 = _l2_eval(message, platform=platform_name, target=target)
+    if _l2.blocked:
+        return json.dumps(_l2.repair_payload)
+
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
@@ -502,6 +512,17 @@ async def _send_via_adapter(
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
     """
+    # Helm L2 outbound secret simulation (LOCAL, DEFAULT-OFF). This is the
+    # deepest direct-adapter send helper; the normal send path is already guarded
+    # earlier in send_message_tool, but guard here too so future callers reaching
+    # _send_via_adapter directly cannot bypass the chokepoint. No-op unless
+    # HERMES_L2_SECRET_SIMULATION is armed and the fake sentinel is present.
+    from gateway.outbound_secret_simulation import guard_outbound as _l2_guard
+    platform_label = platform.value if hasattr(platform, "value") else str(platform)
+    _l2 = _l2_guard(chunk, platform=platform_label, target=chat_id)
+    if _l2 is not None:
+        return _l2.repair_payload
+
     runner = None
     try:
         from gateway.run import _gateway_runner_ref

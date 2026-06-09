@@ -8,7 +8,10 @@ from hermes_cli.compose_gen import (
     generate_compose,
     host_profile_path,
     isolated_clients,
+    isolated_profile_names,
+    main,
     render,
+    render_isolated_list,
 )
 
 
@@ -81,3 +84,108 @@ class TestGenerate:
         assert "hermes-bravo" in parsed["services"]
         # round-trips to the same structure (header is comments only)
         assert parsed["services"]["hermes-bravo"]["container_name"] == "hermes-bravo"
+
+
+class TestIsolatedList:
+    """The exclusion artifact (`isolated.list`) the boot gate consumes."""
+
+    def test_profile_names_all(self):
+        # Profile names of every isolation: container client, file order.
+        assert isolated_profile_names(_registry()) == ("bravo", "charlie")
+
+    def test_profile_names_env_filtered(self):
+        assert isolated_profile_names(_registry(), env="prod") == ("bravo",)
+        assert isolated_profile_names(_registry(), env="dev") == ("charlie",)
+
+    def test_profile_names_distinct_from_client_name(self):
+        # The exclusion set keys on the on-disk PROFILE, not the client name —
+        # that's what the boot reconcile and s6 slot (gateway-<profile>) use.
+        reg = parse_registry({"clients": [
+            {"name": "acme-bot", "profile": "acme", "env": "prod",
+             "telegram_token_ref": "T", "isolation": "container"},
+        ]})
+        assert isolated_profile_names(reg) == ("acme",)
+
+    def test_render_one_profile_per_line_trailing_newline(self):
+        text = render_isolated_list(_registry())
+        assert text == "bravo\ncharlie\n"
+
+    def test_render_empty_when_none_isolated(self):
+        reg = parse_registry({"clients": [
+            {"name": "alpha", "env": "prod", "telegram_token_ref": "A"},
+        ]})
+        # Empty file (no isolated clients) — boot hook treats this as
+        # "nothing to exclude", i.e. today's seed-everything behavior.
+        assert render_isolated_list(reg) == ""
+
+
+def _write_registry(tmp_path):
+    """Write a minimal registry file and return its path."""
+    reg_path = tmp_path / "clients.yaml"
+    reg_path.write_text(
+        "clients:\n"
+        "  - {name: alpha, env: prod, telegram_token_ref: A}\n"
+        "  - {name: bravo, env: prod, telegram_token_ref: B, isolation: container}\n",
+        encoding="utf-8",
+    )
+    return reg_path
+
+
+class TestMainOutputArtifacts:
+    """`--output` writes BOTH the compose file and the sibling isolated.list."""
+
+    def test_output_writes_compose_and_isolated_list(self, tmp_path):
+        reg_path = _write_registry(tmp_path)
+        data_root = tmp_path / "data-prod"
+        data_root.mkdir()
+        out = tmp_path / "docker-compose.clients.yml"
+
+        rc = main([
+            "--registry", str(reg_path),
+            "--data-root", str(data_root),
+            "--output", str(out),
+        ])
+        assert rc == 0
+
+        compose = yaml.safe_load(out.read_text())
+        assert set(compose["services"]) == {"hermes-bravo"}
+
+        # The sibling exclusion artifact must list the isolated profile so the
+        # boot gate keeps it OUT of the shared gateway (no double-run).
+        isolated_list = data_root / "isolated.list"
+        assert isolated_list.read_text() == "bravo\n"
+
+    def test_output_isolated_list_empty_when_none(self, tmp_path):
+        reg_path = tmp_path / "clients.yaml"
+        reg_path.write_text(
+            "clients:\n"
+            "  - {name: alpha, env: prod, telegram_token_ref: A}\n",
+            encoding="utf-8",
+        )
+        data_root = tmp_path / "data-prod"
+        data_root.mkdir()
+        out = tmp_path / "docker-compose.clients.yml"
+
+        rc = main([
+            "--registry", str(reg_path),
+            "--data-root", str(data_root),
+            "--output", str(out),
+        ])
+        assert rc == 0
+        # isolated.list is still written (empty) so the gate sees a definitive
+        # "nothing isolated" rather than a missing-file ambiguity.
+        assert (data_root / "isolated.list").read_text() == ""
+
+    def test_stdout_mode_writes_no_isolated_list(self, tmp_path, capsys):
+        reg_path = _write_registry(tmp_path)
+        data_root = tmp_path / "data-prod"
+        data_root.mkdir()
+
+        rc = main([
+            "--registry", str(reg_path),
+            "--data-root", str(data_root),
+        ])
+        assert rc == 0
+        # No --output → stdout only; no artifact side effects on disk.
+        assert not (data_root / "isolated.list").exists()
+        assert "hermes-bravo" in capsys.readouterr().out

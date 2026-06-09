@@ -1,0 +1,167 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Registry gate: enforce the client registry against the s6 scandir on boot.
+#
+# This is the *mechanical* half of the "never run a bot twice" invariant
+# (compose_gen.py only documents it; this hook enforces it at runtime).
+#
+# What it does, ONLY when a client registry is configured
+# ($HERMES_CLIENTS_REGISTRY points at a readable file):
+#
+#   (a) Excludes per-profile gateways for clients marked `isolation: container`
+#       from the SHARED gateway. 02-reconcile-profiles seeds + (when prior
+#       state was "running") auto-starts a gateway-<profile> slot for EVERY
+#       on-disk profile, registry-unaware. An isolated client is supposed to
+#       run in its OWN container (see hermes_cli/compose_gen.py); if the shared
+#       gateway also runs it, the bot polls Telegram twice -> 409 Conflict and
+#       both bots flap. So for each isolated profile we tear its slot back down
+#       and remove it from the scandir BEFORE s6-svscan starts the user tree.
+#
+#   (b) Emits a `DRIFT:` warning for any on-disk profile under profiles/ that
+#       is NOT present in the registry. Visibility only -- this hook NEVER
+#       deletes a profile's data or its gateway for drift; an unregistered
+#       profile keeps running exactly as today. Operators grep DRIFT: to find
+#       profiles that escaped the declarative control plane.
+#
+# Ordering: runs AFTER 02 (profile reconcile) and 03 (volume service seed) so
+# every gateway-<profile> slot already exists in the scandir. CRITICAL timing:
+# all cont-init.d hooks run BEFORE s6-svscan brings the dynamic /run/service
+# user tree up, so removing an isolated slot here happens before it could have
+# started -- there is no double-run window. (s6-svstat/s6-svc are still safe to
+# call against an already-published slot during cont-init; they no-op if
+# s6-supervise hasn't attached yet.)
+#
+# Safety / backward-compat:
+#   * NO REGISTRY CONFIGURED -> pure no-op. With $HERMES_CLIENTS_REGISTRY unset
+#     or the file absent we fall straight through to today's behavior (02 seeds
+#     and runs everything). This is the prod-default: the repo compose does not
+#     set the var, so merging this changes nothing for existing deployments.
+#   * Best-effort: any failure logs a warning and we still `exit 0`. A missing
+#     registry tool, an unreadable file, or a failed teardown must never wedge
+#     container boot -- a bot that runs is recoverable; a wedged boot is not.
+#   * Idempotent: removing an already-absent slot is a no-op; re-running is safe.
+#
+# Role gate: like 02 and 03, only the GATEWAY container owns per-profile
+# gateways. The dashboard container shares the volume + image but runs no
+# gateways, so there is nothing to gate there.
+# shellcheck source=docker/hermes-role.sh disable=SC1091
+. /opt/hermes/docker/hermes-role.sh
+if [ "$(hermes_role)" = dashboard ]; then
+    echo "registry-gate: dashboard role -- skipping (no gateways to gate here)"
+    exit 0
+fi
+
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+SCANDIR=/run/service
+PROFILES_DIR="$HERMES_HOME/profiles"
+PYTHON=/opt/hermes/.venv/bin/python
+
+# --- Resolve the registry path -------------------------------------------
+# $HERMES_CLIENTS_REGISTRY is the single switch. Unset/absent -> no-op (today's
+# behavior). We don't invent a default path: acting on the wrong file is worse
+# than not acting (see hermes_cli.clients.resolve_registry_path).
+REGISTRY="${HERMES_CLIENTS_REGISTRY:-}"
+if [ -z "$REGISTRY" ]; then
+    echo "registry-gate: \$HERMES_CLIENTS_REGISTRY unset -- no-op (seed/run everything)"
+    exit 0
+fi
+if [ ! -f "$REGISTRY" ]; then
+    echo "registry-gate: registry '$REGISTRY' not found -- no-op (seed/run everything)"
+    exit 0
+fi
+
+# Optional env scope. compose_gen writes isolated.list with `--env` on a host;
+# mirror that here when HERMES_CLIENTS_ENV is set, else consider ALL envs so we
+# never UNDER-exclude (failing toward "don't double-run" is the safe direction).
+ENV_ARG="${HERMES_CLIENTS_ENV:-}"
+
+# --- Compute the isolated-profile exclusion set --------------------------
+# Source of truth is the registry, resolved through the same code the compose
+# generator uses (hermes_cli.compose_gen.isolated_profile_names) so the boot
+# gate and the generated docker-compose.clients.yml can never disagree. Run as
+# hermes (the registry/secrets are hermes-owned) and keep failures soft.
+isolated=""
+if [ -x "$PYTHON" ]; then
+    isolated=$(
+        HERMES_CLIENTS_REGISTRY="$REGISTRY" HERMES_CLIENTS_ENV="$ENV_ARG" \
+        s6-setuidgid hermes "$PYTHON" - <<'PYEOF' 2>/dev/null || true
+import os, sys
+try:
+    from hermes_cli.clients import load_registry
+    from hermes_cli.compose_gen import isolated_profile_names
+    env = os.environ.get("HERMES_CLIENTS_ENV") or None
+    reg = load_registry(os.environ["HERMES_CLIENTS_REGISTRY"])
+    for name in isolated_profile_names(reg, env):
+        print(name)
+except Exception as exc:  # pragma: no cover - best-effort boot step
+    print(f"registry-gate: could not derive isolated set: {exc}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+    )
+else
+    echo "registry-gate: $PYTHON missing -- cannot read registry; no-op"
+    exit 0
+fi
+
+# Fallback: if the registry read produced nothing but a compose-gen artifact
+# exists on the volume, honor it. (Belt-and-braces: a host that ran compose_gen
+# but whose container can't import the registry still gets the exclusion.)
+if [ -z "$isolated" ] && [ -f "$HERMES_HOME/isolated.list" ]; then
+    isolated=$(cat "$HERMES_HOME/isolated.list" 2>/dev/null || true)
+    [ -n "$isolated" ] && echo "registry-gate: using $HERMES_HOME/isolated.list fallback"
+fi
+
+# --- (a) Exclude isolated profiles from the shared gateway ----------------
+if [ -n "$isolated" ]; then
+    for profile in $isolated; do
+        slot="$SCANDIR/gateway-$profile"
+        [ -e "$slot" ] || continue
+        echo "registry-gate: excluding isolated profile '$profile' from the shared gateway"
+        # Best effort: ask s6 to bring it down + leave it down, then remove the
+        # slot from the scandir so s6-svscan never starts it. The -d is harmless
+        # if s6-supervise hasn't attached yet (cont-init runs pre-scan).
+        s6-svc -d "$slot" 2>/dev/null || true
+        rm -rf "$slot" 2>/dev/null || \
+            echo "registry-gate: WARN could not remove $slot"
+    done
+    # Tell s6-svscan the scandir changed so the removals take effect on scan.
+    s6-svscanctl -a "$SCANDIR" 2>/dev/null || \
+        echo "registry-gate: WARN rescan signal failed"
+else
+    echo "registry-gate: no isolated clients -- nothing to exclude"
+fi
+
+# --- (b) Drift visibility: on-disk profiles absent from the registry ------
+# Pure reporting. We compare directory names under profiles/ against the
+# registry's declared profiles and print one DRIFT: line per stray. The
+# default (root) profile is implicit and never drift.
+if [ -d "$PROFILES_DIR" ] && [ -x "$PYTHON" ]; then
+    HERMES_CLIENTS_REGISTRY="$REGISTRY" PROFILES_DIR="$PROFILES_DIR" \
+    s6-setuidgid hermes "$PYTHON" - <<'PYEOF' 2>/dev/null || \
+        echo "registry-gate: WARN drift scan failed (continuing)"
+import os, sys
+from pathlib import Path
+try:
+    from hermes_cli.clients import load_registry
+    reg = load_registry(os.environ["HERMES_CLIENTS_REGISTRY"])
+    known = {c.profile for c in reg.clients} | {"default"}
+    pdir = Path(os.environ["PROFILES_DIR"])
+    for entry in sorted(pdir.iterdir()):
+        if not entry.is_dir():
+            continue
+        # Mirror the reconciler's "real profile" marker so backups / partial
+        # restores don't masquerade as drift.
+        if not (entry / "SOUL.md").exists():
+            continue
+        if entry.name not in known:
+            print(
+                f"DRIFT: profile '{entry.name}' is on disk but absent from the "
+                f"client registry (still running; not deleted)"
+            )
+except Exception as exc:  # pragma: no cover - best-effort boot step
+    print(f"registry-gate: drift scan error: {exc}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+fi
+
+exit 0

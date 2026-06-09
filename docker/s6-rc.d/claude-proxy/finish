@@ -1,0 +1,24 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Claude proxy finish script. Companion to ./run.
+#
+# In the DASHBOARD role ./run exits 0 immediately (the proxy is gateway-only).
+# Without this finish script s6-supervise would restart that clean exit in a
+# tight loop. Exiting 125 here marks the slot as permanently failed ("do not
+# restart"), so in the dashboard container s6-svstat shows claude-proxy down --
+# matching reality (no proxy, no log-lock contention).
+#
+# In the GATEWAY role the proxy is a real long-running service: if it ever exits
+# or is killed we WANT s6-supervise to restart it, so we exit non-125.
+#
+# Finish args: $1=run-exit-code $2=signal-num $3=service-dir $4=run-pgid. See
+# servicedir(7).
+# shellcheck source=docker/hermes-role.sh disable=SC1091
+. /opt/hermes/docker/hermes-role.sh
+if [ "$(hermes_role)" = dashboard ]; then
+    # Dashboard role -- permanent-failure marker; slot stays down.
+    exit 125
+fi
+
+# Gateway role -- allow s6-supervise to restart on crash.
+exit 0

@@ -46,6 +46,18 @@ seeded=""
 for svc in "$SERVICES_SRC"/*; do
     [ -d "$svc" ] || continue
     name=$(basename "$svc")
+    # claude-proxy is now BAKED INTO THE IMAGE as the s6-rc static service
+    # docker/s6-rc.d/claude-proxy (Phase 3). The repo is the source of truth;
+    # the volume copy is retired by the deploy migration. Never re-seed it from
+    # the volume -- a stale volume copy would (a) run unreviewed code and (b)
+    # collide with the image service on /run/service/claude-proxy, recreating
+    # the proxy log-lock double-run. The deploy renames the volume dir to
+    # claude-proxy.legacy; this guard defends the transition window (and any
+    # manual restore) regardless.
+    if [ "$name" = "claude-proxy" ]; then
+        echo "seed-services: '$name' is image-baked now -- NOT seeding from volume"
+        continue
+    fi
     dest="$SCANDIR/$name"
     if [ -e "$dest" ]; then
         echo "seed-services: '$name' already present -- skipping"

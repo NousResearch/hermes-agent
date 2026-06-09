@@ -156,6 +156,80 @@ def test_is_malformed_db_error_discriminates():
     assert not is_malformed_db_error(ValueError("nope"))
 
 
+def test_strategy_b_rebuild_when_dedup_insufficient(tmp_path, monkeypatch):
+    """If the dedup pass can't fix it, the drop-FTS + rebuild pass must.
+
+    Force strat 1 to be a no-op so the escalation path is exercised against a
+    real malformed file. Data must still survive and search must work.
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    # Make the post-strat-1 verification report "still broken" exactly once,
+    # so the routine escalates to strat 2 (drop FTS + VACUUM) and runs its
+    # real SQL against the file; the strat-2 verification then uses the real
+    # check and passes.
+    real_check = hermes_state._db_opens_cleanly
+    calls = {"n": 0}
+
+    def flaky_check(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "pretend strat 1 was insufficient"
+        return real_check(path)
+
+    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", flaky_check)
+    report = repair_state_db_schema(db_path)
+    monkeypatch.undo()
+
+    assert report["repaired"] is True
+    assert report["strategy"] == "drop_fts_rebuild"
+    assert calls["n"] >= 2
+
+    db = SessionDB(db_path=db_path)
+    try:
+        assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'pizza'"
+        ).fetchone()[0] == 5
+    finally:
+        db.close()
+
+
+def test_unrepairable_file_fails_safely(tmp_path, monkeypatch):
+    """A file too damaged to recover must report failure, keep a backup, and
+    never raise from the repair routine itself."""
+    db_path = tmp_path / "state.db"
+    db_path.write_bytes(b"SQLite format 3\x00" + b"\x00\xde\xad\xbe\xef" * 200)
+
+    report = repair_state_db_schema(db_path)
+    assert report["repaired"] is False
+    assert report["error"]
+    # The (damaged) original bytes are preserved for manual restore.
+    assert report["backup_path"] and Path(report["backup_path"]).exists()
+
+
+def test_non_malformed_error_is_not_auto_repaired(tmp_path, monkeypatch):
+    """Auto-heal must only trigger for the malformed-schema class, not for
+    e.g. 'file is not a database' — those raise unchanged."""
+    db_path = tmp_path / "state.db"
+    db_path.write_bytes(b"this is definitely not a sqlite database")
+    monkeypatch.setattr(hermes_state, "_repair_attempted_paths", set())
+
+    called = {"n": 0}
+    orig = hermes_state.repair_state_db_schema
+
+    def spy(*a, **kw):
+        called["n"] += 1
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(hermes_state, "repair_state_db_schema", spy)
+    with pytest.raises(sqlite3.DatabaseError):
+        SessionDB(db_path=db_path)
+    assert called["n"] == 0  # never attempted repair for a non-malformed error
+
+
 def test_repair_on_clean_db_is_noop(tmp_path):
     """Dedup-keyed repair must not damage a healthy DB if invoked."""
     db_path = tmp_path / "state.db"

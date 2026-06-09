@@ -33,6 +33,14 @@ def test_load_gateway_config_bridges_stt_enabled_from_config_yaml(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_probe_audio_duration_wav_failure_returns_none():
+    from gateway.run import _probe_audio_duration
+
+    with patch("wave.open", side_effect=OSError("not a wav")):
+        assert await _probe_audio_duration("/tmp/not-audio.wav") is None
+
+
+@pytest.mark.asyncio
 async def test_enrich_message_with_transcription_surfaces_path_when_stt_disabled():
     from gateway.run import GatewayRunner
 

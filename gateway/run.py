@@ -1423,12 +1423,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             secs = await asyncio.to_thread(_wav_duration)
             return _format_duration(secs)
         except Exception as exc:
-            logger.debug(
-                "Discord voice transcript mirror send failed: guild=%s user=%s error=%s",
-                guild_id,
-                user_id,
-                exc,
-            )
+            logger.debug("WAV duration probe failed for %s: %s", path, exc)
 
     if ext in (".ogg", ".opus", ".oga"):
         try:

@@ -624,11 +624,14 @@ def test_heartbeat_happy_path(worker_env):
 
 
 def test_heartbeat_without_note(worker_env):
-    """note is optional."""
+    """note is now required — empty/missing note must fail."""
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({})
     d = json.loads(out)
-    assert d["ok"] is True
+    assert "error" in d
+    out2 = kt._handle_heartbeat({"note": "   "})
+    d2 = json.loads(out2)
+    assert "error" in d2
 
 
 def test_heartbeat_extends_claim_expires(worker_env):

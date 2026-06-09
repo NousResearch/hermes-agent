@@ -209,7 +209,8 @@ export const zhHant = defineLocale({
       technical: '技術',
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
-      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
+      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -233,7 +234,11 @@ export const zhHant = defineLocale({
         backend: '執行後端',
         timeout: '指令逾時',
         persistentShell: '持久化 Shell',
-        envPassthrough: '環境變數傳遞'
+        envPassthrough: '環境變數傳遞',
+        dockerImage: 'Docker 映像',
+        singularityImage: 'Singularity 映像',
+        modalImage: 'Modal 映像',
+        daytonaImage: 'Daytona 映像'
       },
       fileReadMaxChars: '檔案讀取上限',
       toolOutput: {
@@ -274,6 +279,15 @@ export const zhHant = defineLocale({
           model: '本機轉寫模型',
           language: '轉寫語言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 語言',
@@ -293,6 +307,33 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 語音',
+          language: 'xAI 語言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 語音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 語音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 語音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 裝置'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 語音'
+        },
+        piper: {
+          voice: 'Piper 語音'
         }
       },
       memory: {
@@ -1304,9 +1345,13 @@ export const zhHant = defineLocale({
     unsupportedMessage: '此版本的 Hermes 無法在應用程式內自行更新。',
     connectionRetry: '請檢查網路連線後重試。',
     latestBody: '您正在執行最新版本。',
+    latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安裝。',
+    availableTitleBackend: '後端有可用更新',
+    availableBodyBackend: '已連接的 Hermes 後端有新版本可安裝。',
+    availableBodyNoChangelog: '已有新版本可用。此安裝方式無法顯示更新日誌。',
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
@@ -1317,10 +1362,19 @@ export const zhHant = defineLocale({
     copied: '已複製',
     done: '完成',
     applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後重新開啟 Hermes。',
+    applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
     applyingClose: 'Hermes 將關閉以套用更新。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
-    notNow: '暫不'
+    notNow: '暫不',
+    applyStatus: {
+      preparing: '正在更新後端…',
+      pulling: '後端更新中…',
+      restarting: '後端正在重新啟動以載入更新…',
+      notAvailable: '此後端無法更新。',
+      failed: '後端更新失敗。',
+      noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
+    }
   },
 
   install: {
@@ -1503,6 +1557,9 @@ export const zhHant = defineLocale({
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `落後 ${branch} ${count} 個提交`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `後端 v${version}`,
+      clientLabel: version => `用戶端 v${version}`,
+      backendLabel: version => `後端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '關閉命令中心',
@@ -1527,8 +1584,8 @@ export const zhHant = defineLocale({
       contextUsage: '上下文使用量',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
-      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。',
-      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。',
+      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
+      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。Shift+點擊可全域切換。',
       modelNone: '無',
       noModel: '無模型',
       switchModel: '切換模型',

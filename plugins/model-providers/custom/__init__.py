@@ -63,6 +63,11 @@ custom = CustomProfile(
     ),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured
+    # Without this, no max_tokens is sent and Ollama falls back to its internal
+    # num_predict=128, truncating responses after a few tokens (#39281). This is
+    # only a floor used when the user hasn't set model.max_tokens — they can
+    # override per-model — so we set it generously rather than lowballing it.
+    default_max_tokens=65536,
 )
 
 register_provider(custom)

@@ -370,6 +370,10 @@ platforms:
 
       # How many recent messages to include (default: 3, clamped to 1-50).
       channel_context_limit: 8
+
+      # Cache the fetched window per channel for this many seconds, bounding
+      # conversations.history calls (default: 10; 0 disables caching).
+      channel_context_ttl: 10
 ```
 
 Or via environment variables:
@@ -377,14 +381,16 @@ Or via environment variables:
 ```bash
 SLACK_CHANNEL_CONTEXT=true
 SLACK_CHANNEL_CONTEXT_LIMIT=8
+SLACK_CHANNEL_CONTEXT_TTL=10
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `platforms.slack.extra.channel_context` | `false` | When `true`, every first-turn top-level channel message is seeded with recent channel history (continuity), not only deictic references. |
 | `platforms.slack.extra.channel_context_limit` | `3` | Number of recent messages to include as nearby context. Clamped to 1-50. |
+| `platforms.slack.extra.channel_context_ttl` | `10` | Seconds to cache the fetched window per channel, bounding `conversations.history` calls (its Slack rate limit is per-workspace). `0` disables caching. |
 
-When `channel_context` is enabled, recent history is fetched only on the **first turn** of each top-level request (subsequent turns already carry it in session history). If Slack permissions block the fetch (missing `channels:history` / `groups:history`), the agent receives an explicit `[Slack nearby context fetch failed: ...]` marker instead of silently losing the context.
+When `channel_context` is enabled, recent history is fetched only on the **first turn** of each top-level request (subsequent turns already carry it in session history), and the fetched window is cached per channel for `channel_context_ttl` seconds so a burst of messages in the same channel makes at most one `conversations.history` call per window. If Slack permissions block the fetch (missing `channels:history` / `groups:history`), the agent receives an explicit `[Slack nearby context fetch failed: ...]` marker instead of silently losing the context.
 
 ### Mention & Trigger Behavior
 
@@ -497,6 +503,7 @@ platforms:
       reply_broadcast: false
       channel_context: false
       channel_context_limit: 3
+      channel_context_ttl: 10
 ```
 
 ---

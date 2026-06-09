@@ -77,6 +77,14 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+@dataclass
+class _NearbyContextCache:
+    """Cache entry for fetched nearby channel context (channel_context mode)."""
+    content: str
+    notice: str = ""  # Prompt-visible diagnostic when a fetch failed
+    fetched_at: float = field(default_factory=time.monotonic)
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -433,6 +441,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        # Cache for _fetch_nearby_channel_context results (channel_context mode):
+        # cache_key → _NearbyContextCache. Bounds conversations.history calls to
+        # one per channel per channel_context_ttl seconds (its Slack rate limit
+        # is per-workspace, ~50 req/min for internal apps).
+        self._nearby_context_cache: Dict[str, _NearbyContextCache] = {}
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
         # Track active assistant thread status indicators so stop_typing can
@@ -2835,6 +2848,29 @@ class SlackAdapter(BasePlatformAdapter):
             return 3
         return min(value, 50)
 
+    def _channel_context_ttl(self) -> float:
+        """Seconds to cache a channel's nearby-context window before re-fetching.
+
+        Defaults to ``10.0``. With ``channel_context`` enabled, every first-turn
+        top-level message would otherwise call ``conversations.history``; caching
+        the window per channel bounds that to one call per channel per TTL. The
+        method's Slack rate limit is per-workspace (~50 req/min for internal
+        apps), shared across channels, so this keeps high-volume channels from
+        exhausting the budget. Reads ``platforms.slack.extra.channel_context_ttl``
+        and falls back to the ``SLACK_CHANNEL_CONTEXT_TTL`` env var. ``0`` (or
+        negative) disables caching — every first-turn message re-fetches.
+        """
+        raw = self.config.extra.get("channel_context_ttl")
+        if raw is None:
+            raw = os.getenv("SLACK_CHANNEL_CONTEXT_TTL")
+        if raw is None:
+            return 10.0
+        try:
+            value = float(str(raw).strip())
+        except (TypeError, ValueError):
+            return 10.0
+        return max(0.0, value)
+
     def _should_fetch_nearby_channel_context(
         self,
         *,
@@ -2917,7 +2953,25 @@ class SlackAdapter(BasePlatformAdapter):
         team_id: str = "",
         limit: int = 3,
     ) -> Tuple[str, str]:
-        """Fetch a small bounded window of channel history before a top-level turn."""
+        """Fetch a small bounded window of channel history before a top-level turn.
+
+        When ``channel_context`` is enabled this runs for every first-turn
+        top-level message, so the result is cached per channel for
+        ``channel_context_ttl`` seconds (default 10s) to bound
+        ``conversations.history`` calls — its Slack rate limit is per-workspace
+        (~50 req/min for internal apps), shared across channels. The deictic
+        path (``channel_context`` disabled) is rare and runs uncached, exactly
+        as before.
+        """
+        use_cache = self._channel_context_enabled()
+        cache_key = f"{channel_id}:{team_id}"
+        if use_cache:
+            ttl = self._channel_context_ttl()
+            cached = self._nearby_context_cache.get(cache_key)
+            if cached and ttl > 0 and (time.monotonic() - cached.fetched_at) < ttl:
+                return cached.content, cached.notice
+
+        content, notice = "", ""
         try:
             client = self._get_client(channel_id)
             result = None
@@ -2948,9 +3002,6 @@ class SlackAdapter(BasePlatformAdapter):
                     raise
 
             messages = (result or {}).get("messages", [])
-            if not messages:
-                return "", ""
-
             context_parts = []
             for msg in reversed(messages):
                 msg_text = self._render_slack_context_message_text(msg, team_id=team_id)
@@ -2964,18 +3015,21 @@ class SlackAdapter(BasePlatformAdapter):
                 name = await self._resolve_user_name(msg_user, chat_id=channel_id)
                 context_parts.append(f"{name}: {msg_text}")
 
-            if not context_parts:
-                return "", ""
-
-            content = (
-                "[Slack nearby context — messages immediately before this request (not yet in conversation history):]\n"
-                + "\n".join(context_parts)
-                + "\n[End of Slack nearby context]\n\n"
-            )
-            return content, ""
+            if context_parts:
+                content = (
+                    "[Slack nearby context — messages immediately before this request (not yet in conversation history):]\n"
+                    + "\n".join(context_parts)
+                    + "\n[End of Slack nearby context]\n\n"
+                )
         except Exception as exc:
             logger.warning("[Slack] Failed to fetch nearby channel context: %s", exc)
-            return "", self._describe_nearby_context_failure(exc)
+            notice = self._describe_nearby_context_failure(exc)
+
+        if use_cache:
+            self._nearby_context_cache[cache_key] = _NearbyContextCache(
+                content=content, notice=notice
+            )
+        return content, notice
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.

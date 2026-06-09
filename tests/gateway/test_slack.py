@@ -2316,6 +2316,95 @@ class TestSlackNearbyChannelContext:
             limit=8,
         )
 
+    @pytest.mark.asyncio
+    async def test_channel_context_caches_per_channel(self, adapter):
+        """With channel_context on, a second first-turn message in the same
+        channel within the TTL is served from cache — one API call, not two."""
+        adapter.config.extra["channel_context"] = True
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [
+                {"ts": "199.000", "user": "U_USER", "text": "earlier channel message"},
+            ]
+        })
+
+        def _event(ts):
+            return {
+                "text": "<@U_BOT> do the task",
+                "user": "U_USER",
+                "channel": "C123",
+                "channel_type": "channel",
+                "ts": ts,
+                "team": "T_TEAM",
+            }
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")):
+            await adapter._handle_slack_message(_event("200.001"))
+            await adapter._handle_slack_message(_event("200.002"))
+
+        # One conversations.history call despite two first-turn messages...
+        adapter._app.client.conversations_history.assert_awaited_once()
+        # ...and both messages still receive the (cached) nearby context.
+        assert adapter.handle_message.call_count == 2
+        for call in adapter.handle_message.call_args_list:
+            assert "[Slack nearby context" in call.args[0].text
+            assert "Alice: earlier channel message" in call.args[0].text
+
+    @pytest.mark.asyncio
+    async def test_deictic_path_not_cached_when_channel_context_off(self, adapter):
+        """With channel_context disabled, the deictic path is unchanged from
+        #32346: each deictic message fetches (no per-channel caching)."""
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [
+                {"ts": "199.000", "user": "U_USER", "text": "Bug report: disk full"},
+            ]
+        })
+
+        def _event(ts):
+            return {
+                "text": "<@U_BOT> fix this bug report",
+                "user": "U_USER",
+                "channel": "C123",
+                "channel_type": "channel",
+                "ts": ts,
+                "team": "T_TEAM",
+            }
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")):
+            await adapter._handle_slack_message(_event("200.001"))
+            await adapter._handle_slack_message(_event("200.002"))
+
+        assert adapter._app.client.conversations_history.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_channel_context_ttl_zero_disables_cache(self, adapter):
+        """channel_context_ttl=0 forces a fresh fetch on every first-turn message."""
+        adapter.config.extra["channel_context"] = True
+        adapter.config.extra["channel_context_ttl"] = 0
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [
+                {"ts": "199.000", "user": "U_USER", "text": "earlier channel message"},
+            ]
+        })
+
+        def _event(ts):
+            return {
+                "text": "<@U_BOT> do the task",
+                "user": "U_USER",
+                "channel": "C123",
+                "channel_type": "channel",
+                "ts": ts,
+                "team": "T_TEAM",
+            }
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")):
+            await adapter._handle_slack_message(_event("200.001"))
+            await adapter._handle_slack_message(_event("200.002"))
+
+        assert adapter._app.client.conversations_history.await_count == 2
+
 
 # ---------------------------------------------------------------------------
 # TestAssistantThreadLifecycle

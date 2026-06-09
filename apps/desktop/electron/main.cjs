@@ -4718,9 +4718,9 @@ function createWindow() {
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-    if (icon) {
-      app.dock?.setIcon(icon)
-    }
+    // Keep the packaged bundle icon as the single source of truth for the
+    // macOS Dock. Overriding it at runtime makes running and closed Dock
+    // states resolve different assets, which changes the visible icon size.
   }
 
   if (!IS_MAC) {

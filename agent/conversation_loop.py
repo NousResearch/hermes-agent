@@ -5160,6 +5160,78 @@ def run_conversation(
                 agent._emit_pending_fallback_notice()
                 agent._clear_status_buffer()
 
+                # ── Post-tool placeholder guard ───────────────────────
+                # Some models return a short progress/status string after
+                # tool execution instead of a substantive answer
+                # ("writing...", "working on it", "好的，我来处理").
+                # Unlike a truly empty response, these pass the
+                # _has_content_after_think_block check above and reach
+                # this path.  Detect them and nudge once so the model
+                # completes the task rather than silently stopping.
+                # Only fires when the immediately preceding messages
+                # contain a tool result AND the model hasn't already
+                # been nudged for a placeholder this turn.
+                _prior_was_tool = any(
+                    m.get("role") == "tool"
+                    for m in messages[-6:]
+                )
+                if (
+                    _prior_was_tool
+                    and not getattr(agent, "_post_tool_placeholder_retried", False)
+                ):
+                    _clean = agent._strip_think_blocks(final_response).strip()
+                    _PLACEHOLDER_RE = re.compile(
+                        r'^('
+                        # English: bare acknowledgements
+                        r'(ok(ay)?|sure|got it|understood|alright|noted)[.,!]?\s*'
+                        # English: forward-looking intent with progress verbs only
+                        r'|(i\'?ll|let me|i will|i\'?m going to|i\'?m)\s+'
+                        r'(do|handle|process|check|look|work|fix|update|write|analyze'
+                        r'|review|take care|get|start|begin|go ahead|proceed'
+                        r'|working on|going to|look into|looking)\b.{0,60}'
+                        r'|working on (it|this|that)\.{0,3}'
+                        r'|writing\.{0,3}'
+                        r'|processing\.{0,3}'
+                        r'|on it\.{0,3}'
+                        r'|just a (moment|sec|second)\.{0,3}'
+                        r'|one (moment|sec|second)\.{0,3}'
+                        # Chinese: acknowledgements and progress markers
+                        r'|好的[，,。！]?\s*(我|让我|来|下面|接下来|继续)?.{0,40}'
+                        r'|收到[。！]?\s*'
+                        r'|正在(处理|写|分析|查看|执行).{0,30}'
+                        r'|继续(处理|写|分析|执行)?.{0,30}'
+                        r')$',
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                    if len(_clean) < 120 and _PLACEHOLDER_RE.match(_clean):
+                        agent._post_tool_placeholder_retried = True
+                        logger.info(
+                            "Progress-only response after tool calls (%r) — "
+                            "nudging model to continue",
+                            _clean[:80],
+                        )
+                        agent._emit_status(
+                            "⚠️ Model returned a placeholder after tool calls — "
+                            "nudging to continue"
+                        )
+                        interim_msg = agent._build_assistant_message(
+                            assistant_message, "incomplete"
+                        )
+                        interim_msg["_empty_recovery_synthetic"] = True
+                        messages.append(interim_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "You returned a status message instead of the "
+                                "actual result. Please complete the task and "
+                                "provide your full response now."
+                            ),
+                            "_empty_recovery_synthetic": True,
+                        })
+                        agent._session_messages = messages
+                        agent._save_session_log(messages)
+                        continue
+
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,
                 )

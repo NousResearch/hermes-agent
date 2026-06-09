@@ -18,6 +18,7 @@ const buildUiState = (): UiState => ({
   liveSessionCount: 0,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,
+  notice: null,
   pasteCollapseLines: 5,
   pasteCollapseChars: 2000,
   sections: {},

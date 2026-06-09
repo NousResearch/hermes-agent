@@ -56,10 +56,61 @@ def gated_app():
 # ---------------------------------------------------------------------------
 
 
-def test_gated_status_now_requires_auth(gated_app):
-    """When gate is on, /api/status is NOT public — login bootstrap uses /api/auth/providers."""
+def test_gated_status_is_public(gated_app):
+    """``/api/status`` MUST be public under the OAuth gate.
+
+    Regression guard for the wildcard-subdomain rollout: NAS
+    (``fly-provider.ts`` ``getInstanceRuntimeStatus``) hits
+    ``/api/status`` without a cookie as its sole liveness probe. A 401
+    here surfaces every healthy agent as STARTING/down in the portal
+    UI. The endpoint returns only version + gateway/auth-gate metadata
+    (no user data, no session content), so it stays in the shared
+    ``PUBLIC_API_PATHS`` allowlist under both the legacy ``_SESSION_TOKEN``
+    gate and the OAuth gate.
+
+    The body also reports the gate's shape (``auth_required``,
+    ``auth_providers``) so the SPA's StatusPage and external monitors
+    can distinguish loopback / gated / no-providers without a separate
+    round trip.
+    """
     r = gated_app.get("/api/status")
-    assert r.status_code == 401
+    assert r.status_code == 200, (
+        f"Expected 200, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["auth_required"] is True
+    assert "version" in body
+    assert "gateway_state" in body
+
+
+@pytest.mark.parametrize("path", [
+    "/api/config/defaults",
+    "/api/config/schema",
+    "/api/model/info",
+    "/api/dashboard/themes",
+    "/api/dashboard/plugins",
+])
+def test_other_public_api_paths_are_public_under_gate(gated_app, path):
+    """The remaining ``PUBLIC_API_PATHS`` entries must also bypass the
+    gate. They're documented as non-sensitive read-only endpoints that
+    the SPA pre-loads before login (themes, config schema, model
+    metadata). A 401 / 302-to-login here would block the dashboard
+    shell from rendering pre-auth.
+
+    Accept any non-auth-failure status: 200 when the route succeeds,
+    or any route-specific error (e.g. 400 / 404 / 500 from a missing
+    dependency) — but NEVER 401, and NEVER a 302 to ``/login``.
+    """
+    r = gated_app.get(path, follow_redirects=False)
+    assert r.status_code != 401, (
+        f"{path} returned 401 under the OAuth gate — should be public"
+    )
+    if r.status_code == 302:
+        location = r.headers.get("location", "")
+        assert "/login" not in location, (
+            f"{path} redirected to {location} — should be public, "
+            "not bounced to /login"
+        )
 
 
 def test_gated_html_redirects_to_login(gated_app):
@@ -98,7 +149,7 @@ def test_gated_static_asset_path_is_public(gated_app):
 # ---------------------------------------------------------------------------
 
 
-def test_full_login_round_trip_unlocks_api_status(gated_app):
+def test_full_login_round_trip_unlocks_gated_api(gated_app):
     # 1) Click "Sign in with Stub IdP" — /auth/login redirects to the stub
     #    with a PKCE cookie on the response.
     r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
@@ -128,11 +179,16 @@ def test_full_login_round_trip_unlocks_api_status(gated_app):
     assert any("hermes_session_at" in c for c in set_cookies)
     assert any("hermes_session_rt" in c for c in set_cookies)
 
-    # 3) /api/status now succeeds because we're authenticated.
-    r3 = gated_app.get("/api/status")
-    assert r3.status_code == 200
-    body = r3.json()
-    assert "version" in body
+    # 3) A gated API route (``/api/sessions``) now succeeds because we
+    #    have a valid session cookie. (We deliberately don't probe
+    #    ``/api/status`` here — it's in the shared PUBLIC_API_PATHS
+    #    allowlist and would 200 even without a login, so it can't
+    #    distinguish "logged in" from "gate accidentally disabled".)
+    r3 = gated_app.get("/api/sessions")
+    assert r3.status_code == 200, (
+        f"Expected 200 for /api/sessions post-login, got {r3.status_code}: "
+        f"{r3.text}"
+    )
 
 
 def test_login_unknown_provider_returns_404(gated_app):
@@ -284,3 +340,127 @@ def test_gated_zero_providers_login_page_renders_help_text():
     finally:
         web_server.app.state.auth_required = prev_required
         web_server.app.state.bound_host = prev_host
+
+
+# ---------------------------------------------------------------------------
+# Multi-provider verify: a ProviderError from one provider must not abort the
+# chain when another provider can verify the token.
+# ---------------------------------------------------------------------------
+
+
+class _UnreachableProvider(StubAuthProvider):
+    """A provider whose IDP is unreachable: verify_session always raises.
+
+    Models the real-world bug — a self-hosted-OIDC session hits the ``nous``
+    provider first, which tries to reach Nous Portal's JWKS; if that's
+    unreachable ``nous`` raises ProviderError. The gate must keep trying the
+    remaining providers rather than 503-ing the whole request.
+    """
+
+    name = "unreachable"
+    display_name = "Unreachable IdP (test only)"
+
+    def verify_session(self, *, access_token: str):
+        from hermes_cli.dashboard_auth.base import ProviderError
+
+        raise ProviderError("simulated: IDP/JWKS unreachable")
+
+    def refresh_session(self, *, refresh_token: str):
+        from hermes_cli.dashboard_auth.base import ProviderError
+
+        raise ProviderError("simulated: IDP/JWKS unreachable")
+
+
+def _mint_stub_at(stub: StubAuthProvider) -> str:
+    """Mint a valid access-token cookie value from a StubAuthProvider via its
+    own login round trip (so the HMAC signature matches what verify expects)."""
+    ls = stub.start_login(redirect_uri="https://fly-app.fly.dev/auth/callback")
+    state = dict(
+        seg.split("=", 1)
+        for seg in ls.cookie_payload["hermes_session_pkce"].split(";")
+        if "=" in seg
+    )["state"]
+    verifier = dict(
+        seg.split("=", 1)
+        for seg in ls.cookie_payload["hermes_session_pkce"].split(";")
+        if "=" in seg
+    )["verifier"]
+    session = stub.complete_login(
+        code="stub_code",
+        state=state,
+        code_verifier=verifier,
+        redirect_uri="https://fly-app.fly.dev/auth/callback",
+    )
+    return session.access_token
+
+
+@pytest.fixture
+def _gated_state():
+    """Bare gated app-state setup WITHOUT registering any provider, so each
+    test controls provider registration order itself. Yields a factory that
+    builds the TestClient after providers are registered."""
+    clear_providers()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+
+    def _client() -> TestClient:
+        return TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+
+    yield _client
+    clear_providers()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
+def test_unreachable_first_provider_does_not_block_second(_gated_state):
+    """An unreachable provider registered FIRST must not 503 a request whose
+    token a later provider can verify.
+
+    Regression for the stacked-provider bug: the verify loop used to return
+    503 on the first provider's ProviderError, before the working provider
+    ever got a turn. Now it logs, continues, and the working provider wins.
+    """
+    working = StubAuthProvider()
+    register_provider(_UnreachableProvider())  # registered first → tried first
+    register_provider(working)                  # the one that can verify
+
+    at = _mint_stub_at(working)
+    client = _gated_state()
+    client.cookies.set(SESSION_AT_COOKIE, at)
+    r = client.get("/api/auth/me")
+    assert r.status_code == 200, (
+        f"Expected the working provider to verify the session despite the "
+        f"unreachable one being tried first; got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["provider"] == "stub"
+    assert body["user_id"] == "stub-user-1"
+
+
+def test_all_providers_unreachable_returns_503(_gated_state):
+    """If NO provider can verify the token AND at least one was unreachable,
+    surface 503 (transient outage) rather than forcing a needless re-login."""
+    register_provider(_UnreachableProvider())
+    client = _gated_state()
+    # Any non-empty cookie — the unreachable provider raises before parsing.
+    client.cookies.set(SESSION_AT_COOKIE, "some-opaque-token")
+    r = client.get("/api/auth/me")
+    assert r.status_code == 503
+    assert "unreachable" in r.text.lower()
+
+
+def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
+    """When every provider is REACHABLE but none recognises the token (all
+    return None, none raises), the gate falls through to re-login — NOT 503."""
+    register_provider(StubAuthProvider())
+    client = _gated_state()
+    client.cookies.set(SESSION_AT_COOKIE, "garbage-not-a-real-token")
+    # API path → 401; HTML would 302. Either way, NOT 503.
+    r = client.get("/api/auth/me")
+    assert r.status_code == 401
+    assert "unreachable" not in r.text.lower()

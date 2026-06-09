@@ -400,14 +400,14 @@ stt:
                                     # 作为入站消息的一部分传递给 Agent，
                                     # 适用于自定义流水线
                                     # （说话人分离、对齐、归档等）
-  provider: "local"                  # "local"（免费）| "groq" | "openai"
+  provider: "local"                  # "local"（免费）| "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
   # model: "whisper-1"              # 旧版：在未设置 provider 时使用
 
 # 文字转语音（TTS）
 tts:
-  provider: "edge"                 # "edge"（免费）| "elevenlabs" | "openai" | "neutts" | "minimax"
+  provider: "edge"                 # "edge"（免费）| "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
   edge:
     voice: "en-US-AriaNeural"      # 322 种声音，74 种语言
   elevenlabs:

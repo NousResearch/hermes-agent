@@ -65,7 +65,7 @@ class TestPreToolCheck:
 
     def test_all_tools_skipped_when_interrupted(self):
         """Mock an interrupted agent and verify no tools execute."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         # Build a fake assistant_message with 3 tool calls
         tc1 = MagicMock()
@@ -201,6 +201,83 @@ class TestSIGKILLEscalation:
         assert result_holder["value"] is not None
         assert result_holder["value"]["returncode"] == 130
         assert "interrupted" in result_holder["value"]["output"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Regression: _run_tool cleanup on BaseException (issue #35309)
+# ---------------------------------------------------------------------------
+
+class TestRunToolCleanupOnBaseException:
+    """Verify that _run_tool cleans up _interrupted_threads even when
+    _invoke_tool raises a BaseException (e.g. CancelledError).
+
+    Regression test for #35309: without the finally block, a BaseException
+    bypasses ``except Exception``, leaking the worker tid into
+    _interrupted_threads.  ThreadPoolExecutor recycles tids, so the next
+    tool scheduled on the same thread is instantly "interrupted".
+    """
+
+    def test_cleanup_on_base_exception(self):
+        from unittest.mock import MagicMock, patch
+        import types
+        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
+
+        # Clear global state
+        with _lock:
+            _interrupted_threads.clear()
+
+        # Build a minimal mock agent with the attributes _run_tool needs
+        agent = MagicMock()
+        agent._interrupt_requested = False
+        agent._tool_worker_threads = set()
+        agent._tool_worker_threads_lock = threading.Lock()
+
+        # _set_interrupt delegates to the real module
+        def _mock_set_interrupt(active, tid=None):
+            set_interrupt(active, tid)
+        agent._set_interrupt = _mock_set_interrupt
+
+        # _invoke_tool raises BaseException (simulating CancelledError)
+        agent._invoke_tool = MagicMock(side_effect=BaseException("simulated CancelledError"))
+
+        # Bind the real concurrent method so we get _run_tool
+        from run_agent import AIAgent
+        agent._execute_tool_calls_concurrent = types.MethodType(
+            AIAgent._execute_tool_calls_concurrent, agent
+        )
+
+        # Build a single tool call
+        tc = MagicMock()
+        tc.id = "tc_base_exc"
+        tc.function.name = "dummy_tool"
+        tc.function.arguments = "{}"
+
+        assistant_msg = MagicMock()
+        assistant_msg.tool_calls = [tc]
+
+        # _execute_tool_calls_concurrent will submit _run_tool to a
+        # ThreadPoolExecutor.  The BaseException propagates out of the
+        # worker, but the finally block should still clean up.
+        try:
+            agent._execute_tool_calls_concurrent(assistant_msg, [], "default")
+        except Exception:
+            pass  # ThreadPoolExecutor may re-raise
+
+        # After the worker finishes (even with BaseException), the worker
+        # tid should have been removed from _interrupted_threads and
+        # _tool_worker_threads.
+        assert len(agent._tool_worker_threads) == 0, (
+            f"_tool_worker_threads not cleaned up: {agent._tool_worker_threads}"
+        )
+
+        # Verify no stale tid is left in the global interrupt set.  The
+        # worker thread is recycled by ThreadPoolExecutor, so a leaked tid
+        # would poison the next task on that thread.  We cleared the set at
+        # the start and never set any interrupt ourselves, so a leak from
+        # _run_tool is the only way an entry could land here.
+        with _lock:
+            leaked = set(_interrupted_threads)
+        assert leaked == set(), f"leaked tids in _interrupted_threads: {leaked}"
 
 
 # ---------------------------------------------------------------------------

@@ -197,6 +197,19 @@ def test_run_agent_concurrent_executor_wraps_submit_with_copy_context():
             and call.args[1].id == "_run_tool"
         ):
             tool_submits.append(("fixed", call))
+        # Fixed (shared helper): executor.submit(
+        #     propagate_context_to_thread(_run_tool), ...) — the helper in
+        # tools/thread_context.py does copy_context().run(...) internally and
+        # additionally propagates the thread-local approval/sudo callbacks.
+        elif (
+            isinstance(first, ast.Call)
+            and isinstance(first.func, ast.Name)
+            and first.func.id == "propagate_context_to_thread"
+            and first.args
+            and isinstance(first.args[0], ast.Name)
+            and first.args[0].id == "_run_tool"
+        ):
+            tool_submits.append(("fixed", call))
 
     assert tool_submits, (
         "Could not locate `executor.submit(... _run_tool ...)` in "

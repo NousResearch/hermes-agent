@@ -6,8 +6,7 @@ immediately when provider_info had a saved ``model`` field, making it
 impossible to switch models on multi-model endpoints.
 """
 
-import os
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 
 import pytest
 
@@ -46,7 +45,7 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["model-A", "model-B"]) as mock_fetch, \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="2"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -71,7 +70,7 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["model-A", "model-B"]), \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="2"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -117,7 +116,7 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["model-X"]), \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -141,7 +140,7 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]) as mock_fetch, \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -174,7 +173,7 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["llama-3"]), \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -211,7 +210,7 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -252,7 +251,7 @@ class TestCustomProviderModelSwitch:
         }
 
         with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]), \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -310,7 +309,7 @@ class TestCustomProviderModelSwitch:
                    side_effect=_pick_neuralwatt), \
              patch("hermes_cli.models.fetch_api_models",
                    return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             select_provider_and_model()
@@ -423,7 +422,7 @@ class TestCustomProviderModelSwitch:
                    side_effect=_pick_neuralwatt), \
              patch("hermes_cli.models.fetch_api_models",
                    return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             select_provider_and_model()
@@ -487,7 +486,7 @@ class TestCustomProviderModelSwitch:
             "hermes_cli.models.fetch_api_models",
             return_value=["claude-opus-4-7"],
         ) as mock_fetch, \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -552,7 +551,7 @@ class TestCustomProviderModelSwitch:
             "hermes_cli.models.fetch_api_models",
             return_value=["claude-opus-4-7"],
         ), \
-             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -564,3 +563,133 @@ class TestCustomProviderModelSwitch:
         # clobber it via _preserve_env_ref_templates).
         assert entry["api_key"] == "${HERMES_CRS_HENKEE_KEY}"
         assert "cr_live_secret_xyz" not in saved_text
+
+
+class TestCustomProviderDiscoverModels:
+    """#18726: honor ``discover_models: false`` in the terminal ``hermes model``
+    named-custom flow so the picker shows the configured ``models:`` subset
+    instead of the endpoint's full live catalog."""
+
+    def test_discover_false_uses_configured_list_and_skips_probe(self, config_home):
+        """discover_models: false + configured models → no live probe, the
+        configured list is used verbatim."""
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Baidu Coding",
+            "base_url": "https://qianfan.baidubce.com/v2/coding",
+            "api_key": "sk-test",
+            "discover_models": False,
+            "models": {"kimi-k2.5": {}, "glm-5": {}},
+            "model": "kimi-k2.5",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="2"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        # The live /models endpoint must NOT be probed when discovery is off.
+        mock_fetch.assert_not_called()
+
+    def test_discover_false_saves_choice_from_configured_list(self, config_home):
+        """User picks the 2nd configured model; it persists, list-driven."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Baidu Coding",
+            "base_url": "https://qianfan.baidubce.com/v2/coding",
+            "api_key": "sk-test",
+            "discover_models": False,
+            "models": {"kimi-k2.5": {}, "glm-5": {}},
+            "model": "kimi-k2.5",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="2"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        mock_fetch.assert_not_called()
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model["default"] == "glm-5"
+
+    def test_default_still_probes_when_discover_unset(self, config_home):
+        """Default (discover_models unset → True) keeps live-probe behaviour
+        even when a models: list is configured — Option B opt-out semantics."""
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "My Gateway",
+            "base_url": "https://gw.example.com/v1",
+            "api_key": "sk-test",
+            "models": {"subset-a": {}},  # configured, but discovery NOT disabled
+            "model": "subset-a",
+        }
+
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["live-a", "live-b", "live-c"],
+        ) as mock_fetch, \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        # Probe MUST still run — configured models: alone does not whitelist.
+        mock_fetch.assert_called_once_with(
+            "sk-test",
+            "https://gw.example.com/v1",
+            timeout=8.0,
+        )
+
+    def test_probe_empty_falls_back_to_configured_list(self, config_home):
+        """When discovery is on but the probe returns nothing, fall back to the
+        configured models: list instead of forcing manual entry."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "My Gateway",
+            "base_url": "https://gw.example.com/v1",
+            "api_key": "sk-test",
+            "models": {"fallback-a": {}, "fallback-b": {}},
+            "model": "fallback-a",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=[]), \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="2"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model["default"] == "fallback-b"
+
+    def test_discover_false_string_is_normalised(self, config_home):
+        """String 'false' (hand-edited configs) disables discovery too."""
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Baidu Coding",
+            "base_url": "https://qianfan.baidubce.com/v2/coding",
+            "api_key": "sk-test",
+            "discover_models": "false",
+            "models": {"kimi-k2.5": {}, "glm-5": {}},
+            "model": "kimi-k2.5",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        mock_fetch.assert_not_called()

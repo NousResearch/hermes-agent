@@ -1,7 +1,6 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import logging
-import os
 
 import pytest
 
@@ -343,39 +342,33 @@ class TestJWTTokens:
 
 
 class TestDiscordMentions:
-    """Discord snowflake IDs in <@ID> or <@!ID> format."""
+    """Discord mention snowflakes (<@ID> / <@!ID>) are public syntax, not
+    secrets — they must pass through the redactor unchanged so multi-bot
+    @-pings (DISCORD_ALLOW_BOTS=mentions) keep resolving. See issue #35611."""
 
-    def test_normal_mention(self):
-        result = redact_sensitive_text("Hello <@222589316709220353>")
-        assert "222589316709220353" not in result
-        assert "<@***>" in result
+    def test_normal_mention_passes_through(self):
+        text = "Hello <@222589316709220353>"
+        assert redact_sensitive_text(text) == text
 
-    def test_nickname_mention(self):
-        result = redact_sensitive_text("Ping <@!1331549159177846844>")
-        assert "1331549159177846844" not in result
-        assert "<@!***>" in result
+    def test_nickname_mention_passes_through(self):
+        text = "Ping <@!1331549159177846844>"
+        assert redact_sensitive_text(text) == text
 
-    def test_multiple_mentions(self):
+    def test_multiple_mentions_pass_through(self):
         text = "<@111111111111111111> and <@222222222222222222>"
-        result = redact_sensitive_text(text)
-        assert "111111111111111111" not in result
-        assert "222222222222222222" not in result
+        assert redact_sensitive_text(text) == text
 
-    def test_short_id_not_matched(self):
-        """IDs shorter than 17 digits are not Discord snowflakes."""
+    def test_short_id_passes_through(self):
         text = "<@12345>"
         assert redact_sensitive_text(text) == text
 
-    def test_slack_mention_not_matched(self):
-        """Slack mentions use letters, not pure digits."""
+    def test_slack_mention_passes_through(self):
         text = "<@U024BE7LH>"
         assert redact_sensitive_text(text) == text
 
     def test_preserves_surrounding_text(self):
         text = "User <@222589316709220353> said hello"
-        result = redact_sensitive_text(text)
-        assert result.startswith("User ")
-        assert result.endswith(" said hello")
+        assert redact_sensitive_text(text) == text
 
 
 class TestWebUrlsNotRedacted:

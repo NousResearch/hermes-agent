@@ -19,6 +19,10 @@ interface Skill {
   docsPath?: string;
   identifier?: string;
   installCmd?: string;
+  /** Clickable URL to the skill's origin (repo / detail page). Synthesized
+   *  in extract-skills.py for community skills that have no generated docs
+   *  page, so the expanded card always has somewhere to send the user. */
+  sourceUrl?: string;
   /** Lowercase pre-joined haystack used by the search filter.
    *  Built once at load time so per-keystroke filtering is a single
    *  `.includes()` per skill instead of array-join + toLowerCase on
@@ -163,6 +167,13 @@ const SOURCE_CONFIG: Record<
     border: "rgba(251, 191, 36, 0.2)",
     icon: "\u{1F917}",
   },
+  NVIDIA: {
+    label: "NVIDIA",
+    color: "#76b900",
+    bg: "rgba(118, 185, 0, 0.08)",
+    border: "rgba(118, 185, 0, 0.25)",
+    icon: "\u{25B6}",
+  },
   VoltAgent: {
     label: "VoltAgent",
     color: "#facc15",
@@ -207,6 +218,7 @@ const SOURCE_ORDER = [
   "Anthropic",
   "OpenAI",
   "HuggingFace",
+  "NVIDIA",
   "skills.sh",
   "ClawHub",
   "browse.sh",
@@ -229,6 +241,47 @@ function highlightMatch(text: string, query: string): React.ReactNode {
       <mark className={styles.highlight}>{text.slice(idx, idx + query.length)}</mark>
       {text.slice(idx + query.length)}
     </>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      navigator.clipboard?.writeText(text).then(
+        () => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        },
+        () => {},
+      );
+    },
+    [text],
+  );
+  return (
+    <button
+      className={styles.copyBtn}
+      onClick={onCopy}
+      title="Copy install command"
+      aria-label="Copy install command"
+    >
+      {copied ? (
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+          <path
+            fillRule="evenodd"
+            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
+            clipRule="evenodd"
+          />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+        </svg>
+      )}
+      <span className={styles.copyBtnLabel}>{copied ? "Copied" : "Copy"}</span>
+    </button>
   );
 }
 
@@ -371,16 +424,31 @@ function SkillCard({
             )}
             <div className={styles.installHint}>
               <code>{skill.installCmd || `hermes skills install ${skill.name}`}</code>
+              <CopyButton
+                text={skill.installCmd || `hermes skills install ${skill.name}`}
+              />
             </div>
-            {skill.docsPath && (
-              <a
-                className={styles.docsLink}
-                href={`/docs/user-guide/skills/${skill.docsPath}`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                View full documentation →
-              </a>
-            )}
+            <div className={styles.cardLinks}>
+              {skill.docsPath ? (
+                <a
+                  className={styles.docsLink}
+                  href={`/docs/user-guide/skills/${skill.docsPath}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View full documentation →
+                </a>
+              ) : skill.sourceUrl ? (
+                <a
+                  className={styles.docsLink}
+                  href={skill.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View source ↗
+                </a>
+              ) : null}
+            </div>
           </div>
         )}
       </div>
@@ -784,7 +852,15 @@ export default function SkillsDashboard() {
               </div>
             )}
 
-            {visible.length > 0 ? (
+            {!data && !loadError ? (
+              <div className={styles.empty}>
+                <div className={styles.loadingSpinner} />
+                <h3 className={styles.emptyTitle}>Loading the catalog…</h3>
+                <p className={styles.emptyDesc}>
+                  Fetching 88k+ skills across every registry. One moment.
+                </p>
+              </div>
+            ) : visible.length > 0 ? (
               <>
                 <div className={styles.grid}>
                   {visible.map((skill, i) => {

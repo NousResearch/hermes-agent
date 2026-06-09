@@ -549,9 +549,12 @@ class TestBuildApiKwargsCodex:
         kwargs = agent._build_api_kwargs(messages)
         tools = kwargs.get("tools", [])
         assert len(tools) > 0
+        assert any(t.get("type") == "web_search" for t in tools)
+        function_tools = [t for t in tools if t.get("type") == "function"]
+        assert function_tools
         # Responses format has "name" at top level, not nested under "function"
-        assert "name" in tools[0]
-        assert "function" not in tools[0]
+        assert "name" in function_tools[0]
+        assert "function" not in function_tools[0]
 
 
 # ── Message conversion tests ────────────────────────────────────────────────

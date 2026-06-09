@@ -235,7 +235,13 @@ def _derive_responses_function_call_id(
 # ---------------------------------------------------------------------------
 
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
-    """Convert chat-completions tool schemas to Responses function-tool schemas."""
+    """Convert chat-completions tool schemas to Responses tool schemas.
+
+    Most Hermes tools stay as regular ``{"type":"function", ...}`` entries.
+    A small set of built-in Responses tools are exposed in Hermes as normal
+    function schemas for compatibility with non-Responses transports, then
+    rewritten here into their native Responses form.
+    """
     if not tools:
         return None
 
@@ -244,6 +250,10 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
         fn = item.get("function", {}) if isinstance(item, dict) else {}
         name = fn.get("name")
         if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        if name == "web_search":
+            converted.append({"type": "web_search"})
             continue
         converted.append({
             "type": "function",
@@ -795,8 +805,12 @@ def _preflight_codex_api_kwargs(
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
-            if tool.get("type") != "function":
-                raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
+            tool_type = tool.get("type")
+            if tool_type == "web_search":
+                normalized_tools.append({"type": "web_search"})
+                continue
+            if tool_type != "function":
+                raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool_type!r}.")
 
             name = tool.get("name")
             parameters = tool.get("parameters")

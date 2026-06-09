@@ -128,6 +128,31 @@ class TestMinimaxThinkingSupport:
         assert "thinking" in kwargs
         assert kwargs["thinking"]["type"] == "enabled"
 
+    def test_minimax_m3_defaults_thinking_on(self):
+        # M3 returns an empty response unless thinking is enabled, so it must
+        # default to thinking on even when the caller passes no reasoning_config.
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        assert kwargs["thinking"]["type"] == "enabled"
+
+    def test_minimax_m3_respects_explicit_disable(self):
+        # An explicit opt-out still wins over the M3 default-on.
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+        assert "thinking" not in kwargs
+
     def test_thinking_still_works_for_claude(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(

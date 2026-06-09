@@ -73,6 +73,25 @@ export function removeComposerAttachment(id: string): ComposerAttachment | null 
   return removed
 }
 
+/** Replace an existing attachment in place by id. No-op (returns false) when the
+ * id is gone — e.g. the user removed the chip while an eager upload was still in
+ * flight, so a late success must NOT resurrect it. Use this instead of
+ * addComposerAttachment for async results that may land after a removal. */
+export function updateComposerAttachment(attachment: ComposerAttachment): boolean {
+  const current = $composerAttachments.get()
+  const index = current.findIndex(item => item.id === attachment.id)
+
+  if (index < 0) {
+    return false
+  }
+
+  const next = [...current]
+  next[index] = attachment
+  $composerAttachments.set(next)
+
+  return true
+}
+
 export function clearComposerAttachments() {
   $composerAttachments.set([])
 }

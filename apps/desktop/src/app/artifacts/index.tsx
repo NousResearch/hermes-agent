@@ -34,6 +34,8 @@ import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { artifactTimestampToDate } from './artifact-time'
+
 type ArtifactKind = 'image' | 'file' | 'link'
 type ArtifactFilter = 'all' | ArtifactKind
 const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'file', 'link']
@@ -310,7 +312,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 }
 
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  return ARTIFACT_TIME_FMT.format(artifactTimestampToDate(timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

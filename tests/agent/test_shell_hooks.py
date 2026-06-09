@@ -142,7 +142,6 @@ class TestSerializePayload:
         assert payload["tool_name"] == "terminal"
         assert payload["tool_input"] == {"command": "ls"}
         assert payload["session_id"] == "sess-1"
-        # no rotation: parent_session_id is absent -> exposed as null
         assert payload["parent_session_id"] is None
         assert "cwd" in payload
         # task_id / tool_call_id end up under extra
@@ -162,13 +161,9 @@ class TestSerializePayload:
         )
         payload = json.loads(raw)
         assert payload["session_id"] == "p-1"
-        # the lineage is also surfaced through the distinct field
         assert payload["parent_session_id"] == "p-1"
 
     def test_parent_session_id_exposed_alongside_rotated_head(self):
-        # Compression rotation: session_id is the new (child) head, while
-        # parent_session_id names the session it continues from. Both are
-        # visible so a hook can stitch them into one logical conversation.
         raw = shell_hooks._serialize_payload(
             "on_session_start",
             {"session_id": "child-2", "parent_session_id": "root-1"},

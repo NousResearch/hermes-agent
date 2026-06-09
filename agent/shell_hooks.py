@@ -528,14 +528,6 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
-        # Distinct lineage field: when a session_id rotates (e.g. context
-        # compression forks a child session, see conversation_compression.py),
-        # `session_id` carries the rotated head while `parent_session_id`
-        # carries the session it continues from. Exposing it as its own field
-        # — rather than only collapsing it into `session_id` above — lets hook
-        # consumers stitch a single logical conversation across the rotation
-        # instead of seeing it as disconnected sessions. None when not a
-        # continuation.
         "parent_session_id": kwargs.get("parent_session_id") or None,
         "cwd": cwd,
         "extra": extras,

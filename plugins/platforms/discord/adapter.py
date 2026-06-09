@@ -4194,6 +4194,53 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return None
 
+    async def rename_thread(
+        self,
+        thread_id: str,
+        name: str,
+    ) -> bool:
+        """Rename a Discord thread.
+
+        Returns ``True`` on success, ``False`` on failure.
+        Discord thread names are capped at 100 characters.
+        """
+        if not self._client:
+            return False
+        if not thread_id or not name:
+            return False
+        # Discord thread names max 100 chars
+        # Normalize whitespace (matching _sanitize_discord_thread_title)
+        import re as _re
+        cleaned = _re.sub(r"\s+", " ", (name or "").strip())
+        if not cleaned:
+            return False
+        if len(cleaned) > 100:
+            cleaned = cleaned[:97].rstrip() + "..."
+        try:
+            channel = self._client.get_channel(int(thread_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(thread_id))
+            if not channel:
+                logger.debug("[%s] rename_thread: thread %s not found", self.name, thread_id)
+                return False
+            await channel.edit(name=cleaned)
+            return True
+        except discord.Forbidden:
+            logger.warning(
+                "[%s] rename_thread: missing Manage Threads permission for thread %s",
+                self.name, thread_id,
+            )
+            return False
+        except discord.HTTPException:
+            logger.warning(
+                "[%s] rename_thread: Discord API error for thread %s",
+                self.name, thread_id, exc_info=True,
+            )
+            return False
+        except Exception:
+            logger.debug("[%s] rename_thread failed for thread %s", self.name, thread_id, exc_info=True)
+            return False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

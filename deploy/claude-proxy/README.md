@@ -77,8 +77,57 @@ misbehaving provider; the bug was here.
 | `CLAUDE_BREAKER_THRESHOLD` | `8` | distinct bad prompts in window to trip |
 | `CLAUDE_BREAKER_WINDOW` | `120` | breaker window (s) |
 | `CLAUDE_BREAKER_COOLDOWN` | `90` | breaker open duration (s) |
+| `CLAUDE_BIN` | auto | path to the `claude` binary (else `which` → node_modules glob) |
+| `CLAUDE_PROXY_WORKDIR` | `/opt/data/proxy/workdir` | sandbox cwd, created `0700` at startup |
+| `CLAUDE_PROXY_BACKEND` | `cli` | `cli` (OAuth subprocess) or `anthropic` (direct API) |
+| `CLAUDE_PROXY_ALLOW_ANON` | `1` | serve keyless requests as tenant `anon`; `0` → 401 |
+| `CLAUDE_PROXY_KEYS_FILE` | `/opt/data/proxy/keys.json` | key → tenant map (mtime-reloaded) |
+| `CLAUDE_PROXY_DAILY_TOKEN_BUDGET` | `5000000` | per-tenant daily tokens; over → 429; `0` disables |
+| `ANTHROPIC_API_KEY` | — | required only when `CLAUDE_PROXY_BACKEND=anthropic` |
+| `ANTHROPIC_MODEL_HAIKU/SONNET/OPUS` | `claude-haiku-4-5` / `claude-sonnet-4-6` / `claude-opus-4-8` | tier→model map for the API backend |
 
-`GET /health` reports cache + negative-cache + breaker state.
+`GET /health` reports backend, auth (allow_anon + keys_loaded), per-tenant
+metering (`tenants`), daily-budget spend, cache + negative-cache + breaker state.
+
+## Hardening (proxy lane)
+
+### Sandbox (Phase 0)
+
+Both the main completion subprocess and the Haiku classifier run `claude -p`
+with **no tool access**: `--tools ""` (disable all tools) plus an explicit
+`--disallowedTools` list of every dangerous tool (`Bash Read Write Edit Glob
+Grep WebFetch WebSearch`), and **without** `--permission-mode bypassPermissions`
+— non-interactive `-p` denies tool calls by default, so default-deny is the
+safety net even if a flag is ignored. The cwd is a private `0700` workdir off
+the shared data volume. Cache writes are atomic (temp file + `os.replace`) and
+debounced to at most once per ~30s.
+
+### Tenant identity + auth (Phase 1)
+
+`hermes-provision-client` mints a random per-client proxy key (idempotent) and
+records it in `<hermes_root>/proxy/keys.json` (`key -> client_name`, `0600`).
+The gateway sends it as `Authorization: Bearer <key>`; the proxy reloads the map
+on mtime change (no restart) and resolves the tenant (anonymous → `anon`).
+Cache keys are tenant-scoped (good **and** negative cache); the circuit breaker
+stays **global** (it measures Claude health, not tenant behavior). Every
+`claude_call:` log line and the `/health` `tenants` block carry the tenant id —
+the usage-metering seed.
+
+> **Deploy safety:** `CLAUDE_PROXY_ALLOW_ANON` defaults to `1`, so a deploy does
+> **not** take existing prod bots dark — keyless requests are still served.
+> Tighten to `0` (requiring a valid key, else 401) only **after** keys are
+> rolled out to every live bot.
+
+### Pluggable backend + budgets (Phase 4)
+
+`CLAUDE_PROXY_BACKEND` selects the generation backend; it **defaults to `cli`**
+(prod behavior unchanged). `anthropic` is opt-in and calls the Anthropic
+Messages API directly (stdlib `urllib`, no new deps), mapping the response into
+the same result shape so cache/breaker/conversion are agnostic. The classifier
+is **keyword-first** (free) and only falls back to a Haiku subprocess for
+genuinely ambiguous prompts, caching the tier by prompt hash so repeats never
+re-spawn it. A per-tenant daily token budget returns a `429` when exceeded so
+the gateway's fallback chain takes over.
 
 ## Tests
 

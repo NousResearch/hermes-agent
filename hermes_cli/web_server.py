@@ -964,9 +964,15 @@ async def get_status():
         # Module not importable yet (early startup) — leave as [].
         pass
 
+    try:
+        from tui_gateway.server import DESKTOP_BACKEND_CONTRACT
+    except Exception:
+        DESKTOP_BACKEND_CONTRACT = 0
+
     return {
         "version": __version__,
         "release_date": __release_date__,
+        "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "hermes_home": str(get_hermes_home()),
         "config_path": str(get_config_path()),
         "env_path": str(get_env_path()),

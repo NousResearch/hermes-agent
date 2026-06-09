@@ -219,13 +219,34 @@ describe('useStatusbarItems', () => {
     expect(screen.getByText('2:03')).toBeTruthy()
     expect(screen.getByText(/GPT-5\.5/)).toBeTruthy()
     expect(screen.getByText(/Fast Max/)).toBeTruthy()
-    expect(screen.getByText('Approve for me')).toBeTruthy()
+    expect(screen.getByText('Ask every time')).toBeTruthy()
     expect(screen.getByText('client v0.16.0 (+49)')).toBeTruthy()
     expect(screen.getByText('backend v0.16.0 (+32)')).toBeTruthy()
 
     const rowText = document.querySelector('footer')?.textContent ?? ''
-    expect(rowText.indexOf('GPT-5.5 · Fast Max')).toBeLessThan(rowText.indexOf('Approve for me'))
-    expect(rowText.indexOf('Approve for me')).toBeLessThan(rowText.indexOf('client v0.16.0 (+49)'))
+    expect(rowText.indexOf('GPT-5.5 · Fast Max')).toBeLessThan(rowText.indexOf('Ask every time'))
+    expect(rowText.indexOf('Ask every time')).toBeLessThan(rowText.indexOf('client v0.16.0 (+49)'))
+  })
+
+  it('labels the approval statusbar menu with the current effective mode', () => {
+    $currentModel.set('gpt-5.5')
+    $currentProvider.set('openai-codex')
+
+    const manual = renderStatusbar()
+    expect(screen.getByRole('button', { name: /Ask every time/i })).toBeTruthy()
+    manual.unmount()
+    cleanup()
+
+    $approvalMode.set('smart')
+    const smart = renderStatusbar()
+    expect(screen.getByRole('button', { name: /Smart approvals/i })).toBeTruthy()
+    smart.unmount()
+    cleanup()
+
+    $approvalMode.set('manual')
+    $yoloActive.set(true)
+    renderStatusbar()
+    expect(screen.getByRole('button', { name: /Full access/i })).toBeTruthy()
   })
 
   it('opens a Codex-like approval mode menu and enables full access globally', async () => {
@@ -243,7 +264,7 @@ describe('useStatusbarItems', () => {
 
     renderStatusbar({ requestGateway })
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /Approve for me/i }), {
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Ask every time/i }), {
       button: 0,
       ctrlKey: false
     })
@@ -262,6 +283,7 @@ describe('useStatusbarItems', () => {
       })
     })
     expect($yoloActive.get()).toBe(true)
+    expect(screen.getByRole('button', { name: /Full access/i })).toBeTruthy()
   })
 
   it('sets ask-every-time as the manual approval mode', async () => {
@@ -272,7 +294,7 @@ describe('useStatusbarItems', () => {
 
     renderStatusbar({ requestGateway })
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /Approve for me/i }), {
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Ask every time/i }), {
       button: 0,
       ctrlKey: false
     })
@@ -311,7 +333,7 @@ describe('useStatusbarItems', () => {
 
     renderStatusbar({ requestGateway })
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /Approve for me/i }), {
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Smart approvals/i }), {
       button: 0,
       ctrlKey: false
     })
@@ -321,6 +343,7 @@ describe('useStatusbarItems', () => {
       expect($approvalMode.get()).toBe('off')
       expect($yoloActive.get()).toBe(true)
     })
+    expect(screen.getByRole('button', { name: /Full access/i })).toBeTruthy()
 
     await act(async () => {
       initialMode.resolve({ value: 'manual' })
@@ -346,9 +369,9 @@ describe('useStatusbarItems', () => {
     renderStatusbar({ freshDraftReady: false })
 
     const rowText = document.querySelector('footer')?.textContent ?? ''
-    expect(screen.getByRole('button', { name: /Approve for me/i })).toBeTruthy()
-    expect(rowText.indexOf('GPT-5.5 · Med')).toBeLessThan(rowText.indexOf('Approve for me'))
-    expect(rowText.indexOf('Approve for me')).toBeLessThan(rowText.indexOf('client v0.16.0'))
+    expect(screen.getByRole('button', { name: /Ask every time/i })).toBeTruthy()
+    expect(rowText.indexOf('GPT-5.5 · Med')).toBeLessThan(rowText.indexOf('Ask every time'))
+    expect(rowText.indexOf('Ask every time')).toBeLessThan(rowText.indexOf('client v0.16.0'))
   })
 
   it('renders the backend version in remote mode too', () => {

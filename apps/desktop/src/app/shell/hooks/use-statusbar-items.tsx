@@ -170,6 +170,12 @@ export function useStatusbarItems({
   const showApprovalMenu = gatewayState === 'open'
   const fullAccessActive = yoloActive || approvalMode === 'off'
   const approvalMenuValue: ApprovalMode = fullAccessActive ? 'off' : approvalMode
+  const approvalStatusLabel =
+    approvalMenuValue === 'off'
+      ? copy.approvalFull
+      : approvalMenuValue === 'smart'
+        ? copy.approvalSmart
+        : copy.approvalAsk
 
   const approvalMenuContent = useMemo(
     () => (
@@ -468,11 +474,11 @@ export function useStatusbarItems({
           <Zap className="size-3.5 shrink-0 opacity-70" />
         ),
         id: 'yolo',
-        label: copy.approvalMenuLabel,
+        label: approvalStatusLabel,
         menuAlign: 'end',
         menuClassName: 'w-80',
         menuContent: approvalMenuContent,
-        title: fullAccessActive ? copy.yoloOn : copy.yoloOff,
+        title: `${copy.approvalMenuTitle} ${approvalStatusLabel}`,
         variant: 'menu'
       },
       clientVersionItem,
@@ -494,6 +500,7 @@ export function useStatusbarItems({
       clientVersionItem,
       backendVersionItem,
       fullAccessActive,
+      approvalStatusLabel,
       approvalMenuContent
     ]
   )

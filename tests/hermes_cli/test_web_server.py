@@ -236,10 +236,13 @@ class TestWebServerEndpoints:
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_get_status(self):
+        from tui_gateway import server
+
         resp = self.client.get("/api/status")
         assert resp.status_code == 200
         data = resp.json()
         assert "version" in data
+        assert data["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
         assert "hermes_home" in data
         assert "active_sessions" in data
 

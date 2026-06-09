@@ -149,6 +149,11 @@ const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 // Schema:
 //   { schemaVersion: 1, commit, branch, builtAt, dirty, source }
 const INSTALL_STAMP_SCHEMA_VERSION = 1
+// Must match tui_gateway.server.DESKTOP_BACKEND_CONTRACT and the renderer's
+// REQUIRED_BACKEND_CONTRACT. Checked before the renderer talks to a backend so
+// a cached/remote older server cannot silently miss newer desktop RPCs.
+const REQUIRED_BACKEND_CONTRACT = 3
+
 function loadInstallStamp() {
   // Try packaged location first (resources/install-stamp.json), then the
   // dev/local build output (apps/desktop/build/install-stamp.json) so
@@ -184,6 +189,21 @@ function loadInstallStamp() {
     }
   }
   return null
+}
+
+function assertBackendContract(status) {
+  const contract = Number(status?.desktop_contract ?? 0)
+  if (Number.isFinite(contract) && contract >= REQUIRED_BACKEND_CONTRACT) {
+    return
+  }
+
+  const err = new Error(
+    `Hermes backend is too old for this desktop build ` +
+      `(contract ${Number.isFinite(contract) ? contract : 0}, requires ${REQUIRED_BACKEND_CONTRACT}). ` +
+      'Update the Hermes backend or switch this desktop back to a matching local build.'
+  )
+  err.backendContractMismatch = true
+  throw err
 }
 const INSTALL_STAMP = loadInstallStamp()
 if (INSTALL_STAMP) {
@@ -3011,9 +3031,13 @@ async function waitForHermes(baseUrl, token) {
 
   while (Date.now() < deadline) {
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      const status = await fetchJson(`${baseUrl}/api/status`, token)
+      assertBackendContract(status)
       return
     } catch (error) {
+      if (error?.backendContractMismatch) {
+        throw error
+      }
       lastError = error
       await new Promise(resolve => setTimeout(resolve, 500))
     }

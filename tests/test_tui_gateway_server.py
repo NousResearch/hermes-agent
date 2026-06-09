@@ -1826,13 +1826,19 @@ def test_config_set_approval_mode_rejects_unknown_values():
 def test_desktop_backend_contract_covers_approval_mode_api():
     import re
 
-    updates_path = Path(__file__).resolve().parents[1] / "apps/desktop/src/store/updates.ts"
+    root = Path(__file__).resolve().parents[1]
+    updates_path = root / "apps/desktop/src/store/updates.ts"
+    electron_path = root / "apps/desktop/electron/main.cjs"
     source = updates_path.read_text(encoding="utf-8")
-    match = re.search(r"const REQUIRED_BACKEND_CONTRACT = (\d+)", source)
+    electron_source = electron_path.read_text(encoding="utf-8")
+    renderer_match = re.search(r"const REQUIRED_BACKEND_CONTRACT = (\d+)", source)
+    electron_match = re.search(r"const REQUIRED_BACKEND_CONTRACT = (\d+)", electron_source)
 
-    assert match is not None
+    assert renderer_match is not None
+    assert electron_match is not None
     assert server.DESKTOP_BACKEND_CONTRACT >= 3
-    assert int(match.group(1)) == server.DESKTOP_BACKEND_CONTRACT
+    assert int(renderer_match.group(1)) == server.DESKTOP_BACKEND_CONTRACT
+    assert int(electron_match.group(1)) == server.DESKTOP_BACKEND_CONTRACT
 
 
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):

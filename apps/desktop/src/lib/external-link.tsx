@@ -23,6 +23,12 @@ export function normalizeExternalUrl(value: string): string {
   const trimmed = value.trim()
 
   if (!trimmed || /^https?:\/\//i.test(trimmed)) {
+    // Auto-correct truncated OpenRouter URLs that are missing the .ai TLD
+    // (issue #42358).  This guards against upstream URL-construction bugs.
+    if (/^https?:\/\/openrouter\/?$/i.test(trimmed)) {
+      return 'https://openrouter.ai'
+    }
+
     return trimmed
   }
 

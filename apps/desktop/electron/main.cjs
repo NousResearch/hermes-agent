@@ -727,6 +727,15 @@ function openExternalUrl(rawUrl) {
     return false
   }
 
+  // Guard against truncated provider URLs (e.g. https://openrouter/ instead of
+  // https://openrouter.ai).  This prevents downstream DNS errors when a bug in
+  // URL construction drops the TLD (issue #42358).
+  const host = parsed.hostname.toLowerCase()
+  if (host === 'openrouter' || host === 'openrouter.') {
+    rememberLog(`[link] blocked truncated URL: ${raw}`)
+    return false
+  }
+
   const url = parsed.toString()
 
   if (IS_WSL) {
@@ -2680,6 +2689,20 @@ function runRenderTitleJob(rawUrl) {
     }
 
     hardTimer = setTimeout(() => finish(readTitle()), RENDER_TITLE_TIMEOUT_MS)
+
+    // Defensive: refuse to load URLs with truncated provider domains that would
+    // trigger ERR_NAME_NOT_RESOLVED (e.g. https://openrouter/ missing .ai).
+    // See issue #42358.
+    try {
+      const parsedUrl = new URL(rawUrl)
+      const host = parsedUrl.hostname.toLowerCase()
+      if (host === 'openrouter' || host === 'openrouter.') {
+        rememberLog(`[title] blocked truncated URL: ${rawUrl}`)
+        return finish('')
+      }
+    } catch {
+      return finish('')
+    }
 
     window.webContents.setUserAgent(TITLE_USER_AGENT)
     window.webContents.on('page-title-updated', scheduleGrace)

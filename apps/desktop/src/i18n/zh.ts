@@ -1664,6 +1664,8 @@ export const zh: Translations = {
       runtimeSessionElapsed: '运行时会话已用时间',
       yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
       yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。Shift+点击可全局切换。',
+      goal: '目标',
+      goalActive: '目标模式已激活 — Hermes 正在朝着既定目标工作。',
       modelNone: '无',
       noModel: '无模型',
       switchModel: '切换模型',

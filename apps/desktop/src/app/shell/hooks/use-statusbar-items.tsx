@@ -13,6 +13,7 @@ import {
   Command,
   Hash,
   Loader2,
+  Pin,
   Sparkles,
   Zap,
   ZapFilled
@@ -33,6 +34,7 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $currentUsage,
+  $goalActive,
   $sessionStartedAt,
   $turnStartedAt,
   $workingSessionIds,
@@ -91,6 +93,7 @@ export function useStatusbarItems({
   const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
   const yoloActive = useStore($yoloActive)
+  const goalActive = useStore($goalActive)
   const busy = useStore($busy)
   const currentFastMode = useStore($currentFastMode)
   const currentModel = useStore($currentModel)
@@ -396,6 +399,15 @@ export function useStatusbarItems({
         id: 'session-timer',
         label: copy.session,
         title: copy.runtimeSessionElapsed,
+        variant: 'text'
+      },
+      {
+        className: 'bg-(--chrome-action-hover) px-1 text-foreground',
+        hidden: !goalActive,
+        icon: <Pin className="size-3.5 shrink-0" />,
+        id: 'goal',
+        label: copy.goal || 'Goal',
+        title: copy.goalActive || 'Goal mode active',
         variant: 'text'
       },
       {

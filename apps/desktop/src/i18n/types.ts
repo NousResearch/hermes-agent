@@ -1155,6 +1155,8 @@ export interface Translations {
       runtimeSessionElapsed: string
       yoloOn: string
       yoloOff: string
+      goal: string
+      goalActive: string
       modelNone: string
       noModel: string
       switchModel: string

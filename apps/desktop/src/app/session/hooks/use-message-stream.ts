@@ -31,6 +31,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setGoalActive,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -673,6 +674,17 @@ export function useMessageStream({
 
           if (typeof payload?.fast === 'boolean') {
             setCurrentFastMode(payload.fast)
+          }
+
+          if (typeof payload?.goal_active === 'boolean') {
+            setGoalActive(payload.goal_active)
+
+            if (sessionId) {
+              updateSessionState(sessionId, state => ({
+                ...state,
+                goalActive: payload.goal_active ?? state.goalActive
+              }))
+            }
           }
 
           if (typeof payload?.yolo === 'boolean') {

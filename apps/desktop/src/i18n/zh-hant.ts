@@ -1587,6 +1587,8 @@ export const zhHant = defineLocale({
       runtimeSessionElapsed: '執行時工作階段已用時間',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
       yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。Shift+點擊可全域切換。',
+      goal: '目標',
+      goalActive: '目標模式已啟用 — Hermes 正在朝著既定目標工作。',
       modelNone: '無',
       noModel: '無模型',
       switchModel: '切換模型',

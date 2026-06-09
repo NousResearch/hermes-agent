@@ -1626,6 +1626,8 @@ export const ja = defineLocale({
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
       yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。Shift+クリックで全体に切り替え。',
+      goal: '目標',
+      goalActive: '目標モード有効 — Hermes は設定された目標に向けて作業中です。',
       modelNone: 'なし',
       noModel: 'モデルなし',
       switchModel: 'モデルを切り替え',

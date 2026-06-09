@@ -305,6 +305,8 @@ export interface SessionInfo {
   /** Handoff lifecycle: 'pending' | 'in_progress' | 'completed' | 'failed'. */
   handoff_state?: null | string
   handoff_error?: null | string
+  goal_active?: boolean
+  goal_text?: string
   /** Owning profile name, set by the cross-profile aggregator
    *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
    *  which the UI treats as the default profile. */
@@ -349,6 +351,7 @@ export interface SessionRuntimeInfo {
   cwd?: string
   desktop_contract?: number
   fast?: boolean
+  goal_active?: boolean
   model?: string
   personality?: string
   provider?: string

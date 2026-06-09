@@ -5,7 +5,15 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking, setTurnStartedAt } from '@/store/session'
+import {
+  $busy,
+  $messages,
+  noteSessionActivity,
+  setGoalActive,
+  setSessionAttention,
+  setSessionWorking,
+  setTurnStartedAt
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -127,6 +135,7 @@ export function useSessionStateCache({
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    setGoalActive(pending.state.goalActive)
     // Mirror the focused session's per-session turn clock into the global
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).

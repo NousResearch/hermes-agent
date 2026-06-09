@@ -2033,12 +2033,25 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
     except Exception:
         yolo = False
+    # Check if goal mode is active for this session
+    goal_active = False
+    try:
+        from hermes_cli.goals import GoalManager
+
+        session_key = (session or {}).get("session_key")
+        if session_key:
+            goal_mgr = GoalManager(session_id=session_key)
+            goal_active = goal_mgr.is_active()
+    except Exception:
+        pass
+
     info: dict = {
         "model": getattr(agent, "model", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,
+        "goal_active": goal_active,
         "tools": {},
         "skills": {},
         "cwd": cwd,
@@ -5118,6 +5131,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                     sid,
                                     {"kind": "goal", "text": verdict_msg},
                                 )
+                                _emit("session.info", sid, _session_info(agent, session))
                             if decision.get("should_continue"):
                                 cont_prompt = decision.get("continuation_prompt") or ""
                                 if cont_prompt:
@@ -7115,6 +7129,17 @@ def _(rid, params: dict) -> dict:
         name = resolved
     session = _sessions.get(params.get("session_id", ""))
 
+    def _emit_current_session_info() -> None:
+        if not session:
+            return
+        agent = session.get("agent")
+        if agent is None:
+            return
+        try:
+            _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
+        except Exception:
+            pass
+
     qcmds = _load_cfg().get("quick_commands", {})
     if name in qcmds:
         qc = qcmds[name]
@@ -7266,10 +7291,12 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
+            _emit_current_session_info()
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
             return _ok(rid, {"type": "exec", "output": out})
         if lower == "resume":
             state = mgr.resume()
+            _emit_current_session_info()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
             return _ok(
@@ -7285,6 +7312,7 @@ def _(rid, params: dict) -> dict:
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
+            _emit_current_session_info()
             return _ok(
                 rid,
                 {
@@ -7298,6 +7326,7 @@ def _(rid, params: dict) -> dict:
             state = mgr.set(arg)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
+        _emit_current_session_info()
 
         notice = (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
@@ -8151,6 +8180,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 agent.service_tier = "priority"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
+            _emit("session.info", sid, _session_info(agent, session))
+        elif name == "goal" and agent:
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

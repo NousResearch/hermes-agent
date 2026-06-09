@@ -50,6 +50,7 @@ class CommandDef:
     description: str                   # human-readable description
     category: str                      # "Session", "Configuration", etc.
     aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
+    gateway_aliases: tuple[str, ...] = ()  # aliases that apply only in gateway/messaging
     args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
@@ -66,7 +67,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",), args_hint="[name]"),
+               aliases=("reset",), gateway_aliases=("clear",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
@@ -250,6 +251,30 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
+def _build_gateway_command_lookup() -> dict[str, CommandDef]:
+    """Map gateway-visible command names and aliases to their CommandDef."""
+    lookup: dict[str, CommandDef] = {}
+    for cmd in COMMAND_REGISTRY:
+        if cmd.cli_only and not cmd.gateway_config_gate:
+            continue
+        for name in (cmd.name, *cmd.aliases, *cmd.gateway_aliases):
+            lookup[name] = cmd
+    return lookup
+
+
+_GATEWAY_COMMAND_LOOKUP: dict[str, CommandDef] = _build_gateway_command_lookup()
+
+
+def resolve_gateway_command(name: str) -> CommandDef | None:
+    """Resolve a slash command using gateway-visible names and aliases.
+
+    Some words intentionally mean different things in the CLI and gateway.
+    CLI ``/clear`` clears the terminal; gateway ``/clear`` resets the session
+    because messaging platforms have no terminal screen to clear.
+    """
+    return _GATEWAY_COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+
+
 def _build_description(cmd: CommandDef) -> str:
     """Build a CLI-facing description string including usage hint."""
     if cmd.args_hint:
@@ -306,7 +331,7 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     name
     for cmd in COMMAND_REGISTRY
     if not cmd.cli_only or cmd.gateway_config_gate
-    for name in (cmd.name, *cmd.aliases)
+    for name in (cmd.name, *cmd.aliases, *cmd.gateway_aliases)
 )
 
 
@@ -375,7 +400,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    return resolve_gateway_command(command_name) is not None if command_name else False
 
 
 def _resolve_config_gates() -> set[str]:
@@ -437,7 +462,7 @@ def gateway_help_lines() -> list[str]:
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
-        for a in cmd.aliases:
+        for a in (*cmd.aliases, *cmd.gateway_aliases):
             # Skip internal aliases like reload_mcp (underscore variant)
             if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
                 continue
@@ -1040,9 +1065,12 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     matching Discord's and Telegram's model where every command is a
     first-class slash and not a ``/hermes <verb>`` subcommand.
 
-    Both canonical names and aliases are included so users can type any
+    Canonical names and regular aliases are included so users can type any
     documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
-    Plugin-registered slash commands are included too.
+    Gateway-only compatibility aliases are intentionally skipped here to
+    preserve Slack's capped native-slash slots; they still work through the
+    ``/hermes <subcommand>`` mapping. Plugin-registered slash commands are
+    included too.
 
     Commands whose sanitized name collides with a Slack built-in
     (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
@@ -1125,8 +1153,8 @@ def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/comm
 def slack_subcommand_map() -> dict[str, str]:
     """Return subcommand -> /command mapping for Slack /hermes handler.
 
-    Maps both canonical names and aliases so /hermes bg do stuff works
-    the same as /hermes background do stuff.
+    Maps canonical names, regular aliases, and gateway-only aliases so
+    /hermes bg do stuff works the same as /hermes background do stuff.
 
     Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
     routes through the plugin handler.
@@ -1137,7 +1165,7 @@ def slack_subcommand_map() -> dict[str, str]:
         if not _is_gateway_available(cmd, overrides):
             continue
         mapping[cmd.name] = f"/{cmd.name}"
-        for alias in cmd.aliases:
+        for alias in (*cmd.aliases, *cmd.gateway_aliases):
             mapping[alias] = f"/{alias}"
     for name, _description, _args_hint in _iter_plugin_command_entries():
         if name not in mapping:

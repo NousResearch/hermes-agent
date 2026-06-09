@@ -6329,7 +6329,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _recognized_cmd = None
                 if cmd:
                     try:
-                        from hermes_cli.commands import resolve_command as _resolve_update_cmd
+                        from hermes_cli.commands import resolve_gateway_command as _resolve_update_cmd
                     except Exception:
                         _resolve_update_cmd = None
                     if _resolve_update_cmd is not None:
@@ -6525,7 +6525,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
                 ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
-                resolve_command as _resolve_cmd_inner,
+                resolve_gateway_command as _resolve_cmd_inner,
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
@@ -6868,7 +6868,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from hermes_cli.commands import (
             GATEWAY_KNOWN_COMMANDS,
             is_gateway_known_command,
-            resolve_command as _resolve_cmd,
+            resolve_gateway_command as _resolve_cmd,
         )
 
         # Resolve aliases to canonical name so dispatch and hook names
@@ -14946,7 +14946,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _pending_cmd_word = _pending_parts[0][1:].lower() if _pending_parts else ""
                 if _pending_cmd_word:
                     try:
-                        from hermes_cli.commands import resolve_command as _rc_pending
+                        from hermes_cli.commands import resolve_gateway_command as _rc_pending
                         if _rc_pending(_pending_cmd_word):
                             logger.info(
                                 "Discarding command '/%s' from pending queue — "

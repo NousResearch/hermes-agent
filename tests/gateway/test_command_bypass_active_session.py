@@ -125,6 +125,18 @@ class TestCommandBypassActiveSession:
         assert any("handled:reset" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
+    async def test_clear_bypasses_guard(self):
+        """/clear (gateway alias for /new) must be dispatched directly."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/clear"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:clear" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
     async def test_approve_bypasses_guard(self):
         """/approve must bypass (deadlock prevention)."""
         adapter = _make_adapter()
@@ -326,7 +338,7 @@ class TestAllResolvableCommandsBypassGuard:
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
             "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset",
+            "reload-mcp", "sethome", "reset", "clear",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"
@@ -445,6 +457,14 @@ class TestPendingCommandSafetyNet:
 
         assert resolve_command("reset") is not None
         assert resolve_command("reset").name == "new"  # alias
+
+    def test_clear_gateway_alias_detected(self):
+        from hermes_cli.commands import resolve_command, resolve_gateway_command
+
+        assert resolve_command("clear") is not None
+        assert resolve_command("clear").name == "clear"
+        assert resolve_gateway_command("clear") is not None
+        assert resolve_gateway_command("clear").name == "new"
 
     def test_unknown_command_not_detected(self):
         from hermes_cli.commands import resolve_command

@@ -177,6 +177,7 @@ async def test_auto_registers_missing_gateway_commands(adapter):
     expected_auto = {"debug", "yolo", "profile"}
     for name in expected_auto:
         assert name in tree_names, f"/{name} should be auto-registered on Discord"
+    assert "clear" in tree_names
 
 
 @pytest.mark.asyncio
@@ -191,6 +192,11 @@ async def test_auto_registered_command_dispatches_correctly(adapter):
     adapter._run_simple_slash.reset_mock()
     await debug_cmd.callback(interaction)
     adapter._run_simple_slash.assert_awaited_once_with(interaction, "/debug")
+
+    clear_cmd = adapter._client.tree.commands["clear"]
+    adapter._run_simple_slash.reset_mock()
+    await clear_cmd.callback(interaction, args="next")
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/clear next")
 
 
 @pytest.mark.asyncio
@@ -994,4 +1000,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

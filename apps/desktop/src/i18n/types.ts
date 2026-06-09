@@ -816,6 +816,8 @@ export interface Translations {
     groupAriaUngrouped: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
+    sortModeTooltip: { manual: string; recency: string; created: string }
+    sortModeAria: { manual: string; recency: string; created: string }
     allPinned: string
     shiftClickHint: string
     noWorkspace: string

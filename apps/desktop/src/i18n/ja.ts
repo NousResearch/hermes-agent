@@ -1202,6 +1202,16 @@ export const ja = defineLocale({
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     groupTitleGrouped: 'セッションのグループ化を解除',
     groupTitleUngrouped: 'ワークスペースでグループ化',
+    sortModeTooltip: {
+      manual: '並べ替え：手動順序（クリックで切替）',
+      recency: '並べ替え：最近のアクティビティ（クリックで切替）',
+      created: '並べ替え：作成日時（クリックで切替）'
+    },
+    sortModeAria: {
+      manual: '手動順序で並べ替え',
+      recency: '最近のアクティビティで並べ替え',
+      created: '作成日時で並べ替え'
+    },
     allPinned: 'ここにあるものはすべてピン留めされています。チャットのピン留めを解除すると最近のものに表示されます。',
     shiftClickHint: 'Shift クリックでピン留め · ドラッグで並べ替え',
     noWorkspace: 'ワークスペースなし',

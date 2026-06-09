@@ -1246,6 +1246,16 @@ export const zh: Translations = {
     groupAriaUngrouped: '按工作区分组会话',
     groupTitleGrouped: '取消分组',
     groupTitleUngrouped: '按工作区分组',
+    sortModeTooltip: {
+      manual: '排序：手动顺序（点击切换）',
+      recency: '排序：最近活动（点击切换）',
+      created: '排序：创建时间（点击切换）'
+    },
+    sortModeAria: {
+      manual: '按手动顺序排序',
+      recency: '按最近活动排序',
+      created: '按创建时间排序'
+    },
     allPinned: '这里的全部已置顶。取消置顶某个对话即可在最近中显示。',
     shiftClickHint: 'Shift+ 单击对话以置顶 · 拖动以重新排序',
     noWorkspace: '无工作区',

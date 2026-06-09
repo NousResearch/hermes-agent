@@ -546,7 +546,7 @@ jobs:
             exit 1
           fi
 
-          mapfile -t TAGS < <(git tag -l 'v*' | sort -V)
+          mapfile -t TAGS < <(git tag -l 'v*' | sort -Vr)
 
           if [ "${#TAGS[@]}" -eq 0 ]; then
             log_info "No hay tags v* que publicar."
@@ -581,7 +581,7 @@ jobs:
             exit 0
           fi
 
-          LATEST_TAG="${PUBLISHABLE_TAGS[-1]}"
+          LATEST_TAG="${PUBLISHABLE_TAGS[0]}"
 
           section "Tags publicables"
           printf '%s\n' "${PUBLISHABLE_TAGS[@]}"

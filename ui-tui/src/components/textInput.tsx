@@ -442,6 +442,7 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  submitKey = 'enter',
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   focus = true
@@ -971,10 +972,22 @@ export function TextInput({
         const sequence = (event.keypress as { sequence?: string }).sequence
         const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
 
-        if (k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)) {
-          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+        const isModifier = k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)
+
+        if (submitKey === 'cmd_enter') {
+          // Inverted: modifier+Enter submits, bare Enter inserts newline
+          if (isModifier) {
+            cbSubmit.current?.(vRef.current)
+          } else {
+            commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+          }
         } else {
-          cbSubmit.current?.(vRef.current)
+          // Default: bare Enter submits, modifier+Enter inserts newline
+          if (isModifier) {
+            commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+          } else {
+            cbSubmit.current?.(vRef.current)
+          }
         }
 
         return
@@ -1285,6 +1298,8 @@ interface TextInputProps {
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
   placeholder?: string
+  /** When 'cmd_enter', Enter inserts a newline and Cmd/Ctrl+Enter submits. */
+  submitKey?: 'enter' | 'cmd_enter'
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

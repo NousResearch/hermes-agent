@@ -40,6 +40,16 @@ class TestUnknownPeerResolution:
         s = _session()
         assert mgr._resolve_peer_id(s, "ai") == s.assistant_peer_id
 
+    def test_ai_aliases_are_case_insensitive(self):
+        """Plausible model guesses ("AI", "Assistant", " ai ") must route to the
+        assistant, not silently collapse into the user peer (#42980 review)."""
+        mgr = HonchoSessionManager()
+        s = _session()
+        for alias in ("AI", "Ai", " ai ", "assistant", "Assistant", "ASSISTANT"):
+            assert mgr._resolve_peer_id(s, alias) == s.assistant_peer_id, alias
+        # "user" is likewise case-insensitive
+        assert mgr._resolve_peer_id(s, "USER") == s.user_peer_id
+
     def test_unknown_name_collapses_to_user_peer(self):
         """The core #42980 fix: an invented display name must NOT become its
         own peer id."""
@@ -71,13 +81,33 @@ class TestUnknownPeerResolution:
         # an unconfigured name still collapses to the user peer
         assert mgr._resolve_peer_id(s, "stowaway") == s.user_peer_id
 
-    def test_unknown_peer_does_not_target_a_new_peer(self):
-        """Resolving an unknown name yields the existing user peer, so any
-        downstream ``_get_or_create_peer`` targets the existing peer rather
-        than minting one named after the free-form string."""
+    def test_create_conclusion_for_unknown_peer_writes_to_user_scope(self):
+        """End-to-end through the WRITE path: a conclusion for an invented name
+        must land in the user's conclusion scope, and ``_get_or_create_peer``
+        must never be called with the sanitized free-form name (which is what
+        lazily mints a duplicate Honcho peer). This exercises the real
+        ``create_conclusion`` flow, not just the resolver in isolation."""
         mgr = HonchoSessionManager()
-        mgr._get_or_create_peer = MagicMock()
         s = _session()
-        resolved = mgr._resolve_peer_id(s, "RandomName")
-        assert resolved == s.user_peer_id
-        assert resolved != mgr._sanitize_id("RandomName")
+        mgr._cache[s.key] = s
+        mgr._ai_observe_others = True
+        assistant = MagicMock()
+        mgr._get_or_create_peer = MagicMock(return_value=assistant)
+
+        assert mgr.create_conclusion(s.key, "likes dark mode", peer="JackOnDiscord") is True
+
+        # The conclusion is scoped to the USER peer, not a new "jackondiscord".
+        assistant.conclusions_of.assert_called_once_with(s.user_peer_id)
+        called_with = [c.args[0] for c in mgr._get_or_create_peer.call_args_list]
+        assert mgr._sanitize_id("JackOnDiscord") not in called_with
+
+    def test_resolved_peer_label_reports_collapsed_target(self):
+        """The conclude tool response must report the RESOLVED peer, so it never
+        confirms a write against a peer name the model invented (#42980 review)."""
+        mgr = HonchoSessionManager()
+        s = _session()
+        mgr._cache[s.key] = s
+        assert mgr.resolved_peer_label(s.key, "JackOnDiscord") == s.user_peer_id
+        assert mgr.resolved_peer_label(s.key, "ai") == s.assistant_peer_id
+        # No session cached -> falls back to the sanitized request, never raises.
+        assert mgr.resolved_peer_label("missing:key", "Whoever") == mgr._sanitize_id("Whoever")

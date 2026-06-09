@@ -220,6 +220,59 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
+        """OpenRouter-routed slugs resolve via the live OR catalog before the
+        hardcoded family catch-all.
+
+        Regression for the claude-fable-5 under-report: a brand-new Anthropic
+        slug that is absent from models.dev but present in OpenRouter's live
+        catalog (with a 1M window) used to fall through to the generic
+        ``"claude": 200000`` entry, because the step-6 OR fallback was gated on
+        ``not effective_provider`` and ``effective_provider`` is "openrouter"
+        for any OpenRouter selection. The dedicated step-5 OR branch must read
+        the live value instead.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        or_url = "https://openrouter.ai/api/v1"
+        live = {
+            "anthropic/claude-fable-5": {"context_length": 1_000_000},
+            "anthropic/claude-haiku-4.5": {"context_length": 200_000},
+        }
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value=live), \
+             mock_patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             mock_patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            # The bug: would have returned 200_000 via the "claude" catch-all.
+            assert get_model_context_length(
+                "anthropic/claude-fable-5", base_url=or_url, provider="openrouter"
+            ) == 1_000_000
+            # A genuinely-200k model still resolves to its real OR value — the
+            # fix reads per-model context, it does not blanket-bump to 1M.
+            assert get_model_context_length(
+                "anthropic/claude-haiku-4.5", base_url=or_url, provider="openrouter"
+            ) == 200_000
+
+    def test_openrouter_kimi_32k_underreport_still_guarded(self):
+        """The live OR branch keeps the Kimi-family 32k underreport guard:
+        a bogus 32768 from OpenRouter for a Kimi slug must NOT win — it falls
+        through to the hardcoded default instead.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        or_url = "https://openrouter.ai/api/v1"
+        live = {"moonshotai/kimi-k2.6": {"context_length": 32768}}
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value=live), \
+             mock_patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             mock_patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            ctx = get_model_context_length(
+                "moonshotai/kimi-k2.6", base_url=or_url, provider="openrouter"
+            )
+            assert ctx != 32768, "Kimi 32k OR underreport must not be accepted"
+
 
 # =========================================================================
 # Codex OAuth context-window resolution (provider="openai-codex")

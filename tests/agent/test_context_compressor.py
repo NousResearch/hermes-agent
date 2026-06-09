@@ -957,7 +957,16 @@ class TestSummaryFailureTrackingForGatewayWarning:
             result = c.compress(msgs)
 
         fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
-        assert len(fallback) <= 8300
+        # The fallback summary itself is bounded even when merged into a tail
+        # message (the merge prepends the summary before the tail's original
+        # content).  Extract just the summary portion up to the end marker to
+        # verify the bounding independently of the tail content length.
+        _end_marker = "--- END OF CONTEXT SUMMARY"
+        if _end_marker in fallback:
+            _summary_only = fallback[: fallback.index(_end_marker)]
+        else:
+            _summary_only = fallback
+        assert len(_summary_only) <= 8300
         assert "deterministic fallback" in fallback
         assert "important detail" in fallback
 
@@ -1280,30 +1289,29 @@ class TestCompressWithClient:
         assert len(summary_msg) == 1
         assert summary_msg[0]["role"] == "user"
 
-    def test_summary_role_avoids_consecutive_user_when_head_ends_with_user(self):
-        """When last head message is 'user', summary must be 'assistant' to avoid two consecutive user messages."""
-        mock_client = MagicMock()
+    def test_summary_role_always_user_never_assistant(self):
+        """Compaction summaries always use role='user' to prevent LLMs from
+        treating role='assistant' summaries as their own prior output (#42768).
+        When merging into tail is needed to avoid same-role collision, the
+        summary is prepended to the first tail message instead."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
-        mock_client.chat.completions.create.return_value = mock_response
+        mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
-        # Last head message (index 2) is "user" → summary should be "assistant"
-        # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
-        # the system prompt (always implicitly protected), yielding head [system,
-        # user, user] with last head = user.
+        # Head ends with assistant (index 2), tail starts with assistant (index 6).
+        # summary_role="user" → no collision with either neighbor.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
-            {"role": "user", "content": "msg 2"},  # last head — user
-            {"role": "assistant", "content": "msg 3"},
-            {"role": "user", "content": "msg 4"},
-            {"role": "assistant", "content": "msg 5"},
-            {"role": "user", "content": "msg 6"},
-            {"role": "assistant", "content": "msg 7"},
+            {"role": "assistant", "content": "msg 2"},  # last head — assistant
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},  # first tail — assistant
+            {"role": "user", "content": "msg 7"},
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
@@ -1311,7 +1319,8 @@ class TestCompressWithClient:
             m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
         ]
         assert len(summary_msg) == 1
-        assert summary_msg[0]["role"] == "assistant"
+        # Summary must always be role="user", never "assistant"
+        assert summary_msg[0]["role"] == "user"
 
     def test_summary_role_flips_to_avoid_tail_collision(self):
         """When summary role collides with the first tail message but flipping
@@ -1465,10 +1474,11 @@ class TestCompressWithClient:
             if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary should be merged into the first tail message (assistant at index 5)
-        first_tail = [m for m in result if "msg 5" in (m.get("content") or "")]
-        assert len(first_tail) == 1
-        assert "summary text" in first_tail[0]["content"]
+        # The summary should be merged into the last head message (user at index 1)
+        # to avoid consecutive user messages when head=user, tail=assistant.
+        head_with_summary = [m for m in result if "summary text" in (m.get("content") or "")]
+        assert len(head_with_summary) == 1
+        assert head_with_summary[0]["role"] == "user"
 
     def test_no_collision_scenarios_still_work(self):
         """Verify that the common no-collision cases (head=assistant/tail=assistant,

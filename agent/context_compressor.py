@@ -2094,41 +2094,58 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         _merge_summary_into_tail = False
+        _merge_summary_into_head = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"}:
-            summary_role = "user"
-        else:
-            summary_role = "assistant"
-        # If the chosen role collides with the tail AND flipping wouldn't
-        # collide with the head, flip it.
-        if summary_role == first_tail_role:
-            flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
-                summary_role = flipped
-            else:
-                # Both roles would create consecutive same-role messages
-                # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
+        # Always use role="user" for standalone compaction summaries.
+        # Some LLMs (especially weaker ones) treat role="assistant" summaries
+        # as their own previous output and echo them back into the conversation
+        # as live assistant messages (#42768, #11475, #14521). Using "user"
+        # avoids this while still providing clear handoff context.
+        # When this would create consecutive same-role with either neighbor,
+        # merge the summary into the adjacent message instead of inserting
+        # a standalone message.
+        summary_role = "user"
+        if summary_role == first_tail_role and summary_role == last_head_role:
+            # Both neighbors are "user" — prefer merging into tail
+            _merge_summary_into_tail = True
+        elif summary_role == first_tail_role:
+            # Tail is "user" — merge into first tail to avoid consecutive user
+            _merge_summary_into_tail = True
+        elif summary_role == last_head_role:
+            # Head is "user" — merge into last head to avoid consecutive user
+            _merge_summary_into_head = True
 
         # When the summary lands as a standalone role="user" message,
         # weak models read the verbatim "## Active Task" quote of a past
         # user request as fresh input (#11475, #14521). Append the explicit
         # end marker — the same one used in the merge-into-tail path — so
         # the model has a clear "summary above, not new input" signal.
-        if not _merge_summary_into_tail and summary_role == "user":
+        if not _merge_summary_into_tail and not _merge_summary_into_head and summary_role == "user":
             summary = (
                 summary
                 + "\n\n--- END OF CONTEXT SUMMARY — "
                 "respond to the message below, not the summary above ---"
             )
 
-        if not _merge_summary_into_tail:
+        if not _merge_summary_into_tail and not _merge_summary_into_head:
             compressed.append({"role": summary_role, "content": summary})
+
+        # Merge-into-head: append the summary to the last head message
+        # to avoid consecutive same-role messages when the summary is
+        # always role="user" and the head also ends with "user" (#42768).
+        if _merge_summary_into_head and compressed:
+            _merged_suffix = (
+                "\n\n--- END OF CONTEXT SUMMARY — "
+                "respond to the messages below, not the summary above ---\n\n"
+                + summary
+            )
+            compressed[-1]["content"] = _append_text_to_content(
+                compressed[-1].get("content"),
+                _merged_suffix,
+                prepend=False,
+            )
+            _merge_summary_into_head = False
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()

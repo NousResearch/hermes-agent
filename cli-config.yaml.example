@@ -176,11 +176,11 @@ model:
 # Commands run directly on your machine in the current directory
 # -----------------------------------------------------------------------------
 # Working directory behavior:
-#   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
+#   - CLI (`hermes` command): "." = current directory; explicit path preserved as-is
 #   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 terminal:
   backend: "local"
-  cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
+  cwd: "."  # For local backend: "." = current directory; explicit paths set here are used as-is. Ignored for remote backends unless a backend documents otherwise.
   timeout: 180
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300

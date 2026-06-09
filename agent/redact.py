@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +56,12 @@ _SENSITIVE_BODY_KEYS = frozenset({
     "key",
 })
 
-# Snapshot at import time so runtime env mutations (e.g. LLM-generated
-# `export HERMES_REDACT_SECRETS=false`) cannot disable redaction
-# mid-session.  ON by default — secure default per issue #17691. Users who
-# need raw credential values in tool output (e.g. working on the redactor
-# itself) can opt out via `security.redact_secrets: false` in config.yaml
-# (bridged to this env var in hermes_cli/main.py, gateway/run.py, and
-# cli.py) or `HERMES_REDACT_SECRETS=false` in ~/.hermes/.env. An opt-out
-# warning is logged at gateway and CLI startup so operators see the
-# downgrade — see `_log_redaction_status()` in gateway/run.py and cli.py.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
+# DETE: Redaction is always enabled. The `HERMES_REDACT_SECRETS` env var
+# kill switch has been removed — there is no legitimate reason to send
+# credentials to an LLM provider in plaintext. Callers that need a
+# security-weak path for debugging must use explicit `force=True` parameter
+# to bypass specific patterns, not disable redaction globally.
+_REDACT_ENABLED = True
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
@@ -104,6 +101,10 @@ _PREFIX_PATTERNS = [
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
+    # WordPress application passwords: exact 6x4 space-separated pattern
+    # e.g. "abcd efgh ijkl mnop qrst uvwx" or "dmGp 5QtY j4Xn 7Jtm YPGR 3wwG"
+    # These are case-sensitive alphanumeric, groups of 4 with single spaces.
+    r"\b[A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4}\b",
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
@@ -424,6 +425,33 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             return phone[:4] + "****" + phone[-4:]
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
+    # Hex-encoded credentials: if the output contains hex-dump formatted
+    # lines whose ASCII column contains text that looks like a known
+    # credential or partial credential pattern, redact the hex bytes.
+    # Prevents bypass via xxd, od, hexdump.
+    # Also redacts hex bytes when the SAME output already had a *** redaction
+    # (indicates the credential is present in both raw and encoded form).
+    if (" *** " in text or "***" in text):
+        _HEX_DUMP_ASCII_RE = re.compile(
+            r"([0-9a-fA-F]{4,8}:)?"
+            r"(\s(?:"
+            r"[0-9a-fA-F]{2}(?:\s[0-9a-fA-F]{2}){1,15}"     # byte-by-byte: " 64 76 47 70"
+            r"|"
+            r"[0-9a-fA-F]{4}(?:\s[0-9a-fA-F]{4}){1,7}"      # word-grouped: " 6476 4770"
+            r"))"
+            r"(\s{2,}|  )"
+            r"([\x20-\x7E]{1,16})"
+        )
+        if _HEX_DUMP_ASCII_RE.search(text):
+            # Redact ALL hex dump lines when *** is present — don't need to
+            # match the credential in the ASCII column specifically.
+            # The presence of both a redaction AND hex-dump formatted output
+            # is sufficient evidence that credential bytes may be exposed.
+            def _redact_hex_dump(m):
+                prefix = m.group(1) or ""
+                return f"{prefix} *** [HEX REDACTED] ***"
+            text = _HEX_DUMP_ASCII_RE.sub(_redact_hex_dump, text)
+
     return text
 
 
@@ -456,6 +484,33 @@ def _extract_literal_prefix(pattern: str) -> str:
 _PREFIX_SUBSTRINGS = tuple(
     _extract_literal_prefix(p) for p in _PREFIX_PATTERNS
 )
+
+
+def _redact_message_content(content: Any, redact_fn) -> Any:
+    """Redact sensitive text in a message content field.
+
+    Handles both plain-string content (OpenAI string format) and
+    list-typed content (Anthropic/multimodal content block format,
+    OpenAI vision messages, tool result blocks).
+
+    Uses the provided redact_fn (typically ``redact_sensitive_text``)
+    on each text/thinking/content key found in the structure.
+    """
+    if isinstance(content, str):
+        return redact_fn(content, force=True)
+    if isinstance(content, list):
+        redacted = []
+        for part in content:
+            if isinstance(part, dict):
+                part = dict(part)  # shallow copy to avoid in-place mutation
+                for key in ("text", "thinking", "content"):
+                    if key in part and isinstance(part[key], str):
+                        part[key] = redact_fn(part[key], force=True)
+                    elif key in part and isinstance(part[key], list):
+                        part[key] = _redact_message_content(part[key], redact_fn)
+            redacted.append(part)
+        return redacted
+    return content
 
 
 def _has_known_prefix_substring(text: str) -> bool:

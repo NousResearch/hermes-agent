@@ -661,6 +661,15 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     }
                     if summary_temperature is not None:
                         _create_kwargs["temperature"] = summary_temperature
+                    # ── DETE: redact messages before they leave the trust boundary ────
+                    if _create_kwargs.get("messages"):
+                        import copy
+                        from agent.redact import _redact_message_content, redact_sensitive_text
+                        _create_kwargs["messages"] = copy.deepcopy(_create_kwargs["messages"])
+                        for msg in _create_kwargs["messages"]:
+                            if isinstance(msg, dict) and "content" in msg:
+                                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                    # ────────────────────────────────────────────────────────────────
                     response = self.client.chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)
@@ -730,6 +739,15 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     }
                     if summary_temperature is not None:
                         _create_kwargs["temperature"] = summary_temperature
+                    # ── DETE: redact messages before they leave the trust boundary ────
+                    if _create_kwargs.get("messages"):
+                        import copy
+                        from agent.redact import _redact_message_content, redact_sensitive_text
+                        _create_kwargs["messages"] = copy.deepcopy(_create_kwargs["messages"])
+                        for msg in _create_kwargs["messages"]:
+                            if isinstance(msg, dict) and "content" in msg:
+                                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                    # ────────────────────────────────────────────────────────────────
                     response = await self._get_async_client().chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)

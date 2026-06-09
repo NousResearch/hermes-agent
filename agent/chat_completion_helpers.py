@@ -51,28 +51,7 @@ def _ra():
     return run_agent
 
 
-def _redact_message_content(content: Any, redact_fn) -> Any:
-    """Redact sensitive text in a message content field.
-
-    Handles both plain-string content (OpenAI string format) and
-    list-typed content (Anthropic/multimodal content block format,
-    OpenAI vision messages, tool result blocks).
-    """
-    if isinstance(content, str):
-        return redact_fn(content, force=True)
-    if isinstance(content, list):
-        redacted = []
-        for part in content:
-            if isinstance(part, dict):
-                part = dict(part)  # shallow copy to avoid in-place mutation
-                for key in ("text", "thinking", "content"):
-                    if key in part and isinstance(part[key], str):
-                        part[key] = redact_fn(part[key], force=True)
-                    elif key in part and isinstance(part[key], list):
-                        part[key] = _redact_message_content(part[key], redact_fn)
-            redacted.append(part)
-        return redacted
-    return content
+from agent.redact import _redact_message_content
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:

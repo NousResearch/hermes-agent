@@ -1001,6 +1001,15 @@ class _AnthropicCompletionsAdapter:
         from agent.transports import get_transport
 
         messages = kwargs.get("messages", [])
+        # ── DETE: redact messages before they leave the trust boundary ────
+        if messages:
+            import copy
+            from agent.redact import _redact_message_content, redact_sensitive_text
+            messages = copy.deepcopy(messages)
+            for msg in messages:
+                if isinstance(msg, dict) and "content" in msg:
+                    msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+        # ────────────────────────────────────────────────────────────────
         model = kwargs.get("model", self._model)
         tools = kwargs.get("tools")
         tool_choice = kwargs.get("tool_choice")
@@ -5082,6 +5091,15 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
+    # ── DETE: redact messages before they leave the trust boundary ────
+    if messages:
+        import copy
+        from agent.redact import _redact_message_content, redact_sensitive_text
+        messages = copy.deepcopy(messages)
+        for msg in messages:
+            if isinstance(msg, dict) and "content" in msg:
+                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+    # ────────────────────────────────────────────────────────────────
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
@@ -5586,9 +5604,17 @@ async def async_call_llm(
 
     Same as call_llm() but async. See call_llm() for full documentation.
     """
+    # ── DETE: redact messages before they leave the trust boundary ────
+    if messages:
+        import copy
+        from agent.redact import _redact_message_content, redact_sensitive_text
+        messages = copy.deepcopy(messages)
+        for msg in messages:
+            if isinstance(msg, dict) and "content" in msg:
+                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+    # ────────────────────────────────────────────────────────────────
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
-    effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
     if task == "vision":

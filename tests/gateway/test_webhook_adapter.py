@@ -33,6 +33,7 @@ from gateway.platforms.webhook import (
     _INSECURE_NO_AUTH,
     check_webhook_requirements,
 )
+from gateway.session import build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,10 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter (without starting a full server)."""
     app = web.Application()
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_post(
+        "/webhooks/{route_name}/deliveries/{delivery_id}/stop",
+        adapter._handle_stop_delivery,
+    )
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
 
@@ -778,6 +783,129 @@ class TestSessionIsolation:
         ids = {ev.source.chat_id for ev in captured_events}
         assert len(ids) == 2, "Each delivery must have a unique session chat_id"
 
+    @pytest.mark.asyncio
+    async def test_accepted_webhook_returns_stop_path(self):
+        """Accepted webhook runs expose the delivery-specific stop endpoint."""
+        routes = {"ci": {"secret": _INSECURE_NO_AUTH, "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ci",
+                json={"ref": "main"},
+                headers={"X-GitHub-Delivery": "aaa-111"},
+            )
+            assert resp.status == 202
+            body = await resp.json()
+
+        assert body["delivery_id"] == "aaa-111"
+        assert body["stop_path"] == "/webhooks/ci/deliveries/aaa-111/stop"
+
+
+class TestStopDelivery:
+    @pytest.mark.asyncio
+    async def test_stop_delivery_interrupts_runner_and_cancels_adapter_task(self):
+        """Stop endpoint terminates the active webhook delivery without deleting logs."""
+        secret = "real-secret"
+        routes = {"ci": {"secret": secret, "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+        source = adapter._delivery_source("ci", "aaa-111")
+        session_key = build_session_key(source)
+        agent = MagicMock()
+        cancelled = asyncio.Event()
+
+        async def _parked_task():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(_parked_task())
+        adapter._active_sessions[session_key] = asyncio.Event()
+        adapter._session_tasks[session_key] = task
+        adapter._pending_messages[session_key] = MagicMock()
+
+        class _Runner:
+            def __init__(self):
+                self.adapters = {Platform.WEBHOOK: adapter}
+                self._running_agents = {session_key: agent}
+                self._running_agents_ts = {session_key: time.time()}
+                self._pending_messages = {session_key: "queued"}
+
+            def _session_key_for_source(self, _source):
+                return session_key
+
+            async def _interrupt_and_clear_session(
+                self,
+                key,
+                _source,
+                *,
+                interrupt_reason,
+                invalidation_reason,
+            ):
+                assert key == session_key
+                assert invalidation_reason == "webhook_delivery_stop"
+                self._running_agents[key].interrupt(interrupt_reason)
+                self._running_agents.pop(key, None)
+                self._running_agents_ts.pop(key, None)
+                self._pending_messages.pop(key, None)
+
+        adapter.gateway_runner = _Runner()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ci/deliveries/aaa-111/stop",
+                data=b"",
+                headers={"X-Webhook-Signature": _generic_signature(b"", secret)},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert body == {
+            "status": "stopped",
+            "route": "ci",
+            "delivery_id": "aaa-111",
+        }
+        agent.interrupt.assert_called_once_with("Stop requested for webhook delivery")
+        assert session_key not in adapter._active_sessions
+        assert session_key not in adapter._session_tasks
+        assert session_key not in adapter._pending_messages
+        assert cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_stop_delivery_returns_not_running_for_finished_delivery(self):
+        """Finished or unknown deliveries report not_running instead of deleting state."""
+        routes = {"ci": {"secret": _INSECURE_NO_AUTH, "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ci/deliveries/finished/stop", data=b"")
+            body = await resp.json()
+
+        assert resp.status == 409
+        assert body == {
+            "status": "not_running",
+            "route": "ci",
+            "delivery_id": "finished",
+        }
+
+    @pytest.mark.asyncio
+    async def test_stop_delivery_requires_route_signature(self):
+        """Real route secrets protect the stop endpoint too."""
+        routes = {"ci": {"secret": "real-secret", "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ci/deliveries/aaa-111/stop", data=b"")
+
+        assert resp.status == 401
+
 
 # ===================================================================
 # Delivery info cleanup
@@ -1031,4 +1159,3 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
-

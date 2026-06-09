@@ -37,6 +37,7 @@ import re
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 try:
     from aiohttp import web
@@ -53,6 +54,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.session import build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +186,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
+        app.router.add_post(
+            "/webhooks/{route_name}/deliveries/{delivery_id}/stop",
+            self._handle_stop_delivery,
+        )
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
 
         # Port conflict detection — fail fast if port is already in use
@@ -291,6 +297,130 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
+
+    def _delivery_session_chat_id(self, route_name: str, delivery_id: str) -> str:
+        return f"webhook:{route_name}:{delivery_id}"
+
+    def _delivery_source(self, route_name: str, delivery_id: str):
+        return self.build_source(
+            chat_id=self._delivery_session_chat_id(route_name, delivery_id),
+            chat_name=f"webhook/{route_name}",
+            chat_type="webhook",
+            user_id=f"webhook:{route_name}",
+            user_name=route_name,
+        )
+
+    def _delivery_session_key(self, source) -> str:
+        runner = self.gateway_runner
+        if runner and hasattr(runner, "_session_key_for_source"):
+            try:
+                key = runner._session_key_for_source(source)
+                if isinstance(key, str) and key:
+                    return key
+            except Exception:
+                logger.debug("[webhook] failed to resolve session key via gateway runner", exc_info=True)
+
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    async def _handle_stop_delivery(self, request: "web.Request") -> "web.Response":
+        """POST /webhooks/{route}/deliveries/{delivery_id}/stop.
+
+        Stops a running webhook delivery without deleting the persisted session
+        transcript. Auth follows the same route secret as the original webhook.
+        """
+        self._reload_dynamic_routes()
+
+        route_name = request.match_info.get("route_name", "")
+        delivery_id = request.match_info.get("delivery_id", "")
+        route_config = self._routes.get(route_name)
+
+        if not route_config:
+            return web.json_response(
+                {"error": f"Unknown route: {route_name}"}, status=404
+            )
+        if route_config.get("enabled", True) is False:
+            return web.json_response(
+                {"error": f"Route disabled: {route_name}"}, status=403
+            )
+        if not delivery_id:
+            return web.json_response({"error": "Missing delivery_id"}, status=400)
+
+        try:
+            raw_body = await request.read()
+        except Exception as e:
+            logger.error("[webhook] Failed to read stop body: %s", e)
+            return web.json_response({"error": "Bad request"}, status=400)
+
+        secret = route_config.get("secret", self._global_secret)
+        if not secret:
+            logger.error(
+                "[webhook] Route %s has no HMAC secret; refusing stop request",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Webhook route is missing an HMAC secret"},
+                status=403,
+            )
+        if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
+            logger.warning(
+                "[webhook] Invalid stop signature for route %s delivery %s",
+                route_name,
+                delivery_id,
+            )
+            return web.json_response({"error": "Invalid signature"}, status=401)
+
+        source = self._delivery_source(route_name, delivery_id)
+        session_key = self._delivery_session_key(source)
+        runner = self.gateway_runner
+        runner_active = False
+        adapter_active = (
+            session_key in self._active_sessions
+            or (
+                session_key in self._session_tasks
+                and not self._session_tasks[session_key].done()
+            )
+        )
+
+        if runner is not None:
+            running_agents = getattr(runner, "_running_agents", {}) or {}
+            runner_active = session_key in running_agents
+            if runner_active and hasattr(runner, "_interrupt_and_clear_session"):
+                await runner._interrupt_and_clear_session(
+                    session_key,
+                    source,
+                    interrupt_reason="Stop requested for webhook delivery",
+                    invalidation_reason="webhook_delivery_stop",
+                )
+            elif runner_active:
+                running_agent = running_agents.get(session_key)
+                if hasattr(running_agent, "interrupt"):
+                    running_agent.interrupt("Stop requested for webhook delivery")
+                running_agents.pop(session_key, None)
+
+        if adapter_active:
+            await self.cancel_session_processing(session_key)
+
+        if not runner_active and not adapter_active:
+            return web.json_response(
+                {
+                    "status": "not_running",
+                    "route": route_name,
+                    "delivery_id": delivery_id,
+                },
+                status=409,
+            )
+
+        return web.json_response(
+            {
+                "status": "stopped",
+                "route": route_name,
+                "delivery_id": delivery_id,
+            }
+        )
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
@@ -580,7 +710,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_chat_id = self._delivery_session_chat_id(route_name, delivery_id)
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
@@ -632,6 +762,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 "route": route_name,
                 "event": event_type,
                 "delivery_id": delivery_id,
+                "stop_path": (
+                    f"/webhooks/{quote(route_name, safe='')}/deliveries/"
+                    f"{quote(delivery_id, safe='')}/stop"
+                ),
             },
             status=202,
         )

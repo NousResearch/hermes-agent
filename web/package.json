@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "patch:xterm-webgl": "node scripts/patch-xterm-webgl.mjs",
+    "postinstall": "node scripts/patch-xterm-webgl.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

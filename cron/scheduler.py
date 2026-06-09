@@ -41,6 +41,27 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+def _resolve_cron_disabled_toolsets(cfg: dict, job: dict | None = None) -> list[str]:
+    """Toolsets a cron-spawned agent must never receive.
+
+    ``cronjob`` and ``clarify`` are always disabled in cron context.
+    ``messaging`` is disabled by default too, but router/fan-out jobs can
+    explicitly opt in with job-scoped enabled_toolsets=[..., "messaging"].
+    """
+    disabled = ["cronjob", "clarify"]
+    job_cfg = job if job is not None else cfg
+    job_enabled = {str(name).strip() for name in (job_cfg or {}).get("enabled_toolsets") or []}
+    if "messaging" not in job_enabled:
+        disabled.append("messaging")
+    agent_cfg = (cfg or {}).get("agent") or {}
+    user_disabled = agent_cfg.get("disabled_toolsets") or []
+    for name in user_disabled:
+        name = str(name).strip()
+        if name and name not in disabled:
+            disabled.append(name)
+    return disabled
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -787,17 +808,29 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
+    if "messaging" in {str(name).strip() for name in job.get("enabled_toolsets") or []}:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the job's configured delivery target. You may use send_message only when this job's prompt explicitly asks "
+            "for secondary routing or notifications; do not use it to duplicate the final report. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
+    else:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
@@ -1216,7 +1249,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg if isinstance(_cfg, dict) else {}, job),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

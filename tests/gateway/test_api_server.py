@@ -506,6 +506,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/v1/audio/speech", adapter._handle_audio_speech)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
@@ -683,14 +684,61 @@ class TestModelsEndpoint:
     @pytest.mark.asyncio
     async def test_models_returns_hermes_agent(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/models")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["object"] == "list"
-            assert len(data["data"]) == 1
-            assert data["data"][0]["id"] == "hermes-agent"
-            assert data["data"][0]["owned_by"] == "hermes"
+        # Pin the TTS provider list so the agent-model shape is deterministic
+        # regardless of which TTS backends happen to be installed/configured.
+        with patch("tools.tts_tool.list_available_tts_providers", return_value=[]):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "list"
+                assert len(data["data"]) == 1
+                assert data["data"][0]["id"] == "hermes-agent"
+                assert data["data"][0]["owned_by"] == "hermes"
+
+    @pytest.mark.asyncio
+    async def test_models_lists_available_tts_providers(self, adapter):
+        app = _create_app(adapter)
+        with patch(
+            "tools.tts_tool.list_available_tts_providers",
+            return_value=["edge", "openai"],
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+                ids = [m["id"] for m in data["data"]]
+                # Agent model first, then one entry per available TTS provider.
+                assert ids == ["hermes-agent", "tts/edge", "tts/openai"]
+                tts_model = data["data"][1]
+                assert tts_model["object"] == "model"
+                assert tts_model["owned_by"] == "hermes"
+                assert tts_model["root"] == "tts/edge"
+
+    @pytest.mark.asyncio
+    async def test_models_omits_tts_when_none_available(self, adapter):
+        app = _create_app(adapter)
+        with patch(
+            "tools.tts_tool.list_available_tts_providers", return_value=[]
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                data = await resp.json()
+                assert [m["id"] for m in data["data"]] == ["hermes-agent"]
+
+    @pytest.mark.asyncio
+    async def test_models_survives_tts_enumeration_error(self, adapter):
+        """A failure enumerating TTS providers must not break /v1/models."""
+        app = _create_app(adapter)
+        with patch(
+            "tools.tts_tool.list_available_tts_providers",
+            side_effect=RuntimeError("boom"),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+                assert [m["id"] for m in data["data"]] == ["hermes-agent"]
 
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):
@@ -788,6 +836,268 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# /v1/audio/speech endpoint
+# ---------------------------------------------------------------------------
+
+
+def _fake_tts(tmp_path, *, ext="mp3", payload=b"FAKEAUDIO", success=True, error=None):
+    """Return (mock, calls) for a fake text_to_speech_tool.
+
+    The mock writes a real file (so the handler's existence check passes) and
+    records the kwargs it was called with.
+    """
+    calls = []
+
+    def _impl(text, provider=None, voice=None, speed=None,
+              response_format=None, output_path=None):
+        calls.append({
+            "text": text, "provider": provider, "voice": voice,
+            "speed": speed, "response_format": response_format,
+        })
+        if not success:
+            return json.dumps({"success": False, "error": error or "boom"})
+        # Honor opus requests in the produced extension, like the real tool.
+        out_ext = "ogg" if response_format in ("opus", "ogg") else ext
+        out = tmp_path / f"out.{out_ext}"
+        out.write_bytes(payload)
+        return json.dumps({
+            "success": True, "file_path": str(out), "provider": provider or "edge",
+        })
+
+    return MagicMock(side_effect=_impl), calls
+
+
+def _patch_tts(tts_mock, providers=("edge", "openai")):
+    """Patch the TTS entry points imported inside _handle_audio_speech."""
+    return (
+        patch("tools.tts_tool.text_to_speech_tool", tts_mock),
+        patch("tools.tts_tool.list_available_tts_providers",
+              return_value=list(providers)),
+    )
+
+
+class TestAudioSpeechEndpoint:
+    @pytest.mark.asyncio
+    async def test_speech_success_mp3(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/audio/speech",
+                    json={"input": "hello", "model": "tts/openai"},
+                )
+                assert resp.status == 200
+                assert resp.content_type == "audio/mpeg"
+                assert await resp.read() == b"FAKEAUDIO"
+                assert "speech.mp3" in resp.headers["Content-Disposition"]
+        assert calls[0]["provider"] == "openai"
+        assert calls[0]["text"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_speech_forwards_voice_and_speed(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/audio/speech",
+                    json={"input": "hi", "model": "tts/openai",
+                          "voice": "nova", "speed": 1.5},
+                )
+                assert resp.status == 200
+        assert calls[0]["voice"] == "nova"
+        assert calls[0]["speed"] == 1.5
+
+    @pytest.mark.asyncio
+    async def test_speech_speed_clamped_to_openai_range(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                await cli.post("/v1/audio/speech",
+                               json={"input": "hi", "speed": 99})
+                await cli.post("/v1/audio/speech",
+                               json={"input": "hi", "speed": 0.01})
+        assert calls[0]["speed"] == 4.0
+        assert calls[1]["speed"] == 0.25
+
+    @pytest.mark.asyncio
+    async def test_speech_opus_sets_ogg_content_type(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/audio/speech",
+                    json={"input": "hi", "response_format": "opus"},
+                )
+                assert resp.status == 200
+                # Content-Type follows the produced .ogg file, not the request.
+                assert resp.content_type == "audio/ogg"
+                assert "speech.ogg" in resp.headers["Content-Disposition"]
+        assert calls[0]["response_format"] == "opus"
+
+    @pytest.mark.asyncio
+    async def test_speech_default_provider_when_model_omitted(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                await cli.post("/v1/audio/speech", json={"input": "hi"})
+        assert calls[0]["provider"] is None
+
+    @pytest.mark.asyncio
+    async def test_speech_agent_model_uses_config_default(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                await cli.post("/v1/audio/speech",
+                               json={"input": "hi", "model": "hermes-agent"})
+        assert calls[0]["provider"] is None
+
+    @pytest.mark.asyncio
+    async def test_speech_bare_provider_name(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                await cli.post("/v1/audio/speech",
+                               json={"input": "hi", "model": "edge"})
+        assert calls[0]["provider"] == "edge"
+
+    @pytest.mark.asyncio
+    async def test_speech_missing_input_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/speech", json={"model": "tts/edge"})
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "missing_input"
+
+    @pytest.mark.asyncio
+    async def test_speech_empty_input_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/speech", json={"input": "   "})
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "missing_input"
+
+    @pytest.mark.asyncio
+    async def test_speech_invalid_json_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/audio/speech", data="not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_speech_non_object_body_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/speech", json=["nope"])
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "invalid_body"
+
+    @pytest.mark.asyncio
+    async def test_speech_unsupported_format_returns_400(self, adapter):
+        app = _create_app(adapter)
+        # Format validation happens before any provider work, so no TTS patch.
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/speech",
+                                  json={"input": "hi", "response_format": "flac"})
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["error"]["code"] == "unsupported_response_format"
+            assert body["error"]["param"] == "response_format"
+
+    @pytest.mark.asyncio
+    async def test_speech_invalid_speed_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/speech",
+                                  json={"input": "hi", "speed": "fast"})
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "invalid_speed"
+
+    @pytest.mark.asyncio
+    async def test_speech_no_provider_available_returns_503(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, _ = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts, providers=())
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/speech", json={"input": "hi"})
+                assert resp.status == 503
+                assert (await resp.json())["error"]["code"] == "tts_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_speech_unknown_provider_returns_400(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, _ = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts, providers=("edge",))
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/speech",
+                                      json={"input": "hi", "model": "tts/nope"})
+                assert resp.status == 400
+                body = await resp.json()
+                assert body["error"]["code"] == "model_not_found"
+                assert "tts/edge" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_speech_generation_failure_returns_500(self, adapter, tmp_path):
+        app = _create_app(adapter)
+        tts, _ = _fake_tts(tmp_path, success=False, error="no api key")
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/speech",
+                                      json={"input": "hi", "model": "tts/openai"})
+                assert resp.status == 500
+                body = await resp.json()
+                assert body["error"]["code"] == "tts_generation_failed"
+                assert "no api key" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_speech_missing_output_file_returns_500(self, adapter):
+        app = _create_app(adapter)
+        tts = MagicMock(return_value=json.dumps(
+            {"success": True, "file_path": "/nonexistent/x.mp3"}))
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/speech", json={"input": "hi"})
+                assert resp.status == 500
+                assert (await resp.json())["error"]["code"] == "tts_file_missing"
+
+    @pytest.mark.asyncio
+    async def test_speech_requires_auth(self, auth_adapter, tmp_path):
+        app = _create_app(auth_adapter)
+        tts, _ = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/speech", json={"input": "hi"})
+                assert resp.status == 401
+                ok = await cli.post(
+                    "/v1/audio/speech", json={"input": "hi"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert ok.status == 200
 
 
 # ---------------------------------------------------------------------------

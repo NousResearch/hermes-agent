@@ -127,7 +127,8 @@ class ResponsesApiTransport(ProviderTransport):
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
-        response_tools = _responses_tools(tools)
+        name_aliases = {"web_search": "hermes_web_search"} if is_xai_responses else None
+        response_tools = _responses_tools(tools, name_aliases=name_aliases)
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
         # eagerly call ``_make_tools(tools)`` which does ``for tool in tools``

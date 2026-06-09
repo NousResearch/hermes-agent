@@ -234,8 +234,21 @@ def _derive_responses_function_call_id(
 # Schema conversion
 # ---------------------------------------------------------------------------
 
-def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
-    """Convert chat-completions tool schemas to Responses function-tool schemas."""
+def _responses_tools(
+    tools: Optional[List[Dict[str, Any]]] = None,
+    *,
+    name_aliases: Optional[Dict[str, str]] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Convert chat-completions tool schemas to Responses function-tool schemas.
+
+    ``name_aliases`` lets a backend receive a provider-safe function name while
+    Hermes keeps dispatching the canonical registry name. xAI Responses/Grok
+    Composer currently treats ``web_search`` specially enough that requests
+    asking it to call that function can return reasoning-only/incomplete turns
+    without a structured function_call. Exposing the same tool as
+    ``hermes_web_search`` avoids that provider-side collision; normalization
+    maps the call back before dispatch.
+    """
     if not tools:
         return None
 
@@ -245,9 +258,10 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
         name = fn.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
+        exposed_name = name_aliases.get(name, name) if name_aliases else name
         converted.append({
             "type": "function",
-            "name": name,
+            "name": exposed_name,
             "description": fn.get("description", ""),
             "strict": False,
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
@@ -1153,6 +1167,8 @@ def _normalize_codex_response(
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue
             fn_name = getattr(item, "name", "") or ""
+            if fn_name == "hermes_web_search":
+                fn_name = "web_search"
             arguments = getattr(item, "arguments", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)
@@ -1174,6 +1190,8 @@ def _normalize_codex_response(
             ))
         elif item_type == "custom_tool_call":
             fn_name = getattr(item, "name", "") or ""
+            if fn_name == "hermes_web_search":
+                fn_name = "web_search"
             arguments = getattr(item, "input", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)

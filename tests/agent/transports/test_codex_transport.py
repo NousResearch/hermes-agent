@@ -138,6 +138,39 @@ class TestCodexBuildKwargs:
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
 
+    def test_xai_aliases_web_search_tool_name(self, transport):
+        """Expose web_search under a provider-safe alias on xAI Responses.
+
+        Grok Composer can return reasoning-only/incomplete responses when asked
+        to call a custom Responses function literally named ``web_search``. The
+        transport should alias only xAI's exposed schema name; other providers
+        keep the canonical Hermes name.
+        """
+        messages = [{"role": "user", "content": "Search the web"}]
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+            },
+        }]
+        kw = transport.build_kwargs(
+            model="grok-composer-2.5-fast",
+            messages=messages,
+            tools=tools,
+            is_xai_responses=True,
+        )
+        assert kw["tools"][0]["name"] == "hermes_web_search"
+
+        kw_non_xai = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=tools,
+            is_xai_responses=False,
+        )
+        assert kw_non_xai["tools"][0]["name"] == "web_search"
+
     def test_max_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -452,6 +485,30 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+    def test_xai_web_search_alias_normalizes_back_to_canonical_name(self, transport):
+        """Function calls returned under the xAI-safe alias dispatch as web_search."""
+        r = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call_search123",
+                    name="hermes_web_search",
+                    arguments=json.dumps({"query": "Hermes Agent docs"}),
+                    id="fc_search123",
+                    status="completed",
+                ),
+            ],
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=20,
+                                  input_tokens_details=None, output_tokens_details=None),
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "web_search"
+        assert '"query"' in nr.tool_calls[0].arguments
 
 
 

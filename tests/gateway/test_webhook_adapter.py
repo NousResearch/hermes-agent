@@ -151,6 +151,22 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Gitlab-Token": "wrong"})
         assert adapter._validate_signature(req, b"{}", "correct") is False
 
+    def test_validate_linear_signature_valid(self):
+        """Valid Linear-Signature (hex HMAC-SHA256 of body) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"action": "create", "type": "Issue"}'
+        secret = "linear-webhook-secret"
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        req = _mock_request(headers={"Linear-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_linear_signature_invalid(self):
+        """Wrong Linear-Signature is rejected."""
+        adapter = _make_adapter()
+        body = b'{"action": "create", "type": "Issue"}'
+        req = _mock_request(headers={"Linear-Signature": "deadbeef"})
+        assert adapter._validate_signature(req, body, "linear-webhook-secret") is False
+
     def test_validate_no_signature_with_secret_rejects(self):
         """Secret configured but no recognised signature header → reject."""
         adapter = _make_adapter()

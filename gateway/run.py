@@ -13890,6 +13890,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not _status_adapter:
                     return ""
 
+                # Webhook (autonomous) sessions have no human to answer a
+                # clarify prompt. Blocking on wait_for_response would freeze
+                # the run for the full clarify timeout (minutes) per call.
+                # Short-circuit with a sentinel so the agent makes its own
+                # reasonable default instead — mirrors the webhook approval
+                # escape hatch.
+                try:
+                    _plat = getattr(_status_adapter, "platform", None)
+                    _plat_val = getattr(_plat, "value", _plat)
+                    if str(_plat_val).lower() == "webhook":
+                        return (
+                            "[autonomous webhook run: no user is available to "
+                            "answer. Do NOT call clarify again. Make the most "
+                            "reasonable default decision yourself and proceed, "
+                            "or stop and report what is blocking via your "
+                            "configured delivery channel.]"
+                        )
+                except Exception:
+                    pass
+
                 clarify_id = _uuid.uuid4().hex[:10]
                 _clarify_mod.register(
                     clarify_id=clarify_id,

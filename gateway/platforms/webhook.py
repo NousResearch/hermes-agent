@@ -492,13 +492,25 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
+        # Build a unique delivery ID for idempotency/dedup. Check the known
+        # per-provider delivery headers. Linear sends ``Linear-Delivery``; if we
+        # fall through to a fresh timestamp, every retry (and every agent-caused
+        # re-fire) gets a unique id and the dedup cache can never hit — which
+        # also removes one brake on a webhook feedback loop. Prefer a stable,
+        # provider-supplied id whenever one exists.
+        def _hdr(name: str) -> str:
+            return (
+                request.headers.get(name, "")
+                or request.headers.get(name.lower(), "")
+                or request.headers.get(name.upper(), "")
+            )
+
+        delivery_id = (
+            _hdr("X-GitHub-Delivery")
+            or _hdr("svix-id")
+            or _hdr("Linear-Delivery")
+            or _hdr("X-Request-ID")
+            or str(int(time.time() * 1000))
         )
 
         # ── Idempotency ─────────────────────────────────────────
@@ -681,6 +693,15 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Linear: Linear-Signature = <hex HMAC-SHA256 of raw body>
+        # Same algorithm as the generic path, different header name.
+        linear_sig = _header("Linear-Signature")
+        if linear_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(linear_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")

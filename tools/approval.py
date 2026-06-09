@@ -987,6 +987,41 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _is_webhook_session() -> bool:
+    """True when this agent run was triggered by an inbound webhook POST.
+
+    Webhook runs are autonomous like cron — there is no interactive channel
+    to answer a /approve prompt (the webhook adapter never registers a
+    gateway notify callback). Without this, a dangerous command in a webhook
+    run falls through to the gateway branch, calls submit_pending() with no
+    listener, and blocks the run indefinitely. Governed by
+    ``approvals.webhook_mode`` config, mirroring cron's ``cron_mode``.
+    """
+    # Cron takes precedence: a cron job that happens to bind a platform is
+    # still a cron session, handled by its own mode.
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        return False
+    return _get_session_platform() == "webhook"
+
+
+def _get_webhook_approval_mode() -> str:
+    """Read the webhook approval mode from config. Returns 'deny' or 'approve'.
+
+    Defaults to 'deny' (safe): a dangerous command in a webhook run is
+    blocked with a helpful message so the agent finds another way, rather
+    than hanging on an approval no human can answer.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        mode = str(cfg_get(config, "approvals", "webhook_mode", default="deny")).lower().strip()
+        if mode in {"approve", "off", "allow", "yes"}:
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -1409,6 +1444,32 @@ def check_all_command_guards(command: str, env_type: str,
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
 
+    # Webhook sessions: autonomous like cron, no interactive channel to answer
+    # /approve. Resolve via approvals.webhook_mode instead of falling through to
+    # the gateway branch, where submit_pending() would block with no listener.
+    if _is_webhook_session():
+        if _get_webhook_approval_mode() == "approve":
+            for key, _, _ in warnings:
+                approve_session(session_key, key)
+            logger.warning(
+                "WEBHOOK AUTO-APPROVED dangerous command (webhook_mode=approve): "
+                "%s — %s", combined_desc, command[:200],
+            )
+            return {"approved": True, "message": None, "webhook_approved": True,
+                    "description": combined_desc}
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Command flagged as dangerous ({combined_desc}) "
+                "but webhook-triggered runs have no user present to approve it. "
+                "Find an alternative approach that avoids this command. "
+                "To allow dangerous commands in webhook runs, set "
+                "approvals.webhook_mode: approve in config.yaml."
+            ),
+            "pattern_key": primary_key,
+            "description": combined_desc,
+        }
+
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
     # input() flow.  The agent never sees "approval_required"; it either
@@ -1664,6 +1725,30 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
                 "user_consent": False,
             }
         # verdict == "escalate" → fall through to manual approval
+
+    # Webhook sessions: autonomous, no interactive channel. Resolve via
+    # approvals.webhook_mode instead of hanging on submit_pending() below.
+    if _is_webhook_session():
+        if _get_webhook_approval_mode() == "approve":
+            logger.warning(
+                "WEBHOOK AUTO-APPROVED execute_code (webhook_mode=approve): %s",
+                description,
+            )
+            return {"approved": True, "message": None, "webhook_approved": True,
+                    "description": description}
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: execute_code flagged as dangerous ({description}) "
+                "but webhook-triggered runs have no user present to approve it. "
+                "Find an alternative approach. To allow dangerous code in "
+                "webhook runs, set approvals.webhook_mode: approve in config.yaml."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "blocked",
+            "user_consent": False,
+        }
 
     notify_cb = None
     with _lock:

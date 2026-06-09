@@ -1917,10 +1917,16 @@ DEFAULT_CONFIG = {
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
+    # webhook_mode — same semantics for webhook-triggered (autonomous) runs.
+    #   Webhook runs have no interactive channel to answer /approve, so a
+    #   dangerous command must resolve here rather than hang on a prompt.
+    #   deny (default, safe) — block and let the agent find another way.
+    #   approve — auto-approve dangerous commands in webhook runs.
     "approvals": {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        "webhook_mode": "deny",
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

@@ -777,6 +777,57 @@ class TestFindAliasForProfile:
         assert info.alias_path is not None
         assert info.alias_path.name == "qiaobusi"
 
+    def test_large_suffixless_wrapper_not_fully_read(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import (
+            _WRAPPER_ALIAS_MAX_BYTES,
+            _get_wrapper_dir,
+            create_wrapper_script,
+            find_alias_for_profile,
+        )
+
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        create_wrapper_script("steve")
+
+        large_path = wrapper_dir / "huge-bin"
+        large_path.write_bytes(b"x" * (_WRAPPER_ALIAS_MAX_BYTES + 4096))
+
+        real_read_text = Path.read_text
+
+        def guarded_read_text(self, *args, **kwargs):
+            if self.resolve() == large_path.resolve():
+                raise AssertionError("full read_text on large wrapper candidate")
+            return real_read_text(self, *args, **kwargs)
+
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(Path, "read_text", guarded_read_text)
+        assert find_alias_for_profile("steve") == "steve"
+
+    def test_list_profiles_scans_wrapper_dir_once(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.profiles import create_profile, create_wrapper_script, list_profiles
+
+        create_profile("alpha", no_alias=True)
+        create_profile("beta", no_alias=True)
+        create_profile("gamma", no_alias=True)
+        create_wrapper_script("alpha")
+        create_wrapper_script("beta")
+
+        calls = {"count": 0}
+        real_builder = profiles_mod._build_profile_alias_map
+
+        def counting_builder():
+            calls["count"] += 1
+            return real_builder()
+
+        monkeypatch.setattr(profiles_mod, "_build_profile_alias_map", counting_builder)
+        names = {p.name for p in list_profiles() if p.name in {"alpha", "beta", "gamma"}}
+        assert names == {"alpha", "beta", "gamma"}
+        assert calls["count"] == 1
+
 
 # ===================================================================
 # TestRenameProfile

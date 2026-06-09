@@ -522,6 +522,24 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail))
 
+    # ── Pre-execution argument validation ────────────────────────────
+    try:
+        from tools.argument_validator import validate_tool_arguments as _validate_tool_arguments
+        from tools.registry import registry as _tool_registry
+    except Exception:
+        _validate_tool_arguments = None
+        _tool_registry = None
+
+    if _validate_tool_arguments is not None and _tool_registry is not None:
+        validated = []
+        for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
+            if block_result is None:
+                ok, err = _validate_tool_arguments(name, args, _tool_registry)
+                if not ok:
+                    block_result = json.dumps({"error": err}, ensure_ascii=False)
+            validated.append((tc, name, args, middleware_trace, block_result, blocked_by_guardrail))
+        parsed_calls = validated
+
     # ── Logging / callbacks ──────────────────────────────────────────
     tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":

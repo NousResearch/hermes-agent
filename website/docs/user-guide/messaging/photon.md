@@ -162,7 +162,10 @@ Send an iMessage to your assigned number and Hermes will reply.
 hermes photon status
 ```
 
-Prints:
+Prints saved credentials, sidecar health, your registered number, and the
+assigned iMessage line Hermes uses. When a Photon token and dashboard project
+are available, `status` refreshes missing number rows from the dashboard
+without provisioning new lines.
 
 ```
 Photon iMessage status
@@ -171,6 +174,8 @@ Photon iMessage status
   dashboard project   : 3c90c3cc-0d44-4b50-...
   spectrum project id : sp-...
   project secret      : ✓ stored
+  my number           : +15551234567
+  assigned number     : +16282679185
   node binary         : /usr/bin/node
   sidecar deps        : ✓ installed
 ```

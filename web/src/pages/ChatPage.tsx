@@ -37,6 +37,7 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
+import { nextHasEverActivated } from "./chatActivation";
 
 function buildWsUrl(
   authParam: [string, string],
@@ -133,6 +134,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [hasEverActivated, setHasEverActivated] = useState(isActive);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -232,6 +234,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, []);
 
   useEffect(() => {
+    const next = nextHasEverActivated(hasEverActivated, isActive);
+    if (next !== hasEverActivated) {
+      setHasEverActivated(next);
+    }
+  }, [hasEverActivated, isActive]);
+
+  useEffect(() => {
     // When hidden (non-chat tab) we must not register the header button —
     // another page owns the header's end slot at that point.
     if (!isActive) {
@@ -285,6 +294,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    if (!hasEverActivated) return;
 
     const token = window.__HERMES_SESSION_TOKEN__;
     const gated = !!window.__HERMES_AUTH_REQUIRED__;
@@ -714,7 +724,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, hasEverActivated, resumeParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

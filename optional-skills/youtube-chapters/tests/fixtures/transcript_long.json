@@ -1,0 +1,8 @@
+[
+  {"start": 0.0, "end": 240.0, "text": "Opening, goals, and agenda."},
+  {"start": 240.0, "end": 720.0, "text": "System architecture and component responsibilities."},
+  {"start": 720.0, "end": 1500.0, "text": "Data ingestion, transformation, and storage pipeline."},
+  {"start": 1500.0, "end": 2700.0, "text": "Reliability, observability, and incident response."},
+  {"start": 2700.0, "end": 3900.0, "text": "Deployment walkthrough and production checks."},
+  {"start": 3900.0, "end": 4800.0, "text": "Questions, conclusions, and wrap-up."}
+]

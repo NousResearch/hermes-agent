@@ -1,0 +1,7 @@
+[
+  {"start": 0.0, "duration": 20.0, "text": "Welcome and introduction to the project."},
+  {"start": 20.0, "duration": 45.0, "text": "We explain the goals and expected result."},
+  {"start": 65.0, "duration": 55.0, "text": "Install the dependencies and prepare the workspace."},
+  {"start": 120.0, "duration": 70.0, "text": "Configure the application and environment."},
+  {"start": 190.0, "duration": 40.0, "text": "Run the final test and review the result."}
+]

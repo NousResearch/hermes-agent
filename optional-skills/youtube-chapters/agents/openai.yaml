@@ -1,0 +1,4 @@
+interface:
+  display_name: "YouTube Chapters"
+  short_description: "Generate validated YouTube chapter markers"
+  default_prompt: "Generate paste-ready YouTube chapters for this video."

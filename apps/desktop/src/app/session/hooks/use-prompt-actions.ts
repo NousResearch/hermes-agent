@@ -483,6 +483,16 @@ export function usePromptActions({
               command: command.replace(/^\/+/, '')
             })
 
+            // slash.exec resolves _ok even when the backend rejected the live
+            // switch — the failure rides in `result.error` (see slash.exec in
+            // tui_gateway/server.py). Surface it as an error instead of
+            // rendering result.output as a success line.
+            if (result?.error) {
+              appendSessionTextMessage(sid, 'system', `error: ${result.error}`)
+
+              return
+            }
+
             const body = result?.output || `/${name}: model switched`
             appendSessionTextMessage(
               sid,

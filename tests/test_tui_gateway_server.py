@@ -3510,11 +3510,11 @@ def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monke
         ("/prompt", "prompt"),
         ("/compress", "compress"),
     ]:
-        warning = server._mirror_slash_side_effects("sid", session, cmd)
+        effect = server._mirror_slash_side_effects("sid", session, cmd)
         assert (
-            "session busy" in warning
-        ), f"{cmd} should have returned busy warning, got: {warning!r}"
-        assert f"/{expected_name}" in warning
+            effect.kind == "busy"
+        ), f"{cmd} should have returned busy status, got: {effect!r}"
+        assert f"/{expected_name}" in effect.message
 
     # None of the mutating side-effect helpers should have fired.
     assert not applied["model"], "model switch fired despite running session"
@@ -3536,9 +3536,9 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
     session = _session(running=False)
     session["agent"] = types.SimpleNamespace(model="x")
 
-    warning = server._mirror_slash_side_effects("sid", session, "/model foo")
-    # Should NOT contain "session busy" — the switch went through.
-    assert "session busy" not in warning
+    effect = server._mirror_slash_side_effects("sid", session, "/model foo")
+    # Should NOT be a busy rejection — the switch went through.
+    assert effect.kind != "busy"
     assert applied["model"]
 
 
@@ -3567,9 +3567,9 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     session = _session(running=False)
     session["agent"] = types.SimpleNamespace(model="x")
 
-    warning = server._mirror_slash_side_effects("sid", session, "/compress")
+    effect = server._mirror_slash_side_effects("sid", session, "/compress")
 
-    assert warning == ""
+    assert effect.kind == ""
     assert seen["compress"]
     assert seen["sync"]
     assert ("session.info", "sid", {"model": "x"}) in emitted

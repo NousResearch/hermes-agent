@@ -23,6 +23,11 @@ export interface ImageDetachResponse {
 export interface SlashExecResponse {
   output?: string
   warning?: string
+  // slash.exec resolves _ok even when a live side effect (e.g. a /model
+  // switch) was rejected by the backend; the failure reason rides here (see
+  // slash.exec in tui_gateway/server.py). Callers that act on the result must
+  // treat a present `error` as a failure, not render `output` as success.
+  error?: string
 }
 
 export interface SessionSteerResponse {

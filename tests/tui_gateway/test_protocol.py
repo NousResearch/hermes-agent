@@ -830,7 +830,9 @@ def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
 
 
 def test_slash_exec_plugin_handler_error_returns_output(server):
-    """Plugin handler failures return slash output so the TUI does not redispatch."""
+    """Plugin handler failures keep the _ok envelope + output (so the TUI does
+    not redispatch) AND additively carry result.error so programmatic clients
+    can detect the failure without string-matching the output prose."""
     sid = "test-session"
 
     class Worker:
@@ -857,9 +859,162 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
             "params": {"command": "plugin-cmd hello", "session_id": sid},
         })
 
+    # Envelope stays _ok (TUI keeps its pager path, no redispatch). The failure
+    # is now ADDITIVELY carried in result.error alongside the preserved output,
+    # so a programmatic client can detect it without parsing the prose.
     assert "error" not in resp
-    assert resp["result"] == {"output": "Plugin command error: handler boom: hello"}
+    assert resp["result"] == {
+        "output": "Plugin command error: handler boom: hello",
+        "error": "Plugin command error: handler boom: hello",
+    }
     assert worker.calls == []
+
+
+# ── shell.exec / cli.exec honest-status regression coverage ──────────
+# These paths are already honest (a failed command is detectable via the real
+# exit ``code``, never coerced to success); lock that in so it cannot regress.
+
+
+def test_shell_exec_success_reports_zero_code_and_stdout(server):
+    """A successful shell command returns code 0 with its stdout."""
+    resp = server.handle_request({
+        "id": "r-shell-ok",
+        "method": "shell.exec",
+        "params": {"command": "printf hi"},
+    })
+    assert "error" not in resp
+    assert resp["result"]["code"] == 0
+    assert resp["result"]["stdout"] == "hi"
+
+
+def test_shell_exec_nonzero_exit_reports_real_code(server):
+    """A failed shell command surfaces its real exit code — not coerced to 0 —
+    so a client (ui-tui useSubmission reads result.code) can detect failure."""
+    resp = server.handle_request({
+        "id": "r-shell-fail",
+        "method": "shell.exec",
+        "params": {"command": "exit 3"},
+    })
+    assert "error" not in resp
+    assert resp["result"]["code"] == 3
+
+
+def test_shell_exec_empty_command_errors(server):
+    """An empty shell command is a structured JSON-RPC error, not a silent ok."""
+    resp = server.handle_request({
+        "id": "r-shell-empty",
+        "method": "shell.exec",
+        "params": {"command": ""},
+    })
+    assert resp["error"]["code"] == 4004
+
+
+def test_cli_exec_nonzero_exit_reports_real_code(server, monkeypatch):
+    """cli.exec surfaces a failed hermes_cli subprocess's real exit code on
+    result.code (with stderr in output), so failure stays detectable."""
+    fake = types.SimpleNamespace(returncode=2, stdout="", stderr="boom")
+    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: fake)
+    resp = server.handle_request({
+        "id": "r-cli-fail",
+        "method": "cli.exec",
+        "params": {"argv": ["version"]},
+    })
+    assert "error" not in resp
+    assert resp["result"]["blocked"] is False
+    assert resp["result"]["code"] == 2
+    assert "boom" in resp["result"]["output"]
+
+
+def test_cli_exec_blocked_argv_reports_blocked_payload(server):
+    """An interactive/blocked argv never spawns a subprocess and is flagged."""
+    resp = server.handle_request({
+        "id": "r-cli-blocked",
+        "method": "cli.exec",
+        "params": {"argv": ["setup"]},
+    })
+    assert "error" not in resp
+    assert resp["result"]["blocked"] is True
+    assert resp["result"]["code"] == -1
+    assert resp["result"]["hint"]
+
+
+def test_slash_exec_model_switch_failure_sets_error_field(server):
+    """A backend-rejected /model switch still resolves _ok (so the TUI keeps
+    its pager path) but flags a structured `error` so the web model picker can
+    surface the failure instead of closing as though the switch worked.
+    `warning` stays populated so existing slash.exec consumers are unaffected.
+    """
+    sid = "test-session"
+
+    class Worker:
+        def run(self, cmd):
+            return "  ✗ Model 'bad/model' not available"
+
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": types.SimpleNamespace(model="x"),
+        "slash_worker": Worker(),
+        "running": False,
+    }
+
+    def _raise(_sid, _session, _arg):
+        raise ValueError("model switch failed: 'bad/model' unavailable")
+
+    with patch.object(server, "_apply_model_switch", _raise):
+        resp = server.handle_request({
+            "id": "r-model-fail",
+            "method": "slash.exec",
+            "params": {
+                "command": "model bad/model --provider anthropic",
+                "session_id": sid,
+            },
+        })
+
+    # Envelope is still _ok — the failure is carried inside `result.error`.
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["error"].startswith("live session sync failed: ")
+    assert "model switch failed" in result["error"]
+    # Preserved for the TUI / web slashExec, which read output/warning only.
+    assert result["warning"] == result["error"]
+    assert result["output"] == "  ✗ Model 'bad/model' not available"
+
+
+def test_slash_exec_model_switch_benign_warning_has_no_error(server):
+    """A *successful* switch may still carry an advisory (auto-correction or a
+    non-recommended-model note). That must surface as `warning`, never `error`,
+    so the picker closes + toasts instead of treating it as a failed switch."""
+    sid = "test-session"
+
+    class Worker:
+        def run(self, cmd):
+            return "  ✓ Model switched: ok/model"
+
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": types.SimpleNamespace(model="x"),
+        "slash_worker": Worker(),
+        "running": False,
+    }
+
+    def _benign(_sid, _session, _arg):
+        return {"value": "ok/model", "warning": "model not in catalog — proceeding"}
+
+    with patch.object(server, "_apply_model_switch", _benign):
+        resp = server.handle_request({
+            "id": "r-model-benign",
+            "method": "slash.exec",
+            "params": {
+                "command": "model ok/model --provider anthropic",
+                "session_id": sid,
+            },
+        })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["warning"] == "model not in catalog — proceeding"
+    assert "error" not in result
+    assert result["output"] == "  ✓ Model switched: ok/model"
 
 
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])

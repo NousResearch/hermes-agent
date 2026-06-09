@@ -14,7 +14,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from hermes_constants import (
     get_hermes_home,
@@ -6248,9 +6248,14 @@ def _(rid, params: dict) -> dict:
     argv = params.get("argv", [])
     if not isinstance(argv, list) or not all(isinstance(x, str) for x in argv):
         return _err(rid, 4003, "argv must be list[str]")
+    from action_runtime import cli_to_result, cli_to_wire
+
     hint = _cli_exec_blocked(argv)
     if hint:
-        return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
+        # Phase 2: the pre-exec block gate is routed through the Action Runtime.
+        return _ok(
+            rid, cli_to_wire(cli_to_result(blocked=True, code=-1, output="", hint=hint))
+        )
     try:
         r = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
@@ -6262,8 +6267,14 @@ def _(rid, params: dict) -> dict:
         )
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
+        # Phase 2: route through the Action Runtime. Truncation + "(no output)"
+        # stay here (wire contract); a non-zero exit is an honest FAILED whose
+        # wire shape is unchanged (clients read result.code).
         return _ok(
-            rid, {"blocked": False, "code": r.returncode, "output": out[:48_000]}
+            rid,
+            cli_to_wire(
+                cli_to_result(blocked=False, code=r.returncode, output=out[:48_000])
+            ),
         )
     except subprocess.TimeoutExpired:
         return _err(rid, 5016, "cli.exec: timeout")
@@ -7300,11 +7311,58 @@ def _(rid, params: dict) -> dict:
 # ── Methods: slash.exec ──────────────────────────────────────────────
 
 
-def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
-    """Apply side effects that must also hit the gateway's live agent."""
+class _SlashSideEffect(NamedTuple):
+    """Structured outcome of mirroring a slash command's side effect onto the
+    gateway's live agent.
+
+    ``kind`` carries the *semantic* status; ``message`` is a raw,
+    human-readable detail (free to be reworded or localized):
+
+    * ``''``        — no-op or applied cleanly (no message)
+    * ``'warning'`` — applied, but with an advisory worth surfacing
+    * ``'failure'`` — the side effect did NOT take effect (e.g. a rejected
+      /model switch)
+    * ``'busy'``    — rejected because a turn is in flight
+
+    slash.exec keys ``payload["error"]`` off ``kind`` so failure detection no
+    longer depends on prefix-matching the message text. The wire ``warning`` /
+    ``error`` strings are rendered from this by ``_slash_side_effect_warning``.
+    """
+
+    kind: str = ""
+    message: str = ""
+
+
+# Presentation prefixes for the rendered wire ``warning`` / ``error`` strings.
+# These are *display-only* now — failure detection keys off
+# ``_SlashSideEffect.kind`` — so they are free to be reworded or localized.
+_SLASH_SYNC_FAILED_PREFIX = "live session sync failed: "
+_SLASH_SYNC_BUSY_PREFIX = "session busy — "
+
+
+def _slash_side_effect_warning(effect: _SlashSideEffect) -> str:
+    """Render the human-readable wire ``warning`` string for a side-effect
+    status. Purely presentational: clients that promote failures to ``error``
+    key off ``effect.kind``, not this text, so it is safe to reword/localize."""
+    if effect.kind == "failure":
+        return f"{_SLASH_SYNC_FAILED_PREFIX}{effect.message}"
+    if effect.kind == "busy":
+        return f"{_SLASH_SYNC_BUSY_PREFIX}{effect.message}"
+    return effect.message
+
+
+def _mirror_slash_side_effects(
+    sid: str, session: dict, command: str
+) -> _SlashSideEffect:
+    """Apply side effects that must also hit the gateway's live agent.
+
+    Returns a :class:`_SlashSideEffect` describing the outcome so the caller can
+    distinguish a hard failure / busy rejection from a benign advisory without
+    parsing free-form English.
+    """
     parts = command.lstrip("/").split(None, 1)
     if not parts:
-        return ""
+        return _SlashSideEffect()
     name, arg, agent = (
         parts[0],
         (parts[1].strip() if len(parts) > 1 else ""),
@@ -7318,12 +7376,17 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     # runner's running-agent /model guard.
     _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
     if name in _MUTATES_WHILE_RUNNING and session.get("running"):
-        return f"session busy — /interrupt the current turn before running /{name}"
+        return _SlashSideEffect(
+            "busy", f"/interrupt the current turn before running /{name}"
+        )
 
     try:
         if name == "model" and arg and agent:
             result = _apply_model_switch(sid, session, arg)
-            return result.get("warning", "")
+            warning = result.get("warning", "")
+            if warning:
+                return _SlashSideEffect("warning", warning)
+            return _SlashSideEffect()
         elif name == "personality" and arg and agent:
             pname, new_prompt = _validate_personality(arg, _load_cfg())
             _apply_personality_to_session(sid, session, new_prompt, pname)
@@ -7350,8 +7413,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
 
             process_registry.kill_all()
     except Exception as e:
-        return f"live session sync failed: {e}"
-    return ""
+        return _SlashSideEffect("failure", str(e))
+    return _SlashSideEffect()
 
 
 @method("slash.exec")
@@ -7413,11 +7476,19 @@ def _(rid, params: dict) -> dict:
             resolve_plugin_command_result = None
 
     if plugin_handler and resolve_plugin_command_result:
+        from action_runtime import plugin_to_result, plugin_to_wire
+
         try:
-            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
-            return _ok(rid, {"output": str(result or "(no output)")})
+            value = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            return _ok(
+                rid, plugin_to_wire(plugin_to_result(str(value or "(no output)")))
+            )
         except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+            # Plugin failure → byte-identical {output, error} (Phase 1a additive
+            # contract: both equal "Plugin command error: <e>") rendered from the
+            # Action Runtime result so programmatic clients can detect it; the
+            # TUI/web slashExec paths still read output and are unaffected.
+            return _ok(rid, plugin_to_wire(plugin_to_result(exc=e)))
 
     worker = session.get("slash_worker")
     if not worker:
@@ -7432,11 +7503,18 @@ def _(rid, params: dict) -> dict:
 
     try:
         output = worker.run(cmd)
-        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
-        payload = {"output": output or "(no output)"}
-        if warning:
-            payload["warning"] = warning
-        return _ok(rid, payload)
+        effect = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        # Phase 2: route through the Action Runtime. effect.kind (''/warning/
+        # failure/busy) drives the structured status; the rendered warning and
+        # the additive error-promotion (error == warning iff the side effect did
+        # NOT take, i.e. failure/busy) are reproduced byte-identically. Existing
+        # consumers (TUI, web slashExec) read only output/warning, so the
+        # extra ``error`` field stays inert for them and the wire is unchanged.
+        from action_runtime import slash_to_result, slash_to_wire
+
+        warning = _slash_side_effect_warning(effect)
+        result = slash_to_result(output or "(no output)", effect)
+        return _ok(rid, slash_to_wire(result, warning))
     except Exception as e:
         try:
             worker.close()
@@ -8456,14 +8534,17 @@ def _(rid, params: dict) -> dict:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
         )
-        return _ok(
-            rid,
-            {
-                "stdout": r.stdout[-4000:],
-                "stderr": r.stderr[-2000:],
-                "code": r.returncode,
-            },
+        # Route through the Action Runtime (Phase 2): build a structured
+        # ExecutionResult, then render the byte-identical wire dict. Truncation
+        # stays here — it is part of the wire contract — so the payload matches
+        # exactly; a non-zero exit is an honest FAILED result whose wire shape
+        # is unchanged (clients read result.code).
+        from action_runtime import shell_to_result, shell_to_wire
+
+        result = shell_to_result(
+            stdout=r.stdout[-4000:], stderr=r.stderr[-2000:], code=r.returncode
         )
+        return _ok(rid, shell_to_wire(result))
     except subprocess.TimeoutExpired:
         return _err(rid, 5002, "command timed out (30s)")
     except Exception as e:

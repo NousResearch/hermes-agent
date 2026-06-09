@@ -371,6 +371,39 @@ def interruptible_api_call(agent, api_kwargs: dict):
     if _codex_idle_timeout <= 0:
         _codex_idle_enabled = False
 
+    # Progress-stall watchdog. The stream-idle detector above is satisfied by
+    # ANY SSE frame — including content-free keepalive / ``response.in_progress``
+    # frames. The chatgpt.com/backend-api/codex backend has a failure mode where
+    # it keeps the socket "alive" with periodic keepalives but never emits a real
+    # delta or completes, so _last_event_ts stays fresh forever and the idle
+    # watchdog never trips: the call burns the full blunt stale timeout (observed:
+    # 90s × 6 retries ≈ 9 min before fallback). ``_codex_stream_last_progress_ts``
+    # (set by run_codex_stream only on real deltas / function calls / output items
+    # / terminal events) lets us catch "events flowing but zero forward progress"
+    # and reconnect at the fast cutoff instead. Reuses the fast-reconnect target
+    # (default 40s, clamped below the stale timer) so it fires before the blunt
+    # kill. Set HERMES_CODEX_PROGRESS_STALE_TIMEOUT_SECONDS=0 to disable, or tune
+    # it directly; otherwise it defaults to the same fast cutoff as the no-byte
+    # watchdog.
+    _codex_progress_enabled = _codex_watchdog_enabled
+    _codex_progress_default = _ttfb_timeout if _ttfb_enabled else _codex_idle_timeout
+    _codex_progress_timeout = _env_float(
+        "HERMES_CODEX_PROGRESS_STALE_TIMEOUT_SECONDS",
+        _codex_progress_default,
+    )
+    if _codex_progress_timeout <= 0:
+        _codex_progress_enabled = False
+    elif _stale_timeout != float("inf"):
+        # Never let the progress-stall cutoff meet or exceed the blunt stale
+        # timer (it would then never win); keep the same margin as the no-byte
+        # fast-reconnect clamp.
+        _progress_margin = _env_float(
+            "HERMES_CODEX_TTFB_BELOW_STALE_MARGIN_SECONDS", 10.0
+        )
+        _codex_progress_timeout = min(
+            _codex_progress_timeout, max(_stale_timeout - _progress_margin, 5.0)
+        )
+
     if _codex_watchdog_enabled:
         # Reset before the worker starts so a marker left over from a previous
         # call on this agent can't be misread as first-byte for this one.
@@ -491,6 +524,54 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 result["error"] = TimeoutError(
                     f"Codex stream produced no SSE events for {int(_event_stale_elapsed)}s "
                     f"after first byte (threshold: {int(_codex_idle_timeout)}s)"
+                )
+            break
+
+        # Progress-stall detector: the Codex stream is emitting frames (keepalive
+        # / in_progress refresh _codex_stream_last_event_ts, so the idle detector
+        # above stays quiet) but has produced ZERO real forward progress — no text
+        # / reasoning delta, no function call, no output item, no terminal event —
+        # for longer than the fast-reconnect cutoff. This is the keepalive-only
+        # hang on chatgpt.com/backend-api/codex: without this branch the call
+        # rides the socket all the way to the blunt wall-clock stale timeout
+        # (observed: 90s × 6 retries ≈ 9 min) instead of reconnecting in ~1s.
+        # We only arm once at least one event has arrived (_last_event_ts set) so
+        # this never races the no-byte TTFB detector for the first-byte case.
+        _last_progress_ts = getattr(agent, "_codex_stream_last_progress_ts", None)
+        _last_event_ts_for_progress = getattr(agent, "_codex_stream_last_event_ts", None)
+        if (
+            _codex_progress_enabled
+            and _last_event_ts_for_progress is not None
+            and _last_progress_ts is None
+            and _elapsed > _codex_progress_timeout
+        ):
+            logger.warning(
+                "Codex stream emitted events but no forward progress for %.0fs "
+                "(threshold %.0fs, model=%s, context=~%s tokens). Backend is "
+                "sending keepalives without producing output. Killing connection "
+                "so the retry loop can reconnect.",
+                _elapsed,
+                _codex_progress_timeout,
+                api_kwargs.get("model", "unknown"),
+                f"{_est_tokens_for_codex_watchdog:,}",
+            )
+            agent._buffer_status(
+                f"⚠️ Codex stream stalled with no progress for {int(_elapsed)}s "
+                f"(keepalives only, model: {api_kwargs.get('model', 'unknown')}). "
+                f"Reconnecting."
+            )
+            try:
+                _close_request_client_once("codex_progress_stall_kill")
+            except Exception:
+                pass
+            agent._touch_activity(
+                f"codex stream killed after {int(_elapsed)}s with no forward progress"
+            )
+            t.join(timeout=2.0)
+            if result["error"] is None and result["response"] is None:
+                result["error"] = TimeoutError(
+                    f"Codex stream emitted events but made no forward progress for "
+                    f"{int(_elapsed)}s (threshold: {int(_codex_progress_timeout)}s)"
                 )
             break
 

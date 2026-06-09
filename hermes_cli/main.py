@@ -10174,7 +10174,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "swarm", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -10830,6 +10830,12 @@ def main():
     # =========================================================================
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
+
+    # =========================================================================
+    # swarm command — profile-backed worker fan-out for handoff directories
+    # =========================================================================
+    from hermes_cli.swarm import build_parser as _build_swarm_parser
+    _build_swarm_parser(subparsers)
 
     # =========================================================================
     # login command  (parser built in hermes_cli/subcommands/login.py)

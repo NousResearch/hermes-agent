@@ -54,6 +54,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
+| `hermes swarm` | Launch several profile-backed Hermes workers from handoff files and write status/evidence files. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
@@ -581,6 +582,52 @@ Board resolution order (highest precedence first): `--board <slug>` flag → `HE
 All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
 
 For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/hermes-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/user-guide/features/kanban).
+
+## `hermes swarm`
+
+```bash
+hermes swarm run <run-dir> --worker researcher --worker reviewer:review.md [options]
+hermes swarm status <run-dir>
+```
+
+Launch several **profile-backed** Hermes workers in parallel from saved handoff files. This is a lightweight scripting harness for controller/worker workflows where you already have separate Hermes profiles configured with their own providers, quotas, tools, and memory. It complements `delegate_task` (in-process subagents) and `kanban` (persistent task board) by giving shell scripts and workflow folders a simple process supervisor.
+
+Directory convention:
+
+```text
+<run-dir>/
+  handoffs/<profile>.md       # prompt for each worker unless overridden
+  agents/<profile>.out.md     # worker stdout/final answer
+  logs/<profile>.err.log      # worker stderr
+  status.json                 # durable lifecycle/status record
+```
+
+Examples:
+
+```bash
+# Run two workers using handoffs/researcher.md and handoffs/reviewer.md.
+hermes swarm run .hermes/workflows/audit-001 \
+  --worker researcher \
+  --worker reviewer \
+  --toolsets web,file \
+  --skills hermes-workflow-ops \
+  --timeout-seconds 900 \
+  --read-only
+
+# Use a custom handoff filename for one profile.
+hermes swarm run /tmp/run --worker fast-model:broad-search.md --worker strong-model=final-review.md
+
+# Inspect the status file without reopening every log.
+hermes swarm status .hermes/workflows/audit-001
+```
+
+Important safety details:
+
+- The status file stores handoff paths and a command preview with the prompt body redacted; prompt text is not copied into `status.json`.
+- Worker profiles, model choices, API keys, Slack tokens, and provider routing stay in the users' normal profile configs/env files. The harness does not embed any default worker names.
+- `--read-only` appends a no-side-effects constraint to every prompt. It is still a prompt constraint, not an OS sandbox.
+- `--yolo` and `--accept-hooks` are opt-in; the default is safer for public/shared use.
+- By default the command exits non-zero when any worker fails, is skipped, or times out. Add `--allow-failures` when a controller wants a best-effort evidence bundle and will decide the final gate itself.
 
 ## `hermes webhook`
 

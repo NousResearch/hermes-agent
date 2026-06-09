@@ -8,6 +8,8 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
+For profile-level orchestration across separately configured Hermes profiles/providers, use `hermes swarm run <run-dir> --worker <profile>` from the CLI. `delegate_task` is the in-process tool-call primitive; `hermes swarm` is a shell/process harness for saved handoff files, separate profile quotas, durable stdout/stderr logs, and `status.json` lifecycle tracking.
+
 ## Single Task
 
 ```python

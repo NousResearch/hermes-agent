@@ -1241,6 +1241,8 @@ export const zh: Translations = {
     results: '结果',
     pinned: '已置顶',
     sessions: '会话',
+    liveWork: '进行中的工作',
+    archive: '归档',
     cronJobs: '定时任务',
     groupAriaGrouped: '以单一列表显示会话',
     groupAriaUngrouped: '按工作区分组会话',

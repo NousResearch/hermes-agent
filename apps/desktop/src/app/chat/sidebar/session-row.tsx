@@ -19,7 +19,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   isLive?: boolean
   isSelected: boolean
   isWorking: boolean
-  onArchive: () => void
+  onArchive?: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
@@ -126,7 +126,7 @@ export function SidebarSessionRow({
               return
             }
 
-            if (event.metaKey || event.ctrlKey) {
+            if ((event.metaKey || event.ctrlKey) && onArchive) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')

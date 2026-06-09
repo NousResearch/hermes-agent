@@ -47,10 +47,14 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  ARCHIVE_SECTION_LIMIT,
   CRON_SECTION_LIMIT,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
+  setArchivedSessions,
+  setArchivedSessionsLoading,
+  setArchivedSessionsTotal,
   setAwaitingResponse,
   setBusy,
   setCronSessions,
@@ -294,6 +298,25 @@ export function DesktopController() {
     }
   }, [])
 
+  const refreshArchivedSessions = useCallback(async () => {
+    setArchivedSessionsLoading(true)
+
+    try {
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+      const result = await listAllProfileSessions(ARCHIVE_SECTION_LIMIT, 1, 'only', 'recent', sessionProfile, {
+        excludeSources: ['cron']
+      })
+
+      setArchivedSessions(result.sessions)
+      setArchivedSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
+    } catch {
+      // Non-fatal: Archive stays empty/stale, but live recents still work.
+    } finally {
+      setArchivedSessionsLoading(false)
+    }
+  }, [profileScope])
+
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
@@ -332,7 +355,8 @@ export function DesktopController() {
 
     void refreshCronSessions()
     void refreshCronJobs()
-  }, [profileScope, refreshCronSessions, refreshCronJobs])
+    void refreshArchivedSessions()
+  }, [profileScope, refreshArchivedSessions, refreshCronSessions, refreshCronJobs])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()

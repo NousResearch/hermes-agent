@@ -22,6 +22,8 @@ import {
   getRememberedWorkspaceCwd,
   sessionPinId,
   setActiveSessionId,
+  setArchivedSessions,
+  setArchivedSessionsTotal,
   setAwaitingResponse,
   setBusy,
   setCurrentBranch,
@@ -337,11 +339,13 @@ export function useSessionActions({
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (
@@ -843,8 +847,16 @@ export function useSessionActions({
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
-      // Soft-hide: drop from the sidebar immediately, keep the data.
+      // Soft-hide: drop from the live sidebar immediately, keep the data in the
+      // Archive slice so the completed-work section updates without waiting for
+      // the next backend refresh.
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+
+      if (archived) {
+        setArchivedSessions(prev => [{ ...archived, archived: true }, ...prev.filter(s => s.id !== storedSessionId)])
+        setArchivedSessionsTotal(prev => prev + 1)
+      }
+
       // Archived sessions are hidden by the listSessions(min_messages=1) query
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
@@ -862,6 +874,8 @@ export function useSessionActions({
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
           setSessionsTotal(prev => prev + 1)
+          setArchivedSessions(prev => prev.filter(s => s.id !== storedSessionId))
+          setArchivedSessionsTotal(prev => Math.max(0, prev - 1))
         }
 
         $pinnedSessionIds.set(previousPinned)

@@ -46,6 +46,7 @@ import {
   $panesFlipped,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
+  $sidebarArchiveOpen,
   $sidebarCronOpen,
   $sidebarOpen,
   $sidebarOverlayMounted,
@@ -55,6 +56,7 @@ import {
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setSidebarAgentsGrouped,
+  setSidebarArchiveOpen,
   setSidebarCronOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
@@ -70,6 +72,9 @@ import {
   normalizeProfileKey
 } from '@/store/profile'
 import {
+  $archivedSessions,
+  $archivedSessionsLoading,
+  $archivedSessionsTotal,
   $cronSessions,
   $selectedStoredSessionId,
   $sessionProfileTotals,
@@ -86,7 +91,7 @@ import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { ProfileRail } from './profile-switcher'
-import { freshestSessionId, topRecentSessions } from './session-order'
+import { topRecentSessions, workHeadSessionIds } from './session-order'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -121,6 +126,7 @@ const WORKSPACE_PAGE = 5
 const PROFILE_INITIAL_PAGE = 5
 const GROUP_DND_ID_PREFIX = 'group:'
 const LOCAL_SESSION_SOURCES = new Set(['cli', 'desktop', 'local', 'tui'])
+const EMPTY_LIVE_SESSION_IDS = new Set<string>()
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
@@ -285,9 +291,13 @@ export function ChatSidebar({
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
+  const archiveOpen = useStore($sidebarArchiveOpen)
   const cronOpen = useStore($sidebarCronOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
+  const archivedSessions = useStore($archivedSessions)
+  const archivedSessionsLoading = useStore($archivedSessionsLoading)
+  const archivedSessionsTotal = useStore($archivedSessionsTotal)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
   const sessionsLoading = useStore($sessionsLoading)
@@ -357,9 +367,14 @@ export function ChatSidebar({
     [sessions, showAllProfiles, profileScope]
   )
 
-  const sortedSessions = useMemo(
-    () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+  const openVisibleSessions = useMemo(
+    () => visibleSessions.filter(session => session.archived !== true),
     [visibleSessions]
+  )
+
+  const sortedSessions = useMemo(
+    () => [...openVisibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+    [openVisibleSessions]
   )
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
@@ -369,10 +384,10 @@ export function ChatSidebar({
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
-    // Cron sessions are listed separately but can still be pinned, so index
-    // them too — otherwise a pinned cron job can't resolve into the Pinned
-    // section. Recents take precedence on id collisions (set last).
-    for (const s of [...cronSessions, ...visibleSessions]) {
+    // Cron and archived sessions are listed separately but can still resolve from
+    // durable pins/search results. Recents take precedence on id collisions (set
+    // last) because they are the active work heads.
+    for (const s of [...cronSessions, ...archivedSessions, ...openVisibleSessions]) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
@@ -381,7 +396,7 @@ export function ChatSidebar({
     }
 
     return map
-  }, [visibleSessions, cronSessions])
+  }, [openVisibleSessions, archivedSessions, cronSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -463,18 +478,36 @@ export function ChatSidebar({
     [sortedSessions, pinnedRealIdSet]
   )
 
-  // The single most-recently-active session across loaded recents + cron runs.
-  // Badged 'Live' in the row so the newest is obvious at a glance.
-  const liveSessionId = useMemo(
-    () => freshestSessionId([visibleSessions, cronSessions], session => session.id, sessionTime),
-    [visibleSessions, cronSessions]
+  // Every open work lineage gets one Live badge on its latest head. This is a
+  // work-state marker, not a single global recency marker; cron runs stay in
+  // their own scheduled section and archived rows never count as live.
+  const liveSessionIds = useMemo(
+    () =>
+      workHeadSessionIds(
+        [openVisibleSessions],
+        session => session.id,
+        session => session._lineage_root_id ?? null,
+        sessionTime,
+        session => session.archived === true
+      ),
+    [openVisibleSessions]
   )
 
-  // Top 5 most-recently-worked sessions spanning local, external-source, and
-  // cron runs — a quick-access shortcut above the fuller recents list.
+  // Top 5 most-recently-worked open sessions — a quick-access shortcut above
+  // the fuller live-work list. Scheduled cron runs live in their own section.
   const recentQuickSessions = useMemo(
-    () => topRecentSessions([visibleSessions, cronSessions], session => session.id, sessionTime, 5),
-    [visibleSessions, cronSessions]
+    () => topRecentSessions([openVisibleSessions], session => session.id, sessionTime, 5),
+    [openVisibleSessions]
+  )
+
+  const visibleArchivedSessions = useMemo(
+    () =>
+      archivedSessions
+        .filter(session => session.archived === true)
+        .filter(session => showAllProfiles || normalizeProfileKey(session.profile) === profileScope)
+        .filter(session => !pinnedRealIdSet.has(session.id))
+        .sort((a, b) => sessionTime(b) - sessionTime(a)),
+    [archivedSessions, pinnedRealIdSet, profileScope, showAllProfiles]
   )
 
   const { localSessions: localAgentSessions, sourceGroups } = useMemo(
@@ -581,7 +614,8 @@ export function ChatSidebar({
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
-  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
+  const showArchiveSection = archivedSessionsLoading || visibleArchivedSessions.length > 0
+  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0 || showArchiveSection
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
@@ -589,7 +623,7 @@ export function ChatSidebar({
   // keeps "Load more" stuck on while you browse a small one (the aggregator's
   // total sums every profile). Per-profile totals come from the aggregator
   // (children excluded); fall back to the global total / loaded count.
-  const loadedSessionCount = showAllProfiles ? sessions.length : visibleSessions.length
+  const loadedSessionCount = openVisibleSessions.length
   const scopedProfileTotal = showAllProfiles ? undefined : sessionProfileTotals[profileScope]
 
   const knownSessionTotal = Math.max(
@@ -601,6 +635,11 @@ export function ChatSidebar({
   const remainingSessionCount = Math.max(0, knownSessionTotal - loadedSessionCount)
 
   const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
+
+  const archiveMeta = countLabel(
+    visibleArchivedSessions.length,
+    Math.max(archivedSessionsTotal, visibleArchivedSessions.length)
+  )
 
   const handlePinnedDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) {
@@ -719,7 +758,7 @@ export function ChatSidebar({
             }
             label={s.results}
             labelMeta={String(searchResults.length)}
-            liveSessionId={liveSessionId}
+            liveSessionIds={liveSessionIds}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onResumeSession={onResumeSession}
@@ -740,7 +779,7 @@ export function ChatSidebar({
             emptyState={null}
             label="Recent 5"
             labelMeta={String(recentQuickSessions.length)}
-            liveSessionId={liveSessionId}
+            liveSessionIds={liveSessionIds}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onResumeSession={onResumeSession}
@@ -761,7 +800,7 @@ export function ChatSidebar({
             dndSensors={dndSensors}
             emptyState={<SidebarPinnedEmptyState />}
             label={s.pinned}
-            liveSessionId={liveSessionId}
+            liveSessionIds={liveSessionIds}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onReorder={handlePinnedDragEnd}
@@ -832,9 +871,9 @@ export function ChatSidebar({
                 ) : null}
               </div>
             }
-            label={s.sessions}
+            label={s.liveWork}
             labelMeta={recentsMeta}
-            liveSessionId={liveSessionId}
+            liveSessionIds={liveSessionIds}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
@@ -845,6 +884,27 @@ export function ChatSidebar({
             pinned={false}
             rootClassName="min-h-0 flex-1 p-0"
             sessions={displayAgentSessions}
+            workingSessionIdSet={workingSessionIdSet}
+          />
+        )}
+
+        {contentVisible && showSessionSections && !trimmedQuery && showArchiveSection && (
+          <SidebarSessionsSection
+            activeSessionId={activeSidebarSessionId}
+            contentClassName="flex max-h-48 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+            emptyState={archivedSessionsLoading ? <SidebarSessionSkeletons /> : null}
+            forceEmptyState={archivedSessionsLoading && visibleArchivedSessions.length === 0}
+            label={s.archive}
+            labelMeta={archiveMeta}
+            liveSessionIds={EMPTY_LIVE_SESSION_IDS}
+            onDeleteSession={onDeleteSession}
+            onResumeSession={onResumeSession}
+            onToggle={() => setSidebarArchiveOpen(!archiveOpen)}
+            onTogglePin={pinSession}
+            open={archiveOpen}
+            pinned={false}
+            rootClassName="shrink-0 p-0 pb-1"
+            sessions={visibleArchivedSessions}
             workingSessionIdSet={workingSessionIdSet}
           />
         )}
@@ -960,7 +1020,7 @@ interface SidebarSessionsSectionProps {
   workingSessionIdSet: Set<string>
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession?: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
@@ -972,7 +1032,7 @@ interface SidebarSessionsSectionProps {
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
   labelMeta?: React.ReactNode
-  liveSessionId?: null | string
+  liveSessionIds?: Set<string>
   sortable?: boolean
   onReorder?: (event: DragEndEvent) => void
   dndSensors?: ReturnType<typeof useSensors>
@@ -999,7 +1059,7 @@ function SidebarSessionsSection({
   footer,
   groups,
   labelMeta,
-  liveSessionId = null,
+  liveSessionIds = EMPTY_LIVE_SESSION_IDS,
   sortable = false,
   onReorder,
   dndSensors
@@ -1011,10 +1071,10 @@ function SidebarSessionsSection({
   const renderRow = (session: SessionInfo) => {
     const rowProps = {
       isPinned: pinned,
-      isLive: session.id === liveSessionId,
+      isLive: liveSessionIds.has(session.id),
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
+      onArchive: onArchiveSession ? () => onArchiveSession(session.id) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
@@ -1091,7 +1151,7 @@ function SidebarSessionsSection({
     inner = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
-        liveSessionId={liveSessionId}
+        liveSessionIds={liveSessionIds}
         onArchiveSession={onArchiveSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
@@ -1301,7 +1361,7 @@ interface SortableSessionRowProps {
   isLive: boolean
   isSelected: boolean
   isWorking: boolean
-  onArchive: () => void
+  onArchive?: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void

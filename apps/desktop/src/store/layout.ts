@@ -22,6 +22,7 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
+const SIDEBAR_ARCHIVE_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarArchiveOpen'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
@@ -64,6 +65,9 @@ export const $sidebarPinsOpen = atom(true)
 // rows on `sidebarOpen || this`.
 export const $sidebarOverlayMounted = atom(false)
 export const $sidebarRecentsOpen = atom(true)
+// Completed/archived work is useful for retrieval but should not compete with
+// live work-switching, so keep it in a separate collapsed section.
+export const $sidebarArchiveOpen = atom(storedBoolean(SIDEBAR_ARCHIVE_OPEN_STORAGE_KEY, false))
 // Cron-job sessions live in their own section below recents, collapsed by
 // default (it only renders at all when cron sessions exist) so the
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
@@ -76,6 +80,7 @@ export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
+$sidebarArchiveOpen.subscribe(open => persistBoolean(SIDEBAR_ARCHIVE_OPEN_STORAGE_KEY, open))
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
@@ -133,6 +138,10 @@ export function setSidebarOverlayMounted(mounted: boolean) {
 
 export function setSidebarRecentsOpen(open: boolean) {
   $sidebarRecentsOpen.set(open)
+}
+
+export function setSidebarArchiveOpen(open: boolean) {
+  $sidebarArchiveOpen.set(open)
 }
 
 export function setSidebarCronOpen(open: boolean) {

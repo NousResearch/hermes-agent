@@ -1163,6 +1163,8 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
+    liveWork: '進行中的工作',
+    archive: '封存',
     cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',

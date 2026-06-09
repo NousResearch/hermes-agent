@@ -76,6 +76,11 @@ export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
+// Archived/completed conversations are loaded as their own bounded slice so
+// they never compete with live recents for sidebar slots.
+export const $archivedSessions = atom<SessionInfo[]>([])
+export const $archivedSessionsTotal = atom<number>(0)
+export const $archivedSessionsLoading = atom(false)
 // Cron-job sessions (source === 'cron') are fetched as their own list so the
 // scheduler's always-newest sessions never crowd recents out of the page
 // budget. Powers the collapsed "Cron jobs" sidebar section.
@@ -85,6 +90,7 @@ export const $cronSessions = atom<SessionInfo[]>([])
 // badge renders "N+". Lives here so the controller (fetch) and sidebar (badge)
 // share one source of truth without a circular import.
 export const CRON_SECTION_LIMIT = 50
+export const ARCHIVE_SECTION_LIMIT = 50
 // Listable conversation count per profile (children excluded), keyed by profile
 // name. Lets the sidebar scope its "Load more" footer to the active profile so a
 // huge default profile doesn't keep "Load more" visible while browsing a small
@@ -128,6 +134,9 @@ export const setConnection = (next: Updater<HermesConnection | null>) => updateA
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
+export const setArchivedSessions = (next: Updater<SessionInfo[]>) => updateAtom($archivedSessions, next)
+export const setArchivedSessionsTotal = (next: Updater<number>) => updateAtom($archivedSessionsTotal, next)
+export const setArchivedSessionsLoading = (next: Updater<boolean>) => updateAtom($archivedSessionsLoading, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($sessionProfileTotals, next)

@@ -86,15 +86,19 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
         setRenameOpen(true)
       }
     },
-    {
-      disabled: !onArchive,
-      icon: 'archive',
-      label: r.archive,
-      onSelect: () => {
-        triggerHaptic('selection')
-        onArchive?.()
-      }
-    },
+    ...(onArchive
+      ? [
+          {
+            disabled: false,
+            icon: 'archive',
+            label: r.archive,
+            onSelect: () => {
+              triggerHaptic('selection')
+              onArchive()
+            }
+          }
+        ]
+      : []),
     {
       className: 'text-destructive focus:text-destructive',
       disabled: !onDelete,

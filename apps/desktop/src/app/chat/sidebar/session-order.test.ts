@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import { freshestSessionId, topRecentSessions } from './session-order'
+import { topRecentSessions, workHeadSessionIds } from './session-order'
 
 interface TimedRow {
+  archived?: boolean
   id: string
+  root?: null | string
   t: number
 }
 
-const timed = (...specs: Array<[string, number]>): TimedRow[] => specs.map(([id, t]) => ({ id, t }))
+const timed = (...specs: Array<[string, number, (null | string | undefined)?, boolean?]>): TimedRow[] =>
+  specs.map(([id, t, root, archived]) => ({ archived, id, root, t }))
+
 const timedId = (item: TimedRow) => item.id
+const timedRoot = (item: TimedRow) => item.root ?? null
 const timedTime = (item: TimedRow) => item.t
+const timedArchived = (item: TimedRow) => item.archived === true
 const timedIds = (items: TimedRow[]) => items.map(item => item.id)
+const sortedSetIds = (ids: Set<string>) => [...ids].sort()
 
 describe('topRecentSessions', () => {
   it('merges several lists, sorts newest-first, and caps at n', () => {
@@ -34,12 +41,45 @@ describe('topRecentSessions', () => {
   })
 })
 
-describe('freshestSessionId', () => {
-  it('returns the id of the single newest session across lists', () => {
-    expect(freshestSessionId([timed(['a', 10]), timed(['b', 50], ['c', 5])], timedId, timedTime)).toBe('b')
+describe('workHeadSessionIds', () => {
+  it('returns only the freshest session id per lineage root', () => {
+    const rows = timed(['root-a', 10, 'work-a'], ['tip-a', 30, 'work-a'], ['other', 20, 'work-b'])
+
+    expect(sortedSetIds(workHeadSessionIds([rows], timedId, timedRoot, timedTime, timedArchived))).toEqual([
+      'other',
+      'tip-a'
+    ])
   })
 
-  it('returns null when there are no sessions', () => {
-    expect(freshestSessionId([], timedId, timedTime)).toBeNull()
+  it('treats sessions without a lineage root as their own open work item', () => {
+    const rows = timed(['solo-a', 10], ['solo-b', 30])
+
+    expect(sortedSetIds(workHeadSessionIds([rows], timedId, timedRoot, timedTime, timedArchived))).toEqual([
+      'solo-a',
+      'solo-b'
+    ])
+  })
+
+  it('skips archived sessions and falls back to the newest unarchived tip in the lineage', () => {
+    const rows = timed(['old-open', 10, 'work-a'], ['archived-tip', 99, 'work-a', true], ['fully-archived', 80, 'work-b', true])
+
+    expect(sortedSetIds(workHeadSessionIds([rows], timedId, timedRoot, timedTime, timedArchived))).toEqual([
+      'old-open'
+    ])
+  })
+
+  it('dedupes ids across several lists while still choosing the freshest lineage head', () => {
+    const recents = timed(['work-tip', 20, 'work-a'], ['cron-copy', 15, 'work-b'])
+    const cron = timed(['work-tip', 20, 'work-a'], ['cron-newer', 60, 'work-b'])
+
+    expect(sortedSetIds(workHeadSessionIds([recents, cron], timedId, timedRoot, timedTime, timedArchived))).toEqual([
+      'cron-newer',
+      'work-tip'
+    ])
+  })
+
+  it('returns an empty set when no unarchived sessions exist', () => {
+    expect(workHeadSessionIds([], timedId, timedRoot, timedTime, timedArchived).size).toBe(0)
+    expect(workHeadSessionIds([timed(['archived', 1, 'work', true])], timedId, timedRoot, timedTime, timedArchived).size).toBe(0)
   })
 })

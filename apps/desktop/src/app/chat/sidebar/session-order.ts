@@ -33,15 +33,36 @@ export function topRecentSessions<T>(
   return Array.from(best.values()).sort((a, b) => getTime(b) - getTime(a)).slice(0, n)
 }
 
-// Id of the single most-recently-active session across the given lists, or null
-// when there are none. Used to badge the newest session 'Live' so it reads as
-// the freshest at a glance.
-export function freshestSessionId<T>(
+// Ids of the most-recently-active open session per work lineage.
+//
+// A "Live" badge is a work-state marker, not a single global recency marker:
+// every unfinished lineage gets exactly one head, and archived rows never count
+// as live. Legacy rows without lineage metadata are treated as one-session work
+// items keyed by their own id.
+export function workHeadSessionIds<T>(
   lists: T[][],
   getId: (item: T) => string,
-  getTime: (item: T) => number
-): null | string {
-  const [top] = topRecentSessions(lists, getId, getTime, 1)
+  getLineageRoot: (item: T) => null | string,
+  getTime: (item: T) => number,
+  isArchived: (item: T) => boolean
+): Set<string> {
+  const bestPerLineage = new Map<string, T>()
 
-  return top ? getId(top) : null
+  for (const list of lists) {
+    for (const item of list) {
+      if (isArchived(item)) {
+        continue
+      }
+
+      const id = getId(item)
+      const lineage = getLineageRoot(item) ?? id
+      const existing = bestPerLineage.get(lineage)
+
+      if (!existing || getTime(item) > getTime(existing)) {
+        bestPerLineage.set(lineage, item)
+      }
+    }
+  }
+
+  return new Set(Array.from(bestPerLineage.values(), getId))
 }

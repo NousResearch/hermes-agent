@@ -208,7 +208,7 @@ export const COMPLETION_SOUND_VARIANTS: readonly CompletionSoundVariant[] = [
 
 const DEFAULT_COMPLETION_VARIANT_ID = 8
 
-function playVariant(variantId: number) {
+export function playVariant(variantId: number) {
   const variant = COMPLETION_SOUND_VARIANTS.find(v => v.id === variantId)
 
   if (!variant) {

@@ -6,7 +6,7 @@ import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
-  attachmentDisplayText,
+  optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
   pathLabel,
@@ -418,7 +418,9 @@ export function usePromptActions({
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
       // workspace-relative paths the remote gateway can resolve). Seed the
       // optimistic message with the pre-sync refs, then rewrite once synced.
-      let attachmentRefs = attachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+      // Images use their base64 preview so the thumbnail renders inline without
+      // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
+      let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
       const buildContextText = (atts: ComposerAttachment[]): string => {
         const contextRefs = atts
           .map(a => a.refText)
@@ -550,7 +552,8 @@ export function usePromptActions({
         })
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
-        attachmentRefs = syncedAttachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+        // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
+        attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
 

@@ -5766,7 +5766,15 @@ def _update_via_zip(args):
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        # Explicitly tell uv which Python interpreter to use so it doesn't
+        # pick a system-wide nixpkgs Python that lives on an immutable
+        # filesystem and can't be written to.
+        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
+        if venv_python.exists():
+            uv_pip = [uv_bin, "pip", "--python", str(venv_python)]
+        else:
+            uv_pip = [uv_bin, "pip"]
+        _install_python_dependencies_with_optional_fallback(uv_pip, env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.

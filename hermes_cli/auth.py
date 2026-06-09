@@ -614,10 +614,14 @@ def _resolve_api_key_provider_secret(
 
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    # Coding Plan endpoints probed first — Z.AI keys authenticate against both
+    # generic and coding endpoints, so the first 200 wins.  Coding Plan keys are
+    # now the common case; probing generic first silently routes to pay-as-you-go
+    # billing instead of the subscription quota.  See issue #42536.
     ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",         ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("cn",            "https://open.bigmodel.cn/api/paas/v4",        ["glm-5"],                              "China"),
+    ("global",        "https://api.z.ai/api/paas/v4",                ["glm-5"],                              "Global"),
 ]
 
 

@@ -1296,3 +1296,31 @@ class TestMinimaxOAuthProvider:
             "doesn't fire the 'No auxiliary LLM provider configured' warning "
             "for every minimax-oauth session."
         )
+
+
+class TestZaiEndpointProbeOrder:
+    """Coding Plan endpoints must be probed before generic ones (issue #42536)."""
+
+    def test_coding_endpoints_before_generic(self):
+        """ZAI_ENDPOINTS must list coding-* entries before generic ones."""
+        from hermes_cli.auth import ZAI_ENDPOINTS
+
+        ids = [ep[0] for ep in ZAI_ENDPOINTS]
+        coding_indices = [i for i, ep_id in enumerate(ids) if ep_id.startswith("coding-")]
+        generic_indices = [i for i, ep_id in enumerate(ids) if not ep_id.startswith("coding-")]
+
+        assert coding_indices, "ZAI_ENDPOINTS must contain coding-* entries"
+        assert generic_indices, "ZAI_ENDPOINTS must contain generic entries"
+        assert max(coding_indices) < min(generic_indices), (
+            f"Coding endpoints must precede generic ones. "
+            f"Got coding at {coding_indices}, generic at {generic_indices}"
+        )
+
+    def test_coding_cn_before_coding_global(self):
+        """China coding endpoint should be probed before global (lower latency for CN users)."""
+        from hermes_cli.auth import ZAI_ENDPOINTS
+
+        ids = [ep[0] for ep in ZAI_ENDPOINTS]
+        assert ids.index("coding-cn") < ids.index("coding-global"), (
+            "coding-cn should precede coding-global for lower latency"
+        )

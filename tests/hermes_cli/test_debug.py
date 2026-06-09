@@ -1570,3 +1570,62 @@ class TestRunDebugShareNous:
             run_debug_share(self._args())
         paste.assert_not_called()
 
+
+class TestDebugSlashCommand:
+    """`/debug [nous|local]` parsing in the CLI/TUI handler.
+
+    The classic CLI and the TUI slash worker both dispatch through
+    ``HermesCLI.process_command`` → ``_handle_debug_command(cmd_original)``,
+    which parses an optional destination word and builds the args namespace
+    handed to ``run_debug_share``.
+    """
+
+    def _handler(self):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Stub(CLICommandsMixin):
+            pass
+
+        return _Stub()._handle_debug_command
+
+    def _captured(self, cmd_original):
+        captured = {}
+
+        def _fake_run(args):
+            captured.update(vars(args))
+
+        with patch("hermes_cli.debug.run_debug_share", _fake_run):
+            self._handler()(cmd_original)
+        return captured
+
+    def test_bare_debug_defaults_to_paste(self):
+        c = self._captured("/debug")
+        assert c["nous"] is False and c["local"] is False
+        assert c["lines"] == 200 and c["expire"] == 7
+
+    def test_nous_word_sets_nous(self):
+        c = self._captured("/debug nous")
+        assert c["nous"] is True and c["local"] is False
+
+    def test_local_word_sets_local(self):
+        c = self._captured("/debug local")
+        assert c["local"] is True and c["nous"] is False
+
+    def test_word_parsing_is_case_insensitive(self):
+        c = self._captured("/debug NOUS")
+        assert c["nous"] is True
+
+    def test_local_wins_over_nous(self):
+        # local never touches the network, so it takes precedence.
+        c = self._captured("/debug nous local")
+        assert c["local"] is True and c["nous"] is False
+
+    def test_unknown_word_falls_back_to_default(self):
+        c = self._captured("/debug paste")
+        assert c["nous"] is False and c["local"] is False
+
+    def test_no_arg_default_keyword(self):
+        # Calling with no cmd_original (legacy callers) must still work.
+        c = self._captured("")
+        assert c["nous"] is False and c["local"] is False
+

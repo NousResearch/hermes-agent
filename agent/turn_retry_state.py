@@ -50,6 +50,13 @@ class TurnRetryState:
     thinking_sig_retry_attempted: bool = False
     invalid_encrypted_content_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False
+    # 413 (payload-too-large) image-shrink guard. Distinct from
+    # image_shrink_retry_attempted because a 413 classifies as
+    # payload_too_large (not image_too_large) yet may still be caused by an
+    # oversized inline image on a provider with a tight request ceiling
+    # (Copilot / GitHub Copilot). Fires the same shrink recovery once before
+    # the 413 path falls through to conversation compression.
+    payload_image_shrink_attempted: bool = False
     multimodal_tool_content_retry_attempted: bool = False
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False

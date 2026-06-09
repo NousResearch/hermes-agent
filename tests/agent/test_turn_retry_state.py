@@ -22,6 +22,7 @@ EXPECTED_FIELDS = {
     "thinking_sig_retry_attempted",
     "invalid_encrypted_content_retry_attempted",
     "image_shrink_retry_attempted",
+    "payload_image_shrink_attempted",
     "multimodal_tool_content_retry_attempted",
     "oauth_1m_beta_retry_attempted",
     "llama_cpp_grammar_retry_attempted",

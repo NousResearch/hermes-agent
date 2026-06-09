@@ -2620,6 +2620,36 @@ def run_conversation(
                     classified.reason == FailoverReason.payload_too_large
                 )
 
+                # 413 image-shrink recovery: a 413 (Request Entity Too Large)
+                # classifies as payload_too_large and normally drives
+                # *conversation* compression.  But when the oversized payload is
+                # an inline native image (Copilot / GitHub Copilot enforce a
+                # tighter request-size ceiling than Anthropic-direct), shrinking
+                # text history does nothing — the image bytes are the floor, and
+                # the loop burns every compression attempt then dies with
+                # "cannot compress further."  Attempt the same image-shrink the
+                # 400 image_too_large path uses BEFORE compressing text.  If an
+                # oversized data: URL image part was actually shrunk, retry
+                # immediately.  If there's no shrinkable image, fall through to
+                # normal compression — text really is the problem.
+                if (
+                    is_payload_too_large
+                    and not _retry.payload_image_shrink_attempted
+                ):
+                    _retry.payload_image_shrink_attempted = True
+                    if agent._try_shrink_image_parts_in_messages(api_messages):
+                        agent._vprint(
+                            f"{agent.log_prefix}📐 Request too large (413) — shrank "
+                            f"oversized inline image(s) and retrying...",
+                            force=True,
+                        )
+                        continue
+                    else:
+                        logger.info(
+                            "413 image-shrink recovery: no oversized data-URL image "
+                            "parts to shrink; falling through to context compression."
+                        )
+
                 # Actionable hint for GitHub Models (Azure) 413 errors.
                 # The free tier enforces a hard 8K token cap per request,
                 # which Hermes' system prompt + tool schemas alone exceed.

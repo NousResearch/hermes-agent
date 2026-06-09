@@ -321,3 +321,71 @@ class TestShrinkImagePartsHelper:
         assert msgs[0]["content"][0]["image_url"]["url"] == small
         # The unshrinkable one is left as-is (caller surfaces original error).
         assert msgs[0]["content"][1]["image_url"]["url"] == unshrinkable
+
+
+# ─── 413 payload-too-large → image-shrink wiring ─────────────────────────────
+
+
+class TestPayloadTooLarge413ImageShrink:
+    """A 413 (Request Entity Too Large) from a provider with a tight request
+    ceiling (Copilot / GitHub Copilot) must drive the SAME image-shrink
+    recovery the 400 image_too_large path uses, BEFORE falling through to
+    conversation compression.
+
+    Regression guard for the bug where an oversized inline screenshot 413'd,
+    Hermes compressed *text* history (which did nothing — the image bytes were
+    the floor), burned all compression attempts, and died with "cannot compress
+    further."  The loop wiring lives in agent/conversation_loop.py; here we lock
+    in the pieces it depends on: (1) 413 classifies as payload_too_large,
+    (2) the TurnRetryState carries a dedicated one-shot guard, and (3) the
+    shrink helper truthy-returns only when it actually reduced an oversized
+    inline image so the 413 branch retries iff there's an image to blame, else
+    falls through to text compression.
+    """
+
+    def test_413_classifies_as_payload_too_large(self):
+        """Copilot's bare '413 Request Entity Too Large' → payload_too_large."""
+        err = _FakeApiError(status_code=413, message="Request Entity Too Large")
+        result = classify_api_error(err, provider="copilot", model="claude-opus-4.8")
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.retryable is True
+
+    def test_turn_retry_state_has_payload_image_shrink_guard(self):
+        """The 413 path needs its own one-shot guard, defaulting False, distinct
+        from the 400-path image_shrink_retry_attempted guard."""
+        from agent.turn_retry_state import TurnRetryState
+
+        st = TurnRetryState()
+        assert st.payload_image_shrink_attempted is False
+        # Independent of the 400-path guard — flipping one must not flip the other.
+        st.payload_image_shrink_attempted = True
+        assert st.image_shrink_retry_attempted is False
+
+    def test_413_shrinkable_image_returns_true(self, monkeypatch):
+        """An oversized inline data: URL image shrinks → True (loop retries)."""
+        agent = _make_agent()
+        big = _big_png_data_url(6000)  # ~6 MB, over the 4 MB target
+        small = "data:image/jpeg;base64," + "C" * 500
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda path, *a, **kw: small,
+            raising=False,
+        )
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look at this screenshot"},
+                {"type": "image_url", "image_url": {"url": big}},
+            ],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(msgs) is True
+        assert msgs[0]["content"][1]["image_url"]["url"] == small
+
+    def test_413_no_image_returns_false_falls_through(self):
+        """A 413 with NO inline image → False, so the loop falls through to
+        text compression instead of falsely 'recovering'."""
+        agent = _make_agent()
+        msgs = [{"role": "user", "content": "huge text conversation, no image at all"}]
+        assert agent._try_shrink_image_parts_in_messages(msgs) is False
+

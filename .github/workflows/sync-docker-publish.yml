@@ -17,13 +17,17 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/hermes-agent
+  IMAGE_REPOSITORY: hermes-agent
 
 jobs:
   docker:
     runs-on: ubuntu-latest
-
     timeout-minutes: 90
+
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/hermes-agent
 
     steps:
       - name: Checkout
@@ -31,6 +35,55 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Validate Docker Hub configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
+            echo "::error::El secret DOCKERHUB_USERNAME no está definido o está vacío."
+            exit 1
+          fi
+
+          if [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "::error::El secret DOCKERHUB_TOKEN no está definido o está vacío."
+            exit 1
+          fi
+
+          if [ -z "${IMAGE_NAME:-}" ]; then
+            echo "::error::IMAGE_NAME está vacío. Revisa DOCKERHUB_USERNAME."
+            exit 1
+          fi
+
+          if [[ "${IMAGE_NAME}" == /* ]]; then
+            echo "::error::IMAGE_NAME inválido: '${IMAGE_NAME}'."
+            echo "::error::Esto indica que DOCKERHUB_USERNAME se está resolviendo vacío."
+            exit 1
+          fi
+
+          if [[ "${DOCKERHUB_USERNAME}" != "${DOCKERHUB_USERNAME,,}" ]]; then
+            echo "::error::DOCKERHUB_USERNAME debe estar en minúsculas. Valor recibido: '${DOCKERHUB_USERNAME}'"
+            exit 1
+          fi
+
+          EXPECTED_IMAGE_NAME="${DOCKERHUB_USERNAME}/${IMAGE_REPOSITORY}"
+
+          if [ "${IMAGE_NAME}" != "${EXPECTED_IMAGE_NAME}" ]; then
+            echo "::error::IMAGE_NAME inesperado."
+            echo "::error::IMAGE_NAME='${IMAGE_NAME}'"
+            echo "::error::Esperado='${EXPECTED_IMAGE_NAME}'"
+            exit 1
+          fi
+
+          if ! [[ "${IMAGE_NAME}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::IMAGE_NAME no parece un nombre Docker Hub válido: '${IMAGE_NAME}'"
+            echo "::error::Debe tener formato namespace/repository en minúsculas."
+            exit 1
+          fi
+
+          echo "Configuración Docker Hub validada correctamente."
+          echo "Imagen destino: ${IMAGE_NAME}"
 
       # Necesario para construir imágenes arm64 desde runners amd64
       - name: Set up QEMU
@@ -42,8 +95,8 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
       # ---------------------------------------------------------
       # Publica imágenes de rama:
@@ -56,23 +109,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${IMAGE_NAME:-}" ]; then
-            echo "::error::IMAGE_NAME está vacío. Revisa el secret DOCKERHUB_USERNAME."
-            exit 1
-          fi
-
-          if ! [[ "${IMAGE_NAME}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-            echo "::error::IMAGE_NAME no parece un nombre de imagen Docker Hub válido: ${IMAGE_NAME}"
-            echo "::error::Debe tener formato namespace/repository y estar en minúsculas."
-            exit 1
-          fi
-
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
           SHA_SHORT="$(git rev-parse --short HEAD)"
 
           case "${BRANCH_NAME}" in
             main|develop)
-              echo "Publicando imagen ${BRANCH_NAME} para commit ${GITHUB_SHA}"
+              echo "Publicando imagen ${IMAGE_NAME}:${BRANCH_NAME} para commit ${GITHUB_SHA}"
               ;;
             *)
               echo "Rama no publicable: ${BRANCH_NAME}"
@@ -122,9 +164,6 @@ jobs:
         run: |
           set -uo pipefail
 
-          # -----------------------------------------------------
-          # Logging
-          # -----------------------------------------------------
           log_info() {
             echo "::notice::$*"
           }
@@ -144,9 +183,6 @@ jobs:
             echo "------------------------------------------------------------"
           }
 
-          # -----------------------------------------------------
-          # Estado acumulado
-          # -----------------------------------------------------
           PROCESSED_TAGS=()
           BUILT_TAGS=()
           UPDATED_TAGS=()
@@ -171,18 +207,42 @@ jobs:
             log_warn "Tag ${tag}: ${reason}"
           }
 
-          # -----------------------------------------------------
-          # Validaciones iniciales
-          # -----------------------------------------------------
-          validate_environment() {
+          validate_runtime_environment() {
+            if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
+              log_error "El secret DOCKERHUB_USERNAME no está definido o está vacío."
+              exit 1
+            fi
+
+            if [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+              log_error "El secret DOCKERHUB_TOKEN no está definido o está vacío."
+              exit 1
+            fi
+
             if [ -z "${IMAGE_NAME:-}" ]; then
-              log_error "IMAGE_NAME está vacío. Revisa el secret DOCKERHUB_USERNAME."
+              log_error "IMAGE_NAME está vacío."
+              exit 1
+            fi
+
+            if [[ "${IMAGE_NAME}" == /* ]]; then
+              log_error "IMAGE_NAME inválido: '${IMAGE_NAME}'. DOCKERHUB_USERNAME se está resolviendo vacío."
+              exit 1
+            fi
+
+            if [[ "${DOCKERHUB_USERNAME}" != "${DOCKERHUB_USERNAME,,}" ]]; then
+              log_error "DOCKERHUB_USERNAME debe estar en minúsculas: '${DOCKERHUB_USERNAME}'"
+              exit 1
+            fi
+
+            local expected_image_name
+            expected_image_name="${DOCKERHUB_USERNAME}/${IMAGE_REPOSITORY}"
+
+            if [ "${IMAGE_NAME}" != "${expected_image_name}" ]; then
+              log_error "IMAGE_NAME inesperado: '${IMAGE_NAME}'. Esperado: '${expected_image_name}'"
               exit 1
             fi
 
             if ! [[ "${IMAGE_NAME}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-              log_error "IMAGE_NAME no parece un nombre de imagen Docker Hub válido: ${IMAGE_NAME}"
-              log_error "Debe tener formato namespace/repository y estar en minúsculas."
+              log_error "IMAGE_NAME no parece un nombre Docker Hub válido: ${IMAGE_NAME}"
               exit 1
             fi
 
@@ -210,9 +270,6 @@ jobs:
             echo "SHA: ${GITHUB_SHA}"
           }
 
-          # -----------------------------------------------------
-          # Retry genérico para operaciones remotas
-          # -----------------------------------------------------
           retry() {
             local attempts="$1"
             local delay="$2"
@@ -239,27 +296,12 @@ jobs:
             done
           }
 
-          # -----------------------------------------------------
-          # Validación de tag Docker
-          #
-          # Docker tag:
-          # - máximo 128 caracteres
-          # - empieza por [A-Za-z0-9_]
-          # - luego admite [A-Za-z0-9_.-]
-          # -----------------------------------------------------
           is_valid_docker_tag() {
             local tag="$1"
 
             [[ "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]
           }
 
-          # -----------------------------------------------------
-          # Consulta robusta de imagen remota
-          #
-          # return 0 -> existe
-          # return 1 -> no existe
-          # return 2 -> error consultando registry/auth/red/rate limit/etc.
-          # -----------------------------------------------------
           inspect_image() {
             local ref="$1"
             local out
@@ -393,9 +435,11 @@ jobs:
             local sha_ref="$2"
             local tag_digest
             local sha_digest
+            local tag_rc
+            local sha_rc
 
             tag_digest="$(image_digest "${tag_ref}")"
-            local tag_rc=$?
+            tag_rc=$?
 
             if [ "${tag_rc}" -ne 0 ]; then
               echo "No se pudo obtener digest de ${tag_ref}" >&2
@@ -403,7 +447,7 @@ jobs:
             fi
 
             sha_digest="$(image_digest "${sha_ref}")"
-            local sha_rc=$?
+            sha_rc=$?
 
             if [ "${sha_rc}" -ne 0 ]; then
               echo "No se pudo obtener digest de ${sha_ref}" >&2
@@ -493,12 +537,10 @@ jobs:
             return 0
           }
 
-          # -----------------------------------------------------
-          # Inicio
-          # -----------------------------------------------------
-          validate_environment
+          validate_runtime_environment
 
           section "Sincronizando tags Git"
+
           if ! retry 3 10 git fetch --tags --force --prune; then
             log_error "No se pudieron sincronizar los tags Git."
             exit 1
@@ -517,6 +559,7 @@ jobs:
           PUBLISHABLE_TAGS=()
 
           section "Calculando tags publicables"
+
           for TAG in "${TAGS[@]}"; do
             COMMIT="$(git rev-list -n 1 "${TAG}")"
 
@@ -544,9 +587,6 @@ jobs:
           printf '%s\n' "${PUBLISHABLE_TAGS[@]}"
           echo "Latest tag publicable calculado: ${LATEST_TAG}"
 
-          # -----------------------------------------------------
-          # Procesamiento de tags
-          # -----------------------------------------------------
           for TAG in "${PUBLISHABLE_TAGS[@]}"; do
             PROCESSED_TAGS+=("${TAG}")
 
@@ -673,9 +713,6 @@ jobs:
             fi
           done
 
-          # -----------------------------------------------------
-          # Actualización de latest
-          # -----------------------------------------------------
           section "Actualizando latest"
 
           LATEST_FAILED=false
@@ -698,9 +735,6 @@ jobs:
             fi
           fi
 
-          # -----------------------------------------------------
-          # Resumen final
-          # -----------------------------------------------------
           section "Resumen final"
 
           echo "Tags procesados: ${#PROCESSED_TAGS[@]}"

@@ -62,17 +62,19 @@ class CronPromptInjectionBlocked(Exception):
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Three protected toolsets are always disabled in cron context:
+    Four protected toolsets are always disabled in cron context:
       - ``cronjob`` — would let a cron-spawned agent schedule more cron jobs
       - ``messaging`` — interactive, needs a live gateway session
       - ``clarify`` — interactive, blocks waiting for user input
+      - ``memory`` — cron agents are constructed with ``skip_memory=True``, so
+        exposing this tool only gives the model an unbacked tool that fails
 
     User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
     so per-job ``enabled_toolsets`` cannot bypass policy that applies to
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.yaml's denylist).
     """
-    disabled = ["cronjob", "messaging", "clarify"]
+    disabled = ["cronjob", "messaging", "clarify", "memory"]
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:

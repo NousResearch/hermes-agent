@@ -1091,8 +1091,35 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert set(kwargs["disabled_toolsets"]) >= {
-            "cronjob", "messaging", "clarify", "terminal", "file",
+            "cronjob", "messaging", "clarify", "memory", "terminal", "file",
         }
+
+    def test_run_job_disables_memory_even_when_per_job_enables_it(self, tmp_path):
+        """Cron runs pass skip_memory=True, so memory must not be exposed.
+
+        A cron job can request the memory tool through enabled_toolsets, but
+        there is no MemoryStore injected for cron agents. Keep memory in the
+        disabled set so AIAgent filters the unbacked tool out before the model
+        can call it and receive "Memory is not available" failures.
+        """
+        job = {
+            "id": "memory-toolset-job",
+            "name": "test",
+            "prompt": "remember what you learn",
+            "enabled_toolsets": ["memory", "file"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is True
+        assert kwargs["enabled_toolsets"] == ["memory", "file"]
+        assert "memory" in kwargs["disabled_toolsets"]
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now

@@ -23,7 +23,7 @@ export function desktopFsCacheKey() {
   return connectionCacheKey($connection.get())
 }
 
-function isRemoteMode() {
+export function isDesktopFsRemoteMode() {
   return $connection.get()?.mode === 'remote'
 }
 
@@ -41,7 +41,7 @@ function bridge() {
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
   const desktop = bridge()
-  if (!isRemoteMode()) {
+  if (!isDesktopFsRemoteMode()) {
     return desktop.readDir(path)
   }
   return desktop.api<HermesReadDirResult>({ path: fsPath('list', path) })
@@ -49,7 +49,7 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
 
 export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
   const desktop = bridge()
-  if (!isRemoteMode()) {
+  if (!isDesktopFsRemoteMode()) {
     return desktop.readFileText(path)
   }
   return desktop.api<HermesReadFileTextResult>({ path: fsPath('read-text', path) })
@@ -57,7 +57,7 @@ export async function readDesktopFileText(path: string): Promise<HermesReadFileT
 
 export async function readDesktopFileDataUrl(path: string): Promise<string> {
   const desktop = bridge()
-  if (!isRemoteMode()) {
+  if (!isDesktopFsRemoteMode()) {
     return desktop.readFileDataUrl(path)
   }
 
@@ -67,7 +67,7 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
 
 export async function desktopGitRoot(path: string): Promise<string | null> {
   const desktop = bridge()
-  if (!isRemoteMode()) {
+  if (!isDesktopFsRemoteMode()) {
     return desktop.gitRoot ? desktop.gitRoot(path) : null
   }
 
@@ -77,7 +77,7 @@ export async function desktopGitRoot(path: string): Promise<string | null> {
 
 export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {
   const desktop = bridge()
-  if (!isRemoteMode()) {
+  if (!isDesktopFsRemoteMode()) {
     return desktop.selectPaths(options)
   }
   return remotePicker ? remotePicker.selectPaths(options) : []

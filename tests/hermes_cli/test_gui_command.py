@@ -472,12 +472,26 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
     """First pack fails, purge clears the cache, second pack succeeds, launch."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    packaged_exe = root / "apps" / "desktop" / "release" / "linux-unpacked" / "hermes"
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    def run_side_effect(*args, **kwargs):
+        if run_side_effect.calls == 0:
+            run_side_effect.calls += 1
+            return pack_fail
+        if run_side_effect.calls == 1:
+            run_side_effect.calls += 1
+            packaged_exe.parent.mkdir(parents=True)
+            packaged_exe.write_text("", encoding="utf-8")
+            return pack_ok
+        return launch_ok
+
+    run_side_effect.calls = 0
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
@@ -485,7 +499,7 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail, pack_ok, launch_ok]) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=run_side_effect) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
@@ -502,7 +516,7 @@ def test_gui_does_not_retry_when_purge_finds_nothing(tmp_path, monkeypatch, caps
     """If the purge clears nothing, there's no point retrying — fail fast."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="linux")
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
@@ -517,6 +531,32 @@ def test_gui_does_not_retry_when_purge_finds_nothing(tmp_path, monkeypatch, caps
 
     assert exc.value.code == 1
     mock_purge.assert_called_once()
+    assert mock_run.call_count == 1
+    assert "Desktop GUI build failed" in capsys.readouterr().out
+
+
+def test_gui_does_not_purge_electron_cache_after_packaged_executable_exists(
+    tmp_path, monkeypatch, capsys
+):
+    """A build that leaves a packaged executable did not fail from the
+    missing-Electron-binary cache corruption this retry is meant to repair."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
+         patch("hermes_cli.main.subprocess.run", return_value=pack_fail) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    mock_purge.assert_not_called()
     assert mock_run.call_count == 1
     assert "Desktop GUI build failed" in capsys.readouterr().out
 

@@ -5203,20 +5203,14 @@ def cmd_gui(args: argparse.Namespace):
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-            if build_result.returncode != 0 and not source_mode:
-                # A corrupt cached Electron zip makes `pack` fail with an ENOENT
-                # on the final `electron` -> `Hermes` rename: unpack-electron
-                # extracted a partial tree (missing the 193 MB binary) from the
-                # bad zip. We do NOT try to prove the zip is corrupt ourselves —
-                # stdlib zipfile silently tolerates the prepended/concatenated
-                # junk that is the most common corruption (a partial download
-                # resumed into the same file), so a `testzip()` gate would pass
-                # and never self-heal. Instead, on any packaged-build failure we
-                # purge the version's cached zip + the half-written unpacked dir
-                # and retry once: @electron/get re-downloads with its own SHASUM
-                # verification, which is the real source of truth. If the
-                # failure was something else, the clean re-download is harmless
-                # and the retry fails the same way.
+            if (
+                build_result.returncode != 0
+                and not source_mode
+                and _desktop_packaged_executable(desktop_dir) is None
+            ):
+                # A missing packaged executable indicates the known corrupt
+                # Electron-cache failure. Late failures such as signing leave
+                # it in place and should not trigger a destructive retry.
                 purged = _purge_electron_build_cache(desktop_dir)
                 if purged:
                     print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")

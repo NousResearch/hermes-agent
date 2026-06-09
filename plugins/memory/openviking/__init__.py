@@ -29,8 +29,11 @@ import json
 import logging
 import mimetypes
 import os
+import queue
+import sqlite3
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -41,11 +44,22 @@ from urllib.request import url2pathname
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
+# Standalone session registry — zero-dependency module used by all
+# code paths (CLI, gateway, cron, batch) to track session lifecycle.
+from .registry import (
+    register_session as _register_session,
+    update_state as _update_registry_state,
+)
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
+
+# Cache and persistence limits
+_MAX_CACHED_MESSAGES = int(os.environ.get("OPENVIKING_CACHE_SIZE", "10000"))
+_RECOVERY_DIR = os.path.join(os.path.expanduser("~"), ".hermes", "openviking-recovery")
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -76,19 +90,101 @@ _last_active_provider: Optional["OpenVikingMemoryProvider"] = None
 
 
 def _atexit_commit_sessions():
-    """Fire on_session_end for the last active provider on process exit."""
+    """Fire on_session_end for the last active provider on process exit.
+
+    This is the LAST line of defence. The normal path is:
+    shutdown_memory_provider() → on_session_end() → commit.
+
+    If that path was taken and SUCCEEDED, the _commit_state is 2 and
+    _last_active_provider was cleared by shutdown(), so this is a no-op.
+
+    If that path was taken but FAILED, _commit_state is 3 and the
+    provider's _last_active_provider was cleared — we fall through to
+    the persistent recovery file check below.
+
+    If shutdown_memory_provider was NEVER called (SIGKILL recovery,
+    atexit-only exit), _last_active_provider is still set and we
+    attempt the commit directly.
+    """
     global _last_active_provider
     provider = _last_active_provider
-    if provider is None:
-        return
-    _last_active_provider = None
+
+    # Priority 1: Live provider with cached messages
+    if provider is not None:
+        # Set to None now so we don't retry — the _commit_state
+        # guard in on_session_end/force_commit prevents double-commit
+        _last_active_provider = None
+        try:
+            messages = list(getattr(provider, "_cached_messages", []))
+            if messages:
+                provider.on_session_end(messages)
+                return
+        except Exception:
+            pass  # fall through to recovery files
+
+    # Priority 2: Persistent recovery files
+    # Catches cases where shutdown() cleared _last_active_provider
+    # before the commit completed, or where the process died before
+    # any cleanup ran.
     try:
-        provider.on_session_end([])
+        marker_path = os.path.join(_RECOVERY_DIR, ".pending")
+        if os.path.exists(marker_path):
+            with open(marker_path) as f:
+                pending_sids = [line.strip() for line in f if line.strip()]
+            for sid in pending_sids:
+                snap_path = os.path.join(_RECOVERY_DIR, f"{sid}.json")
+                if os.path.exists(snap_path):
+                    try:
+                        with open(snap_path) as f:
+                            snap = json.load(f)
+                        msgs = snap.get("messages", [])
+                        if msgs:
+                            _atexit_force_commit(sid, msgs)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+def _atexit_force_commit(session_id: str, messages: list) -> None:
+    """Standalone OV commit for atexit — no provider dependency.
+
+    Creates its own HTTP client so it works even if the provider's
+    client was destroyed by shutdown(). Safe to call from any context.
+    """
+    if not messages or not session_id:
+        return
+    endpoint = os.environ.get("OPENVIKING_ENDPOINT", _DEFAULT_ENDPOINT)
+    api_key = os.environ.get("OPENVIKING_API_KEY", "")
+    try:
+        import httpx
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        with httpx.Client(timeout=15.0) as client:
+            for msg in messages[-2000:]:  # last 2000 in case of huge sessions
+                role = msg.get("role", "user")
+                content = (msg.get("content") or "")[:4000]
+                client.post(
+                    f"{endpoint}/api/v1/sessions/{session_id}/messages",
+                    json={"role": role, "content": content},
+                    headers=headers,
+                )
+            client.post(
+                f"{endpoint}/api/v1/sessions/{session_id}/commit",
+                headers=headers,
+            )
     except Exception:
         pass  # best-effort at shutdown time
 
 
 atexit.register(_atexit_commit_sessions)
+
+# Queue worker sentinel types — these are put on the message queue
+# to signal lifecycle events to the single daemon worker thread.
+_MSG = "msg"         # A conversation message: (sid, role, content)
+_FLUSH = "flush"     # Drain all pending messages before continuing
+_SHUTDOWN = "exit"   # Terminate the worker thread
 
 
 # ---------------------------------------------------------------------------
@@ -418,10 +514,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._api_key = ""
         self._session_id = ""
         self._turn_count = 0
-        self._sync_thread: Optional[threading.Thread] = None
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
+        # Message cache for atexit safety net — sync_turn() stores a copy
+        # here so _atexit_commit_sessions() has real data to commit even
+        # if the background sync thread never finished.
+        self._cached_messages: List[Dict[str, Any]] = []
+        # Queue-backed worker thread — replaces thread-per-turn pattern.
+        # sync_turn pushes messages onto the queue; a single daemon worker
+        # drains them and POSTs to OpenViking. Eliminates zombie threads
+        # from timeouts and guarantees in-order message delivery.
+        self._msg_queue: queue.Queue = queue.Queue(maxsize=0)
+        self._worker_thread: Optional[threading.Thread] = None
+        self._flush_event = threading.Event()
+        # Journal directory for local fallback when OpenViking is unreachable.
+        self._journal_dir: Optional[str] = None
+        # Commit state guard: 0=uncommitted, 1=committing, 2=committed,
+        # 3=failed. Prevents double-commit when both shutdown_memory_provider
+        # and the atexit handler call on_session_end().
+        self._commit_state = 0
 
     @property
     def name(self) -> str:
@@ -474,7 +586,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = os.environ.get("OPENVIKING_AGENT", "hermes")
         self._session_id = session_id
         self._turn_count = 0
-
+        self._cached_messages = []
+        self._commit_state = 0
+        self._update_state_db("CREATED")
+        # Register in the standalone session registry — this is the only
+        # place all code paths converge. The registry provides a process-
+        # independent audit trail for the finalizer.
+        _register_session(session_id, source="ov-plugin")
         try:
             self._client = _VikingClient(
                 self._endpoint, self._api_key,
@@ -483,6 +601,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if not self._client.health():
                 logger.warning("OpenViking server at %s is not reachable", self._endpoint)
                 self._client = None
+            else:
+                logger.info(
+                    "OpenViking client initialized for session %s at %s",
+                    session_id, self._endpoint,
+                )
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -566,65 +689,399 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Record the conversation turn in OpenViking's session (non-blocking)."""
+        """Record the conversation turn in OpenViking's session (non-blocking).
+
+        Pushes messages onto a single-worker queue instead of spawning a
+        thread per turn. The daemon worker drains the queue in order and
+        POSTs to OpenViking with up to 3 retries.
+        """
         if not self._client:
             return
 
         self._turn_count += 1
 
-        def _sync():
+        # Cache messages for atexit safety net immediately — always have
+        # the complete turn log regardless of worker thread state.
+        self._cached_messages.append({"role": "user", "content": user_content[:4000]})
+        self._cached_messages.append({"role": "assistant", "content": assistant_content[:4000]})
+        # Cap at 5000 message pairs to avoid unbounded memory growth
+        # in long-running gateway session with thousands of turns.
+        if len(self._cached_messages) > _MAX_CACHED_MESSAGES:
+            self._cached_messages = self._cached_messages[-(_MAX_CACHED_MESSAGES):]
+
+        # Queue the messages — capture session_id at enqueue time so the
+        # worker writes to the correct session even if on_session_switch
+        # is called before the worker processes this item.
+        sid = self._session_id
+        self._start_worker()
+        self._msg_queue.put((_MSG, sid, "user", user_content[:4000]))
+        self._msg_queue.put((_MSG, sid, "assistant", assistant_content[:4000]))
+        self._update_state_db("IN_SYNC")
+
+    def _start_worker(self) -> None:
+        """Start the daemon queue worker if it is not already running."""
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            self._worker_thread = threading.Thread(
+                target=self._queue_worker,
+                daemon=True,
+                name="openviking-queue-worker",
+            )
+            self._worker_thread.start()
+
+    def _queue_worker(self) -> None:
+        """Daemon worker: drain the message queue, POST to OpenViking with
+        retries, handle lifecycle sentinels.
+
+        Three sentinel types:
+          (_MSG, sid, role, content)  — POST a conversation message
+          (_FLUSH, "", "", "")         — signal the flush event then continue
+          (_SHUTDOWN, "", "", "")      — exit the loop
+
+        The worker is daemon=True so it does not prevent process exit.
+        If the worker dies (unhandled exception), the next sync_turn()
+        call restarts it via _start_worker().
+        """
+        while True:
             try:
-                client = _VikingClient(
-                    self._endpoint, self._api_key,
-                    account=self._account, user=self._user, agent=self._agent,
-                )
-                sid = self._session_id
+                item = self._msg_queue.get()
+            except Exception:
+                # Queue corrupted or interrupted — exit the loop.
+                break
 
-                # Add user message
-                client.post(f"/api/v1/sessions/{sid}/messages", {
-                    "role": "user",
-                    "content": user_content[:4000],  # trim very long messages
-                })
-                # Add assistant message
-                client.post(f"/api/v1/sessions/{sid}/messages", {
-                    "role": "assistant",
-                    "content": assistant_content[:4000],
-                })
+            try:
+                msg_type = item[0]
+
+                if msg_type == _SHUTDOWN:
+                    self._msg_queue.task_done()
+                    break
+
+                if msg_type == _FLUSH:
+                    self._flush_event.set()
+                    self._msg_queue.task_done()
+                    continue
+
+                if msg_type == _MSG:
+                    _sid, role, content = item[1], item[2], item[3]
+                    # Retry chain: up to 3 attempts with backoff
+                    last_error = None
+                    for attempt in range(3):
+                        try:
+                            client = _VikingClient(
+                                self._endpoint, self._api_key or "",
+                                account=self._account, user=self._user,
+                                agent=self._agent,
+                            )
+                            client.post(f"/api/v1/sessions/{_sid}/messages", {
+                                "role": role,
+                                "content": content[:4000],
+                            })
+                            last_error = None
+                            break
+                        except Exception as e:
+                            last_error = e
+                            if attempt < 2:
+                                time.sleep(1.0 + attempt)  # 1s, then 2s backoff
+
+                    if last_error is not None:
+                        logger.error(
+                            "OpenViking queue worker: failed to POST %s message for "
+                            "session %s after 3 retries: %s",
+                            role, _sid, last_error,
+                        )
+                        self._journal_message(_sid, role, content)
             except Exception as e:
-                logger.debug("OpenViking sync_turn failed: %s", e)
+                logger.error(
+                    "OpenViking queue worker: unhandled error processing %s: %s",
+                    item[0] if isinstance(item, tuple) else type(item).__name__, e,
+                )
+            finally:
+                try:
+                    self._msg_queue.task_done()
+                except Exception:
+                    pass
 
-        # Wait for any previous sync to finish before starting a new one
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
+    def _journal_message(self, session_id: str, role: str, content: str) -> None:
+        """Write a failed message to the local journal for later repair.
 
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="openviking-sync"
+        The journal file is a JSONL file at:
+          ~/.hermes/openviking-repair/<session_id>.jsonl
+
+        This feeds into the Phase 4 cron finalizer which discovers
+        uncommitted sessions and attempts recovery.
+        """
+        try:
+            repair_dir = os.path.join(
+                os.path.expanduser("~"), ".hermes", "openviking-repair",
+            )
+            os.makedirs(repair_dir, exist_ok=True)
+            journal_path = os.path.join(repair_dir, f"{session_id}.jsonl")
+            with open(journal_path, "a") as f:
+                f.write(json.dumps({
+                    "session_id": session_id,
+                    "role": role,
+                    "content": content[:4000],
+                }) + "\n")
+        except Exception:
+            pass  # best-effort, can't do much if journal write fails
+
+    def _write_repair_marker(self) -> None:
+        """Write a repair marker for sessions that failed to commit.
+
+        The Phase 4 cron finalizer discovers these markers and attempts
+        to recover the session using data from the Hermes session DB.
+        """
+        try:
+            repair_dir = os.path.join(
+                os.path.expanduser("~"), ".hermes", "openviking-repair",
+            )
+            os.makedirs(repair_dir, exist_ok=True)
+            marker_path = os.path.join(repair_dir, f"{self._session_id}.json")
+            with open(marker_path, "w") as f:
+                json.dump({
+                    "session_id": self._session_id,
+                    "cached_messages": self._cached_messages,
+                }, f)
+        except Exception:
+            pass
+
+    def _persist_snapshot(self) -> None:
+        """Persist session data to a crash-safe JSON file before shutdown.
+
+        This file survives process death (SIGKILL, crash) and is discovered
+        by the atexit handler and the background finalizer. Written atomically
+        via tmp + os.replace to prevent partial-write corruption.
+        """
+        try:
+            os.makedirs(_RECOVERY_DIR, exist_ok=True)
+            path = os.path.join(_RECOVERY_DIR, f"{self._session_id}.json")
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w") as f:
+                json.dump({
+                    "session_id": self._session_id,
+                    "messages": self._cached_messages,
+                    "turn_count": self._turn_count,
+                    "commit_state": self._commit_state,
+                    "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }, f)
+            os.replace(tmp_path, path)
+        except Exception:
+            pass  # best-effort
+
+    def _write_recovery_marker(self) -> None:
+        """Write a lightweight marker that the finalizer discovers quickly.
+
+        Appends the session_id to a .pending file that the finalizer
+        scans on each run. Avoids scanning the full recovery directory.
+        """
+        try:
+            os.makedirs(_RECOVERY_DIR, exist_ok=True)
+            marker_path = os.path.join(_RECOVERY_DIR, ".pending")
+            with open(marker_path, "a") as f:
+                f.write(f"{self._session_id}\n")
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # SQLite session state database — delegated to .registry module
+    # ------------------------------------------------------------------ #
+    # Uses the standalone registry.py which has zero agent dependencies
+    # and can be imported from any code path (cron, batch, gateway).
+    # The registry is the single source of truth for session lifecycle.
+    # ------------------------------------------------------------------ #
+
+    def _update_state_db(
+        self,
+        state: str,
+        turn_count: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Upsert the current session's state into the SQLite registry.
+
+        Args:
+            state: One of CREATED, IN_SYNC, FINALIZING, COMMITTED, FAILED.
+            turn_count: Current turn count (defaults to self._turn_count).
+            error: Optional error message for FAILED state.
+        """
+        sid = self._session_id
+        if not sid:
+            return
+        tc = turn_count if turn_count is not None else self._turn_count
+        _update_registry_state(
+            sid, state,
+            turn_count=tc,
+            messages=self._cached_messages,
+            error=error,
         )
-        self._sync_thread.start()
+
+    def force_commit(self, messages: List[Dict[str, Any]]) -> None:
+        """Synchronous fallback: create a fresh client, POST all messages, commit.
+
+        This is the breaker bar for known-session-end scenarios where the
+        background sync thread may still be running (or have timed out).
+        Creates its own ``_VikingClient`` so it does not depend on ``self._client``,
+        which may have been destroyed by a gateway crash or race with shutdown.
+
+        Used as a fallback by ``on_session_end()`` when the sync thread join
+        times out, and directly by ``_atexit_commit_sessions()``.
+        """
+        if not messages:
+            return
+        # Guard: prevent double-commit when both shutdown_memory_provider
+        # and the atexit handler fire (force_commit is the fallback path
+        # for on_session_end, so it should also respect the guard).
+        if self._commit_state >= 2:
+            return
+        self._commit_state = 1
+        self._update_state_db("FINALIZING", turn_count=len(messages) // 2)
+        endpoint = self._endpoint or _DEFAULT_ENDPOINT
+        api_key = self._api_key or ""
+        try:
+            client = _VikingClient(
+                endpoint, api_key,
+                account=self._account, user=self._user, agent=self._agent,
+            )
+            sid = self._session_id
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = (msg.get("content") or "")[:4000]
+                client.post(f"/api/v1/sessions/{sid}/messages", {
+                    "role": role,
+                    "content": content,
+                })
+            client.post(f"/api/v1/sessions/{sid}/commit")
+            self._commit_state = 2
+            self._update_state_db("COMMITTED")
+            logger.info(
+                "OpenViking force_commit completed for session %s (%d messages)",
+                sid, len(messages),
+            )
+        except Exception as e:
+            self._commit_state = 3
+            self._update_state_db("FAILED", error=str(e))
+            logger.error(
+                'OpenViking force_commit failed for session %s: %s',
+                self._session_id, e,
+            )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Commit the session to trigger memory extraction.
 
         OpenViking automatically extracts 6 categories of memories:
         profile, preferences, entities, events, cases, and patterns.
+
+        First flushes the queue worker so all pending messages are written
+        to OpenViking, then POSTs /commit. If the flush times out, falls
+        back to force_commit(cached_messages) — the synchronous breaker bar.
         """
         if not self._client:
             return
+        # Guard: prevent double-commit when both shutdown_memory_provider
+        # and the atexit handler fire.
+        if self._commit_state >= 2:
+            return
+        self._commit_state = 1
+        self._update_state_db("FINALIZING")
 
-        # Wait for any pending sync to finish first — do this before the
-        # turn_count check so the last turn's messages are flushed even if
-        # the count hasn't been incremented yet.
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=10.0)
+        # Flush the queue — wait for the worker to drain all pending messages
+        # before committing. Uses the flush sentinel + event pattern so the
+        # worker stays alive for future flushes.
+        flush_ok = self._flush_queue(timeout=15.0)
 
         if self._turn_count == 0:
+            # No sync_turn calls were made — check if the caller passed
+            # messages directly (e.g. from gateway _session_messages or
+            # CLI atexit cleanup). Use them as a fallback.
+            if messages:
+                logger.info(
+                    "OpenViking on_session_end: _turn_count=0 but caller passed %d messages — "
+                    "using force_commit fallback",
+                    len(messages),
+                )
+                self.force_commit(list(messages))
+                self._commit_state = 2
+                return
+            self._commit_state = 2
+            return
+
+        if not flush_ok:
+            # Queue flush timed out — the worker may be stuck or dead.
+            # Fall back to synchronous force_commit with the message cache,
+            # or the messages passed by the caller if the cache is empty.
+            source = list(self._cached_messages) if self._cached_messages else list(messages or [])
+            logger.warning(
+                "OpenViking on_session_end: queue flush timed out for session %s "
+                "— falling back to force_commit (%d msgs from %s)",
+                self._session_id, len(source),
+                "cache" if self._cached_messages else "caller messages",
+            )
+            if source:
+                self.force_commit(source)
+            else:
+                logger.warning(
+                    "OpenViking on_session_end: no messages available for session %s — "
+                    "cannot commit",
+                    self._session_id,
+                )
+                self._commit_state = 3
+                self._update_state_db("FAILED", error="no messages available")
             return
 
         try:
             self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
+            self._commit_state = 2
+            self._update_state_db("COMMITTED")
             logger.info("OpenViking session %s committed (%d turns)", self._session_id, self._turn_count)
         except Exception as e:
+            self._commit_state = 3
+            self._update_state_db("FAILED", error=str(e))
             logger.warning("OpenViking session commit failed: %s", e)
+            self._write_repair_marker()
+
+    def _flush_queue(self, timeout: float = 15.0) -> bool:
+        """Put a flush sentinel on the queue and wait for the worker to drain.
+
+        Returns True if the worker drained and set the flush event within
+        *timeout* seconds. Returns False if the flush timed out (worker
+        may be stuck or dead).
+        """
+        if not self._worker_thread or not self._worker_thread.is_alive():
+            # Worker not running — nothing to flush.
+            return True
+        self._flush_event.clear()
+        self._msg_queue.put((_FLUSH, "", "", ""))
+        return self._flush_event.wait(timeout=timeout)
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Update cached session state when the agent rotates session_id.
+
+        The base ``MemoryProvider.on_session_switch`` is a no-op, but we
+        cache ``_session_id`` and ``_turn_count`` in ``initialize()`` and
+        ``sync_turn()`` — if we don't refresh them here, all subsequent
+        writes and the final commit target the **original** session_id
+        instead of the new one.
+
+        Called on ``/new``, ``/reset``, ``/resume``, ``/branch``, context
+        compression — any path that rotates ``AIAgent.session_id`` without
+        tearing the provider down.
+        """
+        if not new_session_id:
+            return
+        self._session_id = new_session_id
+        if reset:
+            # Genuinely new conversation — reset the turn counter so
+            # ``on_session_end()`` starts fresh.  The previous session's
+            # commit was already triggered by ``commit_memory_session()``
+            # before this switch.
+            self._turn_count = 0
+            self._cached_messages = []
+            self._commit_state = 0
 
     def _build_memory_uri(self, subdir: str) -> str:
         """Build a viking:// memory URI under the configured user/agent/subdir."""
@@ -645,22 +1102,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
         uri = self._build_memory_uri(subdir)
 
-        def _write():
-            try:
-                client = _VikingClient(
-                    self._endpoint, self._api_key,
-                    account=self._account, user=self._user, agent=self._agent,
-                )
-                client.post("/api/v1/content/write", {
-                    "uri": uri,
-                    "content": content,
-                    "mode": "create",
-                })
-            except Exception as e:
-                logger.debug("OpenViking memory mirror failed: %s", e)
-
-        t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
-        t.start()
+        try:
+            client = _VikingClient(
+                self._endpoint, self._api_key,
+                account=self._account, user=self._user, agent=self._agent,
+            )
+            client.post("/api/v1/content/write", {
+                "uri": uri,
+                "content": content,
+                "mode": "create",
+            })
+        except Exception as e:
+            logger.debug("OpenViking memory mirror failed: %s", e)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
@@ -685,14 +1138,33 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return tool_error(str(e))
 
     def shutdown(self) -> None:
-        # Wait for background threads to finish
-        for t in (self._sync_thread, self._prefetch_thread):
-            if t and t.is_alive():
-                t.join(timeout=5.0)
-        # Clear atexit reference so it doesn't double-commit
+        # Phase 1: Persist snapshot to disk BEFORE clearing the atexit ref.
+        # This ensures recovery files exist even if the commit below fails.
+        if self._session_id and self._cached_messages:
+            self._persist_snapshot()
+        # Phase 2: Attempt synchronous force_commit as a last write.
+        # force_commit creates its own HTTP client and is independent
+        # of the worker thread. If this succeeds, the session is safe.
+        if self._commit_state < 2 and self._cached_messages:
+            try:
+                self.force_commit(list(self._cached_messages))
+            except Exception:
+                pass
+        # Phase 3: Shut down worker threads
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._msg_queue.put((_SHUTDOWN, "", "", ""))
+            self._worker_thread.join(timeout=5.0)
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=5.0)
+        # Phase 4: Clear atexit ref ONLY after everything above ran.
+        # The atexit handler will check persistent recovery files
+        # as a fallback if this commit failed.
         global _last_active_provider
         if _last_active_provider is self:
             _last_active_provider = None
+        # Phase 5: Write recovery marker for the finalizer
+        if self._commit_state < 2 and self._session_id:
+            self._write_recovery_marker()
 
     # -- Tool implementations ------------------------------------------------
 

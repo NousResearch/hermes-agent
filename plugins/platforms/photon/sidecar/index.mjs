@@ -85,6 +85,27 @@ const app = await Spectrum({
   providers: [imessage.config()],
 });
 
+// The spectrum-ts iMessage provider instance bound to this app. Exposes the
+// high-level actions we use: space()/user() resolution and read receipts.
+const provider = imessage(app);
+
+// Send read receipts for inbound messages we handle (so the human sees
+// Delivered → Read). On by default; set PHOTON_READ_RECEIPTS=false to disable.
+const SEND_READ_RECEIPTS =
+  (process.env.PHOTON_READ_RECEIPTS || "true").toLowerCase() !== "false";
+
+async function markRead(space, message) {
+  if (!SEND_READ_RECEIPTS || typeof provider.read !== "function") return;
+  try {
+    await provider.read(space, message);
+  } catch (e) {
+    // Best-effort — SMS/some services don't support read receipts.
+    console.error(
+      "photon-sidecar: read receipt failed: " + (e && e.message ? e.message : e)
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Inbound bridge (sidecar -> adapter).
 //
@@ -229,6 +250,8 @@ async function handleInbound(space, message) {
     console.error(`photon-sidecar: drop non-allowlisted sender ${from}`);
     return;
   }
+  // Fire-and-forget read receipt (handles its own errors); don't delay forward.
+  markRead(space, message);
   const content = message?.content || {};
 
   if (content.type === "attachment" && typeof content.stream === "function") {
@@ -364,8 +387,7 @@ async function resolveSpace(spaceId) {
   if (cached) return cached;
   const dm = spaceId.match(/;-;(\+\d+)/);
   if (dm) {
-    const im = imessage(app);
-    const space = await im.space(await im.user({ phone: dm[1] }));
+    const space = await provider.space(await provider.user({ phone: dm[1] }));
     spaceCache.set(spaceId, space);
     return space;
   }

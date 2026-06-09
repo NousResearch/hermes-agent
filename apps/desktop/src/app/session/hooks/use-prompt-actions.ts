@@ -25,11 +25,11 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
 import {
   $composerAttachments,
-  addComposerAttachment,
   clearComposerAttachments,
   type ComposerAttachment,
   setComposerAttachmentUploadState,
-  terminalContextBlocksFromDraft
+  terminalContextBlocksFromDraft,
+  updateComposerAttachment
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -310,6 +310,11 @@ export function usePromptActions({
     [selectedStoredSessionIdRef, updateSessionState]
   )
 
+  // In-flight drop-time eager uploads, keyed by attachment id. Submit joins
+  // these before re-uploading so a drop-then-immediately-Enter can't fire
+  // file.attach twice and stage duplicate copies on the gateway.
+  const eagerUploadInFlight = useRef<Map<string, Promise<void>>>(new Map())
+
   const syncAttachmentsForSubmit = useCallback(
     async (
       sessionId: string,
@@ -320,7 +325,21 @@ export function usePromptActions({
       const remote = $connection.get()?.mode === 'remote'
       const synced: ComposerAttachment[] = []
 
-      for (const attachment of attachments) {
+      for (const original of attachments) {
+        let attachment = original
+
+        // Join a drop-time eager upload still in flight for this attachment
+        // before deciding anything — otherwise submit and the eager task both
+        // call file.attach and stage duplicate files. After it settles, take the
+        // store's updated copy (its gateway ref, or its failure) over the stale
+        // pre-upload snapshot.
+        const inFlight = eagerUploadInFlight.current.get(attachment.id)
+
+        if (inFlight) {
+          await inFlight
+          attachment = $composerAttachments.get().find(item => item.id === attachment.id) ?? attachment
+        }
+
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
         // A drop-time eager upload may already have staged this one (matching
         // attachedSessionId) — don't re-upload it.
@@ -333,8 +352,9 @@ export function usePromptActions({
         if (attachment.kind === 'image' || attachment.kind === 'file') {
           const nextAttachment = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
 
+          // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
-            addComposerAttachment(nextAttachment)
+            updateComposerAttachment(nextAttachment)
           }
 
           synced.push(nextAttachment)
@@ -367,7 +387,9 @@ export function usePromptActions({
       setComposerAttachmentUploadState(attachment.id, 'uploading')
 
       try {
-        addComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+        // Update-only: if the user removed the chip while this was uploading,
+        // don't resurrect it — just drop the staged result on the floor.
+        updateComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
       } catch (err) {
         // Leave the chip in place so submit-time sync can retry (or the user can
         // remove it) and flag the card; also toast so a hard failure (unreadable
@@ -380,7 +402,6 @@ export function usePromptActions({
   )
 
   const composerAttachments = useStore($composerAttachments)
-  const eagerUploadInFlight = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -399,10 +420,11 @@ export function usePromptActions({
         continue
       }
 
-      eagerUploadInFlight.current.add(attachment.id)
-      void eagerlyUploadAttachment(activeSessionId, attachment).finally(() =>
+      const task = eagerlyUploadAttachment(activeSessionId, attachment).finally(() =>
         eagerUploadInFlight.current.delete(attachment.id)
       )
+
+      eagerUploadInFlight.current.set(attachment.id, task)
     }
   }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
 

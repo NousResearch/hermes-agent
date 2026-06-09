@@ -36,17 +36,7 @@ def safe_nested_get(data, *keys, default="未知"):
 
 def call_qwen_api_via_powershell(api_key, model, messages, max_tokens=2000, temperature=0.7):
     """
-    使用PowerShell调用Qwen API（备用方法，用于解决Python SSL库版本问题）
-    
-    Args:
-        api_key (str): API密钥
-        model (str): 模型名称
-        messages (list): 消息列表
-        max_tokens (int): 最大token数
-        temperature (float): 温度参数
-        
-    Returns:
-        dict: 统一包装格式 {"success": bool, "data": ..., "error": ...}
+    调用Qwen API
     """
     url = "https://ai-pool.evebattery.com/v1/chat/completions"
     payload = {
@@ -59,29 +49,40 @@ def call_qwen_api_via_powershell(api_key, model, messages, max_tokens=2000, temp
     import tempfile
     temp_file = None
     ps_script_file = None
+    result_file = None
     try:
         # 写入payload到临时文件
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=True)
             temp_file = f.name
         
-        # 构建PowerShell脚本（使用字符串拼接避免f-string大括号转义问题）
-        ps_script = (
-            "$headers = @{\n"
-            '    "Content-Type" = "application/json"\n'
-            '    "Authorization" = "Bearer ' + api_key + '"\n'
-            "}\n"
-            '$body = Get-Content -Path "' + temp_file + '" -Raw\n'
-            "try {\n"
-            '    $response = Invoke-WebRequest -Uri "' + url + '" -Method POST -Headers $headers -Body $body -TimeoutSec 120\n'
-            "    Write-Output $response.Content\n"
-            "} catch {\n"
-            "    Write-Error $_.Exception.Message\n"
-            "    exit 1\n"
-            "}\n"
-        )
+        # 构建PowerShell脚本 - 使用StreamReader从响应流中读取UTF-8内容
+        result_file = temp_file + ".result.json"
+        ps_lines = []
+        ps_lines.append('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8')
+        ps_lines.append('$headers = @{')
+        ps_lines.append('    "Content-Type" = "application/json; charset=utf-8"')
+        ps_lines.append('    "Authorization" = "Bearer ' + api_key + '"')
+        ps_lines.append('}')
+        ps_lines.append('$body = [System.IO.File]::ReadAllText("' + temp_file.replace('\\', '\\\\') + '", [System.Text.Encoding]::UTF8)')
+        ps_lines.append("try {")
+        ps_lines.append('    $response = Invoke-WebRequest -Uri "' + url + '" -Method POST -Headers $headers -Body $body -TimeoutSec 120')
+        ps_lines.append('    $stream = $response.RawContentStream')
+        ps_lines.append('    $stream.Position = 0')
+        ps_lines.append('    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)')
+        ps_lines.append('    $content = $reader.ReadToEnd()')
+        ps_lines.append('    $reader.Close()')
+        ps_lines.append('    $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)')
+        ps_lines.append('    [System.IO.File]::WriteAllBytes("' + result_file.replace('\\', '\\\\') + '", $bytes)')
+        ps_lines.append("    exit 0")
+        ps_lines.append("} catch {")
+        ps_lines.append("    Write-Error $_.Exception.Message")
+        ps_lines.append("    exit 1")
+        ps_lines.append("}")
+        ps_script = "\n".join(ps_lines)
         
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.ps1', delete=False, encoding='utf-8') as f:
+        # 用UTF-8 BOM写入ps1脚本
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.ps1', delete=False, encoding='utf-8-sig') as f:
             f.write(ps_script)
             ps_script_file = f.name
         
@@ -89,15 +90,26 @@ def call_qwen_api_via_powershell(api_key, model, messages, max_tokens=2000, temp
         result = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_script_file],
             capture_output=True,
-            text=True,
             timeout=180
         )
         
-        if result.returncode == 0:
-            response_data = json.loads(result.stdout)
-            return {"success": True, "data": response_data, "error": None}
+        if result.returncode == 0 and result_file and os.path.exists(result_file):
+            # 从文件读取结果
+            with open(result_file, 'rb') as f:
+                raw_bytes = f.read()
+            # 尝试多种编码解码
+            for encoding in ['utf-8-sig', 'utf-8', 'gbk', 'latin-1']:
+                try:
+                    text = raw_bytes.decode(encoding)
+                    response_data = json.loads(text)
+                    return {"success": True, "data": response_data, "error": None}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+            # 所有编码都失败
+            return {"success": False, "data": None, "error": f"无法解码响应内容"}
         else:
-            return {"success": False, "data": None, "error": f"PowerShell调用失败: {result.stderr}"}
+            stderr_text = result.stderr.decode('utf-8', errors='replace') if result.stderr else "未知错误"
+            return {"success": False, "data": None, "error": f"PowerShell调用失败: {stderr_text}"}
     except subprocess.TimeoutExpired:
         return {"success": False, "data": None, "error": "PowerShell调用超时"}
     except json.JSONDecodeError as e:

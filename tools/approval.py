@@ -330,6 +330,85 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+# =========================================================================
+# Self-host kill guard — block killing the process hosting this agent
+# =========================================================================
+# An agent session runs inside a host process: the desktop dashboard /
+# gateway (in-process tui_gateway), the CLI, or a launcher's child. A
+# terminal() kill aimed at that host can never complete usefully — the
+# turn dies mid-flight, the session is orphaned (blank indicator, failed
+# stop, session-not-found on the next prompt) and in-progress work is
+# lost. Reproduced 2026-06-09 when a session cleared "stale bytecode" by
+# killing its own dashboard PID. Restarts belong to the supervisor
+# (desktop app, launchd, `hermes gateway restart`), not the hosted agent.
+#
+# Static patterns can't express "our PID", so this is a function guard
+# like the sudo-stdin one: it extracts kill/pkill numeric targets and the
+# shell self-tokens ``$$`` / ``$PPID`` and compares against this process
+# and its parent. Process-group kills (negative PIDs) are intentionally
+# out of scope here — ``kill -1`` is already hardline-blocked above.
+
+_KILL_CMD_RE = re.compile(
+    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*kill\s+(?P<args>[^;&|`\n]*)',
+    re.IGNORECASE)
+_KILL_SELF_TOKEN_RE = re.compile(r'\$\$|\$\{?PPID\}?\b')
+
+
+def _self_host_pids() -> set:
+    """PIDs whose death takes this agent session down with them."""
+    pids = {os.getpid()}
+    try:
+        parent = os.getppid()
+        if parent > 1:
+            pids.add(parent)
+    except Exception:
+        pass
+    return pids
+
+
+def _check_self_host_kill(command: str) -> tuple:
+    """Detect kill commands aimed at this agent's own host process.
+
+    Returns:
+        (is_blocked: bool, description: str | None)
+    """
+    normalized = _normalize_command_for_detection(command)
+    self_token_hit = False
+    target_pids: set = set()
+    for match in _KILL_CMD_RE.finditer(normalized):
+        args = match.group("args") or ""
+        if _KILL_SELF_TOKEN_RE.search(args):
+            self_token_hit = True
+        for token in args.split():
+            if token.startswith("-"):
+                continue  # signal flags and negative pgids — out of scope
+            if token.isdigit():
+                target_pids.add(int(token))
+    if not self_token_hit and not target_pids:
+        return (False, None)
+    hits = sorted(target_pids & _self_host_pids())
+    if self_token_hit or hits:
+        which = ", ".join(str(p) for p in hits) if hits else "$$/$PPID"
+        return (True, f"kill targets this agent's own host process ({which})")
+    return (False, None)
+
+
+def _self_host_kill_block_result(description: str) -> dict:
+    """Build the standard block result for the self-host kill guard."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED: {description}. Killing the process that hosts this "
+            "agent session orphans the session mid-turn — the turn dies, "
+            "stop fails, and the next prompt returns session-not-found. "
+            "Restart the gateway from its supervisor instead (desktop "
+            "Gateway menu, `hermes gateway restart`, launchd), or run the "
+            "kill yourself in a terminal outside the agent."
+        ),
+    }
+
+
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
     return {
@@ -1251,6 +1330,16 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # == Self-host kill guard ==
+    # Unconditional like the hardline floor: killing the process hosting
+    # this very session can never complete usefully (the turn dies with
+    # its host), so no session-level setting may bypass it.
+    is_self_kill, self_kill_desc = _check_self_host_kill(command)
+    if is_self_kill:
+        logger.warning("Self-host kill guard block: %s (command: %s)",
+                       self_kill_desc, command[:200])
+        return _self_host_kill_block_result(self_kill_desc)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

@@ -640,26 +640,47 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
+        self._last_compress_aborted = False
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Clear per-session compaction state at a real session boundary.
+        """Clear all per-session compaction state at a real session boundary.
 
-        ``_previous_summary`` is per-session iterative-summary state. It is
-        cleared on ``on_session_reset()`` (/new, /reset), but session *end*
-        (CLI exit, gateway expiry, session-id rotation) goes through
-        ``on_session_end()`` instead — which inherited a no-op from
-        ``ContextEngine``. Without clearing here, a cron/background session's
-        summary could survive on a reused compressor instance and leak into the
-        next live session via the ``_generate_summary()`` iterative-update path
-        (#38788). ``compress()`` already guards the leak at the point of use;
-        this is defense-in-depth that drops the stale summary the moment the
-        owning session ends.
+        Session end (CLI exit, gateway expiry, session-id rotation) goes
+        through this method rather than ``on_session_reset()`` (/new, /reset).
+        The original fix (#38788) only cleared ``_previous_summary``, but the
+        same cross-session contamination risk applies to every per-session
+        variable that ``on_session_reset()`` clears: stale
+        ``_ineffective_compression_count`` can suppress compression in a
+        subsequent live session; ``_summary_failure_cooldown_until`` can block
+        summary generation; ``_last_compress_aborted`` can make callers think
+        compression is still aborted; ``_last_aux_model_failure_*`` can surface
+        stale error warnings; ``_last_summary_dropped_count`` /
+        ``_last_summary_fallback_used`` can produce misleading user warnings.
+
+        ``compress()`` already guards ``_previous_summary`` leakage at the
+        point of use; this is defense-in-depth that resets the full per-session
+        surface the moment the owning session ends.
         """
         self._previous_summary = None
+        self._last_summary_error = None
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
+        self._last_compression_savings_pct = 100.0
+        self._ineffective_compression_count = 0
+        self._summary_failure_cooldown_until = 0.0
+        self._last_compress_aborted = False
+        self._context_probed = False
+        self._context_probe_persistable = False
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""

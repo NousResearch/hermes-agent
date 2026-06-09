@@ -1825,6 +1825,11 @@ def _launch_tui(
     import tempfile
 
     env = os.environ.copy()
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+        apply_terminal_config_to_env(env=env)
+    except Exception:
+        logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
     active_session_fd, active_session_file = tempfile.mkstemp(
         prefix="hermes-tui-active-session-", suffix=".json"
     )
@@ -5221,12 +5226,31 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
+                # Still failing and the user hasn't pinned a mirror: GitHub's
+                # Electron release host is likely blocked/throttled (the repeating
+                # "retrying" download log). Retry once via npmmirror.com — the
+                # de-facto Electron community mirror (Alibaba). @electron/get
+                # SHASUM-checks the download, but the SHASUMS come from the same
+                # mirror, so that guards against a corrupt/partial download, NOT
+                # a compromised mirror: reaching for it is an explicit trust
+                # trade-off we only make AFTER the canonical GitHub download has
+                # failed, and we never override a user-pinned ELECTRON_MIRROR.
+                print("  ⚠ Desktop build still failing; the Electron download from "
+                      "GitHub looks blocked. Retrying once via a public mirror "
+                      "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
+                mirror_env = dict(env)
+                mirror_env["ELECTRON_MIRROR"] = "https://npmmirror.com/mirrors/electron/"
+                _stop_desktop_processes_locking_build(desktop_dir)
+                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
                     print("  running Hermes desktop window and retry.")
+                print("  If the log shows Electron download retries, rebuild via a mirror:")
+                print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
@@ -5805,6 +5829,16 @@ def _update_via_zip(args):
             print("  ✓ Skills are up to date")
     except Exception:
         pass
+
+    # Seed the model-catalog disk cache from the freshly-unpacked checkout
+    # (same rationale as the git-pull path in _cmd_update_impl). Non-fatal.
+    try:
+        from hermes_cli.model_catalog import seed_cache_from_checkout
+
+        if seed_cache_from_checkout(PROJECT_ROOT):
+            print("  ✓ Model catalog cache refreshed from checkout")
+    except Exception as e:
+        logger.debug("Model catalog seed during zip update failed: %s", e)
 
     print()
     print("✓ Update complete!")
@@ -8364,6 +8398,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Code updated!")
+
+        # Seed the model-catalog disk cache from the freshly-pulled checkout.
+        # The repo ships the canonical catalog at
+        # website/static/api/model-catalog.json, and `git pull` just made it
+        # current — so copy it straight over ~/.hermes/cache/model_catalog.json
+        # instead of waiting on a network fetch (which can be bot-gated or hit a
+        # Portal hiccup). Keeps the model picker's curated/free lists in sync
+        # with the version the user just installed. Non-fatal on failure: the
+        # normal network refresh still applies on the next picker open.
+        try:
+            from hermes_cli.model_catalog import seed_cache_from_checkout
+
+            if seed_cache_from_checkout(PROJECT_ROOT):
+                print("  ✓ Model catalog cache refreshed from checkout")
+        except Exception as e:
+            logger.debug("Model catalog seed during update failed: %s", e)
 
         # After git pull, source files on disk are newer than cached Python
         # modules in this process.  Reload hermes_constants so that any lazy

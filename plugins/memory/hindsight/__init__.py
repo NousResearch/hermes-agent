@@ -695,6 +695,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 subprocess.run(
                     [uv_path, "pip", "install", "--python", sys.executable, "--quiet", "--upgrade"] + deps_to_install,
                     check=True, timeout=120, capture_output=True,
+                    stdin=subprocess.DEVNULL,
                 )
                 print("  ✓ Dependencies up to date")
             except Exception as e:
@@ -1101,6 +1102,7 @@ class HindsightMemoryProvider(MemoryProvider):
                             [uv_path, "pip", "install", "--python", sys.executable,
                              "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
                             check=True, timeout=120, capture_output=True,
+                            stdin=subprocess.DEVNULL,
                         )
                         logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
                     except Exception as e:

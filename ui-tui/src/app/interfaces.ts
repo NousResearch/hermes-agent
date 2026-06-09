@@ -93,6 +93,7 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
+  pluginsHub: boolean
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean

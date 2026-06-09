@@ -688,7 +688,18 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # ordinary outputs. Only tools that intentionally create deliverable media
 # artifacts should be eligible for automatic append when the model omits them
 # from the final gateway reply.
-_AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool"}
+_AUTO_APPEND_MEDIA_TOOL_NAMES = {
+    "text_to_speech",
+    "text_to_speech_tool",
+    "image_generate",
+}
+
+# Tools in this set return their deliverable artifact as a JSON payload with a
+# local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
+# returns ``{"success": true, "image": "/abs/path.png"}``). The auto-append path
+# extracts the path from these fields so delivery is deterministic and does not
+# depend on the model restating the path in its final reply.
+_JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
 
 
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
@@ -755,10 +766,28 @@ def _collect_auto_append_media_tags(
         if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
             continue
         content = str(msg.get("content") or "")
+        tool_name = tool_name_by_call_id.get(call_id)
+        # JSON-payload tools (image_generate) return a local-file path in a
+        # known field rather than a MEDIA: tag. Extract it so delivery is
+        # deterministic even when the model omits the path from its reply.
+        if tool_name == "image_generate" and "MEDIA:" not in content:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
+                    path = payload.get(field)
+                    if (isinstance(path, str)
+                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
+                            and path not in history_media_paths):
+                        media_tags.append(f"MEDIA:{path}")
+                        break
+            continue
         if "MEDIA:" not in content:
             continue
         for match in _TOOL_MEDIA_RE.finditer(content):
-            path = match.group(1).strip().rstrip('\",}')
+            path = match.group(1).strip().rstrip('",}')
             if path and path not in history_media_paths:
                 media_tags.append(f"MEDIA:{path}")
         if "[[audio_as_voice]]" in content:
@@ -12971,9 +13000,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
+
+            # Markdown-capable platforms render a terminal command as a fenced
+            # code block instead of the compact `terminal: "cmd…"` preview.
+            # Gated on the adapter's ``supports_code_blocks`` capability so
+            # plain-text platforms keep the short line.  No language tag is
+            # emitted — Slack mrkdwn renders the tag as a literal first code
+            # line ("bash"), and a bare fence renders correctly everywhere
+            # that supports blocks.
+            #
+            # Verbose mode shows the FULL command.  Non-verbose ("all"/"new")
+            # modes still wrap in a fence but truncate to a single line capped
+            # at ``tool_preview_length`` (default 40) so a long or multi-line
+            # command doesn't render as a huge block — matching the budget the
+            # non-terminal preview path already applies (#42634).
+            _code_block_full = None
+            _code_block_short = None
+            try:
+                _progress_adapter = self.adapters.get(source.platform)
+            except Exception:
+                _progress_adapter = None
+            if (
+                getattr(_progress_adapter, "supports_code_blocks", False)
+                and tool_name == "terminal"
+                and isinstance(args, dict)
+                and isinstance(args.get("command"), str)
+                and args["command"].strip()
+            ):
+                from agent.display import get_tool_preview_max_len
+                _cmd_full = args["command"].rstrip()
+                _code_block_full = f"{emoji} {tool_name}\n```\n{_cmd_full}\n```"
+                # Single-line, capped preview for non-verbose modes.
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 40
+                _lines = _cmd_full.splitlines()
+                _cmd_short = _lines[0] if _lines else _cmd_full
+                _multiline = len(_lines) > 1
+                if len(_cmd_short) > _cap:
+                    _cmd_short = _cmd_short[:_cap - 3] + "..."
+                elif _multiline:
+                    _cmd_short = _cmd_short + " ..."
+                _code_block_short = f"{emoji} {tool_name}\n```\n{_cmd_short}\n```"
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
+                if _code_block_full is not None:
+                    progress_queue.put(_code_block_full)
+                    return
                 if args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
@@ -12994,7 +13067,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
-            if preview:
+            # Terminal commands on markdown platforms get a single-line capped
+            # fenced block (built above) instead of the truncated preview.
+            if _code_block_short is not None:
+                msg = _code_block_short
+            elif preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40

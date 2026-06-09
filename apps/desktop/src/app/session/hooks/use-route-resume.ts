@@ -56,13 +56,19 @@ export function useRouteResume({
   startFreshSessionDraft
 }: RouteResumeOptions) {
   const lastPathnameRef = useRef<string | null>(null)
+  const seenGatewayStateRef = useRef(false)
   const wasGatewayOpenRef = useRef(false)
 
   useEffect(() => {
     const gatewayOpen = gatewayState === 'open'
     const pathnameChanged = lastPathnameRef.current !== locationPathname
-    const gatewayBecameOpen = !wasGatewayOpenRef.current && gatewayOpen
+    // Fire only on a genuine closed->open transition (a reconnect). seenGatewayStateRef
+    // stays false until the first effect run, so a session that mounts with the gateway
+    // already open is not mistaken for "became open" and does not double-resume with the
+    // pathname-driven initial resume below.
+    const gatewayBecameOpen = seenGatewayStateRef.current && !wasGatewayOpenRef.current && gatewayOpen
     lastPathnameRef.current = locationPathname
+    seenGatewayStateRef.current = true
     wasGatewayOpenRef.current = gatewayOpen
 
     if (currentView !== 'chat' || !gatewayOpen) {
@@ -77,12 +83,33 @@ export function useRouteResume({
         Boolean(cachedRuntime) &&
         cachedRuntime === activeSessionIdRef.current
 
-      // Resume only when the route meaningfully changed (or gateway just opened).
-      // This avoids a transient /:sid re-resume during "new chat" state clears
-      // before the pathname updates from /:sid -> /.
-      const shouldResume = pathnameChanged || gatewayBecameOpen
+      // Self-heal a desynced view: the route points at a session that isn't the
+      // loaded one. A create/stream race can leave selected/active null while
+      // the route stays on /:sid (symptom: brand-new chat shows "Thinking" then
+      // an empty transcript even though the turn completed and persisted). The
+      // pathname didn't change, so the normal gate would skip and the view stays
+      // stuck empty forever. selectedStoredSessionIdRef is set synchronously at
+      // resume entry, so this can't loop; the resume's cached fast-path restores
+      // the already-streamed messages without a refetch.
+      //
+      // Crucially this must NOT fire during a /:sid -> /new transition, where
+      // startFreshSessionDraft nulls selected/active one render before the
+      // pathname flips to / (same null+/:sid signature). freshDraftReady is the
+      // discriminator: it's true while heading into a blank new chat, false when
+      // genuinely stranded on a routed session.
+      const stuckOnRoutedSession = routedSessionId !== selectedStoredSessionIdRef.current && !freshDraftReady
 
-      if (!alreadyActive && shouldResume && !creatingSessionRef.current) {
+      // Resume when the route meaningfully changed, the gateway just opened, or
+      // we're stranded on a routed session that never loaded. The first two
+      // guard against a transient /:sid re-resume during "new chat" state clears
+      // before the pathname updates from /:sid -> /.
+      const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
+
+      // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
+      // `alreadyActive`: the cached runtime id can be stale once the gateway
+      // rebinds/reaps the session on its side, and trusting it strands Desktop on
+      // a dead id ("session not found"). Otherwise keep skipping when already active.
+      if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
         void resumeSession(routedSessionId, true)
       }
 

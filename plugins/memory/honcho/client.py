@@ -628,6 +628,7 @@ class HonchoClientConfig:
             root = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
                 capture_output=True, text=True, cwd=cwd, timeout=5,
+                stdin=subprocess.DEVNULL,
             )
             if root.returncode == 0:
                 return Path(root.stdout.strip()).name

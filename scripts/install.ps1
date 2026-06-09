@@ -1725,7 +1725,7 @@ function Write-BootstrapMarker {
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
-    # Create ~/.hermes directory structure
+    # Create the HERMES_HOME directory structure ($HermesHome, default %LOCALAPPDATA%\hermes)
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
@@ -1743,13 +1743,13 @@ function Copy-ConfigTemplates {
         $examplePath = "$InstallDir\.env.example"
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $envPath
-            Write-Success "Created ~/.hermes/.env from template"
+            Write-Success "Created $envPath from template"
         } else {
             New-Item -ItemType File -Force -Path $envPath | Out-Null
-            Write-Success "Created ~/.hermes/.env"
+            Write-Success "Created $envPath"
         }
     } else {
-        Write-Info "~/.hermes/.env already exists, keeping it"
+        Write-Info "$envPath already exists, keeping it"
     }
     
     # Create config.yaml
@@ -1758,10 +1758,10 @@ function Copy-ConfigTemplates {
         $examplePath = "$InstallDir\cli-config.yaml.example"
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $configPath
-            Write-Success "Created ~/.hermes/config.yaml from template"
+            Write-Success "Created $configPath from template"
         }
     } else {
-        Write-Info "~/.hermes/config.yaml already exists, keeping it"
+        Write-Info "$configPath already exists, keeping it"
     }
     
     # Create SOUL.md if it doesn't exist (global persona file).
@@ -1794,25 +1794,25 @@ Delete the contents (or this file) to use the default personality.
 "@
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
-        Write-Success "Created ~/.hermes/SOUL.md (edit to customize personality)"
+        Write-Success "Created $soulPath (edit to customize personality)"
     }
     
-    Write-Success "Configuration directory ready: ~/.hermes/"
+    Write-Success "Configuration directory ready: $HermesHome"
     
-    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    Write-Info "Syncing bundled skills to ~/.hermes/skills/ ..."
+    # Seed bundled skills into $HermesHome\skills (manifest-based, one-time per skill)
+    Write-Info "Syncing bundled skills to $HermesHome\skills ..."
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
             & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
-            Write-Success "Skills synced to ~/.hermes/skills/"
+            Write-Success "Skills synced to $HermesHome\skills"
         } catch {
             # Fallback: simple directory copy
             $bundledSkills = "$InstallDir\skills"
             $userSkills = "$HermesHome\skills"
             if ((Test-Path $bundledSkills) -and -not (Get-ChildItem $userSkills -Exclude '.bundled_manifest' -ErrorAction SilentlyContinue)) {
                 Copy-Item -Path "$bundledSkills\*" -Destination $userSkills -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Success "Skills copied to ~/.hermes/skills/"
+                Write-Success "Skills copied to $HermesHome\skills"
             }
         }
     }
@@ -2247,6 +2247,24 @@ function Install-Desktop {
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
             }
+        }
+        # Still failing and the user hasn't pinned their own mirror: GitHub's
+        # Electron release host is likely blocked/throttled (the repeating
+        # "retrying" log). Retry once via npmmirror.com — the de-facto Electron
+        # community mirror (Alibaba). @electron/get SHASUM-checks the download,
+        # but the SHASUMS come from the same mirror, so that guards against a
+        # corrupt/partial download, NOT a compromised mirror: an explicit trust
+        # trade-off we only make AFTER the canonical GitHub download has failed,
+        # and we never override a user-pinned ELECTRON_MIRROR.
+        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+            $prevMirror = $env:ELECTRON_MIRROR
+            $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+            Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
+            Write-Warn "Retrying once via a public Electron mirror ($($env:ELECTRON_MIRROR)):"
+            Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+            & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+            $code = $LASTEXITCODE
+            $env:ELECTRON_MIRROR = $prevMirror
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {

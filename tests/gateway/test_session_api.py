@@ -76,6 +76,54 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
+    """API-server request sessions should reach tools and terminal subprocess env."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
+    observed = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            from gateway.session_context import get_session_env
+            from tools.environments.local import _make_run_env
+
+            observed["task_id"] = task_id
+            observed["context_session_id"] = get_session_env("HERMES_SESSION_ID")
+            observed["context_platform"] = get_session_env("HERMES_SESSION_PLATFORM")
+            observed["context_session_key"] = get_session_env("HERMES_SESSION_KEY")
+            observed["child_session_id"] = _make_run_env({}).get("HERMES_SESSION_ID")
+            return {"final_response": "ok"}
+
+    def fake_create_agent(**kwargs):
+        return FakeAgent(kwargs["session_id"])
+
+    monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+
+    result, usage = await adapter._run_agent(
+        user_message="hello",
+        conversation_history=[],
+        session_id="request-session",
+        gateway_session_key="request-key",
+    )
+
+    assert result["session_id"] == "request-session"
+    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert observed == {
+        "task_id": "request-session",
+        "context_session_id": "request-session",
+        "context_platform": "api_server",
+        "context_session_key": "request-key",
+        "child_session_id": "request-session",
+    }
+
+
+@pytest.mark.asyncio
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:

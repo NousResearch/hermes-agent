@@ -46,4 +46,23 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    # Kanban plugin routes — public at the gateway layer so our plugin's
+    # origin-aware bearer auth (_require_bearer_if_remote) handles
+    # non-localhost callers. Localhost keeps existing no-auth UX.
+    "/api/plugins/kanban/board",
+    "/api/plugins/kanban/tasks",
+    "/api/plugins/kanban/tasks/",
+    "/api/plugins/kanban/links",
+    "/api/plugins/kanban/links/",
+    "/api/plugins/kanban/boards",
+    "/api/plugins/kanban/boards/",
+    "/api/plugins/kanban/profiles",
+    "/api/plugins/kanban/profiles/",
+    "/api/plugins/kanban/orchestration",
+    "/api/plugins/kanban/diagnostics",
+    "/api/plugins/kanban/config",
+    "/api/plugins/kanban/assignees",
+    "/api/plugins/kanban/stats",
+    "/api/plugins/kanban/dispatch",
+    "/api/plugins/kanban/events",
 })

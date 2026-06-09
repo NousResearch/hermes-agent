@@ -860,6 +860,62 @@ def test_logout_clears_stale_active_codex_without_provider_credentials(tmp_path,
     assert "provider: auto" in config_text
 
 
+def test_logout_defaults_to_configured_qwen_oauth_when_no_active_provider(tmp_path, monkeypatch, capsys):
+    """Bare `hermes logout` should target configured Qwen OAuth if auth has no active provider.
+
+    Selecting Qwen OAuth via `hermes model` sets model.provider without writing
+    auth.json.active_provider (its tokens live in the Qwen CLI credential file),
+    so logout must fall back to the config provider to reset the agent model.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: qwen3-coder-plus\n"
+        "  provider: qwen-oauth\n"
+        "  base_url: https://portal.qwen.ai/v1\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of Qwen OAuth." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
+def test_logout_defaults_to_configured_gemini_cli_when_no_active_provider(tmp_path, monkeypatch, capsys):
+    """Bare `hermes logout` should target configured Google Gemini OAuth if auth has no active provider.
+
+    Selecting Gemini OAuth via `hermes model` sets model.provider without writing
+    auth.json.active_provider (its tokens live in the Google OAuth store), so
+    logout must fall back to the config provider to reset the agent model.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gemini-3-flash-preview\n"
+        "  provider: google-gemini-cli\n"
+        "  base_url: cloudcode-pa://google\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of Google Gemini (OAuth)." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
 def test_reset_config_provider_uses_atomic_yaml_write(tmp_path, monkeypatch):
     """Logout config reset should delegate the YAML write atomically."""
     hermes_home = tmp_path / "hermes"

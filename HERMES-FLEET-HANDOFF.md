@@ -43,18 +43,35 @@ provisioning (by hand) is proven; self-serve (HTTP) is the next build.
   cont-init.d/02-reconcile-profiles (-> hermes_cli/container_boot.py) auto-restarts
   profiles whose last recorded state was "running". This is why bots survive redeploys.
 
-## Per-customer provisioning (concierge — proven by hand)
+## Per-customer provisioning (concierge — PROVEN, pilot-1 live)
 Script: /opt/hermes/provision-in-container.sh (in the image). Refuses to run unless
-$RAILWAY_ENVIRONMENT is set (can never touch a local Hermes). Run in the Railway Shell:
+$RAILWAY_ENVIRONMENT is set (can never touch a local Hermes).
 
-    SLUG=<slug> TELEGRAM_BOT_TOKEN=<...> TELEGRAM_USER_ID=<numeric> \
-    AVOCADO_MCP_KEY=<sk_avo_...> OPENROUTER_API_KEY=<sk-or-...capped> \
-    sh /opt/hermes/provision-in-container.sh
+HOW TO GET A SHELL INSIDE THE RUNNING CONTAINER (this is the part the Railway docs
+make confusing): use the Railway CLI's `railway ssh`, NOT a Railway Function (fresh
+Bun container — no image, no script), NOT the Railway chat-agent sandbox, NOT your
+laptop. `railway ssh` opens a session inside the live deployment where the script
+exists and $RAILWAY_ENVIRONMENT is set:
 
-It: creates the profile, writes config.yaml (Avocado MCP scoped to the customer's
-key, manual approvals, cron deny, safe toolset: image_gen/vision/tts/web/memory/
-session_search/messaging/clarify/todo), writes .env (OpenRouter key + bot token +
-TELEGRAM_ALLOWED_USERS allowlist), and starts the supervised gateway. Idempotent.
+    railway ssh --project <PROJECT_ID> --service hermes-agent-avocado \
+      --environment production \
+      'SLUG=<slug> TELEGRAM_BOT_TOKEN=<...> TELEGRAM_USER_ID=<numeric> \
+       AVOCADO_MCP_KEY=<avk_...> OPENROUTER_API_KEY=<sk-or-...capped> \
+       sh /opt/hermes/provision-in-container.sh'
+
+GOTCHA — `railway ssh` lands you as ROOT, not the hermes user. The script writes
+config.yaml + .env, and (as of the chown patch) chowns them to hermes:hermes so the
+supervised gateway (UID 10000) can read them. Without that chown you get
+`PermissionError: /opt/data/profiles/<slug>/.env` at gateway start. If you ever see
+that on an older script, fix with:
+    railway ssh ... 'chown -R hermes:hermes /opt/data/profiles/<slug> && hermes -p <slug> gateway start'
+
+What the script does: creates the profile, writes config.yaml (Avocado MCP scoped to
+the customer's key, manual approvals, cron deny, safe toolset: image_gen/vision/tts/
+web/memory/session_search/messaging/clarify/todo), writes .env (OpenRouter key + bot
+token + TELEGRAM_ALLOWED_USERS allowlist), chowns to hermes, and starts the gateway.
+Idempotent. On success the gateway registers a dynamic s6 service slot at
+/run/service/gateway-<slug>, so it's supervised and survives container restarts.
 
 ## Validation checklist (Part C)
 1. Bot replies on Telegram from the customer's account.

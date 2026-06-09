@@ -86,6 +86,16 @@ AUTO_UPDATE=false
 ENV
 chmod 600 "$PROFILE_DIR/.env"
 
+# When this script runs as root (e.g. via `railway ssh`, which lands you in the
+# container as root rather than the `hermes` runtime user), the config.yaml and
+# .env we just wrote are root-owned. The supervised gateway runs as the hermes
+# user (UID 10000) and would hit `PermissionError: .../.env` on startup. Chown
+# the files we created to the hermes user so the gateway can read them.
+if [ "$(id -u)" = 0 ] && id hermes >/dev/null 2>&1; then
+  echo "→ chowning profile config to hermes user (script ran as root)"
+  chown hermes:hermes "$PROFILE_DIR/config.yaml" "$PROFILE_DIR/.env"
+fi
+
 echo "→ starting this profile's gateway (the bot goes live)"
 hermes -p "$SLUG" gateway stop 2>/dev/null || true
 hermes -p "$SLUG" gateway start

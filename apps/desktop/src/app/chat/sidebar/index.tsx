@@ -93,6 +93,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -508,6 +509,11 @@ export function ChatSidebar({
     [agentSessions, s.noWorkspace, workspaceOrderIds]
   )
 
+  const visibleMessagingSessions = useMemo(
+    () => filterSessionsByProfileScope(messagingSessions, profileScope, showAllProfiles),
+    [messagingSessions, profileScope, showAllProfiles]
+  )
+
   const loadMoreForProfileGroup = useCallback(
     (profile: string) => {
       if (!onLoadMoreProfileSessions) {
@@ -543,13 +549,13 @@ export function ChatSidebar({
   // within a platform by recency. Per-platform totals (when a "load more" has
   // resolved them) drive the count + whether more remain on disk.
   const messagingGroups = useMemo<MessagingSection[]>(() => {
-    if (!messagingSessions.length) {
+    if (!visibleMessagingSessions.length) {
       return []
     }
 
     const bySource = new Map<string, SessionInfo[]>()
 
-    for (const session of messagingSessions) {
+    for (const session of visibleMessagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
@@ -579,7 +585,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

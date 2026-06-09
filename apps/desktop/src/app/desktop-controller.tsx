@@ -50,9 +50,9 @@ import {
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
-  $messagingSessions,
   $workingSessionIds,
   CRON_SECTION_LIMIT,
   getRecentlySettledSessionIds,
@@ -305,8 +305,12 @@ export function DesktopController() {
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    setMessagingPlatformTotals({})
+
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
 
@@ -321,20 +325,33 @@ export function DesktopController() {
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
-    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
+    const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+    const inProfileScope = (s: SessionInfo) =>
+      sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
+
+    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfileScope(s)
+
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
-      source: platform
-    })
+    const result = await listAllProfileSessions(
+      loaded + SIDEBAR_SESSIONS_PAGE_SIZE,
+      1,
+      'exclude',
+      'recent',
+      sessionProfile,
+      {
+        source: platform
+      }
+    )
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+    const incoming = result.sessions.filter(inPlatform)
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -343,7 +360,7 @@ export function DesktopController() {
 
     const total = result.total ?? incoming.length
     setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+  }, [profileScope])
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right

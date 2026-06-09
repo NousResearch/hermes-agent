@@ -1753,3 +1753,55 @@ class TestLaunchdPlistRespawnGovernance:
         assert "<key>ThrottleInterval</key>" in plist
         assert "<key>ExitTimeOut</key>" in plist
         assert "<key>KeepAlive</key>" in plist
+
+
+class TestPermissionErrorOnLockFile:
+    """Stale root-owned lock files from launchd Background sessions must not
+    crash the gateway on restart (issue #42685)."""
+
+    def test_permission_error_on_lock_file_returns_false_and_removes(self, tmp_path, monkeypatch):
+        """When the lock file is not writable (root-owned), the function should
+        remove the stale file and report the lock as inactive."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("stale", encoding="utf-8")
+
+        real_open = open
+
+        def deny_write(path, *args, **kwargs):
+            if str(path) == str(lock_path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_write)
+
+        result = status.is_gateway_runtime_lock_active(lock_path)
+        assert result is False
+        assert not lock_path.exists(), "stale root-owned lock file should be removed"
+
+    def test_permission_error_unlink_failure_still_returns_false(self, tmp_path, monkeypatch):
+        """Even if unlinking the stale lock file fails (e.g. directory not writable),
+        the function should still return False to allow startup."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("stale", encoding="utf-8")
+
+        real_open = open
+
+        def deny_write(path, *args, **kwargs):
+            if str(path) == str(lock_path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        real_unlink = Path.unlink
+
+        def deny_unlink(self, *args, **kwargs):
+            if str(self) == str(lock_path):
+                raise OSError(13, "Permission denied", str(self))
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_write)
+        monkeypatch.setattr(Path, "unlink", deny_unlink)
+
+        result = status.is_gateway_runtime_lock_active(lock_path)
+        assert result is False

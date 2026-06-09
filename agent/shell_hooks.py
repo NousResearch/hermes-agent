@@ -476,6 +476,7 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
+        "parent_session_id": kwargs.get("parent_session_id"),
         "cwd": cwd,
         "extra": extras,
     }

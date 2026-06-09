@@ -160,6 +160,24 @@ class TestSerializePayload:
         )
         payload = json.loads(raw)
         assert payload["session_id"] == "p-1"
+        assert payload["parent_session_id"] == "p-1"
+
+    def test_parent_session_id_exposed_alongside_session_id(self):
+        raw = shell_hooks._serialize_payload(
+            "subagent_stop",
+            {"session_id": "new-s", "parent_session_id": "old-s"},
+        )
+        payload = json.loads(raw)
+        assert payload["session_id"] == "new-s"
+        assert payload["parent_session_id"] == "old-s"
+
+    def test_parent_session_id_null_when_absent(self):
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call", {"session_id": "s-1"},
+        )
+        payload = json.loads(raw)
+        assert payload["session_id"] == "s-1"
+        assert payload["parent_session_id"] is None
 
     def test_unserialisable_extras_stringified(self):
         class Weird:

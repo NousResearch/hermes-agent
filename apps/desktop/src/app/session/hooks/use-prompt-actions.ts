@@ -1,5 +1,6 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { type MutableRefObject, useCallback } from 'react'
+import { useStore } from '@nanostores/react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
@@ -27,6 +28,7 @@ import {
   addComposerAttachment,
   clearComposerAttachments,
   type ComposerAttachment,
+  setComposerAttachmentUploadState,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
@@ -116,6 +118,87 @@ async function readFileDataUrlForAttach(filePath: string): Promise<string | null
   const dataUrl = await reader(filePath)
 
   return dataUrl || null
+}
+
+type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+/**
+ * Stage one file/image attachment into the session workspace and return the
+ * attachment rewritten with the gateway-side ref. Images upload their bytes in
+ * remote mode (so vision works) and pass the path locally; non-image files
+ * upload bytes remotely and pass the path locally. Throws on failure so callers
+ * can surface an error. Shared by submit-time sync, the eager drop-time upload,
+ * and the message-edit composer drop — keep them in lockstep.
+ */
+export async function uploadComposerAttachment(
+  attachment: ComposerAttachment,
+  opts: { remote: boolean; requestGateway: GatewayRequest; sessionId: string }
+): Promise<ComposerAttachment> {
+  const { remote, requestGateway, sessionId } = opts
+  const path = attachment.path ?? ''
+  const label = attachment.label || pathLabel(path)
+
+  if (attachment.kind === 'image') {
+    let result: ImageAttachResponse
+
+    if (remote) {
+      const payload = await readImageForRemoteAttach(path)
+
+      if (!payload) {
+        throw new Error(`Could not read ${label}`)
+      }
+
+      result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+        session_id: sessionId,
+        content_base64: payload.contentBase64,
+        filename: payload.filename
+      })
+    } else {
+      result = await requestGateway<ImageAttachResponse>('image.attach', {
+        path,
+        session_id: sessionId
+      })
+    }
+
+    if (!result.attached) {
+      throw new Error(result.message || `Could not attach ${label}`)
+    }
+
+    const attachedPath = result.path || path
+
+    return {
+      ...attachment,
+      attachedSessionId: sessionId,
+      label: attachedPath ? pathLabel(attachedPath) : attachment.label,
+      path: attachedPath,
+      uploadState: undefined
+    }
+  }
+
+  // Non-image file.
+  const dataUrl = remote ? await readFileDataUrlForAttach(path) : null
+
+  if (remote && !dataUrl) {
+    throw new Error(`Could not read ${label}`)
+  }
+
+  const result = await requestGateway<FileAttachResponse>('file.attach', {
+    name: label,
+    path,
+    session_id: sessionId,
+    ...(dataUrl ? { data_url: dataUrl } : {})
+  })
+
+  if (!result.attached || !result.ref_text) {
+    throw new Error(result.message || `Could not attach ${label}`)
+  }
+
+  return {
+    ...attachment,
+    attachedSessionId: sessionId,
+    refText: result.ref_text,
+    uploadState: undefined
+  }
 }
 
 interface PromptActionsOptions {
@@ -239,95 +322,23 @@ export function usePromptActions({
 
       for (const attachment of attachments) {
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
+        // A drop-time eager upload may already have staged this one (matching
+        // attachedSessionId) — don't re-upload it.
         if (!attachment.path || attachment.attachedSessionId === sessionId) {
           synced.push(attachment)
+
           continue
         }
 
-        if (attachment.kind === 'image') {
-          let result: ImageAttachResponse
-
-          if (remote) {
-            // The gateway is on another machine — it can't read attachment.path
-            // (a path on THIS disk). Upload the bytes via image.attach_bytes.
-            const payload = await readImageForRemoteAttach(attachment.path)
-
-            if (!payload) {
-              const label = attachment.label || pathLabel(attachment.path)
-              throw new Error(`Could not read ${label}`)
-            }
-
-            result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-              session_id: sessionId,
-              content_base64: payload.contentBase64,
-              filename: payload.filename
-            })
-          } else {
-            result = await requestGateway<ImageAttachResponse>('image.attach', {
-              session_id: sessionId,
-              path: attachment.path
-            })
-          }
-
-          if (!result.attached) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(result.message || `Could not attach ${label}`)
-          }
-
-          const attachedPath = result.path || attachment.path
-          const nextAttachment: ComposerAttachment = {
-            ...attachment,
-            id: attachment.id,
-            label: attachedPath ? pathLabel(attachedPath) : attachment.label,
-            path: attachedPath,
-            attachedSessionId: sessionId
-          }
+        if (attachment.kind === 'image' || attachment.kind === 'file') {
+          const nextAttachment = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
 
           if (updateComposerAttachments) {
             addComposerAttachment(nextAttachment)
           }
 
           synced.push(nextAttachment)
-          continue
-        }
 
-        if (attachment.kind === 'file') {
-          // Non-image file refs are @file: paths the gateway reads with its file
-          // tools. On a remote gateway the desktop path doesn't exist there, so
-          // upload the bytes; the gateway stages them into the session workspace
-          // and hands back a workspace-relative ref that actually resolves.
-          // Local mode can pass the path directly (gateway shares this disk).
-          const dataUrl = remote ? await readFileDataUrlForAttach(attachment.path) : null
-
-          if (remote && !dataUrl) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(`Could not read ${label}`)
-          }
-
-          const result = await requestGateway<FileAttachResponse>('file.attach', {
-            session_id: sessionId,
-            path: attachment.path,
-            name: attachment.label || pathLabel(attachment.path),
-            ...(dataUrl ? { data_url: dataUrl } : {})
-          })
-
-          if (!result.attached || !result.ref_text) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(result.message || `Could not attach ${label}`)
-          }
-
-          const nextAttachment: ComposerAttachment = {
-            ...attachment,
-            id: attachment.id,
-            refText: result.ref_text,
-            attachedSessionId: sessionId
-          }
-
-          if (updateComposerAttachments) {
-            addComposerAttachment(nextAttachment)
-          }
-
-          synced.push(nextAttachment)
           continue
         }
 
@@ -338,6 +349,62 @@ export function usePromptActions({
     },
     [requestGateway]
   )
+
+  // Stage a freshly dropped file as soon as it lands (when a session already
+  // exists), so the upload runs while the user is still typing rather than
+  // stalling the send. The card shows a spinner via `uploadState`; on success
+  // the chip carries its gateway-side ref so submit skips re-uploading.
+  //
+  // Images are intentionally NOT eager-uploaded: attachImagePath adds the chip
+  // and then fills in `previewUrl` (the base64 thumbnail) on a second tick, so
+  // an eager upload would race that write — clobbering the thumbnail and
+  // swapping `path` to a gateway path the local preview can't read. Images are
+  // small and still byte-upload at submit via image.attach_bytes.
+  const eagerlyUploadAttachment = useCallback(
+    async (sessionId: string, attachment: ComposerAttachment) => {
+      const remote = $connection.get()?.mode === 'remote'
+
+      setComposerAttachmentUploadState(attachment.id, 'uploading')
+
+      try {
+        addComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+      } catch (err) {
+        // Leave the chip in place so submit-time sync can retry (or the user can
+        // remove it) and flag the card; also toast so a hard failure (unreadable
+        // file, gateway perms) isn't swallowed while the user keeps typing.
+        setComposerAttachmentUploadState(attachment.id, 'error')
+        notifyError(err, copy.dropFiles)
+      }
+    },
+    [copy.dropFiles, requestGateway]
+  )
+
+  const composerAttachments = useStore($composerAttachments)
+  const eagerUploadInFlight = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      return
+    }
+
+    for (const attachment of composerAttachments) {
+      const needsUpload =
+        attachment.kind === 'file' &&
+        Boolean(attachment.path) &&
+        !attachment.attachedSessionId &&
+        !attachment.uploadState &&
+        !eagerUploadInFlight.current.has(attachment.id)
+
+      if (!needsUpload) {
+        continue
+      }
+
+      eagerUploadInFlight.current.add(attachment.id)
+      void eagerlyUploadAttachment(activeSessionId, attachment).finally(() =>
+        eagerUploadInFlight.current.delete(attachment.id)
+      )
+    }
+  }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
 
   const submitPromptText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {

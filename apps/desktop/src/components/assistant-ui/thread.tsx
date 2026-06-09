@@ -37,7 +37,12 @@ import {
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
-import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from '@/app/chat/composer/inline-refs'
+import {
+  dragHasAttachments,
+  droppedFileInlineRefs,
+  type InlineRefInput,
+  insertInlineRefsIntoEditor
+} from '@/app/chat/composer/inline-refs'
 import {
   composerPlainText,
   placeCaretEnd,
@@ -47,7 +52,8 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
-import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, isImagePath, partitionDroppedFiles } from '@/app/chat/hooks/use-composer-actions'
+import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -76,6 +82,7 @@ import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
@@ -84,7 +91,9 @@ import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -1178,17 +1187,13 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     [aui, closeTrigger, refreshTrigger, requestEditFocus, trigger]
   )
 
-  const insertDroppedRefs = useCallback(
-    (candidates: ReturnType<typeof extractDroppedFiles>) => {
+  const insertRefStrings = useCallback(
+    (refs: InlineRefInput[]) => {
       const editor = editorRef.current
 
-      if (!editor) {
+      if (!editor || refs.length === 0) {
         return false
       }
-
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, cwd))
-        .filter((ref): ref is string => Boolean(ref))
 
       const nextDraft = insertInlineRefsIntoEditor(editor, refs)
 
@@ -1202,7 +1207,60 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       return true
     },
-    [aui, cwd, requestEditFocus]
+    [aui, requestEditFocus]
+  )
+
+  const insertDroppedRefs = useCallback(
+    (candidates: ReturnType<typeof extractDroppedFiles>) => insertRefStrings(droppedFileInlineRefs(candidates, cwd)),
+    [cwd, insertRefStrings]
+  )
+
+  // OS/Finder drops carry an absolute path on THIS machine — the gateway can't
+  // read it in remote mode, and an image needs its bytes uploaded for vision.
+  // Stage each through the same file.attach/image.attach_bytes pipeline the main
+  // composer uses, then insert the *gateway-side* ref the agent can resolve —
+  // never the raw local path (the MahmoudR remote-attach bug, which the main
+  // composer fixes but this edit composer used to reproduce).
+  const uploadOsDropRefs = useCallback(
+    async (osDrops: ReturnType<typeof extractDroppedFiles>): Promise<InlineRefInput[]> => {
+      if (!gateway || !sessionId) {
+        // No session to stage into — best-effort inline refs (matches old path).
+        return droppedFileInlineRefs(osDrops, cwd)
+      }
+
+      const remote = $connection.get()?.mode === 'remote'
+      const requestGateway = <T,>(method: string, params?: Record<string, unknown>) => gateway.request<T>(method, params)
+      const refs: InlineRefInput[] = []
+
+      for (const candidate of osDrops) {
+        const path = candidate.path || ''
+
+        if (!path) {
+          continue
+        }
+
+        const kind: ComposerAttachment['kind'] =
+          candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
+
+        try {
+          const uploaded = await uploadComposerAttachment(
+            { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
+            { remote, requestGateway, sessionId }
+          )
+
+          const ref = attachmentDisplayText(uploaded)
+
+          if (ref) {
+            refs.push(ref)
+          }
+        } catch (err) {
+          notifyError(err, t.desktop.dropFiles)
+        }
+      }
+
+      return refs
+    },
+    [cwd, gateway, sessionId, t.desktop.dropFiles]
   )
 
   const resetDragState = useCallback(() => {
@@ -1256,8 +1314,21 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     event.stopPropagation()
     resetDragState()
 
-    if (insertDroppedRefs(candidates)) {
+    // In-app drags (project tree / gutter) are workspace-relative paths that
+    // resolve on the gateway as-is, so they stay inline refs. OS drops need to
+    // be staged + uploaded first, then their gateway-side ref is inserted.
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+
+    if (insertDroppedRefs(inAppRefs)) {
       triggerHaptic('selection')
+    }
+
+    if (osDrops.length) {
+      void uploadOsDropRefs(osDrops).then(refs => {
+        if (insertRefStrings(refs)) {
+          triggerHaptic('selection')
+        }
+      })
     }
   }
 

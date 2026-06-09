@@ -43,7 +43,7 @@ import {
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
-import { extractDroppedFiles, HERMES_PATHS_MIME } from '../hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
 
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
@@ -64,7 +64,7 @@ import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
 import {
   dragHasAttachments,
-  droppedFileInlineRef,
+  droppedFileInlineRefs,
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from './inline-refs'
@@ -919,24 +919,25 @@ export function ChatBar({
       return
     }
 
-    if (Array.from(event.dataTransfer.types || []).includes(HERMES_PATHS_MIME)) {
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, cwd))
-        .filter((ref): ref is string => Boolean(ref))
+    // In-app drags (project tree / gutter) are workspace-relative paths the
+    // gateway resolves directly, so they stay inline @file:/@line: refs. OS
+    // drops are absolute local paths a remote gateway can't read (and images
+    // need byte upload for vision), so route them through the upload pipeline.
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    const refs = droppedFileInlineRefs(inAppRefs, cwd)
 
-      if (insertInlineRefs(refs)) {
-        triggerHaptic('selection')
-      }
-
-      return
+    if (refs.length && insertInlineRefs(refs)) {
+      triggerHaptic('selection')
     }
 
-    void Promise.resolve(onAttachDroppedItems(candidates)).then(attached => {
-      if (attached) {
-        triggerHaptic('selection')
-        requestMainFocus()
-      }
-    })
+    if (osDrops.length) {
+      void Promise.resolve(onAttachDroppedItems(osDrops)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+          requestMainFocus()
+        }
+      })
+    }
   }
 
   const handleInputDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -956,11 +957,7 @@ export function ChatBar({
 
     const candidates = extractDroppedFiles(event.dataTransfer)
 
-    const refs = candidates
-      .map(candidate => droppedFileInlineRef(candidate, cwd))
-      .filter((ref): ref is string => Boolean(ref))
-
-    if (!refs.length) {
+    if (!candidates.length) {
       return
     }
 
@@ -968,8 +965,26 @@ export function ChatBar({
     event.stopPropagation()
     resetDragState()
 
-    if (insertInlineRefs(refs)) {
+    // Dropping straight onto the text box used to inline-ref *every* file —
+    // including OS/Finder drops, whose absolute local path a remote gateway
+    // can't read and whose image bytes never reached vision. Split by origin:
+    // in-app drags stay inline refs; OS drops go through the upload pipeline.
+    // (When no upload handler is wired, fall back to inline refs for all.)
+    const attach = onAttachDroppedItems
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    const refs = droppedFileInlineRefs(attach ? inAppRefs : candidates, cwd)
+
+    if (refs.length && insertInlineRefs(refs)) {
       triggerHaptic('selection')
+    }
+
+    if (attach && osDrops.length) {
+      void Promise.resolve(attach(osDrops)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+          requestMainFocus()
+        }
+      })
     }
   }
 

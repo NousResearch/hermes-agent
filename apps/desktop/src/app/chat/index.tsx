@@ -49,9 +49,9 @@ import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
-import { droppedFileInlineRef, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
+import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
 import type { ChatBarState } from './composer/types'
-import type { DroppedFile } from './hooks/use-composer-actions'
+import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser, threadLoadingState } from './thread-loading'
@@ -299,19 +299,25 @@ export function ChatView({
   })
 
   // Drop files anywhere in the conversation area, not just on the composer
-  // input — appending the same inline `@file:` ref chips the composer drop
-  // produces (vs. attachment cards) so both surfaces behave identically.
+  // input. In-app drags (project tree / gutter) carry workspace-relative paths
+  // the gateway resolves directly, so they stay inline `@file:` refs. OS/Finder
+  // drops carry absolute local paths that don't exist on a remote gateway (and
+  // images need byte upload for vision), so route them through the attachment
+  // pipeline — otherwise the local path leaks into the prompt verbatim.
   const onDropFiles = useCallback(
     (candidates: DroppedFile[]) => {
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, currentCwd))
-        .filter((ref): ref is string => Boolean(ref))
+      const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+      const refs = droppedFileInlineRefs(inAppRefs, currentCwd)
 
       if (refs.length) {
         requestComposerInsert(refs.join(' '), { mode: 'inline', target: 'main' })
       }
+
+      if (osDrops.length) {
+        void onAttachDroppedItems(osDrops)
+      }
     },
-    [currentCwd]
+    [currentCwd, onAttachDroppedItems]
   )
 
   // Dropping a sidebar session inserts an @session link the agent can resolve

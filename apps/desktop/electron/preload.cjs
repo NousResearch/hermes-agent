@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
   gitFileDiff: filePath => ipcRenderer.invoke('hermes:gitFileDiff', filePath),
+  writeFileText: (filePath, content) => ipcRenderer.invoke('hermes:writeFileText', filePath, content),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),

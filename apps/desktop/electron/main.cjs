@@ -5458,6 +5458,26 @@ ipcMain.handle('hermes:gitFileDiff', async (_event, filePath) => {
   return { diff: '', status, fileContent, headContent }
 })
 
+ipcMain.handle('hermes:writeFileText', async (_event, filePath, content) => {
+  if (!filePath || typeof filePath !== 'string') return { success: false, error: 'No file path provided' }
+  if (typeof content !== 'string') return { success: false, error: 'No content provided' }
+
+  let resolvedPath = filePath
+  if (resolvedPath.startsWith('file://')) {
+    try { resolvedPath = new URL(resolvedPath).pathname } catch {}
+  }
+  resolvedPath = path.resolve(resolvedPath)
+
+  try {
+    const dir = path.dirname(resolvedPath)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(resolvedPath, content, 'utf8')
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')

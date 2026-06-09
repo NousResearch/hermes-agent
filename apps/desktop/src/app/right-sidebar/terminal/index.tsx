@@ -86,3 +86,5 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
     </div>
   )
 }
+
+export { TerminalPanel } from './terminal-panel'

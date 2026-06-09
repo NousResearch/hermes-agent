@@ -1228,6 +1228,7 @@ export interface Translations {
     source: string
     renderedPreview: string
     changes: string
+    edit: string
     unknownSize: string
     binaryTitle: string
     binaryBody: (label: string) => string

@@ -1746,6 +1746,7 @@ export const zh: Translations = {
     source: '源码',
     renderedPreview: '预览',
     changes: '变更',
+    edit: '编辑',
     unknownSize: '大小未知',
     binaryTitle: '这看起来像二进制文件',
     binaryBody: label => `预览 ${label} 可能会显示不可读文本。`,

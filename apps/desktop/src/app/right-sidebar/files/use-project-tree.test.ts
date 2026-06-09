@@ -179,6 +179,27 @@ describe('useProjectTree', () => {
     expect(readDir).toHaveBeenLastCalledWith('/b')
   })
 
+  it('restores each folder tree when switching away and back', async () => {
+    readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/a/src', isDirectory: true }]))
+    readDir.mockResolvedValueOnce(ok([{ name: 'docs', path: '/b/docs', isDirectory: true }]))
+
+    const { rerender, result } = renderHook(({ cwd }) => useProjectTree(cwd), { initialProps: { cwd: '/a/' } })
+
+    await waitFor(() => expect(result.current.data[0]?.name).toBe('src'))
+
+    act(() => {
+      result.current.setNodeOpen('/a/src', true)
+    })
+
+    rerender({ cwd: '/b' })
+    await waitFor(() => expect(result.current.data[0]?.name).toBe('docs'))
+    rerender({ cwd: '/a' })
+
+    await waitFor(() => expect(result.current.data[0]?.name).toBe('src'))
+    expect(result.current.openState).toEqual({ '/a/src': true })
+    expect(readDir).toHaveBeenCalledTimes(2)
+  })
+
   it('returns no-bridge gracefully when window.hermesDesktop is missing', async () => {
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 

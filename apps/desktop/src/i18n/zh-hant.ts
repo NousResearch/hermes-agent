@@ -1660,6 +1660,7 @@ export const zhHant = defineLocale({
     source: '原始碼',
     renderedPreview: '預覽',
     changes: '變更',
+    edit: '編輯',
     unknownSize: '大小未知',
     binaryTitle: '這看起來像二進位檔案',
     binaryBody: label => `預覽 ${label} 可能會顯示無法讀取的文字。`,

@@ -1,8 +1,13 @@
+import '@xterm/xterm/css/xterm.css'
+
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { TerminalTab } from './index'
+import { $chatId, $paneTree, $terminalLayouts, setActiveChatId } from '@/lib/terminal-store'
+
+import { TERMINAL_BG } from './selection'
+import { TerminalPanel } from './terminal-panel'
 
 /**
  * One xterm Terminal mounted at the layout root and CSS-overlayed onto
@@ -40,6 +45,7 @@ export function TerminalSlot({ className = SLOT_CLASS }: { className?: string })
 interface PersistentTerminalProps {
   cwd: string
   onAddSelectionToChat: (text: string, label?: string) => void
+  workspaceId: string
 }
 
 interface Rect {
@@ -52,10 +58,21 @@ interface Rect {
 const sameRect = (a: Rect | null, b: Rect) =>
   !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
 
-export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerminalProps) {
+export function PersistentTerminal({ cwd, onAddSelectionToChat, workspaceId }: PersistentTerminalProps) {
   const slot = useStore($slot)
+  const activeChatId = useStore($chatId)
+  const layouts = useStore($terminalLayouts)
+  const activeTree = useStore($paneTree)
   const [rect, setRect] = useState<Rect | null>(null)
   const [ready, setReady] = useState(false)
+  const [visitedWorkspaceIds, setVisitedWorkspaceIds] = useState<string[]>([])
+  const workspaceCwdsRef = useRef(new Map<string, string>())
+
+  useLayoutEffect(() => {
+    workspaceCwdsRef.current.set(workspaceId, cwd)
+    setActiveChatId(workspaceId)
+    setVisitedWorkspaceIds(current => (current.includes(workspaceId) ? current : [...current, workspaceId]))
+  }, [cwd, workspaceId])
 
   useLayoutEffect(() => {
     if (!slot) {
@@ -69,8 +86,6 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
 
     const tick = () => {
       const r = slot.getBoundingClientRect()
-      // floor top/left + ceil right/bottom: overlay always covers the slot's
-      // full pixel footprint, so half-pixel rects can't leak page bg through.
       const top = Math.floor(r.top)
       const left = Math.floor(r.left)
       const next: Rect = { top, left, width: Math.ceil(r.right) - left, height: Math.ceil(r.bottom) - top }
@@ -111,12 +126,36 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
     contain: 'layout size paint'
   }
 
-  // Defer mount until real dims — booting xterm at 0×0 starts the shell at
-  // 80×24, then the first ResizeObserver SIGWINCH redraws the prompt on a
-  // new line. After first measurement we keep it mounted forever.
   return (
     <div aria-hidden={!visible} style={style}>
-      {ready && <TerminalTab cwd={cwd} onAddSelectionToChat={onAddSelectionToChat} />}
+      {ready &&
+        visitedWorkspaceIds.map(id => {
+          const active = id === workspaceId
+          const tree = active && activeChatId === id ? activeTree : layouts[id]
+
+          if (!tree) {
+            return null
+          }
+
+          return (
+            <div
+              aria-hidden={!active}
+              className="absolute inset-0 flex min-h-0 min-w-0 flex-col"
+              key={id}
+              style={{
+                pointerEvents: active ? 'auto' : 'none',
+                visibility: active ? 'visible' : 'hidden'
+              }}
+            >
+              <TerminalPanel
+                active={active}
+                cwd={workspaceCwdsRef.current.get(id) || cwd}
+                onAddSelectionToChat={onAddSelectionToChat}
+                tree={tree}
+              />
+            </div>
+          )
+        })}
     </div>
   )
 }

@@ -895,6 +895,36 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(results[0]["sender_addr"], "john@test.com")
         self.assertEqual(results[0]["sender_name"], "John Doe")
 
+    def test_fetch_uses_body_peek_to_preserve_unseen_flag(self):
+        """IMAP fetch must use BODY.PEEK[] to avoid marking messages as read."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        fetch_calls = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                fetch_calls.append(args)
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        # Verify BODY.PEEK[] is used instead of RFC822 to avoid setting \\Seen
+        self.assertEqual(len(fetch_calls), 1)
+        self.assertIn("BODY.PEEK[]", fetch_calls[0][1])
+        self.assertNotIn("RFC822", fetch_calls[0][1])
+
 
 class TestPollLoop(unittest.TestCase):
     """Test the async polling loop."""

@@ -226,6 +226,77 @@ class TestHandleVoiceCommand:
 
         assert adapter._auto_tts_default is True
 
+    def _auto_tts_adapter(self, *, default=True):
+        from gateway.config import Platform
+        return SimpleNamespace(
+            _auto_tts_default=default,
+            _auto_tts_disabled_chats=set(),
+            _auto_tts_enabled_chats=set(),
+            platform=Platform.TELEGRAM,
+        )
+
+    def _should_auto_tts(self, adapter, chat_id, source=None):
+        from gateway.platforms.base import BasePlatformAdapter
+        return BasePlatformAdapter._should_auto_tts_for_chat(adapter, chat_id, source)
+
+    @pytest.mark.asyncio
+    async def test_voice_narrate_topic_updates_live_adapter_auto_tts_suppression(self, runner):
+        """Command-time topic narration must suppress base auto-TTS immediately."""
+        from gateway.config import Platform
+
+        event = _make_event("/voice narrate")
+        event.source.platform = Platform.TELEGRAM
+        event.source.thread_id = "1495"
+        adapter = self._auto_tts_adapter(default=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "topic" in result.lower()
+        assert runner._voice_mode["telegram:123:1495"] == "narration"
+        assert adapter._auto_tts_disabled_chats == {"123:1495"}
+        assert adapter._auto_tts_enabled_chats == set()
+        assert self._should_auto_tts(adapter, "123", event.source) is False
+        assert runner._should_enqueue_narration(event, "speak this later", []) is True
+
+    @pytest.mark.asyncio
+    async def test_voice_off_topic_updates_live_adapter_auto_tts_suppression(self, runner):
+        """Command-time topic /voice off must suppress base auto-TTS immediately."""
+        from gateway.config import Platform
+
+        event = _make_event("/voice off")
+        event.source.platform = Platform.TELEGRAM
+        event.source.thread_id = "1495"
+        adapter = self._auto_tts_adapter(default=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        await runner._handle_voice_command(event)
+
+        assert runner._voice_mode["telegram:123:1495"] == "off"
+        assert adapter._auto_tts_disabled_chats == {"123:1495"}
+        assert adapter._auto_tts_enabled_chats == set()
+        assert self._should_auto_tts(adapter, "123", event.source) is False
+
+    @pytest.mark.asyncio
+    async def test_voice_narrate_chat_updates_live_adapter_auto_tts_suppression(self, runner):
+        """Command-time chat narration must suppress global voice.auto_tts immediately."""
+        from gateway.config import Platform
+
+        event = _make_event("/voice narrate chat")
+        event.source.platform = Platform.TELEGRAM
+        event.source.thread_id = "1495"
+        adapter = self._auto_tts_adapter(default=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "chat" in result.lower()
+        assert runner._voice_mode["telegram:123"] == "narration"
+        assert adapter._auto_tts_disabled_chats == {"123"}
+        assert adapter._auto_tts_enabled_chats == set()
+        assert self._should_auto_tts(adapter, "123", event.source) is False
+        assert runner._should_enqueue_narration(event, "speak this later", []) is True
+
     def test_restart_restores_voice_off_state(self, runner, tmp_path):
         from gateway.config import Platform
         runner._VOICE_MODE_PATH.write_text(json.dumps({"telegram:123": "off"}))

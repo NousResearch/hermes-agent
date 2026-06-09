@@ -2349,6 +2349,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         return f"{source.platform.value}:{source.chat_id}:{thread_id}"
 
+    def _adapter_voice_scope_key(self, platform: Platform, voice_key: str) -> str:
+        """Return the adapter-local chat/topic key for a persisted voice-mode key."""
+        prefix = f"{platform.value}:"
+        if str(voice_key).startswith(prefix):
+            return str(voice_key)[len(prefix):]
+        return str(voice_key)
+
     def _legacy_voice_topic_key(self, source: SessionSource) -> Optional[str]:
         """Return the short-lived legacy narration topic key, if applicable."""
         thread_id = getattr(source, "thread_id", None)
@@ -9703,15 +9710,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             narrate_key = self._voice_topic_key(event.source) or voice_key
             self._voice_mode[narrate_key] = "narration"
             self._save_voice_modes()
-            if adapter and narrate_key == voice_key:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=False)
+            if adapter:
+                adapter_key = self._adapter_voice_scope_key(platform, narrate_key)
+                self._set_adapter_auto_tts_disabled(adapter, adapter_key, disabled=True)
             scope = "topic" if narrate_key != voice_key else "chat"
             return f"Long-form narration enabled for this {scope}. I’ll send text first, then narrated voice chunks."
         elif args in {"narrate chat", "narration chat"}:
             self._voice_mode[voice_key] = "narration"
             self._save_voice_modes()
             if adapter:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=False)
+                adapter_key = self._adapter_voice_scope_key(platform, voice_key)
+                self._set_adapter_auto_tts_disabled(adapter, adapter_key, disabled=True)
             return "Long-form narration enabled for this chat. I’ll send text first, then narrated voice chunks."
         elif args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
@@ -9723,8 +9732,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             target_key = self._voice_topic_key(event.source) or voice_key
             self._voice_mode[target_key] = "off"
             self._save_voice_modes()
-            if adapter and target_key == voice_key:
-                self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+            if adapter:
+                adapter_key = self._adapter_voice_scope_key(platform, target_key)
+                self._set_adapter_auto_tts_disabled(adapter, adapter_key, disabled=True)
             return t("gateway.voice.disabled_text")
         elif args in {"off chat", "disable chat"}:
             self._voice_mode[voice_key] = "off"

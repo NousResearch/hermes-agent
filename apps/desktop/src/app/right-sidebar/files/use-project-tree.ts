@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
+import { $connection } from '@/store/session'
+
 import { clearProjectDirCache, readProjectDir } from './ipc'
 
 export interface TreeNode {
@@ -96,6 +98,7 @@ const initialState: ProjectTreeState = {
 const inflight = new Set<string>()
 const $projectTree = atom<ProjectTreeState>(initialState)
 let nextRootRequestId = 0
+let lastConnectionKey = ''
 
 function setProjectTree(updater: (current: ProjectTreeState) => ProjectTreeState) {
   $projectTree.set(updater($projectTree.get()))
@@ -157,6 +160,7 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
 }
 
 export function resetProjectTreeState() {
+  lastConnectionKey = ''
   clearProjectTree()
   clearProjectDirCache()
 }
@@ -170,6 +174,8 @@ export function resetProjectTreeState() {
  */
 export function useProjectTree(cwd: string): UseProjectTreeResult {
   const state = useStore($projectTree)
+  const connection = useStore($connection)
+  const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
 
   const refreshRoot = useCallback(() => loadRoot(cwd, { force: true }), [cwd])
 
@@ -248,8 +254,15 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   )
 
   useEffect(() => {
+    const connectionChanged = lastConnectionKey !== '' && lastConnectionKey !== connectionKey
+    lastConnectionKey = connectionKey
+    if (connectionChanged) {
+      clearProjectDirCache()
+      void loadRoot(cwd, { force: true })
+      return
+    }
     void loadRoot(cwd)
-  }, [cwd])
+  }, [connectionKey, cwd])
 
   return useMemo(
     () => ({

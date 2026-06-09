@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
@@ -16,6 +17,7 @@ import { $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { RemoteFolderPicker } from './files/remote-picker'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -54,7 +56,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const canCollapse = Object.values(openState).some(Boolean)
 
   const chooseFolder = async () => {
-    const selected = await window.hermesDesktop?.selectPaths({
+    const selected = await selectDesktopPaths({
       defaultPath: hasCwd ? currentCwd : undefined,
       directories: true,
       multiple: false,
@@ -90,6 +92,8 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
+      <RemoteFolderPicker />
+
       <FilesystemTab
         canCollapse={canCollapse}
         collapseNonce={collapseNonce}

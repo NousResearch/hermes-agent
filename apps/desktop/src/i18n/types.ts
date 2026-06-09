@@ -1194,6 +1194,9 @@ export interface Translations {
     terminal: string
     noFolderSelected: string
     changeCwdTitle: string
+    remotePickerTitle: string
+    remotePickerDescription: string
+    remotePickerSelect: string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string

@@ -1,3 +1,4 @@
+import { isDesktopFsRemoteMode, readDesktopFileText } from '@/lib/desktop-fs'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -107,6 +108,26 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 }
 
+async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
+  if (!isDesktopFsRemoteMode() || !target || target.kind !== 'file' || target.previewKind === 'image') {
+    return target
+  }
+
+  try {
+    const result = await readDesktopFileText(target.path || target.source)
+    return {
+      ...target,
+      binary: result.binary,
+      byteSize: result.byteSize,
+      language: result.language || target.language,
+      large: (result.byteSize ?? 0) > 512 * 1024,
+      mimeType: result.mimeType
+    }
+  } catch {
+    return target
+  }
+}
+
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
@@ -115,12 +136,12 @@ export async function normalizeOrLocalPreviewTarget(
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
     if (normalized) {
-      return normalized
+      return enrichPreviewTarget(normalized)
     }
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall
     // through to renderer-side local classification so text/images still open.
   }
 
-  return localPreviewTarget(rawTarget, cwd)
+  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
 }

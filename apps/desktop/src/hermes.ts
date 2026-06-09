@@ -58,7 +58,10 @@ import type {
   TerminalBackendsResponse,
   ToolsetConfig,
   ToolsetInfo,
-  ToolsetModelsResponse
+  ToolsetModelsResponse,
+  WebhookCreatePayload,
+  WebhookRoute,
+  WebhooksResponse
 } from '@/types/hermes'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
@@ -202,7 +205,10 @@ export type {
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,
-  ToolsetModelsResponse
+  ToolsetModelsResponse,
+  WebhookCreatePayload,
+  WebhookRoute,
+  WebhooksResponse
 } from '@/types/hermes'
 
 export class HermesGateway extends JsonRpcGatewayClient {
@@ -984,6 +990,39 @@ export function toggleToolset(
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
+    method: 'PUT',
+    body: { enabled }
+  })
+}
+
+export function getWebhooks(): Promise<WebhooksResponse> {
+  return window.hermesDesktop.api<WebhooksResponse>({
+    ...profileScoped(),
+    path: '/api/webhooks'
+  })
+}
+
+export function createWebhook(payload: WebhookCreatePayload): Promise<WebhookRoute & { secret: string }> {
+  return window.hermesDesktop.api<WebhookRoute & { secret: string }>({
+    ...profileScoped(),
+    path: '/api/webhooks',
+    method: 'POST',
+    body: payload
+  })
+}
+
+export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/webhooks/${encodeURIComponent(name)}`,
+    method: 'DELETE'
+  })
+}
+
+export function setWebhookEnabled(name: string, enabled: boolean): Promise<{ enabled: boolean; name: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ enabled: boolean; name: string; ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/webhooks/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }
   })

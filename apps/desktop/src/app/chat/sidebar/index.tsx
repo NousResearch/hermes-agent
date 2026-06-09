@@ -104,7 +104,8 @@ import {
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
-  SKILLS_ROUTE
+  SKILLS_ROUTE,
+  WEBHOOKS_ROUTE
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
@@ -160,6 +161,13 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="comment" {...props} />,
     route: MESSAGING_ROUTE,
     keybindActionId: 'nav.messaging'
+  },
+  {
+    id: 'webhooks',
+    label: '',
+    icon: props => <Codicon name="link" {...props} />,
+    route: WEBHOOKS_ROUTE,
+    keybindActionId: 'nav.webhooks'
   },
   {
     id: 'artifacts',
@@ -1104,6 +1112,7 @@ export function ChatSidebar({
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
+                  (item.id === 'webhooks' && currentView === 'webhooks') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
                   // Contributed rows light up at their own route.
                   (Boolean(item.route) && pathname === item.route)

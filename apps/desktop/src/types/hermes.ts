@@ -243,6 +243,37 @@ export interface MessagingPlatformTestResponse {
   state?: null | string
 }
 
+export interface WebhookRoute {
+  created_at?: null | string
+  deliver: string
+  deliver_only: boolean
+  description: string
+  enabled: boolean
+  events: string[]
+  name: string
+  prompt: string
+  secret_set: boolean
+  skills: string[]
+  url: string
+}
+
+export interface WebhooksResponse {
+  base_url: string
+  enabled: boolean
+  subscriptions: WebhookRoute[]
+}
+
+export interface WebhookCreatePayload {
+  deliver?: string
+  deliver_only?: boolean
+  description?: string
+  events?: string[]
+  name: string
+  prompt?: string
+  secret?: string
+  skills?: string[]
+}
+
 export interface GatewayReadyPayload {
   skin?: unknown
 }

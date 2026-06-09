@@ -51,7 +51,7 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
   const items: ItemSpec[] = [
     {
       disabled: !onPin,
-      icon: 'pin',
+      icon: 'pinned',
       label: pinned ? r.unpin : r.pin,
       onSelect: () => {
         triggerHaptic('selection')

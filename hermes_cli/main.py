@@ -323,6 +323,14 @@ def _require_tty(command_name: str) -> None:
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Strip CWD from sys.path — prevents local files from shadowing Hermes
+# packages.  Virtualenv .pth hooks may resolve '' to the absolute CWD.
+# Re-insert PROJECT_ROOT in case CWD happens to equal it.
+_cwd = os.getcwd()
+sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 
 # ---------------------------------------------------------------------------
 # Profile override — MUST happen before any hermes module import.

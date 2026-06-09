@@ -24,7 +24,10 @@ def _reload_entry_with_env(env_overrides: dict) -> None:
             _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
             if _src_root and _src_root not in sys.path:
                 sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
+            _cwd = os.getcwd()
+            sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
+            if _src_root and _src_root not in sys.path:
+                sys.path.insert(0, _src_root)
         return sys.path[:]
     finally:
         sys.path = original_path
@@ -44,7 +47,8 @@ def test_empty_string_and_dot_removed_from_sys_path():
         assert "." in sys.path
 
         # Run the entry.py fixup logic directly
-        sys.path = [p for p in sys.path if p not in {"", "."}]
+        _cwd = os.getcwd()
+        sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
 
         assert "" not in sys.path
         assert "." not in sys.path
@@ -60,7 +64,10 @@ def test_hermes_src_root_inserted_at_front():
             _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
             if _src_root and _src_root not in sys.path:
                 sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
+            _cwd = os.getcwd()
+            sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
+            if _src_root and _src_root not in sys.path:
+                sys.path.insert(0, _src_root)
 
         assert sys.path[0] == fake_root
     finally:
@@ -78,7 +85,10 @@ def test_src_root_not_duplicated_if_already_present():
             _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
             if _src_root and _src_root not in sys.path:
                 sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
+            _cwd = os.getcwd()
+            sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
+            if _src_root and _src_root not in sys.path:
+                sys.path.insert(0, _src_root)
 
         assert sys.path.count(fake_root) == count_before
     finally:
@@ -94,7 +104,27 @@ def test_no_src_root_env_does_not_crash():
             _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
             if _src_root and _src_root not in sys.path:
                 sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
+            _cwd = os.getcwd()
+            sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
+            if _src_root and _src_root not in sys.path:
+                sys.path.insert(0, _src_root)
         # No exception raised
+    finally:
+        sys.path = original
+
+
+def test_absolute_cwd_removed_from_sys_path():
+    """Virtualenv .pth hooks may resolve '' to the absolute CWD path."""
+    original = sys.path[:]
+    try:
+        cwd = os.getcwd()
+        # Simulate what virtualenv does: replace '' with absolute CWD
+        sys.path = [cwd if p == "" else p for p in sys.path]
+        assert cwd in sys.path
+
+        _cwd = os.getcwd()
+        sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
+
+        assert cwd not in sys.path
     finally:
         sys.path = original

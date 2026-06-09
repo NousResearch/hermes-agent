@@ -7,9 +7,13 @@ import sys
 _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
 if _src_root and _src_root not in sys.path:
     sys.path.insert(0, _src_root)
-# Strip '' and '.' — both resolve to CWD at import time and can let a local
-# directory shadow installed packages.
-sys.path = [p for p in sys.path if p not in {"", "."}]
+# Strip CWD from sys.path — prevents local files from shadowing Hermes
+# packages.  Virtualenv .pth hooks may resolve '' to the absolute CWD.
+# Re-insert _src_root in case CWD happens to equal it.
+_cwd = os.getcwd()
+sys.path = [p for p in sys.path if p not in {"", ".", _cwd}]
+if _src_root and _src_root not in sys.path:
+    sys.path.insert(0, _src_root)
 
 import json
 import logging

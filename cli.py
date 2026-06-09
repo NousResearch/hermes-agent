@@ -4040,6 +4040,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         cont = " | Continuous" if self._voice_continuous else ""
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
+    def _get_status_bar_field_set(self) -> Optional[frozenset]:
+        """Return the set of allowed status-bar fields from config.
+
+        Returns ``None`` when the user has not customized the bar (use
+        built-in defaults).  Returns a ``frozenset`` of field names when
+        ``display.status_bar.fields`` is a non-empty list.
+        """
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            fields = (cfg.get("display") or {}).get("status_bar", {}).get("fields")
+            if isinstance(fields, list) and fields:
+                return frozenset(str(f) for f in fields)
+        except Exception:
+            pass
+        return None
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
         try:
@@ -4051,51 +4068,75 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             duration_label = snapshot["duration"]
 
             yolo_active = self._is_session_yolo_active()
+            fields = self._get_status_bar_field_set()
+
+            def _ok(name: str) -> bool:
+                return fields is None or name in fields
+
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
-                if yolo_active:
-                    text += " · ⚠ YOLO"
-                return self._trim_status_bar_text(text, width)
+                parts = []
+                if _ok("model"):
+                    parts.append(f"⚕ {snapshot['model_short']}")
+                if _ok("duration"):
+                    parts.append(duration_label)
+                if yolo_active and _ok("yolo"):
+                    parts.append("⚠ YOLO")
+                return self._trim_status_bar_text(" · ".join(parts) if parts else f"⚕ {snapshot['model_short']}", width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = []
+                if _ok("model"):
+                    parts.append(f"⚕ {snapshot['model_short']}")
+                if _ok("context_pct"):
+                    parts.append(percent_label)
                 compressions = snapshot.get("compressions", 0)
-                if compressions:
+                if compressions and _ok("compressions"):
                     parts.append(f"🗜️ {compressions}")
                 bg_count = snapshot.get("active_background_tasks", 0)
-                if bg_count:
+                if bg_count and _ok("bg_tasks"):
                     parts.append(f"▶ {bg_count}")
                 bg_proc_count = snapshot.get("active_background_processes", 0)
-                if bg_proc_count:
+                if bg_proc_count and _ok("bg_processes"):
                     parts.append(f"⚙ {bg_proc_count}")
-                parts.append(duration_label)
-                if yolo_active:
+                if _ok("duration"):
+                    parts.append(duration_label)
+                if yolo_active and _ok("yolo"):
                     parts.append("⚠ YOLO")
-                return self._trim_status_bar_text(" · ".join(parts), width)
+                return self._trim_status_bar_text(" · ".join(parts) if parts else f"⚕ {snapshot['model_short']}", width)
 
-            if snapshot["context_length"]:
-                ctx_total = _format_context_length(snapshot["context_length"])
-                ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                context_label = f"{ctx_used}/{ctx_total}"
-            else:
-                context_label = "ctx --"
-
+            parts = []
+            if _ok("model"):
+                parts.append(f"⚕ {snapshot['model_short']}")
+            if _ok("context_detail"):
+                if snapshot["context_length"]:
+                    ctx_total = _format_context_length(snapshot["context_length"])
+                    ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                    context_label = f"{ctx_used}/{ctx_total}"
+                else:
+                    context_label = "ctx --"
+                parts.append(context_label)
+            if _ok("context_pct"):
+                parts.append(percent_label)
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
-            if compressions:
+            if compressions and _ok("compressions"):
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
-            if bg_count:
+            if bg_count and _ok("bg_tasks"):
                 parts.append(f"▶ {bg_count}")
             bg_proc_count = snapshot.get("active_background_processes", 0)
-            if bg_proc_count:
+            if bg_proc_count and _ok("bg_processes"):
                 parts.append(f"⚙ {bg_proc_count}")
-            parts.append(duration_label)
+            if _ok("duration"):
+                parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
-            if prompt_elapsed:
+            if prompt_elapsed and _ok("prompt_elapsed"):
                 parts.append(prompt_elapsed)
-            if yolo_active:
+            if yolo_active and _ok("yolo"):
                 parts.append("⚠ YOLO")
-            return self._trim_status_bar_text(" │ ".join(parts), width)
+            total_tokens = snapshot.get("session_total_tokens", 0)
+            # Only show total_tokens when explicitly requested via config
+            if total_tokens and fields is not None and _ok("total_tokens"):
+                parts.append(f"Σ{format_token_count_compact(total_tokens)}")
+            return self._trim_status_bar_text(" │ ".join(parts) if parts else f"⚕ {snapshot['model_short']}", width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
@@ -4104,100 +4145,95 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
-            # Use prompt_toolkit's own terminal width when running inside the
-            # TUI — shutil.get_terminal_size() can return stale or fallback
-            # values (especially on SSH) that differ from what prompt_toolkit
-            # actually renders, causing the fragments to overflow to a second
-            # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            fields = self._get_status_bar_field_set()
+
+            def _ok(name: str) -> bool:
+                return fields is None or name in fields
+
+            def _sep(ch: str = " · ") -> tuple:
+                return ("class:status-bar-dim", ch)
+
+            frags = []
 
             if width < 52:
-                frags = [
-                    ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", duration_label),
-                ]
-                if yolo_active:
-                    frags.append(("class:status-bar-dim", " · "))
+                if _ok("model"):
+                    frags.append(("class:status-bar", " ⚕ "))
+                    frags.append(("class:status-bar-strong", snapshot["model_short"]))
+                if _ok("duration"):
+                    if frags:
+                        frags.append(_sep(" · "))
+                    frags.append(("class:status-bar-dim", duration_label))
+                if yolo_active and _ok("yolo"):
+                    if frags:
+                        frags.append(_sep(" · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                if not frags:
+                    frags = [("class:status-bar", " ⚕ "), ("class:status-bar-strong", snapshot["model_short"])]
                 frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
-                if width < 76:
-                    compressions = snapshot.get("compressions", 0)
-                    bg_count = snapshot.get("active_background_tasks", 0)
-                    bg_proc_count = snapshot.get("active_background_processes", 0)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
-                    ]
-                    if compressions:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
-                    if bg_count:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
-                    if bg_proc_count:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
-                    frags.extend([
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", duration_label),
-                    ])
-                    if yolo_active:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
-                    frags.append(("class:status-bar", " "))
-                else:
+                sep_ch = " · " if width < 76 else " │ "
+
+                if _ok("model"):
+                    frags.append(("class:status-bar", " ⚕ "))
+                    frags.append(("class:status-bar-strong", snapshot["model_short"]))
+                # Wide mode: context_detail (label) + bar + percent
+                if width >= 76 and _ok("context_detail"):
+                    if frags:
+                        frags.append(_sep(sep_ch))
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
                         ctx_used = format_token_count_compact(snapshot["context_tokens"])
                         context_label = f"{ctx_used}/{ctx_total}"
                     else:
                         context_label = "ctx --"
+                    frags.append(("class:status-bar-dim", context_label))
+                    if _ok("context_pct"):
+                        bar_style = self._status_bar_context_style(percent)
+                        frags.append(_sep(sep_ch))
+                        frags.append((bar_style, self._build_context_bar(percent)))
+                        frags.append(("class:status-bar-dim", " "))
+                        frags.append((bar_style, percent_label))
+                elif _ok("context_pct"):
+                    if frags:
+                        frags.append(_sep(sep_ch))
+                    frags.append((self._status_bar_context_style(percent), percent_label))
+                compressions = snapshot.get("compressions", 0)
+                if compressions and _ok("compressions"):
+                    frags.append(_sep(sep_ch))
+                    frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                bg_count = snapshot.get("active_background_tasks", 0)
+                if bg_count and _ok("bg_tasks"):
+                    frags.append(_sep(sep_ch))
+                    frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
+                bg_proc_count = snapshot.get("active_background_processes", 0)
+                if bg_proc_count and _ok("bg_processes"):
+                    frags.append(_sep(sep_ch))
+                    frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                if _ok("duration"):
+                    frags.append(_sep(sep_ch))
+                    frags.append(("class:status-bar-dim", duration_label))
+                prompt_elapsed = snapshot.get("prompt_elapsed")
+                if prompt_elapsed and _ok("prompt_elapsed"):
+                    frags.append(_sep(sep_ch))
+                    frags.append(("class:status-bar-dim", prompt_elapsed))
+                if yolo_active and _ok("yolo"):
+                    frags.append(_sep(sep_ch))
+                    frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                total_tokens = snapshot.get("session_total_tokens", 0)
+                # Only show total_tokens when explicitly requested via config
+                # (too wide for default layout in fragment mode)
+                if total_tokens and fields is not None and _ok("total_tokens"):
+                    frags.append(_sep(sep_ch))
+                    frags.append(("class:status-bar-dim", f"Σ{format_token_count_compact(total_tokens)}"))
 
-                    bar_style = self._status_bar_context_style(percent)
-                    compressions = snapshot.get("compressions", 0)
-                    bg_count = snapshot.get("active_background_tasks", 0)
-                    bg_proc_count = snapshot.get("active_background_processes", 0)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", context_label),
-                        ("class:status-bar-dim", " │ "),
-                        (bar_style, self._build_context_bar(percent)),
-                        ("class:status-bar-dim", " "),
-                        (bar_style, percent_label),
-                    ]
-                    if compressions:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
-                    if bg_count:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
-                    if bg_proc_count:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
-                    frags.extend([
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                    ])
-                    # Position 7: per-prompt elapsed timer (live or frozen)
-                    prompt_elapsed = snapshot.get("prompt_elapsed")
-                    if prompt_elapsed:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-dim", prompt_elapsed))
-                    if yolo_active:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
-                    frags.append(("class:status-bar", " "))
+                if not frags:
+                    frags = [("class:status-bar", " ⚕ "), ("class:status-bar-strong", snapshot["model_short"])]
+                frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:

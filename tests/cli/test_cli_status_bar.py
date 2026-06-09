@@ -676,3 +676,157 @@ class TestStatusBarWidthSource:
         mock_get_app.assert_not_called()
         mock_shutil.assert_not_called()
         assert len(text) > 0
+
+
+class TestStatusBarFieldConfig:
+    """Tests for display.status_bar.fields config customization."""
+
+    def _cli_with_fields(self, fields, width=120):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch("hermes_cli.config.load_config", return_value={
+            "display": {"status_bar": {"fields": fields}}
+        }):
+            text = cli_obj._build_status_bar_text(width=width)
+        return text
+
+    def test_default_fields_show_all(self):
+        """With empty fields list, all default fields appear."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "claude-sonnet-4-20250514" in text
+        assert "12.4K/200K" in text
+        assert "🗜️" in text
+        assert "15m" in text
+
+    def test_only_model_and_duration(self):
+        """Config with only model and duration hides context and compressions."""
+        text = self._cli_with_fields(["model", "duration"])
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" in text
+        assert "12.4K/200K" not in text
+        assert "🗜️" not in text
+        assert "%" not in text
+
+    def test_only_model(self):
+        """Config with only model shows just the model name."""
+        text = self._cli_with_fields(["model"])
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" not in text
+        assert "12.4K/200K" not in text
+
+    def test_context_pct_only(self):
+        """Config with only context_pct shows just the percentage."""
+        text = self._cli_with_fields(["context_pct"])
+        assert "6%" in text
+        assert "claude-sonnet-4-20250514" not in text
+
+    def test_compressions_only(self):
+        """Config with only compressions shows just the compression count."""
+        text = self._cli_with_fields(["compressions"])
+        assert "🗜️ 7" in text
+        assert "claude-sonnet-4-20250514" not in text
+
+    def test_total_tokens_when_explicitly_requested(self):
+        """total_tokens appears only when explicitly in config."""
+        text = self._cli_with_fields(["model", "total_tokens"])
+        assert "Σ12.4K" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_total_tokens_hidden_by_default(self):
+        """total_tokens does NOT appear with default (empty) fields."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "Σ" not in text
+
+    def test_narrow_terminal_drops_context_detail(self):
+        """Narrow terminal (<76) ignores context_detail even if configured."""
+        text = self._cli_with_fields(["model", "context_detail", "duration"], width=60)
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" in text
+        # context_detail is wide-mode only
+        assert "12.4K/200K" not in text
+
+    def test_fragments_respect_field_config(self):
+        """Fragments method also respects field config."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._status_bar_visible = True
+
+        with patch("hermes_cli.config.load_config", return_value={
+            "display": {"status_bar": {"fields": ["model", "duration"]}}
+        }):
+            frags = cli_obj._get_status_bar_fragments()
+
+        frag_texts = [text for _, text in frags]
+        assert any("claude-sonnet-4-20250514" in t for t in frag_texts)
+        assert any("15m" in t for t in frag_texts)
+        assert not any("🗜️" in t for t in frag_texts)
+        assert not any("12.4K" in t for t in frag_texts)
+
+    def test_field_order_is_fixed(self):
+        """Fields always appear in a fixed order regardless of config order.
+
+        The config controls *which* fields are visible, not their order.
+        Model always comes first as the anchor.
+        """
+        text = self._cli_with_fields(["duration", "model", "compressions"])
+        # model always first, then compressions, then duration
+        model_pos = text.find("claude-sonnet-4-20250514")
+        comp_pos = text.find("🗜️")
+        dur_pos = text.find("15m")
+        assert model_pos < comp_pos < dur_pos
+
+    def test_empty_config_uses_defaults(self):
+        """Empty status_bar config dict uses all defaults."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch("hermes_cli.config.load_config", return_value={
+            "display": {"status_bar": {}}
+        }):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "claude-sonnet-4-20250514" in text
+        assert "12.4K/200K" in text
+        assert "🗜️" in text

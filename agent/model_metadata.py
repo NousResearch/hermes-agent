@@ -6,6 +6,7 @@ and run_agent.py for pre-flight context checks.
 
 import ipaddress
 import logging
+import math
 import os
 import re
 import time
@@ -131,6 +132,33 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # tokens cannot maintain enough working memory for tool-calling workflows.
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
+
+# Chars-per-token divisor for the /context /usage /compress composition
+# estimate (compose_request_breakdown). The classic rule of thumb is ~4
+# chars/token, but that is tuned for English prose; real Hermes requests are
+# dominated by JSON/code-dense tool results which tokenize closer to ~3.5
+# chars/token, so a flat /4 systematically UNDER-counts (empirically ~-8% at
+# 170k context, ~-15% at 280k on tool-heavy turns). 3.5 tightened the live
+# delta-vs-measured band to roughly +-5% across 170k-280k turns. Tunable via
+# env HERMES_COMPOSITION_CHARS_PER_TOKEN without a code change; clamped to a
+# sane 2.0-8.0 range so a typo can't make the estimate absurd. This only
+# affects the displayed composition estimate -- never billing, the provider's
+# real prompt_tokens (Measured occupancy), or compression pressure decisions
+# (those use estimate_request_tokens_rough, still /4, deliberately
+# conservative so Hermes compresses before a provider rejects the payload).
+def _composition_chars_per_token() -> float:
+    raw = os.environ.get("HERMES_COMPOSITION_CHARS_PER_TOKEN", "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if 2.0 <= val <= 8.0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return 3.5
+
+
+COMPOSITION_CHARS_PER_TOKEN = _composition_chars_per_token()
 
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
@@ -1921,7 +1949,8 @@ def compose_request_breakdown(
     api_messages + effective_system + agent.tools), so the buckets describe
     reality, not a re-derived proxy over the stored transcript.
 
-    Buckets (all char/4 estimates, the same method used everywhere):
+    Buckets (all char/N estimates where N = COMPOSITION_CHARS_PER_TOKEN,
+    default 3.5; tunable via env HERMES_COMPOSITION_CHARS_PER_TOKEN):
       Fixed (stable cacheable prefix):
         sys_tokens, tool_schema_tokens
       Non-fixed (grows with the conversation):
@@ -1971,7 +2000,12 @@ def compose_request_breakdown(
                 history_chars += _estimate_message_chars(msg)
 
     def _t(chars: int) -> int:
-        return (chars + 3) // 4 if chars > 0 else 0
+        # Ceiling division by the tunable chars-per-token divisor
+        # (COMPOSITION_CHARS_PER_TOKEN, default 3.5). Ceiling so a handful of
+        # short tool results never round to 0 and vanish from the estimate.
+        if chars <= 0:
+            return 0
+        return int(math.ceil(chars / COMPOSITION_CHARS_PER_TOKEN))
 
     sys_tokens = _t(sys_chars)
     tool_schema_tokens = _t(tool_schema_chars)

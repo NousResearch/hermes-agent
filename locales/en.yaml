@@ -333,7 +333,7 @@ gateway:
     label_cost:               "Cost: {prefix}${amount}"
     label_cost_included:      "Cost: included"
     label_context:            "Context: {used} / {total} ({pct}%)"
-    comp_header:              "Last request composition (char/4 estimate):"
+    comp_header:              "Last request composition (char-based estimate):"
     comp_fixed:               "• Fixed: ~{fixed} tok ({sys} system + {tools} tool schemas)"
     comp_nonfixed:            "• Non-fixed: ~{nonfixed} tok ({hist} history + {results} tool results + {args} tool args)"
     comp_total:               "• Estimated request total: ~{total} tok (sums exactly; fixed + non-fixed)"

@@ -88,6 +88,60 @@ def test_non_dict_messages_do_not_crash():
     assert comp["total_tokens"] >= 0
 
 
+def test_chars_per_token_divisor_default_is_3_5():
+    # Default divisor is 3.5, not the old 4. Use a tool result (counted close to
+    # raw content length) and assert the bucket is ~content/3.5, allowing a small
+    # margin for the dict-framing overhead _estimate_message_chars includes.
+    n = 70000
+    comp = compose_request_breakdown(
+        [{"role": "tool", "content": "x" * n, "tool_call_id": "1"}]
+    )
+    tok = comp["tool_result_tokens"]
+    assert tok >= n / 3.5, f"{tok} should be >= {n}/3.5"
+    # Strictly larger than the old /4 rule would have produced.
+    assert tok > (n + 3) // 4
+
+
+def test_chars_per_token_divisor_env_override(monkeypatch):
+    # The divisor is read at import; reload the module under a patched env so
+    # the override path is exercised end-to-end. With 4.0 the same payload
+    # yields fewer tokens than the default 3.5.
+    import importlib
+    import agent.model_metadata as mm
+    n = 80000
+    monkeypatch.setenv("HERMES_COMPOSITION_CHARS_PER_TOKEN", "4")
+    importlib.reload(mm)
+    try:
+        assert mm.COMPOSITION_CHARS_PER_TOKEN == 4.0
+        comp4 = mm.compose_request_breakdown(
+            [{"role": "tool", "content": "x" * n, "tool_call_id": "1"}]
+        )
+        tok4 = comp4["tool_result_tokens"]
+        assert tok4 >= n / 4.0
+        # 4.0 must produce strictly fewer tokens than the 3.5 default.
+        monkeypatch.setenv("HERMES_COMPOSITION_CHARS_PER_TOKEN", "3.5")
+        importlib.reload(mm)
+        comp35 = mm.compose_request_breakdown(
+            [{"role": "tool", "content": "x" * n, "tool_call_id": "1"}]
+        )
+        assert comp35["tool_result_tokens"] > tok4
+    finally:
+        monkeypatch.delenv("HERMES_COMPOSITION_CHARS_PER_TOKEN", raising=False)
+        importlib.reload(mm)  # restore default 3.5 for other tests
+
+
+def test_chars_per_token_divisor_out_of_range_falls_back_to_default(monkeypatch):
+    import importlib
+    import agent.model_metadata as mm
+    # Absurd / malformed values (typo guard) must be ignored -> default 3.5.
+    for bad in ("0", "999", "-3", "notanumber", ""):
+        monkeypatch.setenv("HERMES_COMPOSITION_CHARS_PER_TOKEN", bad)
+        importlib.reload(mm)
+        assert mm.COMPOSITION_CHARS_PER_TOKEN == 3.5, f"value {bad!r} should fall back"
+    monkeypatch.delenv("HERMES_COMPOSITION_CHARS_PER_TOKEN", raising=False)
+    importlib.reload(mm)
+
+
 # --------------------------------------------------------------------------- #
 # blackbox store — comp_* persistence
 # --------------------------------------------------------------------------- #

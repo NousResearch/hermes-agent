@@ -86,6 +86,33 @@ def test_profile_local_config_uses_global_credentials_fallback(tmp_path, monkeyp
     assert cfg.peer_name == "Arta"
 
 
+def test_windows_localappdata_honcho_config_uses_global_credentials_fallback(tmp_path, monkeypatch):
+    """Windows HERMES_HOME ends in AppData/Local/hermes, not ~/.hermes."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+    monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
+
+    global_dir = tmp_path / ".honcho"
+    global_dir.mkdir()
+    (global_dir / "config.json").write_text(json.dumps({
+        "apiKey": "global-api-key",
+        "baseUrl": "https://honcho.example",
+    }))
+
+    profile_config = tmp_path / "AppData" / "Local" / "hermes" / "honcho.json"
+    profile_config.parent.mkdir(parents=True)
+    profile_config.write_text(json.dumps({
+        "enabled": True,
+        "workspace": "wildeboer-fleet",
+    }))
+
+    cfg = HonchoClientConfig.from_global_config(config_path=profile_config, host="hermes")
+
+    assert cfg.api_key == "global-api-key"
+    assert cfg.base_url == "https://honcho.example"
+    assert cfg.workspace_id == "wildeboer-fleet"
+
+
 class TestHonchoClientConfigAutoEnable:
     """Test auto-enable behavior when API key is present."""
 

@@ -430,7 +430,10 @@ class HonchoClientConfig:
 
         fallback_raw: dict[str, Any] = {}
         global_path = resolve_global_config_path()
-        is_profile_local_config = path.name == "honcho.json" and path.parent.name in {".hermes", "default"}
+        is_profile_local_config = path.name == "honcho.json" and (
+            path.parent.name in {".hermes", "hermes", "default"}
+            or path.parent == get_hermes_home()
+        )
         if is_profile_local_config and path != global_path and global_path.exists():
             try:
                 fallback_raw = json.loads(global_path.read_text(encoding="utf-8"))

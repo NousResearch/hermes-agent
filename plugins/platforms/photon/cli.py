@@ -332,9 +332,13 @@ def _install_sidecar() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} install")
+    # Always pull the newest published spectrum-ts so every setup runs against
+    # the latest SDK. `spectrum-ts@latest` bumps package.json + package-lock.json
+    # to the current release before installing — a plain `npm install` would
+    # stay pinned to whatever the committed lockfile already resolved.
+    print(f"  $ cd {_SIDECAR_DIR} && {npm} install spectrum-ts@latest")
     proc = subprocess.run(  # noqa: S603
-        [npm, "install"],
+        [npm, "install", "spectrum-ts@latest"],
         cwd=str(_SIDECAR_DIR),
         check=False,
     )

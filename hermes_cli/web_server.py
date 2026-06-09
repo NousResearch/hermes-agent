@@ -146,6 +146,24 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
+    # Discover MCP tools at dashboard startup so they are available in TUI sessions.
+    try:
+        from hermes_cli.mcp_config import _get_mcp_servers
+        if _get_mcp_servers():
+            def _discover_mcp_background() -> None:
+                try:
+                    from tools.mcp_tool import discover_mcp_tools
+                    discover_mcp_tools()
+                except Exception:
+                    logger.warning("Background MCP tool discovery failed", exc_info=True)
+            threading.Thread(
+                target=_discover_mcp_background,
+                name="dashboard-mcp-discovery",
+                daemon=True,
+            ).start()
+    except Exception:
+        logger.warning("Could not start MCP discovery thread", exc_info=True)
+
     try:
         yield
     finally:

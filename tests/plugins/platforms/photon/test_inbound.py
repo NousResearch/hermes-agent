@@ -292,6 +292,20 @@ def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     assert adapter._is_duplicate("id-1") is True  # still dup
 
 
+def test_is_duplicate_hard_size_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A burst of unique ids within the window must not grow the dedup map past
+    # its bound — evict oldest (LRU), not only expired entries.
+    import plugins.platforms.photon.adapter as ad
+
+    monkeypatch.setattr(ad, "_DEDUP_MAX_SIZE", 5)
+    adapter = _make_adapter(monkeypatch)
+    for i in range(100):
+        adapter._is_duplicate(f"id-{i}")
+    assert len(adapter._seen_messages) <= 5
+    assert adapter._is_duplicate("id-99") is True  # recent still deduped
+    assert adapter._is_duplicate("id-0") is False  # oldest evicted
+
+
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:
     # If no node binary on PATH the adapter should refuse to start.
     from plugins.platforms.photon import adapter as adapter_mod

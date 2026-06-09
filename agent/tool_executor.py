@@ -170,8 +170,9 @@ def _tool_search_scoped_names(agent) -> frozenset:
             disabled_toolsets=disabled,
             quiet_mode=True,
             skip_tool_search_assembly=True,
+            platform=getattr(agent, "platform", None),
         ) or []
-        names = _ts.scoped_deferrable_names(scoped_defs)
+        names = _ts.scoped_deferrable_names(scoped_defs, platform=getattr(agent, "platform", None))
     except Exception:
         names = frozenset()
     try:

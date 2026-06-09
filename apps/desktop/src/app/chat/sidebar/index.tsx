@@ -924,7 +924,12 @@ export function ChatSidebar({
             onTogglePin={pinSession}
             open={agentsOpen}
             pinned={false}
-            rootClassName="min-h-0 flex-1 p-0"
+            // Keep the flexible recents section at least as tall as its own
+            // header. With min-h-0, a short window plus fixed messaging/platform
+            // sections can squeeze this flex item below the header height; the
+            // visible header then bleeds into the following Discord/Telegram
+            // header and the two labels overlap.
+            rootClassName="min-h-[2.125rem] flex-1 p-0"
             sessions={displayAgentSessions}
             sortable={!showAllProfiles && agentSessions.length > 1}
             workingSessionIdSet={workingSessionIdSet}

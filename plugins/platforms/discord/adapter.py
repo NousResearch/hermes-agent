@@ -135,6 +135,13 @@ def check_discord_requirements() -> bool:
     return True
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _build_allowed_mentions():
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
@@ -595,10 +602,12 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_activity_last_reset: Dict[int, float] = {}  # guild_id -> last inbound activity timer reset
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
+        self._recent_voice_transcripts: Dict[Tuple[int, int], List[Tuple[float, str]]] = {}
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Phase 3: continuous voice mixer (ambient idle bed + ducked speech).
         # Installed once per guild on join; lets acks / TTS / the "thinking"
@@ -2154,6 +2163,7 @@ class DiscordAdapter(BasePlatformAdapter):
             task = self._voice_timeout_tasks.pop(guild_id, None)
             if task:
                 task.cancel()
+            self._voice_activity_last_reset.pop(guild_id, None)
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
@@ -2256,6 +2266,22 @@ class DiscordAdapter(BasePlatformAdapter):
             self._voice_timeout_handler(guild_id)
         )
 
+    def _note_voice_activity(self, guild_id: int, *, min_interval: float = 30.0) -> None:
+        """Record inbound voice activity and keep the voice session alive.
+
+        The inactivity timeout exists to leave empty/forgotten voice channels,
+        but inbound speech is activity too.  Previously the timer was reset on
+        join/playback only, so a listen-only meeting could be disconnected
+        after VOICE_TIMEOUT even while users were actively talking.  Throttle
+        resets to avoid churning timeout tasks on every 200ms listen-loop tick.
+        """
+        now = time.monotonic()
+        last = self._voice_activity_last_reset.get(guild_id, 0.0)
+        if now - last < min_interval:
+            return
+        self._voice_activity_last_reset[guild_id] = now
+        self._reset_voice_timeout(guild_id)
+
     async def _voice_timeout_handler(self, guild_id: int) -> None:
         """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
         try:
@@ -2263,6 +2289,7 @@ class DiscordAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
+        self._voice_activity_last_reset.pop(guild_id, None)
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:
@@ -2381,6 +2408,20 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception:
                         pass
 
+                # Any recent inbound packet means the meeting is active, even
+                # before an utterance reaches silence/STT.  This prevents
+                # continuous or listen-only meetings from timing out mid-call.
+                try:
+                    with receiver._lock:
+                        recent_audio = any(
+                            now - last_t < self._KEEPALIVE_INTERVAL
+                            for last_t in receiver._last_packet_time.values()
+                        )
+                    if recent_audio:
+                        self._note_voice_activity(guild_id)
+                except Exception:
+                    pass
+
                 completed = receiver.check_silence()
                 # Voice inputs always originate from a specific guild
                 # (guild_id is in scope). Pass it so role checks are
@@ -2393,14 +2434,61 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=False,
                     ):
                         continue
+                    self._note_voice_activity(guild_id)
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
 
+    def _voice_transcripts_trigger_agent_turns(self) -> bool:
+        """Whether completed VC utterances should enter the agent pipeline."""
+        return _env_flag("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", False)
+
+    def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
+        """Suppress repeated STT outputs before side-chat posting/callback."""
+        from difflib import SequenceMatcher
+
+        normalized = re.sub(r"\s+", " ", transcript).strip().lower()
+        normalized = re.sub(r"[^\w\s]", "", normalized)
+        if not normalized:
+            return False
+
+        now = time.monotonic()
+        window_seconds = 12.0
+        key = (guild_id, user_id)
+        recent = [
+            (ts, txt)
+            for ts, txt in self._recent_voice_transcripts.get(key, [])
+            if now - ts <= window_seconds
+        ]
+        for _, prior in recent:
+            if prior == normalized:
+                self._recent_voice_transcripts[key] = recent
+                return True
+            if len(prior) >= 16 and len(normalized) >= 16:
+                if SequenceMatcher(None, prior, normalized).ratio() >= 0.95:
+                    self._recent_voice_transcripts[key] = recent
+                    return True
+        recent.append((now, normalized))
+        self._recent_voice_transcripts[key] = recent[-5:]
+        return False
+
+    async def _post_voice_transcript_to_side_chat(self, guild_id: int, user_id: int, transcript: str) -> None:
+        """Post a completed voice transcript directly from the Discord adapter."""
+        text_ch_id = self._voice_text_channels.get(guild_id)
+        if not text_ch_id or not self._client:
+            return
+        try:
+            channel = self._client.get_channel(text_ch_id)
+            if channel:
+                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+        except Exception:
+            logger.debug("Failed to post Discord voice transcript", exc_info=True)
+
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
-        """Convert PCM -> WAV -> STT -> callback."""
+        """Convert PCM -> WAV -> STT, post transcript, and optionally callback."""
         from tools.voice_mode import is_whisper_hallucination
 
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
@@ -2420,7 +2508,18 @@ class DiscordAdapter(BasePlatformAdapter):
 
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
 
-            if self._voice_input_callback:
+            if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+                logger.info(
+                    "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
+                    guild_id,
+                    user_id,
+                    transcript[:100],
+                )
+                return
+
+            await self._post_voice_transcript_to_side_chat(guild_id, user_id, transcript)
+
+            if self._voice_input_callback and self._voice_transcripts_trigger_agent_turns():
                 await self._voice_input_callback(
                     guild_id=guild_id,
                     user_id=user_id,

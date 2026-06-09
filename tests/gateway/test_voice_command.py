@@ -523,6 +523,7 @@ class TestDiscordPlayTtsSkip:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_activity_last_reset = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._client = None
@@ -919,8 +920,9 @@ class TestVoiceChannelCommands:
         await runner._handle_voice_channel_input(111, 42, "Hello")
 
     @pytest.mark.asyncio
-    async def test_input_creates_event_and_dispatches(self, runner):
-        """Voice input creates synthetic event and calls handle_message."""
+    async def test_input_creates_event_and_dispatches_when_enabled(self, runner, monkeypatch):
+        """Voice input creates synthetic event when transcript agent turns are enabled."""
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", "1")
         from gateway.config import Platform
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
@@ -939,8 +941,9 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
-    async def test_input_reuses_bound_source_metadata(self, runner):
+    async def test_input_reuses_bound_source_metadata_when_enabled(self, runner, monkeypatch):
         """Voice input should share the linked text channel session metadata."""
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", "1")
         from gateway.config import Platform
 
         bound_source = SessionSource(
@@ -988,9 +991,31 @@ class TestVoiceChannelCommands:
         assert "Test transcript" in msg
         assert "42" in msg  # user_id in mention
 
+
     @pytest.mark.asyncio
-    async def test_input_suppresses_duplicate_transcript(self, runner):
+    async def test_input_posts_transcript_without_agent_turn_by_default(self, runner, monkeypatch):
+        """Meeting mode posts side-chat transcripts without running the full agent loop."""
+        monkeypatch.delenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", raising=False)
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Meeting transcript")
+
+        mock_channel.send.assert_called_once()
+        mock_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_input_suppresses_duplicate_transcript(self, runner, monkeypatch):
         """Near-immediate duplicate STT output should not dispatch twice."""
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", "1")
         from gateway.config import Platform
 
         mock_adapter = AsyncMock()
@@ -1009,8 +1034,9 @@ class TestVoiceChannelCommands:
         mock_channel.send.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_input_suppresses_near_duplicate_transcript(self, runner):
+    async def test_input_suppresses_near_duplicate_transcript(self, runner, monkeypatch):
         """Small STT wording drift should still be treated as the same utterance."""
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", "1")
         from gateway.config import Platform
 
         mock_adapter = AsyncMock()
@@ -1078,9 +1104,11 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_activity_last_reset = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None
+        adapter._recent_voice_transcripts = {}
         adapter._allowed_user_ids = set()
         adapter._running = True
         return adapter
@@ -1112,6 +1140,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_clients[111] = mock_vc
         adapter._voice_text_channels[111] = 123
         adapter._voice_sources[111] = {"chat_id": "123", "chat_type": "group"}
+        adapter._voice_activity_last_reset[111] = 123.0
 
         mock_receiver = MagicMock()
         adapter._voice_receivers[111] = mock_receiver
@@ -1131,6 +1160,7 @@ class TestDiscordVoiceChannelMethods:
         assert 111 not in adapter._voice_clients
         assert 111 not in adapter._voice_text_channels
         assert 111 not in adapter._voice_sources
+        assert 111 not in adapter._voice_activity_last_reset
         assert 111 not in adapter._voice_receivers
 
     @pytest.mark.asyncio
@@ -1197,9 +1227,25 @@ class TestDiscordVoiceChannelMethods:
         adapter._allowed_user_ids = {"99"}
         assert adapter._is_allowed_user("42") is False
 
+
+    def test_note_voice_activity_resets_timeout_and_throttles(self, monkeypatch):
+        """Inbound voice activity keeps the Discord VC timeout alive without churn."""
+        adapter = self._make_adapter()
+        calls = []
+        monkeypatch.setattr(adapter, "_reset_voice_timeout", lambda guild_id: calls.append(guild_id))
+        times = iter([100.0, 110.0, 131.0])
+        monkeypatch.setattr("plugins.platforms.discord.adapter.time.monotonic", lambda: next(times))
+
+        adapter._note_voice_activity(111)
+        adapter._note_voice_activity(111)
+        adapter._note_voice_activity(111)
+
+        assert calls == [111, 111]
+
     @pytest.mark.asyncio
-    async def test_process_voice_input_success(self):
-        """Successful voice input: PCM->WAV->STT->callback."""
+    async def test_process_voice_input_success(self, monkeypatch):
+        """Successful voice input: PCM->WAV->STT->callback when agent turns enabled."""
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", "1")
         adapter = self._make_adapter()
         callback = AsyncMock()
         adapter._voice_input_callback = callback
@@ -1214,6 +1260,26 @@ class TestDiscordVoiceChannelMethods:
             await adapter._process_voice_input(111, 42, pcm_data)
 
         callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
+
+    @pytest.mark.asyncio
+    async def test_process_voice_input_posts_side_chat_without_callback_by_default(self, monkeypatch):
+        """Default meeting mode keeps transcript posting bot-side and skips agent callback."""
+        monkeypatch.delenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", raising=False)
+        adapter = self._make_adapter()
+        callback = AsyncMock()
+        adapter._voice_input_callback = callback
+        adapter._voice_text_channels = {111: 123}
+        mock_channel = AsyncMock()
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
+             patch("tools.transcription_tools.transcribe_audio",
+                   return_value={"success": True, "transcript": "Hello bot side"}), \
+             patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
+            await adapter._process_voice_input(111, 42, b"\x00" * 96000)
+
+        mock_channel.send.assert_called_once()
+        callback.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_voice_input_hallucination_filtered(self):
@@ -1860,6 +1926,7 @@ class TestVoiceTimeoutCleansRunnerState:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_activity_last_reset = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None
@@ -1951,6 +2018,7 @@ class TestPlaybackTimeout:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_activity_last_reset = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None

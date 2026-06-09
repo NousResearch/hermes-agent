@@ -67,6 +67,13 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -12113,12 +12120,25 @@ class GatewayRunner:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
+            # Meeting/listen mode should not make every transcript trigger an
+            # agent+TTS turn.  Keep text-channel replies speakable via voice_mode
+            # but disable adapter auto-TTS unless transcript agent turns are
+            # explicitly enabled.
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
-            self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            transcript_agent_turns = self._voice_transcripts_trigger_agent_turns()
+            if transcript_agent_turns:
+                self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            else:
+                self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+            mode_note = (
+                "I'll speak my replies and listen to you."
+                if transcript_agent_turns
+                else "I'll transcribe voice to this side chat without answering every utterance."
+            )
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+                f"{mode_note} Use /voice leave to disconnect."
             )
         # Join failed — clear callback
         adapter._voice_input_callback = None
@@ -12198,13 +12218,24 @@ class GatewayRunner:
         recent_store[key] = recent[-5:]
         return False
 
+    def _voice_transcripts_trigger_agent_turns(self) -> bool:
+        """Whether raw Discord VC transcripts should run the full agent loop.
+
+        Meeting mode should be cheap and durable: publish transcripts to the
+        linked side chat without replaying a growing conversation into the LLM
+        for every utterance.  Operators can opt back into the old behavior with
+        HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS=1.
+        """
+        return _env_flag("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", False)
+
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str
     ):
         """Handle transcribed voice from a user in a voice channel.
 
-        Creates a synthetic MessageEvent and processes it through the
-        adapter's full message pipeline (session, typing, agent, TTS reply).
+        Always posts the transcript to the linked side chat.  By default it does
+        not turn every utterance into a full agent request, because that makes
+        long meetings slower as Discord/session history grows.
         """
         adapter = self.adapters.get(Platform.DISCORD)
         if not adapter:
@@ -12252,6 +12283,14 @@ class GatewayRunner:
                 await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
         except Exception:
             pass
+
+        if not self._voice_transcripts_trigger_agent_turns():
+            logger.debug(
+                "Posted Discord voice transcript without agent turn for guild=%s user=%s",
+                guild_id,
+                user_id,
+            )
+            return
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract

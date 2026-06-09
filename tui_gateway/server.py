@@ -31,6 +31,7 @@ from tui_gateway.transport import (
     current_transport,
     reset_transport,
 )
+from tui_gateway.session_state import SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -2640,7 +2641,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     now = time.time()
     with _sessions_lock:
-        _sessions[sid] = {
+        _sessions[sid] = SessionState({
             "agent": agent,
             "session_key": key,
             "history": history,
@@ -2662,7 +2663,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
-        }
+        })
     db = _get_db()
     if db is not None:
         row = db.get_session(key)
@@ -3068,7 +3069,7 @@ def _(rid, params: dict) -> dict:
     now = time.time()
 
     with _sessions_lock:
-        _sessions[sid] = {
+        _sessions[sid] = SessionState({
             "agent": None,
             "agent_error": None,
             "agent_ready": ready,
@@ -3093,7 +3094,7 @@ def _(rid, params: dict) -> dict:
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
-        }
+        })
         _register_session_cwd(_sessions[sid])
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint

@@ -18,6 +18,8 @@ import sys
 
 from rich.markup import escape as _escape
 
+from agent.memory_manager import sanitize_context
+
 
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
@@ -561,6 +563,7 @@ class CLIAgentSetupMixin:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
+                text = sanitize_context(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))

@@ -160,6 +160,7 @@ def realign_markdown_tables(*args, **kwargs):
 # NOTE: `from agent.account_usage import ...` is deliberately NOT at module
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
 # needed when the user runs `/limits`. Lazy-imported inside the handler below.
+from agent.memory_manager import sanitize_context
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -10000,8 +10001,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             sys.stdout.flush()
             time.sleep(0.15)
 
-            # Update history with full conversation
-            self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
+            # Update history with full conversation (sanitize injected
+            # memory-context fence blocks from user messages before storing)
+            if result:
+                _raw_messages = result.get("messages")
+                if _raw_messages:
+                    _clean = []
+                    for _m in _raw_messages:
+                        _mc = _m.copy()
+                        _content = _mc.get("content")
+                        if isinstance(_content, str) and _mc.get("role") == "user":
+                            _mc["content"] = sanitize_context(_content)
+                        _clean.append(_mc)
+                    self.conversation_history = _clean
+                else:
+                    self.conversation_history = self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync

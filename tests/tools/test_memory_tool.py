@@ -575,6 +575,116 @@ class TestExternalDriftGuard:
 # =========================================================================
 
 
+# =========================================================================
+# Auto-archive oversize entries (issue #26045 follow-up)
+#
+# When drift signal #2 fires because of an externally-written oversize entry,
+# the default behavior is to refuse the mutation. With ``auto_archive=True``,
+# the oversize entry is moved to a sidecar archive file (``MEMORY-archive-<ts>.md``)
+# and the primary file is repaired in place. This is the documented escape
+# hatch for the case where the operator KNOWS the entry is fine and just needs
+# to get back to a working state without losing the oversize content.
+# =========================================================================
+
+
+class TestAutoArchiveOversize:
+    """``add(..., auto_archive=True)`` repairs signal-#2 drift by archiving the oversized entry."""
+
+    def _plant_oversize_entry(self, store, target="memory"):
+        """Write a single entry larger than the test fixture's char_limit (500)."""
+        path = store._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # One entry that's clearly over the 500-char test limit
+        giant_entry = "x" * 800
+        path.write_text(giant_entry, encoding="utf-8")
+        return path, giant_entry
+
+    def test_add_without_auto_archive_refuses_oversize_drift(self, store):
+        """Default behaviour is unchanged: oversize drift still refuses the add."""
+        self._plant_oversize_entry(store)
+        result = store.add("memory", "Small entry under drift.")
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert "26045" in result["error"]
+
+    def test_add_with_auto_archive_repairs_signal_2_drift(self, store, tmp_path):
+        """auto_archive=True moves the oversize entry to a sidecar file."""
+        path, giant_entry = self._plant_oversize_entry(store)
+
+        result = store.add("memory", "Small entry after repair.", auto_archive=True)
+
+        assert result["success"] is True, f"expected success, got: {result}"
+        # The sidecar archive exists with the oversize entry body
+        archives = list(tmp_path.glob("MEMORY-archive-*.md"))
+        assert len(archives) == 1, f"expected 1 archive, got {len(archives)}: {archives}"
+        archive_body = archives[0].read_text(encoding="utf-8")
+        assert giant_entry in archive_body
+        assert "§§ archived" in archive_body  # envelope header
+        # The primary file no longer contains the giant entry
+        primary = path.read_text(encoding="utf-8")
+        assert giant_entry not in primary
+        # The original primary was preserved as a .bak
+        baks = list(tmp_path.glob("MEMORY.md.bak.*"))
+        assert len(baks) >= 1
+
+    def test_add_with_auto_archive_response_includes_archive_path(self, store, tmp_path):
+        """The success message tells the operator where the archive landed."""
+        self._plant_oversize_entry(store)
+        result = store.add("memory", "anything", auto_archive=True)
+        assert result["success"] is True
+        assert "Auto-archived" in result["message"]
+        assert "MEMORY-archive-" in result["message"]
+
+    def test_add_with_auto_archive_refuses_round_trip_mismatch(self, store):
+        """auto_archive only repairs signal #2 (oversize), NOT signal #1 (round-trip).
+
+        A round-trip mismatch means the file is structurally corrupted —
+        automatic re-parse could lose data. We refuse even with auto_archive=True.
+        """
+        path = store._path_for("memory")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Trigger signal #1 (round-trip mismatch) WITHOUT triggering signal #2.
+        # The standard parser splits on "\n§\n" (3 chars). If we write
+        # "entry\n§\n\nentry" with an EXTRA newline after the delimiter,
+        # the round-trip join won't match because the parser strips each
+        # entry but the raw still has the orphan blank line.
+        path.write_text("small entry 1\n§\n\nsmall entry 2", encoding="utf-8")
+        result = store.add("memory", "another", auto_archive=True)
+        assert result["success"] is False
+        assert "drift_backup" in result
+
+    def test_add_with_auto_archive_works_for_user_target(self, store, tmp_path):
+        """Same logic applies to USER.md — auto_archive uses the right archive filename."""
+        path, giant = self._plant_oversize_entry(store, target="user")
+        result = store.add("user", "ok", auto_archive=True)
+        assert result["success"] is True
+        archives = list(tmp_path.glob("USER-archive-*.md"))
+        assert len(archives) == 1
+        assert giant in archives[0].read_text(encoding="utf-8")
+
+    def test_tool_dispatcher_passes_auto_archive_flag(self, store, tmp_path):
+        """The top-level memory_tool() entry point forwards auto_archive correctly."""
+        import json
+        self._plant_oversize_entry(store)
+        result_json = memory_tool(
+            action="add",
+            target="memory",
+            content="via dispatcher",
+            auto_archive=True,
+            store=store,
+        )
+        result = json.loads(result_json)
+        assert result["success"] is True
+        assert "Auto-archived" in result["message"]
+
+    def test_schema_documents_auto_archive_parameter(self):
+        """LLM-visible schema lists auto_archive so the model knows it's available."""
+        props = MEMORY_SCHEMA["parameters"]["properties"]
+        assert "auto_archive" in props
+        assert props["auto_archive"]["type"] == "boolean"
+        assert props["auto_archive"]["default"] is False
+
+
 class TestLoadTimeSnapshotSanitization:
     def test_clean_entries_pass_through_snapshot(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)

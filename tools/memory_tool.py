@@ -31,7 +31,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 
@@ -294,8 +294,19 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+    def add(self, target: str, content: str, auto_archive: bool = False) -> Dict[str, Any]:
+        """Append a new entry. Returns error if it would exceed the char limit.
+
+        If ``auto_archive=True`` and the on-disk file contains one or more
+        entries larger than the store's char limit (drift signal #2),
+        the oversized entries are moved to a sidecar archive file and the
+        primary file is rewritten without them so the new entry can be
+        added without hitting the drift guard. The original content is
+        never destroyed — it lands in ``MEMORY-archive-<ts>.md`` (or
+        ``USER-archive-<ts>.md``) with an envelope header. This is the
+        documented escape hatch for issue #26045 follow-up #4 (oversize
+        drift) and is opt-in so default behaviour is unchanged.
+        """
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -312,6 +323,36 @@ class MemoryStore:
             # content the patch tool / shell append / sister session wrote.
             bak = self._reload_target(target)
             if bak:
+                # Drift guard fired. Round-trip mismatches are NOT auto-fixable
+                # (structural corruption, needs human eyes). Oversize entries
+                # CAN be auto-archived if the operator opts in.
+                if not auto_archive:
+                    return _drift_error(self._path_for(target), bak)
+
+                # Drift is likely from oversize entries — try auto-archive.
+                # _reload_target already populated self.<target>_entries from
+                # the parsed disk file. Check if signal #2 (oversize) is the
+                # actual cause.
+                entries = self._entries_for(target)
+                limit = self._char_limit(target)
+                if any(len(e) > limit for e in entries):
+                    clean, archive_path = self._archive_oversize_entries(
+                        target, entries, limit,
+                    )
+                    self._set_entries(target, clean)
+                    self.save_to_disk(target)
+                    # NOTE: do NOT delete the .bak — keep both as audit trail.
+                    return self._success_response(
+                        target,
+                        message=(
+                            f"Auto-archived oversize entries to {archive_path}. "
+                            f"Primary file now has {len(clean)} entries "
+                            f"({self._char_count(target):,}/{limit:,} chars). "
+                            f"Original file preserved at {bak}. Retry your add."
+                        ),
+                    )
+                # Round-trip mismatch without oversize — still structural
+                # corruption, refuse even with auto_archive=True.
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
@@ -574,6 +615,46 @@ class MemoryStore:
             return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
         return str(bak_path)
 
+    def _archive_oversize_entries(
+        self, target: str, entries: List[str], char_limit: int,
+    ) -> Tuple[List[str], Optional[str]]:
+        """Move entries that exceed ``char_limit`` to a sidecar archive file.
+
+        Used as the auto-repair path when drift signal #2 fires on the
+        ``add`` mutation: the operator passes ``auto_archive=True`` to
+        accept the side effect of moving the oversized entry out of
+        MEMORY.md into ``MEMORY-archive-<ts>.md`` so the primary file
+        remains within budget and the round-trip guard stops firing.
+
+        Round-trip mismatch (signal #1) is NOT repaired here — that's a
+        structural corruption that needs human eyes. This function only
+        handles the case where the file parses cleanly but one entry is
+        larger than the per-store budget, which is the most common
+        user-visible drift pattern in practice (issue #26045 follow-up).
+
+        Returns ``(cleaned_entries, archive_path)``. ``archive_path`` is
+        ``None`` if nothing was archived.
+        """
+        clean = [e for e in entries if len(e) <= char_limit]
+        oversize = [e for e in entries if len(e) > char_limit]
+        if not oversize:
+            return entries, None
+
+        # Sidecar file in the same dir so it shows up in the same backups.
+        mem_dir = get_memory_dir()
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        archive_path = mem_dir / f"{self._path_for(target).name.replace('.md', '')}-archive-{ts}.md"
+
+        # Append each oversized entry with an envelope so it's recoverable
+        # as a standalone record (timestamp + char count + body).
+        with open(archive_path, "a", encoding="utf-8") as f:
+            for entry in oversize:
+                f.write(f"§§ archived {ts} ({len(entry)} chars) §§\n")
+                f.write(entry.rstrip() + "\n")
+                f.write(f"§§ end archived ({len(entry)} chars) §§\n\n")
+
+        return clean, str(archive_path)
+
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
         """Write entries to a memory file using atomic temp-file + rename.
@@ -611,12 +692,18 @@ def memory_tool(
     target: str = "memory",
     content: str = None,
     old_text: str = None,
+    auto_archive: bool = False,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
 
     Returns JSON string with results.
+
+    ``auto_archive`` only takes effect on the ``add`` action. When set,
+    if drift signal #2 fires because of an oversized entry on disk, the
+    entry is moved to ``MEMORY-archive-<ts>.md`` (or ``USER-archive-<ts>.md``)
+    and the primary file is repaired so the add can succeed on retry.
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
@@ -627,7 +714,7 @@ def memory_tool(
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+        result = store.add(target, content, auto_archive=auto_archive)
 
     elif action == "replace":
         if not old_text:
@@ -702,6 +789,17 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
+            "auto_archive": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "add-only: when True, if drift signal #2 fires on the on-disk "
+                    "file (oversized entry), automatically move the oversized entry "
+                    "to a MEMORY-archive-<ts>.md sidecar file and rewrite the primary "
+                    "file so the add can succeed on retry. Default False (refuse "
+                    "mutation, surface drift error). See issue #26045 follow-up."
+                ),
+            },
         },
         "required": ["action", "target"],
     },
@@ -720,6 +818,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        auto_archive=args.get("auto_archive", False),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",

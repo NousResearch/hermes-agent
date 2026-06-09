@@ -246,10 +246,9 @@ class TestAdd:
         await _goto(page)
         options = await _get_model_options(page)
         providers = options.get("providers", [])
-        assert len(providers) > 0
+        assert len(providers) > 0, "No providers available from /api/model/options"
         p = providers[0]
-        if not p.get("models"):
-            pytest.skip(f"Provider '{p['slug']}' has no models")
+        assert p.get("models"), f"Provider '{p['slug']}' has no models"
         model = p["models"][0]
         await _add_via_picker(page, p.get("name") or p["slug"], model)
         config = _parse_yaml(await _get_raw_yaml(page))
@@ -264,8 +263,7 @@ class TestAdd:
         await _goto(page)
         options = await _get_model_options(page)
         providers = options.get("providers", [])
-        if not providers:
-            pytest.skip("No providers available")
+        assert providers, "No providers available"
         items = page.locator("[data-testid^='fallback-item-']")
         for p in providers:
             if not p.get("models"):
@@ -285,8 +283,7 @@ class TestAdd:
                 continue
         items = page.locator("[data-testid^='fallback-item-']")
         count = await items.count()
-        if count < 2:
-            pytest.skip("Could not add enough providers via picker")
+        assert count >= 2, "Could not add enough providers via picker"
         last_idx = count - 1
         await _click_and_wait_fallback_put(page, page.locator(f"[data-testid='fallback-move-up-{last_idx}']"))
         ui = await _ui_order(page)

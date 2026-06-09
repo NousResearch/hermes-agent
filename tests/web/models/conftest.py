@@ -190,3 +190,38 @@ async def reset_model_fallbacks(page: Page):
         return await response.json();
     }""")
     yield
+
+
+@pytest.fixture(autouse=True)
+async def mock_model_options(page: Page):
+    """Mock /api/model/options so tests have deterministic provider data.
+
+    Prevents environment-dependent skips by ensuring the model picker always
+    sees at least two providers with models.
+    """
+    import json
+
+    providers = {
+        "providers": [
+            {
+                "slug": "openrouter",
+                "name": "OpenRouter",
+                "models": ["anthropic/claude-sonnet-4", "google/gemini-2.5-flash"],
+            },
+            {
+                "slug": "gemini",
+                "name": "Google Gemini",
+                "models": ["gemini-2.5-flash"],
+            },
+        ]
+    }
+    body = json.dumps(providers)
+
+    async def _options_handler(route):
+        await route.fulfill(status=200, content_type="application/json", body=body)
+
+    await page.route("**/api/model/options", _options_handler)
+    try:
+        yield
+    finally:
+        await page.unroute("**/api/model/options", _options_handler)

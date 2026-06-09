@@ -94,8 +94,7 @@ async def test_main_model_card_refreshes_after_assignment(page: Page):
     }""")
     providers = options.get("providers", [])
     usable = [p for p in providers if p.get("models")]
-    if not usable:
-        pytest.skip("No providers with models available")
+    assert usable, "No providers with models available"
 
     # Pick a provider whose slug is NOT currently shown in the card
     target = None
@@ -116,14 +115,13 @@ async def test_main_model_card_refreshes_after_assignment(page: Page):
 
     picker = page.get_by_role("dialog", name="Set Main Model")
     await expect(picker).to_be_visible()
-    if not await picker.is_visible():
-        pytest.skip("Main model picker did not open")
+    assert await picker.is_visible(), "Main model picker did not open"
 
     # Select provider
     prov_loc = picker.get_by_text(target_name, exact=True)
     if await prov_loc.count() == 0:
         await page.keyboard.press("Escape")
-        pytest.skip(f"Provider '{target_name}' not found in picker")
+    assert await prov_loc.count() > 0, f"Provider '{target_name}' not found in picker"
     await prov_loc.first.click()
     # Wait for model list to refresh after provider selection
     await expect(picker.get_by_role("button", name="Switch", exact=True)).to_be_visible()
@@ -140,9 +138,7 @@ async def test_main_model_card_refreshes_after_assignment(page: Page):
         await model_loc.first.click()
 
     confirm_btn = picker.get_by_role("button", name="Switch", exact=True)
-    if not await confirm_btn.is_enabled():
-        await page.keyboard.press("Escape")
-        pytest.skip("Could not select model in picker")
+    assert await confirm_btn.is_enabled(), "Could not select model in picker"
 
     await confirm_btn.click()
     await expect(picker).to_be_hidden()
@@ -196,6 +192,8 @@ async def test_used_models_tab_has_period_controls(page: Page):
 async def test_used_models_tab_renders_content(page: Page):
     """Used Models tab should render either cards or empty state."""
     await _go_to_tab(page, "Used Models")
+    # Wait for either cards or empty state to render to avoid race conditions
+    await page.locator("[data-testid='used-model-card'], [data-testid='used-models-empty-state']").first.wait_for(state="visible", timeout=5000)
     cards = page.locator("[data-testid='used-model-card']")
     empty_state = page.locator("[data-testid='used-models-empty-state']")
     cards_count = await cards.count()

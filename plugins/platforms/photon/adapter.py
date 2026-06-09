@@ -24,6 +24,7 @@ Outbound:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     # Type checkers see ``httpx`` as the always-imported module, so every use
@@ -422,8 +423,13 @@ class PhotonAdapter(BasePlatformAdapter):
               "space": {"id": "...", "type": "dm"|"group", "phone": "+E164"},
               "sender": {"id": "+E164"},
               "content": {"type": "text", "text": "..."}
-                       | {"type": "attachment", "name", "mimeType", "size"},
+                       | {"type": "attachment", "id", "name", "mimeType",
+                          "size", "data"?, "encoding"?},
               "timestamp": "2026-05-14T19:06:32.000Z"
+
+        Attachment content carries the bytes inline as base64 ``data`` (with
+        ``encoding == "base64"``) when the sidecar could read them within its
+        size cap; otherwise only metadata is present and we surface a marker.
             }
         """
         space = event.get("space") or {}
@@ -449,6 +455,11 @@ class PhotonAdapter(BasePlatformAdapter):
         except ValueError:
             timestamp = datetime.now(tz=timezone.utc)
 
+        # Media attachments (local cached paths) handed to the agent via the
+        # gateway's image-routing path, exactly like the BlueBubbles channel.
+        media_urls: List[str] = []
+        media_types: List[str] = []
+
         ctype = content.get("type")
         if ctype == "text":
             text = content.get("text") or ""
@@ -456,8 +467,20 @@ class PhotonAdapter(BasePlatformAdapter):
         elif ctype == "attachment":
             name = content.get("name") or "(unnamed)"
             mime = content.get("mimeType") or ""
-            text = f"[Photon attachment received: {name} ({mime})]"
             mtype = _attachment_message_type(mime)
+            cached = _cache_inbound_attachment(content, name, mime)
+            if cached:
+                media_urls.append(cached)
+                media_types.append(mime or "application/octet-stream")
+                # The real bytes are attached, so the agent sees the media
+                # itself — a short marker is enough text, and it keeps group
+                # mention-gating consistent with plain messages.
+                text = "(attachment)"
+            else:
+                # No bytes (over the sidecar cap, a failed read, or a caching
+                # failure) — fall back to a metadata marker so the agent still
+                # knows something arrived.
+                text = f"[Photon attachment received: {name} ({mime})]"
         else:
             text = f"[Photon content type not handled: {ctype}]"
             mtype = MessageType.TEXT
@@ -489,6 +512,8 @@ class PhotonAdapter(BasePlatformAdapter):
             message_id=event.get("messageId"),
             raw_message=event,
             timestamp=timestamp,
+            media_urls=media_urls,
+            media_types=media_types,
         )
         await self.handle_message(message_event)
 
@@ -817,6 +842,77 @@ def _attachment_message_type(mime: str) -> MessageType:
     if mime.startswith("application/"):
         return MessageType.DOCUMENT
     return MessageType.DOCUMENT
+
+
+# MIME → file-extension maps for caching inbound attachment bytes. These mirror
+# the BlueBubbles iMessage channel so both adapters name cached media the same.
+_IMAGE_EXT_BY_MIME = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".jpg",
+    "image/heif": ".jpg",
+    "image/tiff": ".jpg",
+}
+_AUDIO_EXT_BY_MIME = {
+    "audio/mp3": ".mp3",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-caf": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".m4a",
+}
+
+
+def _cache_inbound_attachment(
+    content: Dict[str, Any], name: str, mime: str
+) -> Optional[str]:
+    """Decode a base64-inlined inbound attachment and cache it locally.
+
+    The sidecar inlines the attachment bytes as ``content["data"]`` (base64).
+    We decode them and route to the shared media cache by MIME type, returning
+    the cached absolute path so the caller can populate ``media_urls`` (which
+    the gateway then hands to the model). Returns ``None`` when there are no
+    bytes (over the sidecar's inline cap or a failed read) or when caching
+    fails, so the caller can fall back to a text marker.
+    """
+    data_b64 = content.get("data")
+    if not data_b64:
+        return None
+    try:
+        raw = base64.b64decode(data_b64)
+    except (ValueError, TypeError) as exc:
+        logger.warning("[photon] failed to decode inbound attachment bytes: %s", exc)
+        return None
+
+    from gateway.platforms.base import (
+        cache_audio_from_bytes,
+        cache_document_from_bytes,
+        cache_image_from_bytes,
+    )
+
+    mime = (mime or "").lower()
+    # Prefer the real extension from the filename; fall back to the MIME map.
+    suffix = Path(name).suffix if name else ""
+    try:
+        if mime.startswith("image/"):
+            ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
+            try:
+                return cache_image_from_bytes(raw, ext)
+            except ValueError:
+                # Bytes don't look like a supported image (e.g. HEIC magic) —
+                # still deliver them as a document rather than dropping them.
+                return cache_document_from_bytes(raw, name)
+        if mime.startswith("audio/"):
+            ext = suffix or _AUDIO_EXT_BY_MIME.get(mime, ".mp3")
+            return cache_audio_from_bytes(raw, ext)
+        # Video, application/*, and everything else → document cache.
+        return cache_document_from_bytes(raw, name)
+    except Exception as exc:
+        logger.warning("[photon] failed to cache inbound attachment %s: %s", name, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

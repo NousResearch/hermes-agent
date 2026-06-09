@@ -6,7 +6,9 @@ sidecar-event parsing without spawning the Node sidecar or binding ports.
 """
 from __future__ import annotations
 
+import base64
 import json
+from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
@@ -80,28 +82,112 @@ async def test_dispatch_group_type(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured[0].source.chat_type == "group"
 
 
+# A real 1x1 transparent PNG (passes base.py's _looks_like_image magic check).
+_PNG_1X1_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhf"
+    "DwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _attachment_event(
+    content: Dict[str, Any], msg_id: str = "spc-msg-att"
+) -> Dict[str, Any]:
+    return {
+        "messageId": msg_id,
+        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
+        "sender": {"id": "+15551234567"},
+        "content": {"type": "attachment", **content},
+        "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+
+
 @pytest.mark.asyncio
-async def test_dispatch_attachment_surfaces_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_dispatch_attachment_without_bytes_surfaces_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No inline ``data`` (over cap / failed sidecar read) -> text marker, no media."""
     adapter = _make_adapter(monkeypatch)
     captured = _capture(adapter, monkeypatch)
 
-    event = {
-        "messageId": "spc-msg-att",
-        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
-        "sender": {"id": "+15551234567"},
-        "content": {
-            "type": "attachment",
-            "name": "IMG_4127.HEIC",
-            "mimeType": "image/heic",
-            "size": 12345,
-        },
-        "timestamp": "2026-05-14T19:06:32.000Z",
-    }
+    event = _attachment_event(
+        {"name": "IMG_4127.HEIC", "mimeType": "image/heic", "size": 12345}
+    )
     await adapter._dispatch_inbound(event)
     assert len(captured) == 1
-    assert "Photon attachment received" in captured[0].text
-    assert "IMG_4127.HEIC" in captured[0].text
-    assert captured[0].message_type == MessageType.PHOTO
+    ev = captured[0]
+    assert "Photon attachment received" in ev.text
+    assert "IMG_4127.HEIC" in ev.text
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_urls == []
+    assert ev.media_types == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_attachment_downloads_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inline base64 image bytes are decoded, cached, and exposed as media."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    raw = base64.b64decode(_PNG_1X1_B64)
+    event = _attachment_event(
+        {
+            "name": "photo.png",
+            "mimeType": "image/png",
+            "size": len(raw),
+            "data": _PNG_1X1_B64,
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/png"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == raw
+        assert ev.text == "(attachment)"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_attachment_downloads_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-image attachments route through the document cache as DOCUMENT."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    raw = b"%PDF-1.4 hermes test document"
+    event = _attachment_event(
+        {
+            "name": "report.pdf",
+            "mimeType": "application/pdf",
+            "size": len(raw),
+            "data": base64.b64encode(raw).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.DOCUMENT
+    assert ev.media_types == ["application/pdf"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == raw
+        assert ev.text == "(attachment)"
+    finally:
+        cached.unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio

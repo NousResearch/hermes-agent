@@ -114,14 +114,18 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_HOME_CHANNEL`     | (unset)                    | Default space id for cron delivery   |
 | `PHOTON_ALLOWED_USERS`    | (unset)                    | Comma-separated E.164 allowlist      |
 | `PHOTON_REQUIRE_MENTION`  | false                      | Gate group chats on a wake word      |
+| `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | 20 MB           | Max inbound attachment size the sidecar reads & inlines |
 
-## Limitations (current Photon API)
+## Attachments & limitations
 
-- **Inbound attachments are metadata only.** Inbound events carry the
-  filename + MIME type; the plugin surfaces a text marker
-  (`[Photon attachment received: …]`) so the agent knows something arrived.
-  The SDK exposes attachment bytes via `content.read()`/`stream()`, so
-  downloading them is a sidecar follow-up.
+- **Inbound attachments are downloaded.** The sidecar reads the bytes
+  (`content.read()`) and base64-inlines them on the NDJSON event; the adapter
+  caches them to the shared media cache and populates `media_urls` /
+  `media_types`, so the agent sees the real image/file (vision included) —
+  parity with the BlueBubbles iMessage channel. Attachments larger than
+  `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or any byte read that
+  fails, fall back to a text marker (`[Photon attachment received: …]`) so the
+  agent still knows something arrived.
 - **Outbound attachments are supported.** Images, voice notes, video, and
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`

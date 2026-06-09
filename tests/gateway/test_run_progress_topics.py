@@ -1295,10 +1295,10 @@ class TerminalCommandAgent:
 
 
 @pytest.mark.asyncio
-async def test_terminal_progress_is_truncated_preview_not_bash_block(monkeypatch, tmp_path):
-    """Regression for #41215: terminal progress must render as a short truncated
-    preview, never the full command in a fenced ```bash block, even on a
-    markdown-capable (supports_code_blocks) gateway."""
+async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
+    """Terminal progress on a markdown-capable (supports_code_blocks) gateway
+    renders the full command in a bare fenced code block — no language tag
+    (Slack mrkdwn would print 'bash' as a literal first code line)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1328,18 +1328,20 @@ async def test_terminal_progress_is_truncated_preview_not_bash_block(monkeypatch
         context_prompt="",
         history=[],
         source=source,
-        session_id="sess-terminal-no-bash-block",
+        session_id="sess-terminal-code-block",
         session_key="agent:main:telegram:dm:12345",
     )
 
     assert result["final_response"] == "done"
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
-    # Compact truncated preview, not a fenced bash block.
+    # Bare fenced block, no language tag (no '```bash').
+    assert "```" in all_content
     assert "```bash" not in all_content
-    assert 'terminal: "' in all_content
-    # The full multi-line command body must not reach the chat.
-    assert "npm install -g hyperframes@latest" not in all_content
+    # The full multi-line command body IS present in the block.
+    assert "npm install -g hyperframes@latest" in all_content
+    # No truncated quoted preview for the terminal command.
+    assert 'terminal: "' not in all_content
 
 
 @pytest.mark.asyncio

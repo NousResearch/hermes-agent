@@ -4860,11 +4860,19 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             content_type = mime_map.get(suffix, "application/octet-stream")
             filename = resolved.name
+            # RFC 5987: non-ASCII filenames must use filename* encoding
+            try:
+                filename.encode("ascii")
+                disposition = f'attachment; filename="{filename}"'
+            except UnicodeEncodeError:
+                import urllib.parse
+                encoded = urllib.parse.quote(filename, safe="")
+                disposition = f'attachment; filename=""; filename*=UTF-8\'\'{encoded}'
             return web.Response(
                 body=content,
                 content_type=content_type,
                 headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Disposition": disposition,
                     "Content-Length": str(file_size),
                     "X-File-Category": _get_file_category(resolved.name),
                 },

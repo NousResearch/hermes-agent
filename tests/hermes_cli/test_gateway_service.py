@@ -451,6 +451,43 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    @pytest.fixture(autouse=True)
+    def _stub_launchd_service_probe(self, monkeypatch, request):
+        if request.node.name in {
+            "test_launchd_domain_prefers_gui_when_live_service_exists_there",
+            "test_launchd_domain_defaults_to_user_when_no_live_service_exists",
+        }:
+            return
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_service_exists_in_domain",
+            lambda domain, label: False,
+        )
+
+    def test_launchd_domain_prefers_gui_when_live_service_exists_there(self, monkeypatch):
+        label = gateway_cli.get_launchd_label()
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
+            target = cmd[-1]
+            if cmd[:2] == ["launchctl", "print"] and target == f"gui/{os.getuid()}/{label}":
+                return SimpleNamespace(returncode=0, stdout="running", stderr="")
+            if cmd[:2] == ["launchctl", "print"] and target == f"user/{os.getuid()}/{label}":
+                return SimpleNamespace(returncode=113, stdout="", stderr="missing")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._launchd_domain() == f"gui/{os.getuid()}"
+
+    def test_launchd_domain_defaults_to_user_when_no_live_service_exists(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=113, stdout="", stderr="missing"),
+        )
+
+        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})

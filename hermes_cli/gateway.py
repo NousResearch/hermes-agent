@@ -3067,12 +3067,43 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def _launchd_service_exists_in_domain(domain: str, label: str) -> bool:
+    """Return True when launchd reports the gateway label in the given domain.
+
+    Some macOS 26 hosts still have older Hermes gateway jobs loaded in
+    ``gui/<uid>`` even though newer installs prefer ``user/<uid>``. Detect the
+    live domain first so start/stop/restart can keep managing the existing job
+    instead of misclassifying it as missing and falling back to detached mode.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"{domain}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    uid = os.getuid()
+    label = get_launchd_label()
+    gui_domain = f"gui/{uid}"
+    user_domain = f"user/{uid}"
+
+    # Prefer whichever domain already owns the live service so management
+    # commands keep targeting the same job across Hermes upgrades.
+    if _launchd_service_exists_in_domain(gui_domain, label):
+        return gui_domain
+    if _launchd_service_exists_in_domain(user_domain, label):
+        return user_domain
+
+    # Default to the newer `user/<uid>` domain for fresh installs because it is
+    # reachable from non-Aqua/background sessions on modern macOS.
+    return user_domain  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and

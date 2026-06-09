@@ -452,3 +452,66 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+    # ----- repeat/times non-int type coercion guards (issue #41611) -----
+
+    def test_update_repeat_whitespace_string_does_not_crash(self):
+        """Passing repeat=' ' (whitespace string) should not raise TypeError."""
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h", repeat=3)
+        )
+        assert created["success"] is True
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                repeat=" ",
+            )
+        )
+        assert updated["success"] is True
+
+    def test_update_repeat_non_numeric_string_does_not_crash(self):
+        """Passing repeat='abc' should not raise TypeError."""
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h", repeat=3)
+        )
+        assert created["success"] is True
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                repeat="abc",
+            )
+        )
+        assert updated["success"] is True
+
+    def test_create_job_with_non_int_repeat_does_not_crash(self):
+        """create_job should tolerate non-int repeat without TypeError."""
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="test", schedule="every 1h", repeat=" "
+        )
+        # repeat should be passed through (not normalized to None for strings)
+        assert job["id"] is not None
+
+    def test_create_job_with_negative_int_repeat_normalizes_to_none(self):
+        """create_job should normalize negative repeat to None (infinite)."""
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="test", schedule="every 1h", repeat=-1
+        )
+        assert job["repeat"]["times"] is None
+
+    def test_mark_job_run_with_non_int_times_does_not_crash(self):
+        """mark_job_run should tolerate non-int 'times' in repeat dict."""
+        from cron.jobs import create_job, save_jobs, mark_job_run
+
+        job = create_job(prompt="test", schedule="every 1h", repeat=5)
+        # Simulate corrupted times field (e.g., from LLM tool call)
+        job["repeat"]["times"] = " "
+        save_jobs([job])
+
+        # Should not raise TypeError
+        mark_job_run(job["id"], success=True)

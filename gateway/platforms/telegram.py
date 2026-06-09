@@ -5970,6 +5970,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if not self._should_process_message(msg):
             self._pending_guest_queries.pop(chat_id_str, None)
+            self._guest_only_chats.discard(chat_id_str)
             return
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)

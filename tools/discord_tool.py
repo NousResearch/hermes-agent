@@ -424,13 +424,36 @@ def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any
     return json.dumps({"success": True, "message": f"Message {message_id} deleted."})
 
 
+def _format_discord_error(exc: DiscordAPIError) -> str:
+    """Compact Discord API error for result payloads without leaking tokens."""
+    message = exc.body
+    try:
+        parsed = json.loads(exc.body or "{}")
+        if isinstance(parsed, dict):
+            message = str(parsed.get("message") or parsed.get("error") or exc.body)
+    except Exception:
+        message = exc.body
+    if len(message) > 300:
+        message = message[:297] + "..."
+    return f"Discord API {exc.status}: {message}"
+
+
 def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
     auto_archive_duration: int = 1440,
+    user_id: str = "",
+    expected_parent_id: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Create a thread in a channel."""
+    """Create a thread and verify parent/member visibility gates.
+
+    ``channel_id`` is still the parent channel where the thread is created.
+    ``expected_parent_id`` lets callers guard against accidentally creating a
+    thread under the wrong channel.  When omitted, the intended parent is the
+    supplied ``channel_id``.  ``user_id`` is optional and, for create_thread,
+    means the requesting user to add/verify as a thread member.
+    """
     if message_id:
         # Create thread from an existing message
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
@@ -446,11 +469,104 @@ def _create_thread(
             "auto_archive_duration": auto_archive_duration,
             "type": 11,  # PUBLIC_THREAD
         }
+
     thread = _discord_request("POST", path, token, body=body)
+    thread_id = str(thread["id"])
+    intended_parent_id = str(expected_parent_id or channel_id)
+
+    verification: Dict[str, Any] = {
+        "expected_parent_id": intended_parent_id,
+        "actual_parent_id": str(thread.get("parent_id") or ""),
+        "parent_verified": False,
+        "parent_matches": False,
+        "requester_user_id": str(user_id or "") or None,
+        "requester_member_added": None,
+        "requester_member_verified": None,
+        "requester_member_attempts": 0,
+    }
+    warnings: List[str] = []
+
+    try:
+        thread_info = _discord_request("GET", f"/channels/{thread_id}", token)
+        actual_parent_id = str(thread_info.get("parent_id") or "")
+        verification["actual_parent_id"] = actual_parent_id
+        verification["parent_verified"] = True
+        verification["parent_matches"] = actual_parent_id == intended_parent_id
+        if not verification["parent_matches"]:
+            warnings.append(
+                "Thread parent_id does not match expected_parent_id; "
+                "treat this as misplaced and recreate/handoff instead of calling it ready."
+            )
+    except DiscordAPIError as exc:
+        verification["parent_error"] = _format_discord_error(exc)
+        warnings.append("Could not verify thread parent_id; do not report the thread as ready.")
+
+    requester_user_id = str(user_id or "").strip()
+    if requester_user_id:
+        if not (verification.get("parent_verified") and verification.get("parent_matches")):
+            verification["requester_member_added"] = False
+            verification["requester_member_verified"] = False
+            warnings.append(
+                "Skipped requester membership add because the thread parent was not verified; "
+                "recreate/handoff the misplaced thread first."
+            )
+        else:
+            add_error: Optional[str] = None
+            for _attempt in range(2):
+                verification["requester_member_attempts"] += 1
+                try:
+                    _discord_request(
+                        "PUT",
+                        f"/channels/{thread_id}/thread-members/{requester_user_id}",
+                        token,
+                    )
+                    verification["requester_member_added"] = True
+                    add_error = None
+                    break
+                except DiscordAPIError as exc:
+                    add_error = _format_discord_error(exc)
+                    verification["requester_member_added"] = False
+            if add_error:
+                verification["requester_member_error"] = add_error
+                warnings.append(
+                    "Failed to add requester as a thread member after retry; "
+                    "visibility is not complete."
+                )
+            else:
+                try:
+                    member = _discord_request(
+                        "GET",
+                        f"/channels/{thread_id}/thread-members/{requester_user_id}",
+                        token,
+                    )
+                    verified_id = str(member.get("user_id") or member.get("id") or "")
+                    verification["requester_member_verified"] = verified_id == requester_user_id
+                    if not verification["requester_member_verified"]:
+                        warnings.append("Requester thread-member read-back did not match the requested user_id.")
+                except DiscordAPIError as exc:
+                    verification["requester_member_verified"] = False
+                    verification["requester_member_verify_error"] = _format_discord_error(exc)
+                    warnings.append("Could not read back requester thread membership; visibility is not complete.")
+
+    success = bool(
+        verification.get("parent_verified")
+        and verification.get("parent_matches")
+        and (
+            not requester_user_id
+            or (
+                verification.get("requester_member_added") is True
+                and verification.get("requester_member_verified") is True
+            )
+        )
+    )
+
     return json.dumps({
-        "success": True,
-        "thread_id": thread["id"],
+        "success": success,
+        "thread_created": True,
+        "thread_id": thread_id,
         "name": thread.get("name"),
+        "verification": verification,
+        "warnings": warnings,
     })
 
 
@@ -510,7 +626,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
-    ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("create_thread", "(channel_id, name; optional message_id, user_id, expected_parent_id)", "create a public thread or message thread; verify parent and optional requester membership"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -675,7 +791,7 @@ def _build_schema(
         },
         "user_id": {
             "type": "string",
-            "description": "Discord user ID.",
+            "description": "Discord user ID. For create_thread, this is the requester to add and verify as a thread member.",
         },
         "role_id": {
             "type": "string",
@@ -711,6 +827,10 @@ def _build_schema(
             "type": "integer",
             "enum": [60, 1440, 4320, 10080],
             "description": "Thread archive duration in minutes (create_thread, default 1440).",
+        },
+        "expected_parent_id": {
+            "type": "string",
+            "description": "Expected parent channel ID for create_thread. If omitted, channel_id is treated as the intended parent and verified after creation.",
         },
     }
 
@@ -839,6 +959,7 @@ def _run_discord_action(
     before: str = "",
     after: str = "",
     auto_archive_duration: int = 1440,
+    expected_parent_id: str = "",
 ) -> str:
     """Shared handler logic for both discord tools."""
     token = _get_bot_token()
@@ -894,6 +1015,7 @@ def _run_discord_action(
             before=before,
             after=after,
             auto_archive_duration=auto_archive_duration,
+            expected_parent_id=expected_parent_id,
         )
     except DiscordAPIError as e:
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
@@ -923,6 +1045,7 @@ _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "expected_parent_id": "",
 }
 
 

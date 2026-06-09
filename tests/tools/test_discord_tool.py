@@ -3,7 +3,7 @@
 import json
 import urllib.error
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -449,28 +449,104 @@ class TestCreateThread:
     @patch("tools.discord_tool._discord_request")
     def test_create_standalone_thread(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        mock_req.return_value = {"id": "800", "name": "New Thread"}
+        mock_req.side_effect = [
+            {"id": "800", "name": "New Thread"},
+            {"id": "800", "name": "New Thread", "parent_id": "11"},
+        ]
         result = json.loads(discord_core(action="create_thread", channel_id="11", name="New Thread"))
         assert result["success"] is True
         assert result["thread_id"] == "800"
-        # Verify the API call
-        mock_req.assert_called_once_with(
-            "POST", "/channels/11/threads", "test-token",
-            body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
-        )
+        assert result["verification"]["parent_matches"] is True
+        mock_req.assert_has_calls([
+            call(
+                "POST", "/channels/11/threads", "test-token",
+                body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
+            ),
+            call("GET", "/channels/800", "test-token"),
+        ])
 
     @patch("tools.discord_tool._discord_request")
     def test_create_thread_from_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        mock_req.return_value = {"id": "801", "name": "Discussion"}
+        mock_req.side_effect = [
+            {"id": "801", "name": "Discussion"},
+            {"id": "801", "name": "Discussion", "parent_id": "11"},
+        ]
         result = json.loads(discord_core(
             action="create_thread", channel_id="11", name="Discussion", message_id="1001",
         ))
         assert result["success"] is True
-        mock_req.assert_called_once_with(
-            "POST", "/channels/11/messages/1001/threads", "test-token",
-            body={"name": "Discussion", "auto_archive_duration": 1440},
-        )
+        mock_req.assert_has_calls([
+            call(
+                "POST", "/channels/11/messages/1001/threads", "test-token",
+                body={"name": "Discussion", "auto_archive_duration": 1440},
+            ),
+            call("GET", "/channels/801", "test-token"),
+        ])
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_parent_mismatch_not_ready(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "802", "name": "Misplaced"},
+            {"id": "802", "name": "Misplaced", "parent_id": "99"},
+        ]
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id="11",
+            name="Misplaced",
+            expected_parent_id="11",
+            user_id="42",
+        ))
+        assert result["success"] is False
+        assert result["thread_created"] is True
+        assert result["verification"]["actual_parent_id"] == "99"
+        assert result["verification"]["parent_matches"] is False
+        assert result["verification"]["requester_member_added"] is False
+        assert result["verification"]["requester_member_verified"] is False
+        assert result["verification"]["requester_member_attempts"] == 0
+        assert call("PUT", "/channels/802/thread-members/42", "test-token") not in mock_req.call_args_list
+        assert result["warnings"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_adds_and_verifies_requester_member(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "803", "name": "Visible"},
+            {"id": "803", "name": "Visible", "parent_id": "11"},
+            None,
+            {"id": "803", "user_id": "42"},
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Visible", user_id="42",
+        ))
+        assert result["success"] is True
+        assert result["verification"]["requester_member_added"] is True
+        assert result["verification"]["requester_member_verified"] is True
+        assert result["verification"]["requester_member_attempts"] == 1
+        mock_req.assert_has_calls([
+            call("PUT", "/channels/803/thread-members/42", "test-token"),
+            call("GET", "/channels/803/thread-members/42", "test-token"),
+        ])
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_retries_requester_member_add_once(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "804", "name": "Retry Visible"},
+            {"id": "804", "name": "Retry Visible", "parent_id": "11"},
+            DiscordAPIError(403, '{"message":"Missing Access"}'),
+            None,
+            {"id": "804", "user_id": "42"},
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Retry Visible", user_id="42",
+        ))
+        assert result["success"] is True
+        assert result["verification"]["requester_member_attempts"] == 2
+        assert mock_req.call_args_list.count(
+            call("PUT", "/channels/804/thread-members/42", "test-token")
+        ) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +664,7 @@ class TestRegistration:
         desc = entry.schema["description"]
         assert "fetch_messages(channel_id)" in desc
         assert "search_members(guild_id, query)" in desc
-        assert "create_thread(channel_id, name)" in desc
+        assert "create_thread(channel_id, name; optional message_id, user_id, expected_parent_id)" in desc
         # Admin actions should NOT be in core description
         assert "list_guilds()" not in desc
         assert "add_role(" not in desc

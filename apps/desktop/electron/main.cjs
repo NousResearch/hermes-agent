@@ -63,6 +63,8 @@ const {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  extractDashboardSessionToken,
+  isLoopbackRemoteBaseUrl,
   normAuthMode,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,
@@ -2769,6 +2771,51 @@ function fetchPublicJson(url, options = {}) {
   })
 }
 
+function fetchText(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid URL: ${error.message}`))
+      return
+    }
+    const client = parsed.protocol === 'https:' ? https : http
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      return
+    }
+
+    const req = client.request(
+      parsed,
+      {
+        method: options.method || 'GET',
+        headers: options.headers || {}
+      },
+      res => {
+        const chunks = []
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            return
+          }
+          resolve(text)
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
+    req.end()
+  })
+}
+
 function mimeTypeForPath(filePath) {
   const ext = path.extname(filePath || '').toLowerCase()
 
@@ -4012,6 +4059,30 @@ async function mintGatewayWsTicket(baseUrl) {
   return ticket
 }
 
+async function discoverLoopbackDashboardToken(baseUrl) {
+  if (!isLoopbackRemoteBaseUrl(baseUrl)) {
+    return null
+  }
+
+  const html = await fetchText(`${baseUrl}/chat`, { timeoutMs: 8_000 })
+  const token = extractDashboardSessionToken(html)
+  if (!token) {
+    throw new Error('Loopback Hermes dashboard did not expose a session token in /chat.')
+  }
+  return token
+}
+
+async function refreshLoopbackDashboardToken(connection) {
+  if (connection?.authMode !== 'token' || connection.tokenSource !== 'loopback-dashboard') {
+    return connection?.token || null
+  }
+
+  const token = await discoverLoopbackDashboardToken(connection.baseUrl)
+  connection.token = token
+  connection.wsUrl = buildGatewayWsUrl(connection.baseUrl, token)
+  return token
+}
+
 // Build a fresh WS URL for the *current* connection. Critical for reconnects:
 // OAuth WS tickets are single-use with a ~30s TTL, so the ticket baked into
 // the cached connection's wsUrl is stale on the second connect. The renderer
@@ -4029,6 +4100,9 @@ async function freshGatewayWsUrl(profile) {
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl)
     return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+  }
+  if (connection.tokenSource === 'loopback-dashboard') {
+    await refreshLoopbackDashboardToken(connection)
   }
   // Local/token: the cached wsUrl already carries the (long-lived) token.
   return connection.wsUrl
@@ -4225,10 +4299,11 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // authenticate via the login-window session cookie (verified at connect time in
 // resolveRemoteBackend), so only token-auth remotes require a saved token.
 function buildRemoteBlock(remoteUrl, authMode, token) {
-  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
+  const url = normalizeRemoteBaseUrl(remoteUrl)
+  if (authMode !== 'oauth' && !decryptDesktopSecret(token) && !isLoopbackRemoteBaseUrl(url)) {
     throw new Error('Remote gateway session token is required.')
   }
-  return { url: normalizeRemoteBaseUrl(remoteUrl), authMode, token }
+  return { url, authMode, token }
 }
 
 function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
@@ -4318,7 +4393,14 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     }
   }
 
-  if (!token) {
+  let resolvedToken = token
+  let tokenSource = token ? 'saved' : null
+  if (!resolvedToken && isLoopbackRemoteBaseUrl(baseUrl)) {
+    resolvedToken = await discoverLoopbackDashboardToken(baseUrl)
+    tokenSource = 'loopback-dashboard'
+  }
+
+  if (!resolvedToken) {
     throw new Error(
       'Remote Hermes gateway is selected, but no session token is saved. ' +
         'Open Settings → Gateway and save a token, or switch back to Local.'
@@ -4330,8 +4412,9 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     mode: 'remote',
     source,
     authMode: 'token',
-    token,
-    wsUrl: buildGatewayWsUrl(baseUrl, token)
+    token: resolvedToken,
+    tokenSource,
+    wsUrl: buildGatewayWsUrl(baseUrl, resolvedToken)
   }
 }
 
@@ -4358,13 +4441,13 @@ async function resolveRemoteBackend(profile) {
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
   if (rawEnvUrl) {
-    if (!rawEnvToken) {
+    if (!rawEnvToken && !isLoopbackRemoteBaseUrl(rawEnvUrl)) {
       throw new Error(
         'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
           'Both must be provided to connect to a remote Hermes backend.'
       )
     }
-    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
+    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken || null, 'env')
   }
 
   // 3. Global remote.
@@ -4409,7 +4492,11 @@ async function requestJsonForProfile(profile, path, method, body) {
   const conn = await ensureBackend(profile)
   const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
-  return conn.authMode === 'oauth' ? fetchJsonViaOauthSession(url, opts) : fetchJson(url, conn.token, opts)
+  if (conn.authMode === 'oauth') {
+    return fetchJsonViaOauthSession(url, opts)
+  }
+  const token = await refreshLoopbackDashboardToken(conn)
+  return fetchJson(url, token, opts)
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -4513,7 +4600,10 @@ async function testDesktopConnectionConfig(input = {}) {
   // false-positive "reachable" while the real boot still failed with "Could not
   // connect to Hermes gateway". Mirror the renderer's connect here so the test
   // reflects the full path the app actually uses.
-  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, { mintTicket: mintGatewayWsTicket })
+  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, {
+    discoverToken: discoverLoopbackDashboardToken,
+    mintTicket: mintGatewayWsTicket
+  })
   // Skip the WS leg only when the runtime genuinely lacks a WebSocket (so an
   // older Electron/Node never fails the test spuriously); Electron's main
   // process ships a global WebSocket on every supported version.

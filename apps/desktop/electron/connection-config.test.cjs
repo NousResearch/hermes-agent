@@ -22,6 +22,8 @@ const {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  extractDashboardSessionToken,
+  isLoopbackRemoteBaseUrl,
   normAuthMode,
   normalizeRemoteBaseUrl,
   pathWithGlobalRemoteProfile,
@@ -181,6 +183,28 @@ test('normalizeRemoteBaseUrl rejects non-http(s) protocols', () => {
 
 test('normalizeRemoteBaseUrl rejects garbage', () => {
   assert.throws(() => normalizeRemoteBaseUrl('not a url'), /not valid/)
+})
+
+// --- loopback dashboard token discovery helpers ---
+
+test('isLoopbackRemoteBaseUrl allows only http loopback remotes', () => {
+  assert.equal(isLoopbackRemoteBaseUrl('http://127.0.0.1:9119'), true)
+  assert.equal(isLoopbackRemoteBaseUrl('http://localhost:9119/chat'), true)
+  assert.equal(isLoopbackRemoteBaseUrl('http://[::1]:9119'), true)
+  assert.equal(isLoopbackRemoteBaseUrl('https://127.0.0.1:9119'), false)
+  assert.equal(isLoopbackRemoteBaseUrl('http://192.168.1.10:9119'), false)
+  assert.equal(isLoopbackRemoteBaseUrl('https://gw.example.com'), false)
+  assert.equal(isLoopbackRemoteBaseUrl('not a url'), false)
+})
+
+test('extractDashboardSessionToken reads the injected /chat session token', () => {
+  const html = '<script>window.__HERMES_SESSION_TOKEN__ = "tok_123";</script>'
+  assert.equal(extractDashboardSessionToken(html), 'tok_123')
+})
+
+test('extractDashboardSessionToken returns null when /chat has no token', () => {
+  assert.equal(extractDashboardSessionToken('<html></html>'), null)
+  assert.equal(extractDashboardSessionToken(''), null)
 })
 
 // --- buildGatewayWsUrl (token) ---
@@ -357,8 +381,15 @@ test('resolveTestWsUrl (token mode) builds a ?token= URL the WS probe can use', 
   assert.equal(url, 'wss://gw.example.com/api/ws?token=tok123')
 })
 
-test('resolveTestWsUrl (token mode, no token) returns null — genuine skip', async () => {
+test('resolveTestWsUrl (token mode, no token, non-loopback) returns null — genuine skip', async () => {
   assert.equal(await resolveTestWsUrl('https://gw.example.com', 'token', null), null)
+})
+
+test('resolveTestWsUrl (token mode, loopback, no token) discovers the dashboard token', async () => {
+  const url = await resolveTestWsUrl('http://127.0.0.1:9119', 'token', null, {
+    discoverToken: async () => 'loopback-token'
+  })
+  assert.equal(url, 'ws://127.0.0.1:9119/api/ws?token=loopback-token')
 })
 
 test('resolveTestWsUrl (oauth, mint ok) builds a ?ticket= URL', async () => {

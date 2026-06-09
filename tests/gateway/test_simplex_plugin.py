@@ -205,6 +205,13 @@ def test_corr_id_pending_set_self_trims():
 
 @pytest.mark.asyncio
 async def test_send_dm():
+    """DMs use the bare ``@<id> text`` chat-command form.
+
+    The bracketed form ``@[<id>] text`` is what the daemon's man page
+    documents, but in practice both addressing styles route through
+    the same chat-command parser; bare ``@<id>`` matches what every
+    Hermes deployment has been using in production for months.
+    """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
@@ -222,6 +229,14 @@ async def test_send_dm():
 
 @pytest.mark.asyncio
 async def test_send_group():
+    """Groups use the structured ``/_send #<id> json [...]`` form.
+
+    The bracket chat-command form ``#[<id>] text`` *looks* like an exact
+    ID match in the daemon docs but is parsed as a display-name lookup
+    — so messages to groups whose display name isn't literally the ID
+    silently drop. The structured ``/_send`` form addresses by numeric
+    ID and survives newlines/quoting through ``json.dumps``.
+    """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
@@ -231,7 +246,11 @@ async def test_send_group():
 
     result = await adapter.send("group:grp-99", "Hello, group!")
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "#[grp-99] Hello, group!"
+    assert payload["cmd"].startswith("/_send #grp-99 json ")
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": "Hello, group!"}
     assert result.success is True
 
 

@@ -194,7 +194,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         email = args.email
         try:
             user, created = photon_auth.register_user_if_absent(
-                token, dashboard_id,
+                spectrum_id, secret,
                 phone_number=phone,
                 first_name=first_name,
                 last_name=args.last_name,
@@ -310,12 +310,11 @@ def _refresh_status_numbers() -> None:
     phone, assigned = photon_auth.load_user_numbers()
     if phone and assigned:
         return
-    token = photon_auth.load_photon_token()
-    dashboard_id = photon_auth.load_dashboard_project_id()
-    if not token or not dashboard_id:
+    spectrum_id, project_secret = photon_auth.load_project_credentials()
+    if not spectrum_id or not project_secret:
         return
     try:
-        photon_auth.refresh_user_numbers(token, dashboard_id)
+        photon_auth.refresh_user_numbers(spectrum_id, project_secret)
     except Exception as e:
         print(f"      (could not refresh Photon user numbers: {e})", file=sys.stderr)
 

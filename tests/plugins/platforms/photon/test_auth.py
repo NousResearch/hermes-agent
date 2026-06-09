@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from base64 import b64encode
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,6 +41,7 @@ _PHOTON_ENV = (
     "PHOTON_PROJECT_ID",
     "PHOTON_PROJECT_SECRET",
     "PHOTON_DASHBOARD_PROJECT_ID",
+    "PHOTON_SPECTRUM_HOST",
     "PHOTON_ALLOWED_USERS",
     "PHOTON_HOME_CHANNEL",
 )
@@ -140,17 +142,19 @@ def test_refresh_user_numbers_reads_existing_assignment(
     photon_auth.store_user_numbers(phone_number="+15551234567")
 
     def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        assert kwargs.get("headers", {}).get("Authorization") == "Bearer tok"
-        assert url.endswith("/projects/dash/spectrum/users")
-        return _FakeResponse(json_body=[{
+        assert kwargs.get("headers", {}).get("Authorization") == (
+            "Basic " + b64encode(b"sp:secret").decode("ascii")
+        )
+        assert url.endswith("/projects/sp/users/")
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
             "id": "user-uuid",
             "phoneNumber": "+1 (555) 123-4567",
             "assignedPhoneNumber": "+16282679185",
-        }])
+        }]}})
 
     monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
 
-    phone, assigned = photon_auth.refresh_user_numbers("tok", "dash")
+    phone, assigned = photon_auth.refresh_user_numbers("sp", "secret")
     assert phone == "+15551234567"
     assert assigned == "+16282679185"
     assert photon_auth.load_user_numbers() == ("+15551234567", "+16282679185")
@@ -361,7 +365,7 @@ def test_regenerate_project_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_create_user_rejects_invalid_phone() -> None:
     with pytest.raises(ValueError, match="E.164"):
-        photon_auth.create_user("tok", "proj", phone_number="not-a-number")
+        photon_auth.create_user("proj", "secret", phone_number="not-a-number")
 
 
 def test_create_user_posts_dashboard_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -371,27 +375,30 @@ def test_create_user_posts_dashboard_shape(monkeypatch: pytest.MonkeyPatch) -> N
         captured["url"] = url
         captured["body"] = kwargs.get("json")
         captured["headers"] = kwargs.get("headers")
-        return _FakeResponse(json_body={"success": True, "user": {
+        return _FakeResponse(json_body={"succeed": True, "data": {
             "id": "user-uuid", "phoneNumber": "+15551234567",
         }})
 
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
-    user = photon_auth.create_user("tok", "proj-id", phone_number="+15551234567")
+    user = photon_auth.create_user("proj-id", "secret", phone_number="+15551234567")
     assert user["id"] == "user-uuid"
+    assert captured["body"]["type"] == "shared"
     assert captured["body"]["phoneNumber"] == "+15551234567"
-    assert captured["headers"]["Authorization"] == "Bearer tok"
-    assert "/projects/proj-id/spectrum/users" in captured["url"]
+    assert captured["headers"]["Authorization"] == (
+        "Basic " + b64encode(b"proj-id:secret").decode("ascii")
+    )
+    assert captured["url"].endswith("/projects/proj-id/users/")
 
 
 def test_register_user_if_absent_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     posted = {"n": 0}
 
     def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body=[{
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
             "id": "u1",
             "phoneNumber": "+1 (555) 123-4567",
             "assignedPhoneNumber": "+16282679185",
-        }])
+        }]}})
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
         posted["n"] += 1
@@ -401,7 +408,7 @@ def test_register_user_if_absent_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     # Same number, different formatting — should match and NOT create.
     user, created = photon_auth.register_user_if_absent(
-        "tok", "proj", phone_number="+15551234567",
+        "proj", "secret", phone_number="+15551234567",
     )
     assert created is False
     assert user["id"] == "u1"
@@ -424,15 +431,15 @@ def test_user_assigned_line() -> None:
 
 def test_register_user_if_absent_creates(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body=[])
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": []}})
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body={"success": True, "user": {"id": "u-new"}})
+        return _FakeResponse(json_body={"succeed": True, "data": {"id": "u-new"}})
 
     monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     user, created = photon_auth.register_user_if_absent(
-        "tok", "proj", phone_number="+15551234567",
+        "proj", "secret", phone_number="+15551234567",
     )
     assert created is True
     assert user["id"] == "u-new"

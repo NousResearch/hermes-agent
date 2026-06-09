@@ -23,7 +23,16 @@ def clarify_callback(cli, question, choices):
     """
     from cli import CLI_CONFIG
 
-    timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+    # Read from agent.clarify_timeout (canonical key, shared with gateway
+    # via tools/clarify_gateway.py:get_clarify_timeout).  Fall back to the
+    # legacy clarify.timeout key for users who set it manually.
+    _agent = CLI_CONFIG.get("agent", {})
+    _agent = _agent if isinstance(_agent, dict) else {}
+    timeout = _agent.get("clarify_timeout", None)
+    if timeout is None:
+        _legacy = CLI_CONFIG.get("clarify", {})
+        _legacy = _legacy if isinstance(_legacy, dict) else {}
+        timeout = _legacy.get("timeout", 600)
     response_queue = queue.Queue()
     is_open_ended = not choices
 

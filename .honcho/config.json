@@ -1,0 +1,17 @@
+{
+  "peerName": "calumai",
+  "hosts": {
+    "claude_code": {
+      "workspace": "calum-selfhost",
+      "aiPeer": "claude"
+    },
+    "opencode": {
+      "workspace": "calum-selfhost",
+      "aiPeer": "opencode"
+    },
+    "antigravity": {
+      "workspace": "calum-selfhost",
+      "aiPeer": "antigravity"
+    }
+  }
+}

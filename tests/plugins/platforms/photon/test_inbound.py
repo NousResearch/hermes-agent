@@ -101,6 +101,18 @@ def _attachment_event(
     }
 
 
+def _voice_event(
+    content: Dict[str, Any], msg_id: str = "spc-msg-voice"
+) -> Dict[str, Any]:
+    return {
+        "messageId": msg_id,
+        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
+        "sender": {"id": "+15551234567"},
+        "content": {"type": "voice", **content},
+        "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+
+
 @pytest.mark.asyncio
 async def test_dispatch_attachment_without_bytes_surfaces_marker(
     monkeypatch: pytest.MonkeyPatch,
@@ -154,6 +166,64 @@ async def test_dispatch_attachment_downloads_image(
         assert ev.text == "(attachment)"
     finally:
         cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_voice_downloads_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inbound Spectrum voice content is cached and routed to auto-STT."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    raw = b"OggS" + b"\x00" * 32
+    event = _voice_event(
+        {
+            "name": "note.ogg",
+            "mimeType": "audio/ogg",
+            "duration": 7,
+            "size": len(raw),
+            "data": base64.b64encode(raw).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.VOICE
+    assert ev.media_types == ["audio/ogg"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == raw
+        assert ev.text == "(voice)"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_voice_without_bytes_surfaces_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metadata-only voice still tells the agent a voice note arrived."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _voice_event(
+        {"name": "note.m4a", "mimeType": "audio/mp4", "duration": 12, "size": 12345}
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert "Photon voice received" in ev.text
+    assert "note.m4a" in ev.text
+    assert "duration: 12s" in ev.text
+    assert ev.message_type == MessageType.VOICE
+    assert ev.media_urls == []
+    assert ev.media_types == []
 
 
 @pytest.mark.asyncio

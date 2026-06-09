@@ -435,13 +435,15 @@ class PhotonAdapter(BasePlatformAdapter):
               "space": {"id": "...", "type": "dm"|"group", "phone": "+E164"},
               "sender": {"id": "+E164"},
               "content": {"type": "text", "text": "..."}
-                       | {"type": "attachment", "id", "name", "mimeType",
-                          "size", "data"?, "encoding"?},
+                       | {"type": "attachment"|"voice", "id", "name",
+                          "mimeType", "size", "duration"?, "data"?,
+                          "encoding"?},
               "timestamp": "2026-05-14T19:06:32.000Z"
 
-        Attachment content carries the bytes inline as base64 ``data`` (with
-        ``encoding == "base64"``) when the sidecar could read them within its
-        size cap; otherwise only metadata is present and we surface a marker.
+        Attachment and voice content carry the bytes inline as base64 ``data``
+        (with ``encoding == "base64"``) when the sidecar could read them
+        within its size cap; otherwise only metadata is present and we surface
+        a marker.
             }
         """
         space = event.get("space") or {}
@@ -476,23 +478,38 @@ class PhotonAdapter(BasePlatformAdapter):
         if ctype == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
-        elif ctype == "attachment":
-            name = content.get("name") or "(unnamed)"
+        elif ctype in {"attachment", "voice"}:
+            is_voice = ctype == "voice"
+            name = content.get("name") or ("voice" if is_voice else "(unnamed)")
             mime = content.get("mimeType") or ""
-            mtype = _attachment_message_type(mime)
-            cached = _cache_inbound_attachment(content, name, mime)
+            mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
+            cached = _cache_inbound_attachment(
+                content, name, mime, force_audio=is_voice
+            )
             if cached:
                 media_urls.append(cached)
-                media_types.append(mime or "application/octet-stream")
+                media_types.append(
+                    mime or ("audio/mp4" if is_voice else "application/octet-stream")
+                )
                 # The real bytes are attached, so the agent sees the media
                 # itself — a short marker is enough text, and it keeps group
                 # mention-gating consistent with plain messages.
-                text = "(attachment)"
+                text = "(voice)" if is_voice else "(attachment)"
             else:
                 # No bytes (over the sidecar cap, a failed read, or a caching
                 # failure) — fall back to a metadata marker so the agent still
                 # knows something arrived.
-                text = f"[Photon attachment received: {name} ({mime})]"
+                label = "voice" if is_voice else "attachment"
+                duration = content.get("duration")
+                duration_text = (
+                    f", duration: {duration}s"
+                    if isinstance(duration, (int, float))
+                    else ""
+                )
+                text = (
+                    f"[Photon {label} received: {name} "
+                    f"({mime or 'unknown MIME'}{duration_text})]"
+                )
         else:
             text = f"[Photon content type not handled: {ctype}]"
             mtype = MessageType.TEXT
@@ -950,7 +967,11 @@ _AUDIO_EXT_BY_MIME = {
 
 
 def _cache_inbound_attachment(
-    content: Dict[str, Any], name: str, mime: str
+    content: Dict[str, Any],
+    name: str,
+    mime: str,
+    *,
+    force_audio: bool = False,
 ) -> Optional[str]:
     """Decode a base64-inlined inbound attachment and cache it locally.
 
@@ -988,8 +1009,10 @@ def _cache_inbound_attachment(
                 # Bytes don't look like a supported image (e.g. HEIC magic) —
                 # still deliver them as a document rather than dropping them.
                 return cache_document_from_bytes(raw, name)
-        if mime.startswith("audio/"):
-            ext = suffix or _AUDIO_EXT_BY_MIME.get(mime, ".mp3")
+        if force_audio or mime.startswith("audio/"):
+            ext = suffix or _AUDIO_EXT_BY_MIME.get(
+                mime, ".m4a" if force_audio else ".mp3"
+            )
             return cache_audio_from_bytes(raw, ext)
         # Video, application/*, and everything else → document cache.
         return cache_document_from_bytes(raw, name)

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -61,6 +61,35 @@ export function GitPanel({ active, cwd, onOpenChange }: GitPanelProps) {
     [status, t]
   )
 
+  const gitRoot = status.root || cwd
+
+  const handleStage = useCallback(
+    async (entry: HermesGitStatusEntry) => {
+      if (!window.hermesDesktop?.gitStage) return
+      await window.hermesDesktop.gitStage(gitRoot, entry.path)
+      void refresh()
+    },
+    [gitRoot, refresh]
+  )
+
+  const handleUnstage = useCallback(
+    async (entry: HermesGitStatusEntry) => {
+      if (!window.hermesDesktop?.gitUnstage) return
+      await window.hermesDesktop.gitUnstage(gitRoot, entry.path)
+      void refresh()
+    },
+    [gitRoot, refresh]
+  )
+
+  const handleDiscard = useCallback(
+    async (entry: HermesGitStatusEntry) => {
+      if (!window.hermesDesktop?.gitDiscard) return
+      await window.hermesDesktop.gitDiscard(gitRoot, entry.path)
+      void refresh()
+    },
+    [gitRoot, refresh]
+  )
+
   const branch = status.branch.name || (status.branch.detached ? status.branch.oid.slice(0, 8) : '')
 
   return (
@@ -109,32 +138,79 @@ export function GitPanel({ active, cwd, onOpenChange }: GitPanelProps) {
                 const name = pathParts.pop() || entry.path
                 const parent = pathParts.join('/')
                 const code = statusCode(entry, group.id)
+                const isStaged = group.id === 'staged'
+                const isChange = group.id === 'changes' || group.id === 'untracked'
 
                 return (
-                  <button
-                    className="group/change flex w-full min-w-0 items-center gap-2 px-2.5 py-1 text-left text-[0.6875rem] hover:bg-(--ui-row-hover-background)"
+                  <div
+                    className="group/change flex w-full min-w-0 items-center gap-0 hover:bg-(--ui-row-hover-background)"
                     key={`${group.id}:${entry.path}`}
-                    onClick={() => onOpenChange(entry, status.root || cwd)}
-                    title={entry.originalPath ? `${entry.originalPath} → ${entry.path}` : entry.path}
-                    type="button"
                   >
-                    <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="file" size="0.75rem" />
-                    <span className="min-w-0 flex-1 truncate text-(--ui-text-secondary)">
-                      {name}
-                      {parent && <span className="ml-1 text-(--ui-text-quaternary)">{parent}</span>}
-                    </span>
-                    <span
-                      className={cn(
-                        'w-4 shrink-0 text-center font-mono font-bold',
-                        group.id === 'staged' && 'text-emerald-500',
-                        group.id === 'changes' && 'text-amber-500',
-                        group.id === 'untracked' && 'text-emerald-500',
-                        group.id === 'conflicts' && 'text-rose-500'
-                      )}
+                    {isStaged ? (
+                      <button
+                        aria-label={t.rightSidebar.unstageChanges}
+                        className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-(--ui-text-primary)"
+                        onClick={e => {
+                          e.stopPropagation()
+                          void handleUnstage(entry)
+                        }}
+                        title={t.rightSidebar.unstageChanges}
+                        type="button"
+                      >
+                        <Codicon name="remove" size="0.75rem" />
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          aria-label={t.rightSidebar.stageChanges}
+                          className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-emerald-500"
+                          onClick={e => {
+                            e.stopPropagation()
+                            void handleStage(entry)
+                          }}
+                          title={t.rightSidebar.stageChanges}
+                          type="button"
+                        >
+                          <Codicon name="add" size="0.75rem" />
+                        </button>
+                        <button
+                          aria-label={t.rightSidebar.discardChanges}
+                          className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-rose-500"
+                          onClick={e => {
+                            e.stopPropagation()
+                            void handleDiscard(entry)
+                          }}
+                          title={t.rightSidebar.discardChanges}
+                          type="button"
+                        >
+                          <Codicon name="remove" size="0.75rem" />
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-[0.6875rem]"
+                      onClick={() => onOpenChange(entry, status.root || cwd)}
+                      title={entry.originalPath ? `${entry.originalPath} → ${entry.path}` : entry.path}
+                      type="button"
                     >
-                      {code}
-                    </span>
-                  </button>
+                      <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="file" size="0.75rem" />
+                      <span className="min-w-0 flex-1 truncate text-(--ui-text-secondary)">
+                        {name}
+                        {parent && <span className="ml-1 text-(--ui-text-quaternary)">{parent}</span>}
+                      </span>
+                      <span
+                        className={cn(
+                          'mr-1 w-4 shrink-0 text-center font-mono font-bold',
+                          isStaged && 'text-emerald-500',
+                          group.id === 'changes' && 'text-amber-500',
+                          group.id === 'untracked' && 'text-emerald-500',
+                          group.id === 'conflicts' && 'text-rose-500'
+                        )}
+                      >
+                        {code}
+                      </span>
+                    </button>
+                  </div>
                 )
               })}
             </section>

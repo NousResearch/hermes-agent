@@ -1230,6 +1230,9 @@ export interface Translations {
     changes: string
     untrackedFiles: string
     addToChat: string
+    stageChanges: string
+    unstageChanges: string
+    discardChanges: string
   }
 
   preview: {

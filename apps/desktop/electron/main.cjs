@@ -5507,6 +5507,53 @@ ipcMain.handle('hermes:gitStatus', async (_event, cwd) => {
   }
 })
 
+ipcMain.handle('hermes:gitStage', async (_event, cwd, filePath) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  try {
+    const result = await runGit(['add', '--', filePath], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-add-failed') : undefined }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:gitUnstage', async (_event, cwd, filePath) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  try {
+    const result = await runGit(['restore', '--staged', '--', filePath], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-restore-failed') : undefined }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:gitCommit', async (_event, cwd, message) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  if (!message || typeof message !== 'string' || !message.trim()) {
+    return { success: false, error: 'Commit message is required' }
+  }
+  try {
+    const result = await runGit(['commit', '-m', message.trim()], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-commit-failed') : undefined, output: result.stdout.trim() }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:gitDiscard', async (_event, cwd, filePath) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  try {
+    const result = await runGit(['restore', '--', filePath], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-restore-failed') : undefined }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
 ipcMain.handle('hermes:writeFileText', async (_event, filePath, content) => {
   if (!filePath || typeof filePath !== 'string') return { success: false, error: 'No file path provided' }
   if (typeof content !== 'string') return { success: false, error: 'No content provided' }

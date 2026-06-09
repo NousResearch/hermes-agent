@@ -1747,7 +1747,10 @@ export const zh: Translations = {
     stagedChanges: '暂存的更改',
     changes: '更改',
     untrackedFiles: '未跟踪文件',
-    addToChat: '添加到对话'
+    addToChat: '添加到对话',
+    stageChanges: '暂存更改',
+    unstageChanges: '取消暂存',
+    discardChanges: '放弃更改'
   },
 
   preview: {

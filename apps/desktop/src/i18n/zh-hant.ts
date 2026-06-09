@@ -1661,7 +1661,10 @@ export const zhHant = defineLocale({
     stagedChanges: '已暫存的變更',
     changes: '變更',
     untrackedFiles: '未追蹤檔案',
-    addToChat: '新增至聊天'
+    addToChat: '新增至聊天',
+    stageChanges: '暫存變更',
+    unstageChanges: '取消暫存',
+    discardChanges: '捨棄變更'
   },
 
   preview: {

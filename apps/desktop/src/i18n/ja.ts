@@ -1700,7 +1700,10 @@ export const ja = defineLocale({
     stagedChanges: 'ステージ済みの変更',
     changes: '変更',
     untrackedFiles: '未追跡ファイル',
-    addToChat: 'チャットに追加'
+    addToChat: 'チャットに追加',
+    stageChanges: 'ステージング',
+    unstageChanges: 'ステージング解除',
+    discardChanges: '変更を破棄'
   },
 
   preview: {

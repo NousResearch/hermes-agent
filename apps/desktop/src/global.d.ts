@@ -46,6 +46,9 @@ declare global {
         path: string,
         originalPath?: string
       ) => Promise<{ diff: string; status: 'untracked' | 'modified' | 'staged' | ''; fileContent: string; headContent: string }>
+      gitStage: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
+      gitUnstage: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
+      gitDiscard: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
       gitStatus: (cwd: string) => Promise<HermesGitStatusResult>
       writeFileText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>

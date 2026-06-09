@@ -392,7 +392,78 @@ def test_codex_spend_cap_error_carries_reason():
 
 
 def test_default_ledger_path_expanduser(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_CODEX_SPEND_LEDGER", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     guard = CodexSpendGuard(limits=resolve_limits(None))
     assert str(guard.ledger_path).startswith(str(tmp_path))
     assert guard.ledger_path.name == "codex_spend.json"
+
+
+# ---------------------------------------------------------------------------
+# Ledger-path env override (test isolation; NOT a disable)
+# ---------------------------------------------------------------------------
+
+
+def test_env_ledger_path_override_used_when_set(monkeypatch, tmp_path):
+    override = tmp_path / "custom_spend.json"
+    monkeypatch.setenv("HERMES_CODEX_SPEND_LEDGER", str(override))
+    guard = CodexSpendGuard(limits=resolve_limits(None))
+    assert guard.ledger_path == override
+
+
+def test_env_ledger_path_override_falls_back_when_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_CODEX_SPEND_LEDGER", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    guard = CodexSpendGuard(limits=resolve_limits(None))
+    assert guard.ledger_path.name == "codex_spend.json"
+    assert str(guard.ledger_path).startswith(str(tmp_path))
+
+
+def test_env_ledger_path_override_does_not_disable_enforcement(monkeypatch, tmp_path):
+    # The env var only redirects the file; the cap is still enforced.
+    override = tmp_path / "enforced.json"
+    monkeypatch.setenv("HERMES_CODEX_SPEND_LEDGER", str(override))
+    limits = Limits(max_calls_per_hour=1, max_calls_per_day=100, max_tokens_per_day=10**9)
+    guard = CodexSpendGuard(limits=limits)
+    now = 4_000_000.0
+    assert guard.reserve(now=now).allowed is True
+    assert guard.reserve(now=now + 1).allowed is False  # still capped
+
+
+# ---------------------------------------------------------------------------
+# Process-wide singleton accessor
+# ---------------------------------------------------------------------------
+
+
+def test_singleton_accessor_is_process_wide(monkeypatch, tmp_path):
+    from agent.codex_spend_guard import (
+        get_codex_spend_guard,
+        reset_codex_spend_guard_for_test,
+    )
+
+    monkeypatch.setenv("HERMES_CODEX_SPEND_LEDGER", str(tmp_path / "singleton.json"))
+    reset_codex_spend_guard_for_test()
+    try:
+        g1 = get_codex_spend_guard()
+        g2 = get_codex_spend_guard()
+        assert g1 is g2
+        reset_codex_spend_guard_for_test()
+        g3 = get_codex_spend_guard()
+        assert g3 is not g1
+    finally:
+        reset_codex_spend_guard_for_test()
+
+
+def test_singleton_honors_env_ledger_path(monkeypatch, tmp_path):
+    from agent.codex_spend_guard import (
+        get_codex_spend_guard,
+        reset_codex_spend_guard_for_test,
+    )
+
+    override = tmp_path / "singleton_path.json"
+    monkeypatch.setenv("HERMES_CODEX_SPEND_LEDGER", str(override))
+    reset_codex_spend_guard_for_test()
+    try:
+        assert get_codex_spend_guard().ledger_path == override
+    finally:
+        reset_codex_spend_guard_for_test()

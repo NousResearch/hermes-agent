@@ -65,6 +65,17 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    # Proactive spend gate — same chokepoint enforcement as the Responses
+    # path. A denial is a deliberate stop and propagates like other Codex
+    # errors. The TurnResult carries no usage field, so this path is
+    # gate-only (no record_tokens).
+    from agent.codex_spend_guard import CodexSpendCapError, get_codex_spend_guard
+
+    _guard = get_codex_spend_guard()
+    _resv = _guard.reserve()
+    if not _resv.allowed:
+        raise CodexSpendCapError(_resv.reason)
+
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
@@ -430,6 +441,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     """
     import httpx as _httpx
 
+    from agent.codex_spend_guard import CodexSpendCapError, get_codex_spend_guard
+
+    _guard = get_codex_spend_guard()
+    _resv = _guard.reserve()
+    if not _resv.allowed:
+        raise CodexSpendCapError(_resv.reason)
+
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
@@ -504,6 +522,21 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     sum(len(p) for p in agent._codex_streamed_text_parts),
                     agent._client_log_context(),
                 )
+
+            # Best-effort token accounting (never affects the return value or
+            # raises). Records prompt+output tokens from the completed usage.
+            try:
+                _usage = getattr(final, "usage", None)
+                if _usage is not None:
+                    _pt = getattr(_usage, "prompt_tokens", 0) or 0
+                    _ct = getattr(
+                        _usage,
+                        "output_tokens",
+                        getattr(_usage, "completion_tokens", 0),
+                    ) or 0
+                    _guard.record_tokens(int(_pt) + int(_ct))
+            except Exception:
+                pass
 
             return final
         finally:

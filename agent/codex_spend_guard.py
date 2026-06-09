@@ -166,7 +166,19 @@ def resolve_limits(config: Optional[dict]) -> Limits:
 # ---------------------------------------------------------------------------
 
 
+_LEDGER_PATH_ENV = "HERMES_CODEX_SPEND_LEDGER"
+
+
 def _default_ledger_path() -> Path:
+    """Resolve the default ledger path.
+
+    Honors the ``HERMES_CODEX_SPEND_LEDGER`` env var when set (used for
+    per-test isolation so the shared ``~/.hermes/codex_spend.json`` is never
+    polluted). This is a PATH override ONLY — it never disables enforcement.
+    """
+    override = os.environ.get(_LEDGER_PATH_ENV)
+    if override:
+        return Path(override)
     return Path(os.path.expanduser("~")) / ".hermes" / _DEFAULT_LEDGER_NAME
 
 
@@ -250,6 +262,8 @@ class CodexSpendGuard:
         }
         try:
             with self._locked():
+                # Read-only: snapshot intentionally does NOT persist the pruned
+                # ledger, so the /usage display path can never mutate the file.
                 ledger = self._load_and_prune(now)
             hour_cutoff = now - HOUR_SECONDS
             day_cutoff = now - DAY_SECONDS
@@ -377,6 +391,45 @@ class CodexSpendGuard:
             raise
 
 
+# ---------------------------------------------------------------------------
+# Process-wide singleton accessor
+# ---------------------------------------------------------------------------
+
+_singleton: Optional[CodexSpendGuard] = None
+
+
+def get_codex_spend_guard() -> CodexSpendGuard:
+    """Return the process-wide :class:`CodexSpendGuard`, building it lazily.
+
+    Limits are derived from Hermes config (``codex_spend_cap`` section), which
+    can only LOWER the hard ceilings. Config/import failures fall back to the
+    hard ceilings (``resolve_limits(None)``) — construction must never raise.
+    The ledger path honors ``HERMES_CODEX_SPEND_LEDGER`` via
+    :func:`_default_ledger_path`.
+    """
+    global _singleton
+    if _singleton is None:
+        try:
+            from hermes_cli.config import load_config
+
+            # resolve_limits reads the ``codex_spend_cap`` section itself, so
+            # pass the full config dict (not the pre-extracted section).
+            limits = resolve_limits(load_config())
+        except Exception as exc:  # noqa: BLE001 — never raise at construction.
+            logger.warning(
+                "CodexSpendGuard config load failed (%s); using hard ceilings.", exc
+            )
+            limits = resolve_limits(None)
+        _singleton = CodexSpendGuard(limits=limits)
+    return _singleton
+
+
+def reset_codex_spend_guard_for_test() -> None:
+    """Clear the process-wide singleton (tests only)."""
+    global _singleton
+    _singleton = None
+
+
 __all__ = [
     "MAX_CALLS_PER_HOUR",
     "MAX_CALLS_PER_DAY",
@@ -390,4 +443,6 @@ __all__ = [
     "CodexSpendGuard",
     "evaluate",
     "resolve_limits",
+    "get_codex_spend_guard",
+    "reset_codex_spend_guard_for_test",
 ]

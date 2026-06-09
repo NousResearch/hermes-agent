@@ -418,6 +418,31 @@ def _isolate_hermes_home(_hermetic_environment):
 # approvals from one test's session into another's.
 
 
+@pytest.fixture(autouse=True)
+def _isolate_codex_spend_ledger(tmp_path, monkeypatch):
+    """Point the Codex spend guard at a per-test ledger and reset its singleton.
+
+    The proactive spend gate now runs on every ``run_codex_stream`` /
+    app-server turn. The hermetic env above redirects HERMES_HOME but NOT
+    HOME, and the guard's default ledger lives under
+    ``Path.home()/.hermes/codex_spend.json`` — so without this override
+    tests would hit (and trip) the REAL shared ledger. We give every test a
+    fresh ``tmp_path`` ledger via ``HERMES_CODEX_SPEND_LEDGER`` and clear the
+    process-wide singleton before and after, guaranteeing no ``~/.hermes``
+    writes and no cross-test interference. This is a PATH override only — it
+    does NOT disable enforcement.
+    """
+    from agent.codex_spend_guard import reset_codex_spend_guard_for_test
+
+    ledger = tmp_path / "codex_spend_ledger.json"
+    monkeypatch.setenv("HERMES_CODEX_SPEND_LEDGER", str(ledger))
+    reset_codex_spend_guard_for_test()
+    try:
+        yield
+    finally:
+        reset_codex_spend_guard_for_test()
+
+
 @pytest.fixture()
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""

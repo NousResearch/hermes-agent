@@ -43,8 +43,14 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+# HERMES_REPO_URL / HERMES_REPO_URL_SSH let embedders and fork maintainers
+# install from a pinned fork without maintaining a divergent copy of this
+# script.
+REPO_URL_HTTPS="${HERMES_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
+# When only the HTTPS override is given, use it for the primary attempt too —
+# otherwise the SSH-first clone would still hit the default repo (where a
+# fork-only branch does not exist) before falling back.
+REPO_URL_SSH="${HERMES_REPO_URL_SSH:-${HERMES_REPO_URL:-git@github.com:NousResearch/hermes-agent.git}}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an

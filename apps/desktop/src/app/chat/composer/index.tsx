@@ -469,6 +469,28 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    // Check text first — on macOS, copying plain text always includes a
+    // PDF/image flavor in the clipboard.  If we check images first, that
+    // ghost flavor is extracted as a blank image and the text is lost.
+    // See https://github.com/NousResearch/hermes-agent/issues/42827
+    const pastedText = event.clipboardData.getData('text').trim()
+
+    if (pastedText) {
+      if (DATA_IMAGE_URL_RE.test(pastedText)) {
+        event.preventDefault()
+
+        return
+      }
+
+      event.preventDefault()
+      document.execCommand('insertText', false, pastedText)
+      const nextDraft = composerPlainText(event.currentTarget)
+      draftRef.current = nextDraft
+      aui.composer().setText(nextDraft)
+
+      return
+    }
+
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
     if (imageBlobs.length > 0) {
@@ -485,29 +507,8 @@ export function ChatBar({
       return
     }
 
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = event.clipboardData.getData('text').trim()
-
-    if (!pastedText) {
-      event.preventDefault()
-
-      return
-    }
-
-    if (DATA_IMAGE_URL_RE.test(pastedText)) {
-      event.preventDefault()
-
-      return
-    }
-
+    // No text and no images — swallow the paste to avoid inserting nothing.
     event.preventDefault()
-    document.execCommand('insertText', false, pastedText)
-    const nextDraft = composerPlainText(event.currentTarget)
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
   }
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)

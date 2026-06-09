@@ -428,12 +428,26 @@ class HonchoClientConfig:
             logger.warning("Failed to read %s: %s, falling back to env", path, e)
             return cls.from_env(host=resolved_host)
 
+        fallback_raw: dict[str, Any] = {}
+        global_path = resolve_global_config_path()
+        is_profile_local_config = path.name == "honcho.json" and path.parent.name in {".hermes", "default"}
+        if is_profile_local_config and path != global_path and global_path.exists():
+            try:
+                fallback_raw = json.loads(global_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.debug("Failed to read fallback Honcho config %s: %s", global_path, e)
+
         host_block = _host_block(raw, resolved_host)
+        fallback_host_block = _host_block(fallback_raw, resolved_host)
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
 
-        # Explicit host block fields win, then flat/global, then defaults
+        # Explicit host block fields win, then flat/global, then defaults.
+        # Profile-local ~/.hermes/honcho.json files often carry Hermes-specific
+        # identity/session settings but intentionally omit shared credentials.
+        # In that case, fall back to ~/.honcho/config.json for API/base URL while
+        # preserving the local workspace/peer/session overrides.
         workspace = (
             host_block.get("workspace")
             or raw.get("workspace")
@@ -448,23 +462,33 @@ class HonchoClientConfig:
             host_block.get("apiKey")
             or raw.get("apiKey")
             or os.environ.get("HONCHO_API_KEY")
+            or fallback_host_block.get("apiKey")
+            or fallback_raw.get("apiKey")
         )
 
         environment = (
             host_block.get("environment")
-            or raw.get("environment", "production")
+            or raw.get("environment")
+            or os.environ.get("HONCHO_ENVIRONMENT")
+            or fallback_host_block.get("environment")
+            or fallback_raw.get("environment")
+            or "production"
         )
 
         base_url = (
             raw.get("baseUrl")
             or raw.get("base_url")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
+            or fallback_raw.get("baseUrl")
+            or fallback_raw.get("base_url")
             or None
         )
         timeout = _resolve_optional_float(
             raw.get("timeout"),
             raw.get("requestTimeout"),
             os.environ.get("HONCHO_TIMEOUT"),
+            fallback_raw.get("timeout"),
+            fallback_raw.get("requestTimeout"),
         )
 
         # Auto-enable when API key or base_url is present (unless explicitly disabled)

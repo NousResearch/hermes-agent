@@ -45,6 +45,47 @@ def test_gateway_session_key_wins_over_session_title():
     assert resolved == "agent-main-telegram-dm-7724476685"
 
 
+def test_profile_local_config_uses_global_credentials_fallback(tmp_path, monkeypatch):
+    """Profile-local Honcho config may omit shared API credentials."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+    monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
+
+    global_dir = tmp_path / ".honcho"
+    global_dir.mkdir()
+    (global_dir / "config.json").write_text(json.dumps({
+        "apiKey": "global-api-key",
+        "baseUrl": "https://honcho.example",
+        "workspace": "global-workspace",
+        "environment": "staging",
+        "timeout": 12.5,
+    }))
+
+    profile_config = tmp_path / ".hermes" / "honcho.json"
+    profile_config.parent.mkdir()
+    profile_config.write_text(json.dumps({
+        "enabled": True,
+        "workspace": "wildeboer-fleet",
+        "hosts": {
+            "hermes": {
+                "aiPeer": "hermes",
+                "peerName": "Arta",
+                "recallMode": "hybrid",
+            }
+        },
+    }))
+
+    cfg = HonchoClientConfig.from_global_config(config_path=profile_config, host="hermes")
+
+    assert cfg.enabled is True
+    assert cfg.api_key == "global-api-key"
+    assert cfg.base_url == "https://honcho.example"
+    assert cfg.workspace_id == "wildeboer-fleet"
+    assert cfg.environment == "staging"
+    assert cfg.timeout == 12.5
+    assert cfg.peer_name == "Arta"
+
+
 class TestHonchoClientConfigAutoEnable:
     """Test auto-enable behavior when API key is present."""
 
@@ -87,23 +128,27 @@ class TestHonchoClientConfigAutoEnable:
         assert cfg.api_key == "test-api-key-12345"
         assert cfg.enabled is True
 
-    def test_disabled_when_no_api_key_and_no_explicit_enabled(self, tmp_path):
-        """When no API key and enabled not set, should be disabled."""
+    def test_disabled_when_no_api_key_or_base_url_and_no_explicit_enabled(self, tmp_path):
+        """When no API key/baseUrl and enabled not set, should be disabled."""
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({
             "workspace": "test",
-            # No apiKey, no enabled
+            # No apiKey, no baseUrl, no enabled
         }))
 
-        # Clear env var if set
+        # Clear env vars if set so this test does not inherit host-level status mode.
         env_key = os.environ.pop("HONCHO_API_KEY", None)
+        env_base_url = os.environ.pop("HONCHO_BASE_URL", None)
         try:
             cfg = HonchoClientConfig.from_global_config(config_path=config_path)
             assert cfg.api_key is None
-            assert cfg.enabled is False  # No API key = not enabled
+            assert cfg.base_url is None
+            assert cfg.enabled is False  # No API key/baseUrl = not enabled
         finally:
             if env_key:
                 os.environ["HONCHO_API_KEY"] = env_key
+            if env_base_url:
+                os.environ["HONCHO_BASE_URL"] = env_base_url
 
     def test_auto_enables_with_env_var_api_key(self, tmp_path, monkeypatch):
         """When API key is in env var (not config), should auto-enable."""

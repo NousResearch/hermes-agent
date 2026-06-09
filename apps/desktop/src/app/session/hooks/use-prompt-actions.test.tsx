@@ -3,9 +3,8 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $sessions, setSessions } from '@/store/session'
-import { $connection } from '@/store/session'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
+import { $connection, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { usePromptActions } from './use-prompt-actions'
@@ -453,6 +452,63 @@ describe('usePromptActions file attachment sync', () => {
       method: 'prompt.submit',
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
     })
+  })
+})
+
+describe('usePromptActions eager-upload races', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+    $composerAttachments.set([])
+  })
+
+  afterEach(() => {
+    cleanup()
+    $composerAttachments.set([])
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('joins an in-flight eager upload at submit instead of staging the file twice', async () => {
+    // Drop-then-immediately-Enter: the drop kicks off an eager file.attach; if
+    // submit doesn't join it, both calls stage the file and leave a duplicate
+    // under .hermes/desktop-attachments/. Submit must await the in-flight upload
+    // and reuse its gateway-side ref.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    let releaseAttach: () => void = () => {}
+    const methods: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+      if (method === 'file.attach') {
+        // Block until released so submit runs while the upload is in flight.
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/doc.pdf', uploaded: true } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    // Drop a file → the eager effect fires file.attach and blocks on it.
+    $composerAttachments.set([{ id: 'file:doc.pdf', kind: 'file', label: 'doc.pdf', path: '/Users/me/doc.pdf' }])
+    await waitFor(() => expect(methods.filter(m => m === 'file.attach').length).toBe(1))
+
+    // Submit reads the store, sees the upload in flight, and joins it.
+    const submitting = handle!.submitText('here you go')
+    releaseAttach()
+
+    expect(await submitting).toBe(true)
+    // Exactly one file.attach (submit reused the eager result), then the send.
+    expect(methods.filter(m => m === 'file.attach').length).toBe(1)
+    expect(methods).toContain('prompt.submit')
   })
 })
 

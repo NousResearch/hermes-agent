@@ -128,6 +128,7 @@ const GROUP_DND_ID_PREFIX = 'group:'
 const LOCAL_SESSION_SOURCES = new Set(['cli', 'desktop', 'local', 'tui'])
 const EMPTY_LIVE_SESSION_IDS = new Set<string>()
 
+const isCronSession = (session: Pick<SessionInfo, 'source'>): boolean => normalizeSessionSource(session.source) === 'cron'
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
@@ -501,7 +502,7 @@ export function ChatSidebar({
   // Top 5 most-recently-worked open sessions — a quick-access shortcut above
   // the fuller live-work list. Scheduled cron runs live in their own section.
   const recentQuickSessions = useMemo(
-    () => topRecentSessions([openVisibleSessions], session => session.id, sessionTime, 5),
+    () => topRecentSessions([openVisibleSessions], session => session.id, sessionTime, 5, isCronSession),
     [openVisibleSessions]
   )
 

@@ -6,14 +6,16 @@ interface TimedRow {
   archived?: boolean
   id: string
   root?: null | string
+  source?: null | string
   t: number
 }
 
-const timed = (...specs: Array<[string, number, (null | string | undefined)?, boolean?]>): TimedRow[] =>
-  specs.map(([id, t, root, archived]) => ({ archived, id, root, t }))
+const timed = (...specs: Array<[string, number, (null | string | undefined)?, boolean?, (null | string | undefined)?]>): TimedRow[] =>
+  specs.map(([id, t, root, archived, source]) => ({ archived, id, root, source, t }))
 
 const timedId = (item: TimedRow) => item.id
 const timedRoot = (item: TimedRow) => item.root ?? null
+const timedSource = (item: TimedRow) => item.source ?? null
 const timedTime = (item: TimedRow) => item.t
 const timedArchived = (item: TimedRow) => item.archived === true
 const timedIds = (items: TimedRow[]) => items.map(item => item.id)
@@ -33,6 +35,15 @@ describe('topRecentSessions', () => {
     const cron = timed(['x', 99]) // same session id, but fresher
 
     expect(timedIds(topRecentSessions([loaded, cron], timedId, timedTime, 5))).toEqual(['x', 'y'])
+  })
+
+  it('excludes scheduled cron runs when an exclusion predicate is provided', () => {
+    const local = timed(['older-open', 10], ['fresh-open', 30])
+    const cron = timed(['cron-run', 99, undefined, false, 'cron'])
+
+    expect(
+      timedIds(topRecentSessions([local, cron], timedId, timedTime, 5, session => timedSource(session) === 'cron'))
+    ).toEqual(['fresh-open', 'older-open'])
   })
 
   it('returns an empty list for n <= 0 or no input', () => {

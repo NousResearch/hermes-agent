@@ -5,13 +5,14 @@
 
 // Merge several session lists into one newest-first list, deduped by id (the
 // freshest timestamp wins on collision), capped at `n`. Powers the "Recent N"
-// quick-access section, which spans local, external-source, and cron sessions —
-// the same session can appear in more than one source list, so dedup matters.
+// quick-access section. Callers can pass `isExcluded` for rows that have their
+// own dedicated surface (for example scheduled cron runs).
 export function topRecentSessions<T>(
   lists: T[][],
   getId: (item: T) => string,
   getTime: (item: T) => number,
-  n: number
+  n: number,
+  isExcluded?: (item: T) => boolean
 ): T[] {
   if (n <= 0) {
     return []
@@ -21,6 +22,10 @@ export function topRecentSessions<T>(
 
   for (const list of lists) {
     for (const item of list) {
+      if (isExcluded?.(item)) {
+        continue
+      }
+
       const id = getId(item)
       const existing = best.get(id)
 

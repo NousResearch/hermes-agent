@@ -14,11 +14,15 @@
 //   - Each request must include `X-Hermes-Sidecar-Token: ${TOKEN}`
 //   - POST /healthz                     -> {"ok": true}
 //   - POST /send                        -> {"ok": true, "messageId": "..."}
-//       body: {"spaceId": "...", "text": "...", "replyTo": "..." | null}
+//       body: {"spaceId": "...", "text": "...", "effect": "confetti" | null}
+//       (a URL in `text` renders a native link preview automatically)
 //   - POST /send-attachment             -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
-//              "kind": "attachment" | "voice", "replyTo": "..." | null}
+//              "kind": "attachment" | "voice", "effect": "slam" | null}
+//   - POST /send-attachments            -> {"ok": true, "messageIds": [...]}
+//       body: {"spaceId": "...", "paths": ["...", ...],
+//              "caption": "..." | null, "pacingMs": 600 | null}
 //   - POST /typing                      -> {"ok": true}
 //       body: {"spaceId": "..."}
 //   - POST /shutdown                    -> {"ok": true}; then process exits
@@ -62,10 +66,10 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice;
+let Spectrum, imessage, attachment, voice, effect;
 try {
   ({ Spectrum, attachment, voice } = await import("spectrum-ts"));
-  ({ imessage } = await import("spectrum-ts/providers/imessage"));
+  ({ imessage, effect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -368,6 +372,25 @@ async function resolveSpace(spaceId) {
   throw new Error(`unable to resolve space id ${spaceId}`);
 }
 
+// Resolve a friendly screen/bubble effect name (e.g. "confetti", "slam",
+// "invisible") to Apple's reverse-DNS effect id. Names + ids come straight from
+// the provider's own effect map so we never hardcode the (long, churn-prone)
+// identifiers. Returns null for an unknown/empty name (send proceeds without
+// an effect rather than failing the message).
+function resolveEffect(name) {
+  if (!name) return null;
+  const map = (imessage && imessage.effect && imessage.effect.message) || {};
+  const id = map[String(name).trim().toLowerCase()];
+  if (!id) console.error(`photon-sidecar: unknown effect "${name}" — ignoring`);
+  return id || null;
+}
+
+// Wrap outgoing content with an effect when one was requested and resolved.
+function withEffect(content, effectName) {
+  const id = resolveEffect(effectName);
+  return id && typeof effect === "function" ? effect(content, id) : content;
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.headers["x-hermes-sidecar-token"] !== sharedToken) {
     return unauthorized(res);
@@ -387,7 +410,7 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text } = body || {};
+      const { spaceId, text, effect: effectName } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
@@ -396,11 +419,17 @@ const server = http.createServer(async (req, res) => {
       // treated as a second content item and throws `c.build is not a function`.
       // Threaded replies in 1.x need the reply() builder + the original Message,
       // which the adapter doesn't hand us, so replyTo is not forwarded here.
-      const result = await withRetry(() => space.send(text));
+      //
+      // Plain URLs in `text` get native iMessage link previews automatically
+      // (Apple's client renders the Open Graph card), so no special handling is
+      // needed for rich links. An optional `effect` applies a screen/bubble
+      // effect (confetti, slam, invisible ink, …).
+      const result = await withRetry(() => space.send(withEffect(text, effectName)));
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/send-attachment") {
-      const { spaceId, path, name, mimeType, caption, kind } = body || {};
+      const { spaceId, path, name, mimeType, caption, kind, effect: effectName } =
+        body || {};
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
       }
@@ -408,7 +437,9 @@ const server = http.createServer(async (req, res) => {
 
       // spectrum-ts infers name + MIME from the file extension; pass
       // overrides only when Hermes supplied them so a known-good
-      // inference isn't clobbered with an empty string.
+      // inference isn't clobbered with an empty string. Images/GIFs/videos and
+      // arbitrary files (PDFs, docs) all go through the same builder and render
+      // natively; a sticker is just a (sticker-sized) image attachment.
       const opts = {};
       if (name) opts.name = name;
       if (mimeType) opts.mimeType = mimeType;
@@ -417,7 +448,7 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const result = await withRetry(() => space.send(builder));
+      const result = await withRetry(() => space.send(withEffect(builder, effectName)));
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.
@@ -432,6 +463,39 @@ const server = http.createServer(async (req, res) => {
         }
       }
       return ok(res, { messageId: result?.id || result?.messageId || null });
+    }
+    if (req.url === "/send-attachments") {
+      // Multiple files in one logical send. iMessage has no atomic multi-file
+      // bubble over this path, so we send them sequentially with a short pace
+      // between each (back-to-back sends can arrive out of order or get
+      // coalesced); `pacingMs` overrides the default.
+      const { spaceId, paths, caption, pacingMs } = body || {};
+      if (!spaceId || !Array.isArray(paths) || paths.length === 0) {
+        return badRequest(res, "spaceId and a non-empty paths[] are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const delay = Number.isFinite(pacingMs) ? Math.max(0, pacingMs) : 600;
+      const messageIds = [];
+      for (let i = 0; i < paths.length; i++) {
+        const p = paths[i];
+        if (typeof p !== "string" || !p) continue;
+        const r = await withRetry(() => space.send(attachment(p)));
+        messageIds.push(r?.id || r?.messageId || null);
+        if (i < paths.length - 1 && delay) {
+          await new Promise((rs) => setTimeout(rs, delay));
+        }
+      }
+      if (caption && typeof caption === "string") {
+        try {
+          await withRetry(() => space.send(caption));
+        } catch (e) {
+          console.error(
+            "photon-sidecar: multi-attachment caption failed: " +
+              (e && e.stack ? e.stack : String(e))
+          );
+        }
+      }
+      return ok(res, { messageIds });
     }
     if (req.url === "/typing") {
       const { spaceId } = body || {};

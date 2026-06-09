@@ -510,8 +510,18 @@ function withEffect(content, effectName) {
   return id && typeof effect === "function" ? effect(content, id) : content;
 }
 
+// Constant-time token comparison (don't leak the token via `!==` timing).
+const _tokenBuf = Buffer.from(sharedToken);
+function tokenOk(header) {
+  if (typeof header !== "string") return false;
+  const h = Buffer.from(header);
+  // Length check first — timingSafeEqual throws on length mismatch; the token
+  // length is not secret.
+  return h.length === _tokenBuf.length && crypto.timingSafeEqual(h, _tokenBuf);
+}
+
 const server = http.createServer(async (req, res) => {
-  if (req.headers["x-hermes-sidecar-token"] !== sharedToken) {
+  if (!tokenOk(req.headers["x-hermes-sidecar-token"])) {
     return unauthorized(res);
   }
   if (req.method !== "POST") {

@@ -372,6 +372,7 @@ export interface UiState {
   // the default set).
   statusBarFields: null | ReadonlySet<string>
   streaming: boolean
+  submitKey: 'enter' | 'cmd_enter'
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).

@@ -786,6 +786,7 @@ export function TextInput({
   mouseApiRef,
   cursorSnapshotRef,
   ignoreVerticalArrows = false,
+  submitKey = 'enter',
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -1481,7 +1482,10 @@ export function TextInput({
         const range = selRange()
         const pending = valueForReturnSubmit(vRef.current, curRef.current, inp, range)
         const sequence = (event.keypress as { sequence?: string }).sequence
-        const insertNewline = shouldInsertNewlineOnReturn(k, sequence ?? '')
+        // Default: bare Enter submits, modifier+Enter inserts newline.
+        // Inverted (cmd_enter): modifier+Enter submits, bare Enter inserts newline.
+        const modifiedReturn = shouldInsertNewlineOnReturn(k, sequence ?? '')
+        const insertNewline = submitKey === 'cmd_enter' ? !modifiedReturn : modifiedReturn
 
         if (insertNewline) {
           commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
@@ -1872,6 +1876,8 @@ interface TextInputProps {
   placeholder?: string
   /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
   placeholderColor?: string
+  /** When 'cmd_enter', Enter inserts a newline and Cmd/Ctrl+Enter submits. */
+  submitKey?: 'enter' | 'cmd_enter'
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

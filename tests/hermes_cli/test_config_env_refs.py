@@ -1,6 +1,8 @@
 import textwrap
 
-from hermes_cli.config import load_config, save_config
+import pytest
+
+from hermes_cli.config import load_config, save_config, save_env_value, set_config_value
 
 
 def _write_config(tmp_path, body: str):
@@ -136,6 +138,57 @@ def test_save_config_keeps_edited_partial_template_strings_literal(monkeypatch, 
     saved = _read_config(tmp_path)
     assert "Authorization: Token alt-secret" in saved
     assert "Authorization: Bearer ${ALT_SECRET}" not in saved
+
+
+def test_save_config_rejects_redacted_model_api_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        model:
+          provider: custom
+          base_url: https://api.example.test/v1
+          api_key: ${REAL_MODEL_KEY}
+        """,
+    )
+
+    config = load_config()
+    config["model"]["api_key"] = "sk-m...n8ui"
+
+    with pytest.raises(ValueError, match="redacted credential placeholder"):
+        save_config(config)
+
+    assert "api_key: ${REAL_MODEL_KEY}" in _read_config(tmp_path)
+    assert "sk-m...n8ui" not in _read_config(tmp_path)
+
+
+def test_set_config_value_rejects_redacted_auxiliary_api_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        auxiliary:
+          vision:
+            provider: custom
+            api_key: ${AUX_VISION_KEY}
+        """,
+    )
+
+    with pytest.raises(ValueError, match="redacted credential placeholder"):
+        set_config_value("auxiliary.vision.api_key", "[REDACTED]")
+
+    saved = _read_config(tmp_path)
+    assert "api_key: ${AUX_VISION_KEY}" in saved
+    assert "[REDACTED]" not in saved
+
+
+def test_save_env_value_rejects_redacted_api_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    with pytest.raises(ValueError, match="redacted credential placeholder"):
+        save_env_value("OPENAI_API_KEY", "sk-...")
+
+    assert not (tmp_path / ".env").exists()
 
 
 def test_save_config_falls_back_to_positional_matching_for_duplicate_names(monkeypatch, tmp_path):

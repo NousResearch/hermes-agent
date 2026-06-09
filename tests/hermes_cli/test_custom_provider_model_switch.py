@@ -134,7 +134,7 @@ class TestCustomProviderModelSwitch:
         provider_info = {
             "name": "Anthropic Proxy",
             "base_url": "https://proxy.example.com/anthropic",
-            "api_key": "***",
+            "api_key": "sk-test-anthropic-proxy",
             "model": "claude-3",
             "api_mode": "anthropic_messages",
         }
@@ -146,7 +146,7 @@ class TestCustomProviderModelSwitch:
             _model_flow_named_custom({}, provider_info)
 
         mock_fetch.assert_called_once_with(
-            "***",
+            "sk-test-anthropic-proxy",
             "https://proxy.example.com/anthropic",
             timeout=8.0,
             api_mode="anthropic_messages",
@@ -168,7 +168,7 @@ class TestCustomProviderModelSwitch:
         provider_info = {
             "name": "My vLLM",
             "base_url": "https://vllm.example.com/v1",
-            "api_key": "***",
+            "api_key": "sk-test-vllm-key",
             "model": "llama-3",
         }
 

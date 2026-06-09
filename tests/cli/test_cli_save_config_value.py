@@ -132,3 +132,40 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+    def test_rejects_redacted_value_on_env_save(self, config_env):
+        """save_env_value must reject redacted placeholders for credential keys."""
+        from hermes_cli.config import save_env_value
+
+        with pytest.raises(ValueError, match="redacted"):
+            save_env_value("OPENAI_API_KEY", "sk-...abc")
+        with pytest.raises(ValueError, match="redacted"):
+            save_env_value("ANTHROPIC_API_KEY", "[redacted]")
+
+    def test_rejects_nonstandard_credential_keys(self, config_env):
+        """FAL_KEY and VOICE_TOOLS_OPENAI_KEY live in OPTIONAL_ENV_VARS
+        with ``"password": True`` but end in ``_KEY``, not ``_API_KEY``.
+        The write-time guard must still reject redacted placeholders."""
+        from hermes_cli.config import save_env_value
+
+        with pytest.raises(ValueError, match="redacted"):
+            save_env_value("FAL_KEY", "***")
+        with pytest.raises(ValueError, match="redacted"):
+            save_env_value("VOICE_TOOLS_OPENAI_KEY", "sk-...xyz")
+
+    def test_allows_real_secret_values(self, config_env):
+        """Real API keys must not be rejected.
+        Boundary: real keys may contain patterns that look like placeholders
+        (e.g. '...') but they should pass through when longer than 32 chars."""
+        from hermes_cli.config import save_env_value
+
+        # Long real key — must succeed.
+        real_key = "sk-proj-" + "a" * 60
+        save_env_value("OPENAI_API_KEY", real_key)
+
+        # Short real value — harmless key, not a placeholder.
+        save_env_value("DINGTALK_CLIENT_ID", "ding123abc")
+
+        # Placeholder mimic — short key with "...", must be rejected.
+        with pytest.raises(ValueError, match="redacted"):
+            save_env_value("ANTHROPIC_API_KEY", "sk-...n8ui")

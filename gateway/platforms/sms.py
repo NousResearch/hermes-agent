@@ -65,8 +65,13 @@ class SmsAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
-        self._account_sid: str = os.environ["TWILIO_ACCOUNT_SID"]
-        self._auth_token: str = os.environ["TWILIO_AUTH_TOKEN"]
+        self._account_sid: str = os.getenv("TWILIO_ACCOUNT_SID", "")
+        self._auth_token: str = os.getenv("TWILIO_AUTH_TOKEN", "")
+        if not self._account_sid or not self._auth_token:
+            raise ValueError(
+                "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN environment variables "
+                "are required for the SMS platform"
+            )
         self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))

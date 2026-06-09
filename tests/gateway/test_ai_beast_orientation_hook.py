@@ -45,7 +45,7 @@ def _write_fake_ai_beast_adapter(project_root: Path) -> None:
     (package / "telegram_adapter.py").write_text(
         "from .loader import RegistryError\n"
         "CALLS = []\n"
-        "def handle_telegram_orientation_command(text, registry, *, chat_id=None, thread_id=None, bot_username=None):\n"
+        "def handle_telegram_orientation_command(text, registry, *, chat_id=None, thread_id=None, bot_username=None, enable_beast_namespace=False):\n"
         "    CALLS.append((text, registry['workspaces'].name, registry['bindings'].name, chat_id, thread_id, bot_username))\n"
         "    if text == '/projects':\n"
         "        return 'Projects (read-only registry):\\n- AI Beast [ai-beast]'\n"

@@ -273,6 +273,7 @@ def _lazy_orientation_adapter(config: Any, project_root: Path, context: Mapping[
             chat_id=_source_value(context, "chat_id"),
             thread_id=_source_value(context, "thread_id"),
             bot_username=_get_value(config, "bot_username"),
+            enable_beast_namespace=_beast_namespace_enabled(config),
         )
 
     return _adapter

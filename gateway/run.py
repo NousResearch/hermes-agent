@@ -12332,11 +12332,14 @@ class GatewayRunner:
             if not tts_text:
                 return
 
-            # Use .mp3 extension so edge-tts conversion to opus works correctly.
-            # The TTS tool may convert to .ogg — use file_path from result.
+            # Telegram renders Opus/Ogg as a native voice note. Other platforms
+            # keep the broadly-compatible MP3 default unless their adapter
+            # transforms it downstream.
+            platform_value = getattr(event.source.platform, "value", event.source.platform)
+            audio_suffix = ".ogg" if str(platform_value).lower() == "telegram" else ".mp3"
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+                f"tts_reply_{_uuid.uuid4().hex[:12]}{audio_suffix}",
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 

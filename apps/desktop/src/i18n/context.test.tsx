@@ -7,7 +7,7 @@ import { type I18nConfigClient, I18nProvider, useI18n } from './context'
 import type { Locale } from './types'
 
 function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
-  const { isLoadingConfig, isSavingLocale, locale, saveError, setLocale, t } = useI18n()
+  const { configLoadError, isLoadingConfig, isSavingLocale, locale, saveError, setLocale, t } = useI18n()
 
   return (
     <div>
@@ -16,6 +16,7 @@ function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
       <p data-testid="save">{t.common.save}</p>
       <p data-testid="loading">{String(isLoadingConfig)}</p>
       <p data-testid="saving">{String(isSavingLocale)}</p>
+      <p data-testid="config-error">{configLoadError?.message ?? ''}</p>
       <p data-testid="save-error">{saveError?.message ?? ''}</p>
       <button onClick={() => void setLocale(target).catch(() => undefined)} type="button">
         switch
@@ -28,6 +29,7 @@ describe('I18nProvider', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('defaults to English without a config client', () => {
@@ -76,23 +78,67 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
-  it('keeps English usable when config loading fails', async () => {
-    const configClient: I18nConfigClient = {
-      getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
-      saveConfig: vi.fn()
+  it('retries config loading before falling back to English', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const configClient: I18nConfigClient = {
+        getConfig: vi
+          .fn()
+          .mockRejectedValueOnce(new Error('config unavailable'))
+          .mockResolvedValueOnce({ display: { language: 'zh-Hans' } }),
+        saveConfig: vi.fn()
+      }
+
+      render(
+        <I18nProvider configClient={configClient}>
+          <LanguageProbe />
+        </I18nProvider>
+      )
+
+      expect(screen.getByTestId('locale').textContent).toBe('en')
+
+      await vi.advanceTimersByTimeAsync(250)
+      vi.useRealTimers()
+      await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+      expect(configClient.getConfig).toHaveBeenCalledTimes(2)
+      expect(screen.getByTestId('locale').textContent).toBe('zh')
+      expect(screen.getByTestId('label').textContent).toBe('语言')
+      expect(screen.getByTestId('config-error').textContent).toBe('')
+      expect(configClient.saveConfig).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
     }
+  })
 
-    render(
-      <I18nProvider configClient={configClient} initialLocale="zh">
-        <LanguageProbe />
-      </I18nProvider>
-    )
+  it('keeps English usable after exhausting config retries', async () => {
+    vi.useFakeTimers()
 
-    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    try {
+      const configClient: I18nConfigClient = {
+        getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
+        saveConfig: vi.fn()
+      }
 
-    expect(screen.getByTestId('locale').textContent).toBe('en')
-    expect(screen.getByTestId('label').textContent).toBe('Language')
-    expect(configClient.saveConfig).not.toHaveBeenCalled()
+      render(
+        <I18nProvider configClient={configClient} initialLocale="zh">
+          <LanguageProbe />
+        </I18nProvider>
+      )
+
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+      await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+      expect(configClient.getConfig).toHaveBeenCalledTimes(5)
+      expect(screen.getByTestId('locale').textContent).toBe('en')
+      expect(screen.getByTestId('label').textContent).toBe('Language')
+      expect(screen.getByTestId('config-error').textContent).toBe('config unavailable')
+      expect(configClient.saveConfig).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('loads zh-hant from display.language config', async () => {

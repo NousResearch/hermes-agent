@@ -55,6 +55,13 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
 
+const CONFIG_LOAD_MAX_ATTEMPTS = 5
+const CONFIG_LOAD_RETRY_BASE_DELAY_MS = 250
+
+function getConfigLoadRetryDelayMs(attempt: number): number {
+  return CONFIG_LOAD_RETRY_BASE_DELAY_MS * 2 ** attempt
+}
+
 export interface I18nContextValue {
   configLoadError: Error | null
   isLoadingConfig: boolean
@@ -100,31 +107,75 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     }
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null
+    let resolveRetryWait: (() => void) | null = null
+
+    const finishRetryWait = () => {
+      const resolve = resolveRetryWait
+      resolveRetryWait = null
+      resolve?.()
+    }
+
+    const waitForRetry = (ms: number) =>
+      new Promise<void>(resolve => {
+        resolveRetryWait = resolve
+        retryTimer = globalThis.setTimeout(() => {
+          retryTimer = null
+          finishRetryWait()
+        }, ms)
+      })
 
     setIsLoadingConfig(true)
     setConfigLoadError(null)
 
-    configClient
-      .getConfig()
-      .then(config => {
-        if (!cancelled) {
-          setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+    void (async () => {
+      let lastError: Error | null = null
+
+      for (let attempt = 0; attempt < CONFIG_LOAD_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          const config = await configClient.getConfig()
+
+          if (!cancelled) {
+            setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+          }
+
+          return
+        } catch (error) {
+          lastError = toError(error)
+
+          if (cancelled) {
+            return
+          }
+
+          if (attempt < CONFIG_LOAD_MAX_ATTEMPTS - 1) {
+            await waitForRetry(getConfigLoadRetryDelayMs(attempt))
+
+            if (cancelled) {
+              return
+            }
+          }
         }
-      })
-      .catch(error => {
-        if (!cancelled) {
-          setConfigLoadError(toError(error))
-          setLocaleState(DEFAULT_LOCALE)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingConfig(false)
-        }
-      })
+      }
+
+      if (!cancelled && lastError) {
+        setConfigLoadError(lastError)
+        setLocaleState(DEFAULT_LOCALE)
+      }
+    })().finally(() => {
+      if (!cancelled) {
+        setIsLoadingConfig(false)
+      }
+    })
 
     return () => {
       cancelled = true
+
+      if (retryTimer !== null) {
+        globalThis.clearTimeout(retryTimer)
+        retryTimer = null
+      }
+
+      finishRetryWait()
     }
   }, [configClient, initialLocale])
 

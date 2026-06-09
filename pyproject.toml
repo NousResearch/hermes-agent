@@ -61,6 +61,16 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  # ``packaging`` is imported directly on three production paths but was never
+  # declared, so it only reached users transitively (pip/uv pull it for other
+  # tools). The slim official Docker image ships without it, where the
+  # try/except-ImportError fallbacks silently degrade: Hindsight's
+  # ``_meets_minimum_version`` disables update_mode='append' (#40503),
+  # tools/lazy_deps.py treats every version constraint as satisfied, and
+  # hermes_cli/main.py drops to naive requirement parsing. Pure-Python
+  # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
+  # Pinned to the version already resolved in uv.lock (no resolution churn).
+  "packaging==26.0",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
   # DEFAULT delivery path, not matrix-specific: without it both

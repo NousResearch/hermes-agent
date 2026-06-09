@@ -1272,7 +1272,7 @@ voice:
   record_key: "ctrl+b"         # CLI 内的按键通话键
   max_recording_seconds: 120    # 长录音的硬停止
   auto_tts: false               # /voice on 时自动启用口语回复
-  beep_enabled: true            # 在 CLI 语音模式中播放录音开始/停止提示音
+  beep_enabled: false           # 在 CLI 语音模式中播放录音开始/停止提示音
   silence_threshold: 200        # 语音检测的 RMS 阈值
   silence_duration: 3.0         # 自动停止前的静默秒数
 ```

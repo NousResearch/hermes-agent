@@ -939,9 +939,9 @@ class TestVoiceBeepConfigReal:
     """Tests the CLI voice beep toggle."""
 
     @patch("hermes_cli.config.load_config", return_value={"voice": {}})
-    def test_beeps_enabled_by_default(self, _cfg):
+    def test_beeps_disabled_by_default(self, _cfg):
         cli = _make_voice_cli()
-        assert cli._voice_beeps_enabled() is True
+        assert cli._voice_beeps_enabled() is False
 
     @patch("hermes_cli.config.load_config", return_value={"voice": {"beep_enabled": False}})
     def test_beeps_can_be_disabled(self, _cfg):

@@ -463,9 +463,24 @@ class TestCountOccurrences:
     def test_basic(self):
         from tools.patch_parser import _count_occurrences
         assert _count_occurrences("aaa", "a") == 3
-        assert _count_occurrences("aaa", "aa") == 2
         assert _count_occurrences("hello world", "xyz") == 0
         assert _count_occurrences("", "x") == 0
+
+    def test_counts_non_overlapping_matches(self):
+        """The helper is documented to count *non-overlapping* occurrences,
+        and the ambiguity check in ``_validate_operations`` relies on that:
+        a self-overlapping context hint that occurs exactly once must count
+        as 1, otherwise an unambiguous addition-only hunk is spuriously
+        rejected as "ambiguous" (the ``start = pos + 1`` overlap bug)."""
+        from tools.patch_parser import _count_occurrences
+        # Self-overlapping patterns that occur exactly once non-overlapping.
+        assert _count_occurrences("aaa", "aa") == 1
+        # A short divider hint sitting inside a longer rule: one location.
+        assert _count_occurrences("-----", "---") == 1
+        assert _count_occurrences("ababa", "aba") == 1
+        # Genuine non-overlapping repeats are still counted.
+        assert _count_occurrences("aaaa", "aa") == 2
+        assert _count_occurrences("xx.xx", "xx") == 2
 
 
 class TestParseErrorSignalling:

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
@@ -87,7 +87,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
+import { BrowserFeedbackWindow } from './browser-feedback'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -238,6 +238,18 @@ export function DesktopController() {
   } = useOverlayRouting()
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
+  const [browserFeedbackOpen, setBrowserFeedbackOpen] = useState(false)
+  const [browserFeedbackMinimized, setBrowserFeedbackMinimized] = useState(false)
+
+  const openBrowserFeedback = useCallback(() => {
+    setBrowserFeedbackOpen(true)
+    setBrowserFeedbackMinimized(false)
+  }, [])
+
+  const closeBrowserFeedback = useCallback(() => {
+    setBrowserFeedbackOpen(false)
+    setBrowserFeedbackMinimized(false)
+  }, [])
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
@@ -936,7 +948,14 @@ export function DesktopController() {
         setCronFocusJobId(jobId)
         navigate(CRON_ROUTE)
       }}
-      onNavigate={selectSidebarItem}
+      onNavigate={item => {
+        if (item === 'browser') {
+          openBrowserFeedback()
+          return
+        }
+
+        selectSidebarItem(item)
+      }}
       onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
@@ -1131,11 +1150,14 @@ export function DesktopController() {
   )
 
   return (
-    <AppShell
+    <>
+      <AppShell
+      browserFeedbackMinimized={browserFeedbackMinimized}
       leftStatusbarItems={leftStatusbarItems}
       leftTitlebarTools={titlebarToolGroups.flat.left}
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
+      onOpenBrowserFeedback={openBrowserFeedback}
       overlays={overlays}
       previewPaneOpen={chatOpen && Boolean(previewTarget || filePreviewTarget)}
       statusbarItems={statusbarItems}
@@ -1204,7 +1226,17 @@ export function DesktopController() {
       {panesFlipped ? fileBrowserPane : terminalPane}
       {previewPane}
       {panesFlipped ? terminalPane : fileBrowserPane}
-    </AppShell>
+      </AppShell>
+      {browserFeedbackOpen && (
+        <BrowserFeedbackWindow
+          minimized={browserFeedbackMinimized}
+          onClose={closeBrowserFeedback}
+          onFocus={openBrowserFeedback}
+          onMinimizedChange={setBrowserFeedbackMinimized}
+          open={browserFeedbackOpen}
+        />
+      )}
+    </>
   )
 }
 

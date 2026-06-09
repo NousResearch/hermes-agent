@@ -10,6 +10,7 @@ import {
   $fileBrowserOpen,
   $panesFlipped,
   $sidebarOpen,
+  CHAT_MIN_WIDTH,
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_PANE_ID,
   setSidebarOpen
@@ -26,6 +27,7 @@ import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 interface AppShellProps {
+  browserFeedbackMinimized?: boolean
   children: ReactNode
   leftStatusbarItems?: readonly StatusbarItem[]
   leftTitlebarTools?: readonly TitlebarTool[]
@@ -34,6 +36,7 @@ interface AppShellProps {
   // hoisting it to the root `overlays` layer (sibling of <main>, z above z-3)
   // would cover every pane's drag handle.
   mainOverlays?: ReactNode
+  onOpenBrowserFeedback: () => void
   onOpenSettings: () => void
   overlays?: ReactNode
   // Rails that sit at the window's left edge in the flipped layout but never
@@ -61,10 +64,12 @@ const viewportIsFullscreen = () =>
   window.innerWidth >= window.screen.width && window.innerHeight >= window.screen.height
 
 export function AppShell({
+  browserFeedbackMinimized = false,
   children,
   leftStatusbarItems,
   leftTitlebarTools,
   mainOverlays,
+  onOpenBrowserFeedback,
   onOpenSettings,
   overlays,
   previewPaneOpen = false,
@@ -118,7 +123,7 @@ export function AppShell({
   // between the pane-tool cluster and the system cluster so they don't sit
   // flush against each other. Modeled as N gaps (N - 1 inner + 1 trailing)
   // to keep the formula generic for any pane-tool count.
-  const SYSTEM_TOOL_COUNT = 4
+  const SYSTEM_TOOL_COUNT = 5
   const paneToolCount = titlebarTools?.filter(tool => !tool.hidden).length ?? 0
   const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem))`
 
@@ -158,6 +163,7 @@ export function AppShell({
           '--titlebar-controls-top': `${titlebarControls.top}px`,
           '--titlebar-tools-right': titlebarToolsRight,
           '--titlebar-tools-width': titlebarToolsWidth,
+          '--chat-min-width': CHAT_MIN_WIDTH,
           // Anchor for the pane-tool cluster's right edge in TitlebarControls.
           // Sourced from the layout store rather than the PaneShell-emitted
           // --pane-*-width vars because the titlebar is a sibling of PaneShell
@@ -167,7 +173,13 @@ export function AppShell({
       }
     >
       {!hideTitlebarControls && (
-        <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+        <TitlebarControls
+          browserFeedbackMinimized={browserFeedbackMinimized}
+          leftTools={leftTitlebarTools}
+          onOpenBrowserFeedback={onOpenBrowserFeedback}
+          onOpenSettings={onOpenSettings}
+          tools={titlebarTools}
+        />
       )}
 
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">

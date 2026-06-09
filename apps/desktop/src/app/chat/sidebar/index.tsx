@@ -125,6 +125,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     action: 'new-session'
   },
   {
+    id: 'browser',
+    label: 'Web Browser',
+    icon: props => <Codicon name="globe" {...props} />,
+    action: 'browser'
+  },
+  {
     id: 'skills',
     label: '',
     icon: props => <Codicon name="symbol-misc" {...props} />,
@@ -298,6 +304,7 @@ function useSortableBindings(id: string) {
 }
 
 interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
+  browserFeedbackMinimized?: boolean
   currentView: AppView
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => void
@@ -312,6 +319,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
 }
 
 export function ChatSidebar({
+  browserFeedbackMinimized = false,
   currentView,
   onNavigate,
   onLoadMoreSessions,
@@ -819,6 +827,7 @@ export function ChatSidebar({
                   (item.id === 'artifacts' && currentView === 'artifacts')
 
                 const isNewSession = item.id === 'new-session'
+                const browserMinimized = item.id === 'browser' && browserFeedbackMinimized
 
                 return (
                   <SidebarMenuItem key={item.id}>
@@ -835,6 +844,7 @@ export function ChatSidebar({
                         'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
                         active &&
                           'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
+                        browserMinimized && 'text-sky-600 dark:text-sky-300',
                         !isInteractive &&
                           'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                       )}

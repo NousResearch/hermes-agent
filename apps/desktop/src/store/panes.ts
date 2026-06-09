@@ -56,16 +56,15 @@ function load(): Record<string, PaneStateSnapshot> {
   return {}
 }
 
-// widthOverride is in-memory only — phase 2 can add per-pane persistWidth opt-in.
 function persist(states: Record<string, PaneStateSnapshot>) {
   if (typeof window === 'undefined') {
     return
   }
 
-  const minimal: Record<string, { open: boolean }> = {}
+  const minimal: Record<string, PaneStateSnapshot> = {}
 
   for (const [id, s] of Object.entries(states)) {
-    minimal[id] = { open: s.open }
+    minimal[id] = { open: s.open, widthOverride: s.widthOverride }
   }
 
   try {

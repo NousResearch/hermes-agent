@@ -982,7 +982,10 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSe
         onClick={onToggle}
         type="button"
       >
-        <SidebarPanelLabel>{label}</SidebarPanelLabel>
+        {/* pl-3 (vs the component's base pl-2) nudges the dither marker +4px so
+            its center lines up with the nav-icon column above (size-4 icons at
+            px-2 → center 16px from the group edge). */}
+        <SidebarPanelLabel className="pl-3">{label}</SidebarPanelLabel>
         {meta && <SidebarCount>{meta}</SidebarCount>}
         <DisclosureCaret
           className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"

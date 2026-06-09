@@ -2590,20 +2590,15 @@ def _parse_tui_skills_env() -> list[str]:
 def _load_fallback_model():
     """Return the configured fallback chain for TUI-created agents.
 
-    Keep this in parity with ``HermesCLI.__init__``: prefer the new
-    ``fallback_providers`` list and accept the legacy single-dict
-    ``fallback_model`` shape.
+    Delegates to the shared ``get_fallback_chain`` helper so the TUI path
+    stays in parity with ``HermesCLI.__init__`` and ``gateway/run.py``:
+    ``fallback_providers`` is the primary source of truth and keeps its
+    order, with legacy ``fallback_model`` entries merged in afterwards
+    (deduped on provider/model/base_url).
     """
-    cfg = _load_cfg()
-    fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or []
-    if isinstance(fb, dict):
-        fb = [fb] if fb.get("provider") and fb.get("model") else []
-    if isinstance(fb, list):
-        return [
-            f for f in fb
-            if isinstance(f, dict) and f.get("provider") and f.get("model")
-        ]
-    return []
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    return get_fallback_chain(_load_cfg())
 
 
 def _agent_fallback_model(agent):

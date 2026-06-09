@@ -165,4 +165,31 @@ describe('external link helpers', () => {
       'https://expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
     )
   })
+
+  it('explicitOnly skips bare filename/domain tokens and only links explicit URLs', () => {
+    installDesktopBridge()
+
+    render(
+      <LinkifiedText
+        explicitOnly
+        pretty={false}
+        text={'Report  https://paste.rs/abc\nagent.log  https://paste.rs/def\nerrors.log'}
+      />
+    )
+
+    const links = screen.getAllByRole('link')
+    expect(links.map(a => a.getAttribute('href'))).toEqual(['https://paste.rs/abc', 'https://paste.rs/def'])
+    // Bare filename-shaped tokens stay as plain text, not links.
+    expect(screen.queryByText(content => content.includes('agent.log'))).toBeTruthy()
+    expect(links.some(a => (a.textContent ?? '').includes('.log'))).toBe(false)
+  })
+
+  it('without explicitOnly, bare filename tokens are still linkified (default behavior)', () => {
+    installDesktopBridge()
+
+    render(<LinkifiedText pretty={false} text="open agent.log please" />)
+
+    const link = screen.getByRole('link', { name: 'agent.log' })
+    expect(link.getAttribute('href')).toBe('https://agent.log')
+  })
 })

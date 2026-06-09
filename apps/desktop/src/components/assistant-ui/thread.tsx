@@ -77,6 +77,7 @@ import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
+import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
@@ -919,7 +920,7 @@ const SystemMessage: FC = () => {
       >
         <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
         <span className="mx-1.5 text-muted-foreground/35">·</span>
-        <span className="whitespace-pre-wrap">{slashStatus.groups.output.trim()}</span>
+        <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={slashStatus.groups.output.trim()} />
       </MessagePrimitive.Root>
     )
   }
@@ -930,7 +931,7 @@ const SystemMessage: FC = () => {
       data-role="system"
       data-slot="aui_system-message-root"
     >
-      <span className="whitespace-pre-wrap">{text}</span>
+      <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={text} />
     </MessagePrimitive.Root>
   )
 }

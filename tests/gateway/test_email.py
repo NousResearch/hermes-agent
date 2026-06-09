@@ -1203,5 +1203,53 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         mock_imap.xatom.assert_called_once()
 
 
+class TestSeenUidPersistence(unittest.TestCase):
+    """Seen-UID set must survive a gateway restart so downtime mail is not dropped."""
+
+    def _make_adapter(self, tmpdir):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        adapter._seen_uids_path = lambda: os.path.join(tmpdir, "seen.json")
+        return adapter
+
+    def test_save_then_load_round_trips_as_bytes_uids(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            a = self._make_adapter(d)
+            a._seen_uids = {b"10", b"2", b"100"}
+            a._save_seen_uids()
+
+            b = self._make_adapter(d)
+            self.assertTrue(b._load_seen_uids())
+            self.assertEqual(b._seen_uids, {b"10", b"2", b"100"})
+
+    def test_load_returns_false_when_no_state_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            a = self._make_adapter(d)
+            self.assertFalse(a._load_seen_uids())
+
+    def test_downtime_uid_not_skipped_after_restart(self):
+        """A UID absent from the persisted set must be treated as new (processable)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            a = self._make_adapter(d)
+            a._seen_uids = {b"5"}      # only old mail handled before restart
+            a._save_seen_uids()
+
+            b = self._make_adapter(d)  # restart
+            b._load_seen_uids()
+            # UID 9 arrived during downtime -> not in persisted set -> processable
+            self.assertNotIn(b"9", b._seen_uids)
+            self.assertIn(b"5", b._seen_uids)
+
+
 if __name__ == "__main__":
     unittest.main()

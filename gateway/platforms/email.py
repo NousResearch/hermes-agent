@@ -18,6 +18,7 @@ Environment variables:
 import asyncio
 import email as email_lib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -293,6 +294,47 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    def _seen_uids_path(self) -> str:
+        """On-disk path for the persisted seen-UID set, keyed per address."""
+        base = os.path.expanduser("~/.hermes")
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", self._address or "default")
+        return os.path.join(base, "email_seen_uids_%s.json" % safe)
+
+    def _load_seen_uids(self) -> bool:
+        """Load the persisted seen-UID set. Returns True if a state file existed.
+
+        Restart-safety: without this, connect() reseeds _seen_uids from
+        `search ALL` on every restart, which marks mail that arrived during
+        downtime as already-seen and silently drops it. Persisting the set lets
+        a restart skip only genuinely-handled mail and process downtime mail.
+        """
+        path = self._seen_uids_path()
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path) as fh:
+                uids = json.load(fh)
+            # Stored as ints; _seen_uids holds bytes UIDs like b'1234'.
+            self._seen_uids = {str(int(u)).encode() for u in uids}
+            logger.info("[Email] Loaded %d persisted seen UIDs from %s",
+                        len(self._seen_uids), path)
+            return True
+        except Exception as e:  # noqa: BLE001 - corrupt state must not block startup
+            logger.warning("[Email] Failed to load persisted seen UIDs (%s); "
+                           "reseeding from mailbox", e)
+            return False
+
+    def _save_seen_uids(self) -> None:
+        """Persist the seen-UID set atomically (tmp + os.replace)."""
+        path = self._seen_uids_path()
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(sorted(int(u) for u in self._seen_uids), fh)
+            os.replace(tmp, path)
+        except Exception as e:  # noqa: BLE001 - persistence is best-effort
+            logger.warning("[Email] Failed to persist seen UIDs: %s", e)
+
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         try:
@@ -300,16 +342,25 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
+            if self._load_seen_uids():
+                # Restart path: trust the persisted set. Mail that arrived while
+                # the gateway was down is UNSEEN and NOT in the set, so the poll
+                # loop will process it; already-handled mail stays skipped.
+                logger.info("[Email] IMAP connection test passed. Restart detected: "
+                            "%d known UIDs loaded; downtime mail will be processed.",
+                            len(self._seen_uids))
+            else:
+                # First connect for this mailbox: seed ALL existing messages so we
+                # don't replay history, then persist the baseline for next restart.
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                self._trim_seen_uids()
+                self._save_seen_uids()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -375,10 +426,12 @@ class EmailAdapter(BasePlatformAdapter):
                 if status != "OK" or not data or not data[0]:
                     return results
 
+                new_uids = False
                 for uid in data[0].split():
                     if uid in self._seen_uids:
                         continue
                     self._seen_uids.add(uid)
+                    new_uids = True
                     # Trim periodically to prevent unbounded memory growth
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
@@ -419,6 +472,10 @@ class EmailAdapter(BasePlatformAdapter):
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
                     })
+                # Persist the (possibly grown) seen set so a restart picks up
+                # only mail that arrived afterwards, not this batch again.
+                if new_uids:
+                    self._save_seen_uids()
             finally:
                 try:
                     imap.logout()

@@ -449,3 +449,27 @@ def pytest_configure(config):
         else:
             cache_file.write_text("clean", encoding="utf-8")
 
+
+@pytest.fixture(autouse=True)
+def _isolate_email_seen_uids(monkeypatch):
+    """Redirect EmailAdapter's seen-UID persistence to a throwaway dir.
+
+    The restart-safe email receive path persists ``_seen_uids`` to
+    ``~/.hermes/email_seen_uids_<addr>.json``. Without this fixture, any test
+    that constructs an EmailAdapter and reaches connect()/_fetch_new_messages
+    would read and write the real ``~/.hermes`` state — leaking files into the
+    live agent's state dir and making connect tests order-dependent.
+    """
+    import os
+    import tempfile
+
+    try:
+        from gateway.platforms.email import EmailAdapter
+    except Exception:
+        return
+    state_dir = tempfile.mkdtemp(prefix="email_seen_uids_test_")
+    monkeypatch.setattr(
+        EmailAdapter,
+        "_seen_uids_path",
+        lambda self: os.path.join(state_dir, "seen.json"),
+    )

@@ -164,6 +164,27 @@ function assistantMultiReasoningMessage(texts: string[]): ThreadMessage {
   } as ThreadMessage
 }
 
+function assistantMixedReasoningMessage(): ThreadMessage {
+  return {
+    id: 'assistant-reasoning-mixed-1',
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', text: 'Earlier completed thought.', status: { type: 'complete' } },
+      { type: 'text', text: 'Interim answer.' },
+      { type: 'reasoning', text: 'Current running thought.', status: { type: 'running' } }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function assistantTodoMessage(
   todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>,
   running = true
@@ -351,6 +372,20 @@ function GroupedReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantMultiReasoningMessage([' First thought.', ' Second thought.'])],
     isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function MixedReasoningHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [assistantMixedReasoningMessage()],
+    isRunning: true,
     onNew: async () => {}
   })
 
@@ -683,6 +718,26 @@ describe('assistant-ui streaming renderer', () => {
     expect(reasoningParts.length).toBe(2)
     expect(reasoningParts[0]?.textContent).toBe('First thought.')
     expect(reasoningParts[1]?.textContent).toBe('Second thought.')
+  })
+
+  it('auto-opens only the running reasoning disclosure in a mixed running message', async () => {
+    const { container } = render(<MixedReasoningHarness />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-slot="aui_thinking-disclosure"]').length).toBe(2)
+    })
+
+    const toggles = [
+      ...container.querySelectorAll<HTMLButtonElement>('[data-slot="aui_thinking-disclosure"] button[aria-expanded]')
+    ]
+
+    expect(toggles.map(toggle => toggle.getAttribute('aria-expanded'))).toEqual(['false', 'true'])
+    await waitFor(() => {
+      expect(
+        [...container.querySelectorAll('[data-slot="aui_reasoning-text"]')].map(node => node.textContent).join('\n')
+      ).toContain('Current running thought.')
+    })
+    expect(container.textContent).not.toContain('Earlier completed thought.')
   })
 
   it('renders live todo rows during a running turn', () => {

@@ -587,8 +587,12 @@ export function useSessionActions({
       setFreshDraftReady(false)
       setActiveSessionId(null)
       activeSessionIdRef.current = null
-      busyRef.current = true
-      setBusy(true)
+      // Do not inherit the previous session's busy/streaming UI while the target
+      // session resumes. An idle session would otherwise show Stop/spinner until
+      // resume completes; a running target session will be re-marked busy via
+      // session.info / message.start once the gateway confirms it.
+      busyRef.current = false
+      setBusy(false)
       setAwaitingResponse(false)
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
@@ -675,14 +679,16 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
+        const resumedRunning = Boolean(resumed.info?.running)
         updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
-            busy: false,
-            awaitingResponse: false
+            busy: resumedRunning,
+            awaitingResponse: resumedRunning,
+            turnStartedAt: resumedRunning ? (state.turnStartedAt ?? Date.now()) : null
           }),
           storedSessionId
         )

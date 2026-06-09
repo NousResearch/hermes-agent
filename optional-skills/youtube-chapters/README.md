@@ -54,11 +54,27 @@ From the skill directory:
 python scripts/fetch_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-Specify preferred languages by repeating `--language`:
+Specify preferred languages in descending preference order. The default is `tr,en`:
 
 ```text
-python scripts/fetch_transcript.py "VIDEO_ID" --language tr --language en
+python scripts/fetch_transcript.py "VIDEO_ID" --languages tr,en
 ```
+
+Inspect the available transcript tracks:
+
+```text
+python scripts/fetch_transcript.py "VIDEO_ID" --list-transcripts
+```
+
+The CLI accepts a cookie-file option for forward compatibility:
+
+```text
+python scripts/fetch_transcript.py "VIDEO_ID" --cookies path/to/cookies.txt
+```
+
+The currently supported `youtube-transcript-api` provider does not support cookie-based
+retrieval and returns `CookiesUnsupported`. Cookies are private credentials. Never commit,
+share, or include cookie files in a pull request.
 
 Successful output is normalized JSON containing `start`, `end`, and cleaned `text`.
 Missing or disabled captions produce a structured JSON error and a non-zero exit code:
@@ -69,6 +85,9 @@ Missing or disabled captions produce a structured JSON error and a non-zero exit
   "message": "No captions or transcript could be retrieved for this video."
 }
 ```
+
+Provider failures include a short `detail` containing only the provider exception class name.
+No traceback or private request data is returned.
 
 Invalid YouTube URLs or video IDs are rejected before transcript retrieval:
 
@@ -87,6 +106,27 @@ Invalid YouTube URLs or video IDs are rejected before transcript retrieval:
 4. Validate the chapters and return paste-ready markers.
 5. If the script returns an error, explain that captions are unavailable and ASR fallback is
    not implemented yet.
+
+`fetch_transcript.py` only fetches and normalizes transcript data. It does not call an LLM.
+Hermes uses the timestamped transcript with its configured LLM to generate chapter markers.
+
+## YouTube shows a transcript, but the CLI returns TranscriptUnavailable
+
+The YouTube UI and an unauthenticated transcript provider do not always have the same access.
+The transcript may not exist in the requested language, may require browser/session context,
+or may be blocked for automated requests from the current IP or environment. Region, age, and
+account restrictions can also prevent access. In some cases, the provider cannot access the
+same transcript track displayed by the YouTube UI.
+
+Recommended troubleshooting:
+
+1. Try `--list-transcripts`.
+2. Try `--languages tr,en`.
+3. Try another captioned public video.
+4. If a future provider version supports cookies, try `--cookies path/to/cookies.txt`. Treat
+   cookies as private credentials and never commit them.
+5. If captions still cannot be retrieved, a future ASR fallback using Whisper and `yt-dlp`
+   may be needed.
 
 ## Validation
 

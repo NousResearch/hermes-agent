@@ -85,7 +85,6 @@ interface SidebarCronJobsSectionProps {
   onTriggerJob: (jobId: string) => void
   onToggle: () => void
   open: boolean
-  sharedScroller?: boolean
 }
 
 export function SidebarCronJobsSection({
@@ -96,8 +95,7 @@ export function SidebarCronJobsSection({
   onOpenRun,
   onTriggerJob,
   onToggle,
-  open,
-  sharedScroller = false
+  open
 }: SidebarCronJobsSectionProps) {
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
@@ -159,12 +157,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent
-          className={cn(
-            'flex shrink-0 flex-col gap-px pb-1.75',
-            !sharedScroller && 'max-h-72 overflow-y-auto overscroll-contain'
-          )}
-        >
+        <SidebarGroupContent className="flex max-h-72 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75 short:max-h-none short:overflow-visible">
           {shown.map(job => (
             <CronJobSidebarRow
               expanded={peekJobId === job.id}

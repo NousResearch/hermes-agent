@@ -126,8 +126,12 @@ const WORKSPACE_PAGE = 5
 // ALL-profiles view: show only the latest N per profile up front to keep the
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
-const COMPACT_SECTION_STACK_MAX_HEIGHT_PX = 520
 const GROUP_DND_ID_PREFIX = 'group:'
+// Applied to each section's scroll body so that on short viewports (the `short`
+// height variant) its private scroller flattens — no max-height, no internal
+// overflow — and the whole section stack scrolls as one. Keeps the per-section
+// scrollers on taller windows.
+const SHORT_FLATTEN = 'short:max-h-none short:flex-none short:overflow-visible'
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
@@ -136,34 +140,6 @@ const parseGroupDndId = (id: string) =>
 
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
-
-// Compact mode collapses every section into one shared scroller when the
-// section stack itself is short — measured on the element (not the window) so
-// titlebar/statusbar chrome and OS differences don't skew the threshold. A
-// callback ref (re)attaches the observer whenever the stack mounts, since it
-// renders conditionally.
-function useCompactSidebarSections() {
-  const [compact, setCompact] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-
-  const stackRef = useCallback((node: HTMLDivElement | null) => {
-    observerRef.current?.disconnect()
-    observerRef.current = null
-
-    if (!node || typeof ResizeObserver === 'undefined') {
-      return
-    }
-
-    const sync = () => setCompact(node.clientHeight < COMPACT_SECTION_STACK_MAX_HEIGHT_PX)
-    const observer = new ResizeObserver(sync)
-
-    sync()
-    observer.observe(node)
-    observerRef.current = observer
-  }, [])
-
-  return { compact, stackRef }
-}
 
 function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[]): T[] {
   if (!orderIds.length) {
@@ -366,7 +342,6 @@ export function ChatSidebar({
   const [messagingOpen, setMessagingOpen] = useState<Record<string, boolean>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
-  const { compact: compactSections, stackRef: sectionStackRef } = useCompactSidebarSections()
 
   // Hotkey (session.focusSearch) → focus the field once it's mounted.
   useEffect(() => {
@@ -841,21 +816,14 @@ export function ChatSidebar({
         )}
 
         {contentVisible && showSessionSections && (
-          <div
-            className={cn(
-              'flex min-h-0 flex-1 flex-col pb-1.75',
-              compactSections ? 'overflow-y-auto overscroll-contain' : 'overflow-hidden'
-            )}
-            ref={sectionStackRef}
-          >
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden pb-1.75 short:overflow-y-auto short:overscroll-contain">
             {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName={
-                  compactSections
-                    ? 'flex flex-col gap-px pb-1.75'
-                    : 'flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75'
-                }
+                contentClassName={cn(
+                  'flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75',
+                  SHORT_FLATTEN
+                )}
                 emptyState={
                   <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                     {s.noMatch(trimmedQuery)}
@@ -870,9 +838,8 @@ export function ChatSidebar({
                 onTogglePin={pinSession}
                 open
                 pinned={false}
-                rootClassName={compactSections ? 'shrink-0 p-0' : 'min-h-0 flex-1 p-0'}
+                rootClassName="min-h-0 flex-1 p-0 short:flex-none"
                 sessions={searchResults}
-                virtualize={!compactSections}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
@@ -880,7 +847,7 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName="flex min-h-10 flex-col gap-px rounded-lg pb-2 pt-1"
+                contentClassName={cn('flex min-h-10 flex-col gap-px rounded-lg pb-2 pt-1', SHORT_FLATTEN)}
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
@@ -895,7 +862,6 @@ export function ChatSidebar({
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 sortable={pinnedSessions.length > 1}
-                virtualize={!compactSections}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
@@ -904,9 +870,8 @@ export function ChatSidebar({
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn(
-                  compactSections
-                    ? 'flex min-h-0 flex-col pb-1.75'
-                    : 'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
+                  'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
+                  SHORT_FLATTEN,
                   // Separate profile sections clearly in the ALL view; rows inside
                   // each group keep their own tight gap-px rhythm.
                   showAllProfiles ? 'gap-3' : 'gap-px'
@@ -968,10 +933,9 @@ export function ChatSidebar({
                 onTogglePin={pinSession}
                 open={agentsOpen}
                 pinned={false}
-                rootClassName={compactSections ? 'shrink-0 p-0' : 'min-h-0 flex-1 p-0'}
+                rootClassName="min-h-0 flex-1 p-0 short:flex-none"
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
-                virtualize={!compactSections}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
@@ -980,11 +944,10 @@ export function ChatSidebar({
               messagingGroups.map(group => (
                 <SidebarSessionsSection
                   activeSessionId={activeSidebarSessionId}
-                  contentClassName={
-                    compactSections
-                      ? 'flex shrink-0 flex-col gap-px pb-1.75'
-                      : 'flex max-h-56 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75'
-                  }
+                  contentClassName={cn(
+                    'flex max-h-56 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75',
+                    SHORT_FLATTEN
+                  )}
                   emptyState={null}
                   footer={
                     group.hasMore ? (
@@ -1016,7 +979,6 @@ export function ChatSidebar({
                   pinned={false}
                   rootClassName="shrink-0 p-0"
                   sessions={group.sessions}
-                  virtualize={!compactSections}
                   workingSessionIdSet={workingSessionIdSet}
                 />
               ))}
@@ -1030,7 +992,6 @@ export function ChatSidebar({
                 onToggle={() => setSidebarCronOpen(!cronOpen)}
                 onTriggerJob={onTriggerCronJob}
                 open={cronOpen}
-                sharedScroller={compactSections}
               />
             )}
           </div>
@@ -1161,7 +1122,6 @@ interface SidebarSessionsSectionProps {
   sortable?: boolean
   onReorder?: (event: DragEndEvent) => void
   dndSensors?: ReturnType<typeof useSensors>
-  virtualize?: boolean
 }
 
 function SidebarSessionsSection({
@@ -1188,8 +1148,7 @@ function SidebarSessionsSection({
   labelIcon,
   sortable = false,
   onReorder,
-  dndSensors,
-  virtualize = true
+  dndSensors
 }: SidebarSessionsSectionProps) {
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   const showEmptyState = forceEmptyState || (!hasGroupedSessions && sessions.length === 0)
@@ -1236,7 +1195,7 @@ function SidebarSessionsSection({
       renderRows(items)
     )
 
-  const flatVirtualized = virtualize && !showEmptyState && !groups?.length && sessions.length >= VIRTUALIZE_THRESHOLD
+  const flatVirtualized = !showEmptyState && !groups?.length && sessions.length >= VIRTUALIZE_THRESHOLD
 
   let inner: React.ReactNode
   let bodyOwnsDndContext = dndActive && !showEmptyState
@@ -1302,7 +1261,7 @@ function SidebarSessionsSection({
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow
   // to avoid a double scroll container.
-  const resolvedContentClassName = flatVirtualized ? undefined : contentClassName
+  const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
 
   return (
     <SidebarGroup className={rootClassName}>

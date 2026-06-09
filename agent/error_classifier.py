@@ -603,6 +603,13 @@ def classify_api_error(
     # recognizable phrases; on match we strip ``pattern``/``format`` from
     # ``self.tools`` in the retry loop and retry once. Cloud providers are
     # unaffected — they accept these keywords and we never hit this branch.
+    #
+    # Some OpenAI-compatible endpoints (e.g. strict GPT tool-schema
+    # validation) also reject ``pattern`` containing regex lookaround
+    # (lookahead / lookbehind) with a different error shape:
+    #   "Invalid JSON schema: regex lookaround is not supported."
+    # Route through the same recovery path — strip ``pattern``/``format``
+    # and retry once.
     if (
         status_code == 400
         and (
@@ -611,6 +618,11 @@ def classify_api_error(
             or (
                 "unable to generate parser" in error_msg
                 and "template" in error_msg
+            )
+            or (
+                "invalid json schema" in error_msg
+                and "regex lookaround" in error_msg
+                and "not supported" in error_msg
             )
         )
     ):

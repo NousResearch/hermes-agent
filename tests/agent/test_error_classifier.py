@@ -743,6 +743,27 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openai-compatible")
         assert result.reason != FailoverReason.llama_cpp_grammar_pattern
 
+    def test_openai_regex_lookaround_rejection(self):
+        """OpenAI-compatible endpoints reject regex lookaround in tool schemas."""
+        e = MockAPIError(
+            "Invalid JSON schema: regex lookaround is not supported. "
+            "Found at $...properties.email.pattern.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_openai_regex_lookaround_requires_all_keywords(self):
+        """Partial match should not trigger — all three keywords needed."""
+        e = MockAPIError(
+            "Invalid JSON schema: regex syntax error in pattern",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom")
+        assert result.reason != FailoverReason.llama_cpp_grammar_pattern
+
     # ── Provider-specific: Anthropic long-context tier ──
 
     def test_anthropic_long_context_tier(self):

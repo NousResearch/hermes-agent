@@ -289,6 +289,26 @@ class TestSpeakTextGuards:
         # Should simply return None without raising.
         assert speak_text(text) is None
 
+    def test_speak_text_uses_returned_tts_file_path(self, monkeypatch):
+        import hermes_cli.voice as voice
+        from tools import tts_tool
+
+        played = []
+
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda **_kwargs: '{"success": true, "file_path": "/tmp/hermes_voice/actual.flac"}',
+        )
+        monkeypatch.setattr(voice.os, "makedirs", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(voice.os.path, "isfile", lambda _path: True)
+        monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
+        monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+
+        assert voice.speak_text("Hello world") is None
+        assert played == ["/tmp/hermes_voice/actual.flac"]
+
 
 class TestContinuousAPI:
     """Continuous (VAD) mode API — CLI-parity loop entry points."""

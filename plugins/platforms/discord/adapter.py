@@ -605,6 +605,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._voice_input_tasks: Dict[int, set[asyncio.Task]] = {}  # guild_id -> in-flight STT/callback work
+        self._voice_input_semaphore: Optional[asyncio.Semaphore] = None
+        self._voice_input_concurrency = max(1, int(os.getenv("HERMES_DISCORD_VOICE_STT_CONCURRENCY", "3")))
+        self._voice_input_max_pending = max(1, int(os.getenv("HERMES_DISCORD_VOICE_STT_MAX_PENDING", "12")))
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Phase 3: continuous voice mixer (ambient idle bed + ducked speech).
@@ -2145,6 +2149,8 @@ class DiscordAdapter(BasePlatformAdapter):
             listen_task = self._voice_listen_tasks.pop(guild_id, None)
             if listen_task:
                 listen_task.cancel()
+            for task in list(getattr(self, "_voice_input_tasks", {}).pop(guild_id, set())):
+                task.cancel()
 
             # Tear down the mixer (stops the continuous outgoing stream).
             if getattr(self, "_voice_mixers", None) is not None:
@@ -2421,11 +2427,62 @@ class DiscordAdapter(BasePlatformAdapter):
                     ):
                         continue
                     self._note_voice_activity(guild_id)
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
+                    self._schedule_voice_input_processing(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
+
+    def _schedule_voice_input_processing(self, guild_id: int, user_id: int, pcm_data: bytes) -> bool:
+        """Schedule PCM->WAV->STT->callback work without blocking voice polling.
+
+        Live meetings can produce completed utterances from several speakers in
+        the same silence-check tick.  Running each STT path inline makes later
+        speakers wait behind earlier speakers and pauses silence detection.
+        Keep the listener cheap: fan out completed chunks, cap concurrency, and
+        bound pending work per guild so STT backlog cannot grow forever.
+        """
+        tasks_by_guild = getattr(self, "_voice_input_tasks", None)
+        if tasks_by_guild is None:
+            tasks_by_guild = {}
+            self._voice_input_tasks = tasks_by_guild
+
+        tasks = tasks_by_guild.setdefault(guild_id, set())
+        for task in list(tasks):
+            if task.done():
+                tasks.discard(task)
+
+        max_pending = max(1, int(getattr(self, "_voice_input_max_pending", 12)))
+        if len(tasks) >= max_pending:
+            logger.warning(
+                "Dropping Discord voice utterance for guild=%d user=%d: STT backlog full (%d)",
+                guild_id, user_id, len(tasks),
+            )
+            return False
+
+        async def _runner():
+            semaphore = getattr(self, "_voice_input_semaphore", None)
+            if semaphore is None:
+                concurrency = max(1, int(getattr(self, "_voice_input_concurrency", 3)))
+                semaphore = asyncio.Semaphore(concurrency)
+                self._voice_input_semaphore = semaphore
+            async with semaphore:
+                await self._process_voice_input(guild_id, user_id, pcm_data)
+
+        task = asyncio.create_task(_runner())
+        tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("Discord voice input task failed: %s", exc, exc_info=True)
+
+        task.add_done_callback(_done)
+        return True
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""

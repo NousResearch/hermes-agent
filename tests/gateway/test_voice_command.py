@@ -2900,6 +2900,67 @@ class TestUDPKeepalive:
             DiscordAdapter._KEEPALIVE_INTERVAL = original_interval
 
 
+class TestVoiceListenLoopConcurrency:
+    """Completed utterances from multiple speakers should not queue serially."""
+
+    @pytest.mark.asyncio
+    async def test_simultaneous_speaker_utterances_start_processing_concurrently(self):
+        """Three completed speakers should enter STT processing before any one finishes.
+
+        Regression coverage for live meetings where the transcript lagged far
+        behind when several people talked at once.  The listener loop should
+        keep extraction cheap and fan out completed utterances instead of
+        awaiting each PCM->WAV/STT/callback path inline.
+        """
+        import asyncio
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import PlatformConfig, Platform
+
+        class FakeReceiver:
+            def __init__(self):
+                self._running = True
+                self._last_packet_time = {1: time.monotonic()}
+                self._calls = 0
+
+            def check_silence(self):
+                self._calls += 1
+                self._running = False
+                return [
+                    (101, b"a" * 96000),
+                    (102, b"b" * 96000),
+                    (103, b"c" * 96000),
+                ]
+
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter.config = PlatformConfig(enabled=True, extra={})
+        adapter._client = SimpleNamespace(get_guild=lambda _guild_id: None)
+        adapter._voice_clients = {}
+        adapter._voice_receivers = {111: FakeReceiver()}
+        adapter._is_allowed_user = MagicMock(return_value=True)
+        adapter._note_voice_activity = MagicMock()
+
+        started = set()
+        all_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_process(guild_id, user_id, pcm_data):
+            started.add(user_id)
+            if len(started) == 3:
+                all_started.set()
+            await release.wait()
+
+        adapter._process_voice_input = fake_process
+
+        task = asyncio.create_task(adapter._voice_listen_loop(111))
+        try:
+            await asyncio.wait_for(all_started.wait(), timeout=1.0)
+            assert started == {101, 102, 103}
+        finally:
+            release.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+
 # =====================================================================
 # BasePlatformAdapter._should_auto_tts_for_chat — gate for auto-TTS
 # on voice input. Regression test for Issue #16007.

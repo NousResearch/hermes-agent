@@ -1,0 +1,58 @@
+schema_version: 1
+milestone: M4
+runtime: hermes_dynamic_workflows
+kanban_dispatch: disabled
+coding_model_policy: grok-composer-2.5-fast
+coding_provider_policy: xai-oauth
+
+gateway_owner_profile: auto-coder
+cron_host_profile: auto-coder
+
+dwf_lanes:
+  - id: dwf-parent
+    profile: auto-coder
+    model: grok-composer-2.5-fast
+    provider: xai-oauth
+    dispatch: parent_session
+    toolsets: cli_platform
+  - id: dwf-research
+    profile: auto-coder
+    model: grok-composer-2.5-fast
+    dispatch: delegate_task
+    mutation: none
+    toolsets: [web, file]
+  - id: dwf-coder
+    profile: auto-coder
+    model: grok-composer-2.5-fast
+    dispatch: delegate_task
+    mutation: worktree_only
+    toolsets: [terminal, file]
+  - id: dwf-verifier
+    profile: auto-coder
+    model: grok-composer-2.5-fast
+    dispatch: delegate_task
+    mutation: none
+    toolsets: [terminal, file]
+
+profiles_frozen:
+  ids:
+    - kanban-impl
+    - kanban-triage
+    - kanban-review
+    - kanban-pr
+    - kanban-merge-steward
+    - kanban-ops-steward
+  reason: operator_no_kanban_and_missing_env
+
+profiles_active:
+  - id: auto-coder
+    roles: [operator, gateway, cron_host, dwf_parent]
+    env_present: true
+    gateway: running
+  - id: builder
+    roles: [optional_coder_openrouter]
+    env_present: true
+    dispatch: manual_only
+  - id: gateway-minimal
+    roles: [gateway_standby]
+    dispatch: forbidden_while_auto_coder_running

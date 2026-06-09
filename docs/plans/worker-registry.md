@@ -3,6 +3,8 @@
 > **Proposal only** — generated before any profile/config edit.  
 > Evidence: live `hermes profile list`, per-profile `config.yaml` model/provider lines, `.env` presence (not contents), M2b receipt `20260609-171951`, M3 `routing-matrix.yaml`.
 
+> **Runtime (2026-06-09):** Hermes **dynamic workflows** — see `worker-registry-dwf-lanes.md` and `worker-registry.yaml`. **Kanban worker dispatch is off**; `kanban-*` rows are inventory only.
+
 ## Operator policy (2026-06-09)
 
 **Coding tasks:** use **Grok Composer 2.5 Fast** (`xai-oauth` / `grok-composer-2.5-fast`) for all coding work — interactive sessions, delegation workers, and Kanban implementation lanes unless you explicitly choose otherwise.

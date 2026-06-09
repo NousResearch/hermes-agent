@@ -876,7 +876,7 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         pricing: dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
+                if alias in normalized and isinstance(normalized[alias], (int, float, str)) and normalized[alias] not in {None, ""}:
                     pricing[target] = normalized[alias]
                     break
         if pricing:

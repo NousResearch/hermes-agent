@@ -877,12 +877,41 @@ def _scan_level(
         _scan_level(d, source, set(), sub_prefix, depth + 1, seen)
 
 
+def _scan_entry_point_plugins(seen: dict) -> None:
+    """Add pip entry-point plugins (``hermes_agent.plugins`` group) to *seen*."""
+    try:
+        import importlib.metadata
+
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+
+        for ep in group_eps:
+            if ep.name not in seen:
+                seen[ep.name] = (
+                    ep.name,     # name
+                    "",          # version
+                    "",          # description
+                    "entrypoint",  # source
+                    Path(),      # no dir_path for entry-point plugins
+                    ep.name,     # key
+                )
+    except Exception:
+        pass
+
+
 def _discover_all_plugins() -> list:
     """Return a list of (name, version, description, source, dir_path, key) for
-    every plugin the loader can see — user + bundled + project.
+    every plugin the loader can see — user + bundled + entry-point + project.
 
     Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project; user overrides bundled on
+    bundled first, then user, then entry-point; user overrides bundled on
     key collision.
     """
     seen: dict = {}  # key -> (name, version, description, source, path, key)
@@ -895,6 +924,10 @@ def _discover_all_plugins() -> list:
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+
+    # Pip entry-point plugins (same group the runtime loader scans).
+    _scan_entry_point_plugins(seen)
+
     return list(seen.values())
 
 

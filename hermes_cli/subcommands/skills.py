@@ -135,6 +135,22 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
+    skills_protect = skills_subparsers.add_parser(
+        "protect",
+        help="Protect a skill from agent modifications (immutable)",
+        description=(
+            "Mark a skill as protected so the agent cannot modify it. "
+            "Protected skills are immutable: no edit, patch, write_file, "
+            "remove_file, or delete. Uses a .protected dotfile marker."
+        ),
+    )
+    skills_protect.add_argument("name", help="Skill name to protect")
+    skills_protect.add_argument(
+        "--unprotect",
+        action="store_true",
+        help="Remove protection instead of adding it",
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )

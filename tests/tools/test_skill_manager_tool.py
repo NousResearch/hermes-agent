@@ -957,3 +957,104 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Protected guard (.protected dotfile)
+# ---------------------------------------------------------------------------
+
+
+class TestProtectedGuard:
+    """Test the .protected dotfile mechanism that blocks all agent mutations."""
+
+    @staticmethod
+    @contextmanager
+    def _protect(skill_dir: Path):
+        """Context manager that creates a .protected marker for the duration."""
+        marker = skill_dir / ".protected"
+        marker.touch()
+        try:
+            yield
+        finally:
+            marker.unlink(missing_ok=True)
+
+    def test_edit_refuses_protected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._protect(tmp_path / "my-skill"):
+                result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "protected" in result["error"].lower()
+        assert "immutable" in result["error"].lower()
+
+    def test_patch_refuses_protected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._protect(tmp_path / "my-skill"):
+                result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is False
+        assert "protected" in result["error"].lower()
+
+    def test_delete_refuses_protected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._protect(tmp_path / "my-skill"):
+                result = _delete_skill("my-skill")
+        assert result["success"] is False
+        assert "protected" in result["error"].lower()
+        # Skill still exists
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_write_file_refuses_protected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._protect(tmp_path / "my-skill"):
+                result = _write_file("my-skill", "references/api.md", "content")
+        assert result["success"] is False
+        assert "protected" in result["error"].lower()
+
+    def test_remove_file_refuses_protected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/api.md", "content")
+            with self._protect(tmp_path / "my-skill"):
+                result = _remove_file("my-skill", "references/api.md")
+        assert result["success"] is False
+        assert "protected" in result["error"].lower()
+        # File still exists
+        assert (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_unprotected_skills_still_editable(self, tmp_path):
+        """Sanity check: unprotected skills are not affected by the guard."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True
+
+    def test_create_not_blocked_by_protection(self, tmp_path):
+        """Create is not a mutation of an existing skill — protection doesn't apply."""
+        with _skill_dir(tmp_path):
+            result = _create_skill("new-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+
+    def test_protection_error_message_includes_unprotect_hint(self, tmp_path):
+        """Error message tells the user how to remove protection."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._protect(tmp_path / "my-skill"):
+                result = _patch_skill("my-skill", "old", "new")
+        assert "hermes skills unprotect" in result["error"]
+
+    def test_find_skill_dir_returns_path(self, tmp_path):
+        """find_skill_dir() public API returns the skill directory."""
+        from tools.skill_manager_tool import find_skill_dir
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = find_skill_dir("my-skill")
+        assert result == tmp_path / "my-skill"
+
+    def test_find_skill_dir_returns_none_for_missing(self, tmp_path):
+        from tools.skill_manager_tool import find_skill_dir
+        with _skill_dir(tmp_path):
+            result = find_skill_dir("nonexistent")
+        assert result is None

@@ -653,11 +653,15 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                # Check for .protected dotfile
+                protected = (skill_dir / ".protected").exists()
+
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "protected": protected,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

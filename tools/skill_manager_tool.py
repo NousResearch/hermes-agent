@@ -161,6 +161,55 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _protected_guard(name: str) -> Optional[str]:
+    """Return a refusal message if *name* is protected, else None.
+
+    Protection blocks **all** mutations: edit, patch, write_file,
+    remove_file, and delete.  Unlike ``pinned`` (which only guards
+    deletion), ``protected`` makes a skill fully immutable at the tool
+    level — the agent cannot modify it in any way.
+
+    The marker is a ``.protected`` dotfile inside the skill directory.
+    This is deliberately *not* stored in SKILL.md frontmatter to avoid
+    any risk of YAML corruption.
+
+    Fail-closed: if we can't determine the skill's path or read the
+    dotfile, we assume protected and refuse the mutation.
+    """
+    result = _find_skill(name)
+    if not result:
+        return None  # skill not found — let the caller handle that
+    skill_dir = result["path"]
+    marker = skill_dir / ".protected"
+    try:
+        if marker.exists():
+            return (
+                f"Skill '{name}' is protected and cannot be modified. "
+                f"Protected skills are immutable: no edit, patch, write_file, "
+                f"remove_file, or delete. To remove protection, run "
+                f"`hermes skills unprotect {name}` or delete the "
+                f".protected file in {skill_dir}."
+            )
+    except OSError:
+        # Fail-closed: if we can't check, assume protected
+        logger.warning("Failed to check .protected marker for %s at %s", name, marker, exc_info=True)
+        return (
+            f"Cannot verify protection status for skill '{name}'. "
+            f"Refusing mutation as a safety precaution."
+        )
+    return None
+
+
+def find_skill_dir(name: str) -> Optional[Path]:
+    """Public API: return the directory path for a skill, or None.
+
+    Wraps internal ``_find_skill()`` so external callers (CLI, plugins)
+    don't depend on the private implementation.
+    """
+    result = _find_skill(name)
+    return result["path"] if result else None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -553,6 +602,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
+    protected_err = _protected_guard(name)
+    if protected_err:
+        return {"success": False, "error": protected_err}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -592,6 +645,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    protected_err = _protected_guard(name)
+    if protected_err:
+        return {"success": False, "error": protected_err}
 
     skill_dir = existing["path"]
 
@@ -682,6 +739,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
+    protected_err = _protected_guard(name)
+    if protected_err:
+        return {"success": False, "error": protected_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -751,6 +812,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
 
+    protected_err = _protected_guard(name)
+    if protected_err:
+        return {"success": False, "error": protected_err}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -784,6 +849,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    protected_err = _protected_guard(name)
+    if protected_err:
+        return {"success": False, "error": protected_err}
 
     skill_dir = existing["path"]
 

@@ -1012,6 +1012,49 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         c.print()
 
 
+def do_protect(name: str, unprotect: bool = False,
+               console: Optional[Console] = None) -> None:
+    """Protect or unprotect a skill from agent modifications.
+
+    Creates or removes a .protected dotfile in the skill directory.
+    Protected skills are immutable at the tool level: no edit, patch,
+    write_file, remove_file, or delete.
+    """
+    from tools.skill_manager_tool import find_skill_dir
+
+    c = console or _console
+
+    skill_dir = find_skill_dir(name)
+    if not skill_dir:
+        c.print(f"[bold red]Error:[/] Skill '{name}' not found. "
+                f"Run [cyan]hermes skills list[/] to see available skills.\n")
+        return
+
+    marker = skill_dir / ".protected"
+
+    if unprotect:
+        if not marker.exists():
+            c.print(f"[yellow]Skill '{name}' is not protected.[/]\n")
+            return
+        try:
+            marker.unlink()
+            c.print(f"[green]✓[/] Skill '{name}' is now [bold]unprotected[/] — "
+                    f"the agent can modify it again.\n")
+        except OSError as e:
+            c.print(f"[bold red]Error:[/] Failed to remove .protected marker: {e}\n")
+    else:
+        if marker.exists():
+            c.print(f"[yellow]Skill '{name}' is already protected.[/]\n")
+            return
+        try:
+            marker.touch()
+            c.print(f"[green]✓[/] Skill '{name}' is now [bold]protected[/] — "
+                    f"the agent cannot modify it.\n"
+                    f"  To remove protection: [cyan]hermes skills unprotect {name}[/]\n")
+        except OSError as e:
+            c.print(f"[bold red]Error:[/] Failed to create .protected marker: {e}\n")
+
+
 def do_uninstall(name: str, console: Optional[Console] = None,
                  skip_confirm: bool = False,
                  invalidate_cache: bool = True) -> None:
@@ -1562,6 +1605,8 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "protect":
+        do_protect(args.name, unprotect=getattr(args, "unprotect", False))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1597,7 +1642,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|protect|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

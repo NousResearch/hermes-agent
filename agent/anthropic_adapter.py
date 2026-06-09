@@ -208,8 +208,8 @@ def _resolve_anthropic_messages_max_tokens(
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6+ models that support adaptive thinking."""
-    return any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
+    """Return True for Claude 4.6+ and MiniMax M3 models that support adaptive thinking."""
+    return _is_minimax_m3(model) or any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
 
 
 def _supports_xhigh_effort(model: str) -> bool:

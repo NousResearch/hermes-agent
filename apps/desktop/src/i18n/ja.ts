@@ -1766,7 +1766,8 @@ export const ja = defineLocale({
       restoreCheckpoint: 'チェックポイントを復元',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
-      sendEdited: '編集済みメッセージを送信'
+      sendEdited: '編集済みメッセージを送信',
+      attachingFile: '添付中…'
     },
     approval: {
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',

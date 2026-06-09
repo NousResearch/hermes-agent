@@ -837,6 +837,12 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
+        {contentVisible && (
+          <div className="shrink-0 px-0.5 pb-1 pt-0">
+            <ProfileRail />
+          </div>
+        )}
+
         {contentVisible && showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
@@ -1037,12 +1043,6 @@ export function ChatSidebar({
         )}
 
         {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
-
-        {contentVisible && (
-          <div className="shrink-0 px-0.5 pb-1 pt-0.5">
-            <ProfileRail />
-          </div>
-        )}
       </SidebarContent>
     </Sidebar>
   )

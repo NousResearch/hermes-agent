@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { AlertCircle } from '@/lib/icons'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
@@ -76,7 +77,7 @@ export function SidebarSessionRow({
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? sessionSourceLabel(handoffSource) ?? handoffSource : null
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
-  // the atom is tiny and rarely non-empty. True when a clarify prompt in this
+  // the atom is tiny and rarely non-empty. True when a blocking prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
 
@@ -121,7 +122,10 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className={cn(
+            'z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 text-left',
+            needsInput ? 'pr-12' : 'pr-1 group-hover:pr-12'
+          )}
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -201,11 +205,13 @@ export function SidebarSessionRow({
           </span>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
+          {needsInput ? (
+            <NeedsInputBadge label={r.needsInput} title={r.waitingForAnswer} />
+          ) : !isWorking ? (
             <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
               {age}
             </span>
-          )}
+          ) : null}
           <SessionActionsMenu
             onArchive={onArchive}
             onDelete={onDelete}
@@ -231,6 +237,20 @@ export function SidebarSessionRow({
   )
 }
 
+function NeedsInputBadge({ label, title }: { label: string; title: string }) {
+  return (
+    <span
+      aria-label={label}
+      className="pointer-events-none absolute right-6 top-1/2 inline-grid size-5 -translate-y-1/2 place-items-center rounded-[4px] border border-amber-400/35 bg-amber-500/15 text-amber-200 shadow-sm"
+      data-slot="session-needs-input-badge"
+      role="status"
+      title={title}
+    >
+      <AlertCircle aria-hidden="true" className="size-3.5" />
+    </span>
+  )
+}
+
 function SidebarRowDot({
   isWorking,
   needsInput = false,
@@ -243,16 +263,15 @@ function SidebarRowDot({
   const { t } = useI18n()
   const r = t.sidebar.row
 
-  // "Needs input" wins over "working": a clarify-blocked session is technically
+  // "Needs input" wins over "working": a prompt-blocked session is technically
   // still running, but the actionable state is that it's waiting on the user.
   // Amber + steady (no ping) reads as "your turn", distinct from the accent
   // pulse of an active turn.
   if (needsInput) {
     return (
       <span
-        aria-label={r.needsInput}
+        aria-hidden="true"
         className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
-        role="status"
         title={r.waitingForAnswer}
       />
     )

@@ -80,8 +80,8 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
   return { ...transform, x: Math.min(maxX, Math.max(minX, snapped)), y: 0 }
 }
 
-// Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
-// left, the colored named profiles scrolling between, and Manage pinned right.
+// Arc-Spaces-style profile rail in the sidebar header stack: a default↔all toggle
+// pinned left, the colored named profiles scrolling between, and Manage pinned right.
 // The active profile pops in its own color — the "where am I" cue. Single-
 // profile users see the "+" (create their first profile) and the Manage
 // overflow (edit the default profile's SOUL.md); the colored named squares
@@ -461,12 +461,12 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           </Tooltip>
         </TooltipProvider>
 
-        {/* The rail sits at the very bottom, so pad off the chrome (esp. the
-            statusbar) — Radix then flips the menu up instead of squishing it. */}
+        {/* Keep menus away from the titlebar/statusbar chrome when the sidebar
+            rail is near either edge. */}
         <ContextMenuContent
           aria-label={p.actionsFor(label)}
           className="w-40"
-          collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+          collisionPadding={{ bottom: 44, left: 8, right: 8, top: 44 }}
         >
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
@@ -486,8 +486,8 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
       <PopoverContent
         aria-label={p.colorFor(label)}
         className="w-auto p-2"
-        collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
-        side="top"
+        collisionPadding={{ bottom: 44, left: 8, right: 8, top: 44 }}
+        side="bottom"
       >
         <div className="grid grid-cols-6 gap-1.5">
           {PROFILE_SWATCHES.map(swatch => (

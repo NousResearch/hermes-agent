@@ -1045,8 +1045,20 @@ class HonchoSessionManager:
     def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
         """Resolve a peer alias or explicit peer ID to a concrete Honcho peer ID.
 
-        Always returns a non-empty string: either a known peer ID or a
-        sanitized version of the caller-supplied alias/ID.
+        Always returns a non-empty string. The aliases ``"user"`` and ``"ai"``
+        map to the session's user / assistant peers. Any other value is only
+        honored when it matches a *known* peer — the session's own peers or an
+        operator-configured peer (``peer_name`` / ``user_peer_aliases``). An
+        unrecognized free-form value (e.g. a display name the model invented
+        for the user) collapses to the stable user peer instead of minting a
+        brand-new Honcho peer.
+
+        Minting a fresh peer for every name the model used to address one user
+        was the cause of duplicate-peer fragmentation (issue #42980): the
+        duplicates accumulated and were then discarded on Honcho's
+        consolidation pass, losing what it knew about the user. Operators who
+        genuinely run multiple peers should declare them via
+        ``user_peer_aliases``; anything undeclared is treated as the user.
         """
         candidate = (peer or "user").strip()
         if not candidate:
@@ -1058,7 +1070,22 @@ class HonchoSessionManager:
         if normalized == self._sanitize_id("ai"):
             return session.assistant_peer_id
 
-        return normalized
+        # Honor an explicit, already-known peer: the session's own peers or an
+        # operator-configured peer id/alias. Anything else is an unrecognized
+        # free-form name — collapse it to the user peer rather than create a
+        # new peer (single-user-safe default; prevents #42980 fragmentation).
+        known_ids = {session.user_peer_id, session.assistant_peer_id}
+        known_ids |= self._explicit_user_peer_ids()
+        if normalized in known_ids:
+            return normalized
+
+        logger.debug(
+            "Honcho: unrecognized peer %r resolved to user peer %r "
+            "(not minting a new peer)",
+            candidate,
+            session.user_peer_id,
+        )
+        return session.user_peer_id
 
     def _resolve_observer_target(
         self,

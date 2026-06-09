@@ -48,7 +48,7 @@ PROFILE_SCHEMA = {
         "properties": {
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
             "card": {
                 "type": "array",
@@ -81,7 +81,7 @@ SEARCH_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
         },
         "required": ["query"],
@@ -120,7 +120,7 @@ REASONING_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
         },
         "required": ["query"],
@@ -144,7 +144,7 @@ CONTEXT_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
         },
         "required": [],
@@ -173,7 +173,7 @@ CONCLUDE_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
         },
         "required": [],

@@ -24,6 +24,62 @@ DEFAULT_TIMEOUT_SECONDS = 180
 MAX_QUESTION_CHARS = 2000
 MAX_RESULT_CHARS = 20000
 ALLOWED_SEARCH_TYPES = {"CHUNKS", "RAG_COMPLETION", "GRAPH_COMPLETION"}
+TRAILING_SOURCE_PUNCTUATION = ".,;:)]}>\"'"
+
+
+def _normalize_source_filename(name: Any) -> str:
+    return str(name or "").strip().rstrip(TRAILING_SOURCE_PUNCTUATION)
+
+
+def _normalize_source_file_list(values: Any) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(values, list):
+        return normalized
+    for value in values:
+        name = _normalize_source_filename(value)
+        if name and name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    return normalized
+
+
+def _normalize_source_fields(value: Any) -> Any:
+    """Normalize structured source filename fields in a parsed envelope in-place."""
+    if not isinstance(value, dict):
+        return value
+
+    if isinstance(value.get("source_files"), list):
+        value["source_files"] = _normalize_source_file_list(value.get("source_files"))
+
+    if isinstance(value.get("sources"), list):
+        normalized_sources = []
+        seen_sources: set[str] = set()
+        for source in value["sources"]:
+            if not isinstance(source, dict):
+                continue
+            source = dict(source)
+            source["file"] = _normalize_source_filename(source.get("file"))
+            if source["file"] and source["file"] not in seen_sources:
+                seen_sources.add(source["file"])
+                normalized_sources.append(source)
+        value["sources"] = normalized_sources
+
+    if isinstance(value.get("result_items"), list):
+        normalized_items = []
+        for item in value["result_items"]:
+            if not isinstance(item, dict):
+                normalized_items.append(item)
+                continue
+            item = dict(item)
+            if isinstance(item.get("source_files"), list):
+                item["source_files"] = _normalize_source_file_list(item.get("source_files"))
+            normalized_items.append(item)
+        value["result_items"] = normalized_items
+
+    if "source_count" in value and isinstance(value.get("source_files"), list):
+        value["source_count"] = len(value["source_files"])
+    return value
 
 
 def _candidate_lab_roots() -> list[Path]:
@@ -116,7 +172,7 @@ def _fallback_source_counts(value: Any) -> dict[str, int]:
     counts: dict[str, int] = {}
     for text in _fallback_iter_text_values(value):
         for match in re.finditer(r"SOURCE_FILE:\s*([A-Za-z0-9_.-]+)", text):
-            name = match.group(1)
+            name = _normalize_source_filename(match.group(1))
             if name:
                 counts[name] = counts.get(name, 0) + 1
     return counts
@@ -261,7 +317,7 @@ def cognee_query(
     )
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
-    parsed = _safe_json_loads(stdout)
+    parsed = _normalize_source_fields(_safe_json_loads(stdout))
     rendered = json.dumps(parsed, ensure_ascii=False, indent=2) if not isinstance(parsed, str) else parsed
     truncated_rendered, truncated = _truncate_text(rendered)
 

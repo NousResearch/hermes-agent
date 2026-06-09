@@ -63,6 +63,36 @@ def test_cognee_query_invokes_isolated_lab(monkeypatch, tmp_path):
     assert "answer" in payload["result_text"]
 
 
+def test_cognee_query_normalizes_source_filenames_from_envelope(monkeypatch, tmp_path):
+    home = tmp_path / "profile"
+    lab = home / "cognee_lab"
+    scripts = lab / "scripts"
+    py = lab / ".venv" / "bin" / "python"
+    scripts.mkdir(parents=True)
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\nexec python3 \"$@\"\n", encoding="utf-8")
+    py.chmod(0o755)
+    (scripts / "query.py").write_text(
+        "import json\n"
+        "print(json.dumps({'ok': True, 'results': ['Ada North — supported by SOURCE_FILE: project_zephyr.md.'], "
+        "'source_files': ['project_zephyr.md.'], "
+        "'sources': [{'file': 'project_zephyr.md.', 'mentions': 1, 'first_path': 'result[0]', 'text_preview': 'SOURCE_FILE: project_zephyr.md.'}], "
+        "'source_count': 1, "
+        "'result_items': [{'path': 'result[0]', 'source_files': ['project_zephyr.md.'], 'text_preview': 'SOURCE_FILE: project_zephyr.md.', 'chars': 31}]}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools.cognee_query_tool import cognee_query
+
+    payload = json.loads(cognee_query("Who?", search_type="CHUNKS", include_raw=True))
+
+    assert payload["source_files"] == ["project_zephyr.md"]
+    assert payload["sources"][0]["file"] == "project_zephyr.md"
+    assert payload["result_items"][0]["source_files"] == ["project_zephyr.md"]
+    assert payload["raw"]["source_files"] == ["project_zephyr.md"]
+
+
 def test_source_extraction_handles_nested_results():
     from tools.cognee_query_tool import _extract_source_files, _extract_sources, _flatten_result_items
 
@@ -86,6 +116,27 @@ def test_source_extraction_handles_nested_results():
         "result.CHUNKS.results[0]",
         "result.CHUNKS.results[1].nested",
     ]
+
+
+def test_fallback_source_extraction_strips_trailing_punctuation():
+    from tools.cognee_query_tool import _fallback_extract_source_files, _fallback_extract_sources, _fallback_flatten_result_items
+
+    value = [
+        "Supported by SOURCE_FILE: project_zephyr.md.",
+        "See SOURCE_FILE: memory_policy.md, and SOURCE_FILE: zephyr_runbook.md);",
+    ]
+
+    assert _fallback_extract_source_files(value) == [
+        "project_zephyr.md",
+        "memory_policy.md",
+        "zephyr_runbook.md",
+    ]
+    assert [source["file"] for source in _fallback_extract_sources(value)] == [
+        "project_zephyr.md",
+        "memory_policy.md",
+        "zephyr_runbook.md",
+    ]
+    assert _fallback_flatten_result_items(value)[0]["source_files"] == ["project_zephyr.md"]
 
 
 def test_cognee_query_loads_source_helpers_by_path_without_mutating_sys_path(monkeypatch, tmp_path):

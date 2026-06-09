@@ -32,6 +32,22 @@ def test_load_gateway_config_bridges_stt_enabled_from_config_yaml(tmp_path, monk
     assert config.stt_enabled is False
 
 
+def test_load_gateway_config_bridges_discord_voice_transcript_agent_turns(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.dump({"discord": {"voice_transcript_agent_turns": True}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.DISCORD].extra["voice_transcript_agent_turns"] is True
+
+
 @pytest.mark.asyncio
 async def test_enrich_message_with_transcription_surfaces_path_when_stt_disabled():
     from gateway.run import GatewayRunner

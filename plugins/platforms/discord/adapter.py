@@ -181,6 +181,7 @@ class VoiceReceiver:
 
     SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
+    MAX_UTTERANCE_DURATION = 30.0  # bound hot-path audio buffers during long monologues
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
@@ -478,7 +479,11 @@ class VoiceReceiver:
                 # 48kHz, 16-bit, stereo = 192000 bytes/sec
                 buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
 
-                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
+                utterance_complete = (
+                    silence_duration >= self.SILENCE_THRESHOLD
+                    or buf_duration >= self.MAX_UTTERANCE_DURATION
+                )
+                if utterance_complete and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
                         # SSRC not mapped (SPEAKING event missing after bot rejoin).
@@ -578,6 +583,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
+    VOICE_ACTIVITY_TIMEOUT_REFRESH = 30.0
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -597,9 +603,14 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_activity_timeout_resets: Dict[int, float] = {}  # guild_id -> monotonic timestamp
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._voice_input_tasks: Dict[int, set[asyncio.Task]] = {}  # guild_id -> in-flight STT/callback work
+        self._voice_input_semaphore: Optional[asyncio.Semaphore] = None
+        self._voice_input_concurrency = max(1, int(os.getenv("HERMES_DISCORD_VOICE_STT_CONCURRENCY", "3")))
+        self._voice_input_max_pending = max(1, int(os.getenv("HERMES_DISCORD_VOICE_STT_MAX_PENDING", "12")))
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Phase 3: continuous voice mixer (ambient idle bed + ducked speech).
@@ -2140,6 +2151,8 @@ class DiscordAdapter(BasePlatformAdapter):
             listen_task = self._voice_listen_tasks.pop(guild_id, None)
             if listen_task:
                 listen_task.cancel()
+            for task in list(getattr(self, "_voice_input_tasks", {}).pop(guild_id, set())):
+                task.cancel()
 
             # Tear down the mixer (stops the continuous outgoing stream).
             if getattr(self, "_voice_mixers", None) is not None:
@@ -2156,6 +2169,9 @@ class DiscordAdapter(BasePlatformAdapter):
             task = self._voice_timeout_tasks.pop(guild_id, None)
             if task:
                 task.cancel()
+            resets = getattr(self, "_voice_activity_timeout_resets", None)
+            if resets is not None:
+                resets.pop(guild_id, None)
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
@@ -2254,9 +2270,24 @@ class DiscordAdapter(BasePlatformAdapter):
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+        resets = getattr(self, "_voice_activity_timeout_resets", None)
+        if resets is None:
+            resets = {}
+            self._voice_activity_timeout_resets = resets
+        resets[guild_id] = time.monotonic()
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
             self._voice_timeout_handler(guild_id)
         )
+
+    def _note_voice_activity(self, guild_id: int) -> None:
+        """Refresh the inactivity timer for inbound audio without timer churn."""
+        resets = getattr(self, "_voice_activity_timeout_resets", None)
+        if resets is None:
+            resets = {}
+            self._voice_activity_timeout_resets = resets
+        now = time.monotonic()
+        if now - resets.get(guild_id, 0.0) >= self.VOICE_ACTIVITY_TIMEOUT_REFRESH:
+            self._reset_voice_timeout(guild_id)
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
         """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
@@ -2384,6 +2415,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         pass
 
                 completed = receiver.check_silence()
+                if receiver._last_packet_time:
+                    self._note_voice_activity(guild_id)
                 # Voice inputs always originate from a specific guild
                 # (guild_id is in scope). Pass it so role checks are
                 # guild-scoped and not cross-guild.
@@ -2395,11 +2428,63 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=False,
                     ):
                         continue
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
+                    self._note_voice_activity(guild_id)
+                    self._schedule_voice_input_processing(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
+
+    def _schedule_voice_input_processing(self, guild_id: int, user_id: int, pcm_data: bytes) -> bool:
+        """Schedule PCM->WAV->STT->callback work without blocking voice polling.
+
+        Live meetings can produce completed utterances from several speakers in
+        the same silence-check tick.  Running each STT path inline makes later
+        speakers wait behind earlier speakers and pauses silence detection.
+        Keep the listener cheap: fan out completed chunks, cap concurrency, and
+        bound pending work per guild so STT backlog cannot grow forever.
+        """
+        tasks_by_guild = getattr(self, "_voice_input_tasks", None)
+        if tasks_by_guild is None:
+            tasks_by_guild = {}
+            self._voice_input_tasks = tasks_by_guild
+
+        tasks = tasks_by_guild.setdefault(guild_id, set())
+        for task in list(tasks):
+            if task.done():
+                tasks.discard(task)
+
+        max_pending = max(1, int(getattr(self, "_voice_input_max_pending", 12)))
+        if len(tasks) >= max_pending:
+            logger.warning(
+                "Dropping Discord voice utterance for guild=%d user=%d: STT backlog full (%d)",
+                guild_id, user_id, len(tasks),
+            )
+            return False
+
+        async def _runner():
+            semaphore = getattr(self, "_voice_input_semaphore", None)
+            if semaphore is None:
+                concurrency = max(1, int(getattr(self, "_voice_input_concurrency", 3)))
+                semaphore = asyncio.Semaphore(concurrency)
+                self._voice_input_semaphore = semaphore
+            async with semaphore:
+                await self._process_voice_input(guild_id, user_id, pcm_data)
+
+        task = asyncio.create_task(_runner())
+        tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("Discord voice input task failed: %s", exc, exc_info=True)
+
+        task.add_done_callback(_done)
+        return True
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""

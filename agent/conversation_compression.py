@@ -271,19 +271,22 @@ def check_compression_model_feasibility(agent: Any) -> None:
 
 
 def replay_compression_warning(agent: Any) -> None:
-    """Re-send the compression warning through ``status_callback``.
+    """Re-send the compression warning through filtered status plumbing.
 
     During ``__init__`` the gateway's ``status_callback`` is not yet
     wired, so ``_emit_status`` only reaches ``_vprint`` (CLI).  This
     method is called once at the start of the first
-    ``run_conversation()`` — by then the gateway has set the callback,
-    so every platform (Telegram, Discord, Slack, etc.) receives the
-    warning.
+    ``run_conversation()`` — by then the gateway has set the callback.
+
+    Compression warnings are operator/runtime diagnostics, not customer-facing
+    chat replies. Route through ``_emit_status(customer_facing=False)`` instead
+    of calling ``status_callback`` directly so WhatsApp/Slack/etc. inherit the
+    same suppression filter used by retry/compression lifecycle banners.
     """
     msg = getattr(agent, "_compression_warning", None)
     if msg and agent.status_callback:
         try:
-            agent.status_callback("lifecycle", msg)
+            agent._emit_status(msg, customer_facing=False)
         except Exception:
             pass
 

@@ -423,20 +423,26 @@ def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
 
     # Phase 1: __init__ — _emit_status prints (CLI) but callback is None
     vprint_messages = []
-    agent._emit_status = lambda msg: vprint_messages.append(msg)
+    agent._emit_status = lambda msg, customer_facing=True: vprint_messages.append(
+        (msg, customer_facing)
+    )
     agent._check_compression_model_feasibility()
 
     assert len(vprint_messages) == 1  # CLI got it
+    assert vprint_messages[0][1] is True
     assert agent._compression_warning is not None  # stored for replay
 
     # Phase 2: gateway wires callback post-init, then run_conversation replays
-    callback_events = []
-    agent.status_callback = lambda ev, msg: callback_events.append((ev, msg))
+    emitted = []
+    agent._emit_status = lambda msg, customer_facing=True: emitted.append(
+        (msg, customer_facing)
+    )
+    agent.status_callback = lambda ev, msg: None
     agent._replay_compression_warning()
 
     assert any(
-        ev == "lifecycle" and "Auto-lowered" in msg
-        for ev, msg in callback_events
+        "Auto-lowered" in msg and customer_facing is False
+        for msg, customer_facing in emitted
     )
 
 
@@ -472,6 +478,23 @@ def test_replay_without_callback_is_noop():
     agent._replay_compression_warning()
 
 
+def test_replay_compression_warning_suppresses_customer_facing_callbacks():
+    """Compression-warning replay must not bypass WhatsApp status filtering."""
+    agent = _make_agent()
+    agent.platform = "whatsapp"
+    agent._compression_warning = (
+        "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
+        "to 85% (from 45%) to use more of the window before summarizing."
+    )
+    callback_events = []
+    agent.status_callback = lambda ev, msg: callback_events.append((ev, msg))
+    agent._vprint = lambda *args, **kwargs: None
+
+    agent._replay_compression_warning()
+
+    assert callback_events == []
+
+
 @patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_len):
@@ -483,24 +506,28 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
     mock_client.api_key = "sk-aux"
     mock_get_client.return_value = (mock_client, "small-model")
 
-    agent._emit_status = lambda msg: None
+    agent._emit_status = lambda msg, customer_facing=True: None
     agent._check_compression_model_feasibility()
 
     assert agent._compression_warning is not None
 
     # Simulate what run_conversation does
-    callback_events = []
-    agent.status_callback = lambda ev, msg: callback_events.append((ev, msg))
+    emitted = []
+    agent._emit_status = lambda msg, customer_facing=True: emitted.append(
+        (msg, customer_facing)
+    )
+    agent.status_callback = lambda ev, msg: None
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # as in run_conversation
 
-    assert len(callback_events) == 1
+    assert len(emitted) == 1
+    assert emitted[0][1] is False
 
     # Second turn — nothing replayed
-    callback_events.clear()
+    emitted.clear()
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None
 
-    assert len(callback_events) == 0
+    assert len(emitted) == 0

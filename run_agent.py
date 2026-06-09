@@ -797,6 +797,7 @@ class AIAgent:
     _INTERNAL_STATUS_PREFIXES = (
         "\U0001f5dc",  # 🗜 context-pressure / compression banner family
         "⚠️ Iteration budget exhausted",
+        "ℹ Codex gpt-5.5 caps context",
     )
 
     def _emit_status(self, message: str, customer_facing: bool = True) -> None:

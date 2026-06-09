@@ -159,6 +159,253 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+    def test_normalize_interactive_card_extracts_body_from_user_dsl(self):
+        """CardKit 2.0 dual-publish: real content lives in the `user_dsl`
+        schema-2.0 string; the top-level `elements`/`title` are a lossy
+        fallback. Body must be extracted, not just the title.
+
+        Regression: a card only yielded the title because `user_dsl` was
+        never parsed and the fallback `{tag:text}` nodes were dropped by the
+        rich-block gate.
+        """
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        user_dsl = {
+            "config": {},
+            "elements": [
+                {
+                    "background_style": "default",
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "elements": [
+                                {"content": "<at id=all></at>", "tag": "markdown"},
+                                {"content": "**操作人员**：Alice", "tag": "markdown"},
+                                {"content": "**项目名称**：Demo App i18n", "tag": "markdown"},
+                                {"content": "**时间**：2026-06-09 10:11:20", "tag": "markdown"},
+                                {"content": "**结果**：成功", "tag": "markdown"},
+                                {"content": "**类型**：客户端", "tag": "markdown"},
+                                {"content": "**版本**：4.1.0", "tag": "markdown"},
+                                {"content": "**描述**：", "tag": "markdown"},
+                            ],
+                        }
+                    ],
+                    "tag": "column_set",
+                }
+            ],
+            "header": {
+                "template": "blue",
+                "title": {"content": "发布通知", "tag": "plain_text"},
+            },
+        }
+        raw_content = json.dumps(
+            {
+                "title": "发布通知",
+                "elements": [
+                    [
+                        {"tag": "text", "text": "@所有人"},
+                        {"tag": "text", "text": "操作人员"},
+                        {"tag": "text", "text": "：Alice"},
+                    ]
+                ],
+                "user_dsl": json.dumps(user_dsl, ensure_ascii=False),
+            },
+            ensure_ascii=False,
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=raw_content,
+        )
+
+        self.assertEqual(normalized.relation_kind, "interactive")
+        text = normalized.text_content
+        self.assertIn("发布通知", text)
+        self.assertIn("Alice", text)
+        self.assertIn("Demo App i18n", text)
+        self.assertIn("成功", text)
+        self.assertIn("4.1.0", text)
+
+    def test_normalize_interactive_card_extracts_links_table_and_no_layout_noise(self):
+        """schema-2.0 card with nested columns, a markdown table, hyperlink
+        nodes and a button. Regression for two defects:
+          1. _collect_text_segments harvested layout/style scalars
+             (element_id, background_style, alignments, colors) as if text.
+          2. the 12-line cap truncated the bottom links/button.
+        """
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        def md(content, eid):
+            return {
+                "content": content,
+                "element_id": eid,
+                "tag": "markdown",
+                "text_align": "left",
+                "background_style": "default",
+            }
+
+        user_dsl = {
+            "schema": "2.0",
+            "config": {"streaming_mode": False},
+            "header": {
+                "template": "red",
+                "title": {"content": "通知：示例标题，请及时查看", "tag": "plain_text"},
+            },
+            "body": {
+                "direction": "vertical",
+                "padding": "12px 12px 12px 12px",
+                "elements": [
+                    md("<font color='grey'>账号</font>\nuser@example.com", "_2"),
+                    {
+                        "tag": "column_set",
+                        "element_id": "_3",
+                        "flex_mode": "none",
+                        "horizontal_align": "left",
+                        "columns": [
+                            {
+                                "tag": "column",
+                                "element_id": "_8",
+                                "vertical_align": "top",
+                                "weight": 1,
+                                "width": "weighted",
+                                "elements": [md("<font color='grey'>环境</font>\nprod", "_9")],
+                            },
+                            {
+                                "tag": "column",
+                                "element_id": "_10",
+                                "width": "weighted",
+                                "elements": [md("<font color='grey'>实例ID</font>", "_13")],
+                            },
+                        ],
+                    },
+                    {"tag": "hr", "element_id": "_22"},
+                    md("\n| 组件 | 版本 |\n| --- | --- |\n| 核心 |  |\n| 客户端 | v3.3.0(33079) |\n", "_23"),
+                    md("[日志](https://res.example.com/app_log.zip)", "_30"),
+                    md("附加日志", "_35"),
+                    md("[统计](https://api.example.com/statistics)", "_43"),
+                    md("[详情](https://api.example.com/event_detail?id=125)", "_48"),
+                    {
+                        "tag": "column_set",
+                        "element_id": "_54",
+                        "columns": [
+                            {
+                                "tag": "column",
+                                "element_id": "_55",
+                                "width": "auto",
+                                "elements": [
+                                    {
+                                        "tag": "button",
+                                        "element_id": "_56",
+                                        "name": "Button_m6vy7xom",
+                                        "type": "primary",
+                                        "form_action_type": "submit",
+                                        "url": "https://api.example.com/event_detail?id=125",
+                                        "text": {"content": "去处理", "tag": "plain_text"},
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            },
+        }
+        raw_content = json.dumps(
+            {
+                "title": "[Action Needed] Alert",
+                "elements": [[{"tag": "text", "text": "Upgrade to the latest app version"}]],
+                "user_dsl": json.dumps(user_dsl, ensure_ascii=False),
+            },
+            ensure_ascii=False,
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=raw_content,
+        )
+        text = normalized.text_content
+
+        # Title + every meaningful line must survive (no 12-line truncation).
+        self.assertIn("通知：示例标题，请及时查看", text)
+        self.assertIn("user@example.com", text)
+        self.assertIn("v3.3.0(33079)", text)  # table cell
+        self.assertIn("https://res.example.com/app_log.zip", text)  # log link
+        self.assertIn("https://api.example.com/statistics", text)  # stats link
+        self.assertIn("https://api.example.com/event_detail?id=125", text)  # detail link
+        self.assertIn("去处理", text)  # button label
+
+        # Layout/style metadata must NOT leak in as text lines.
+        card_lines = text.split("\n")
+        for noise in ("_2", "_3", "_23", "_56", "weighted", "auto", "default", "primary", "submit", "Button_m6vy7xom"):
+            self.assertNotIn(noise, card_lines, f"layout noise leaked: {noise!r}")
+
+    def test_normalize_interactive_card_bare_schema_2_0_without_user_dsl(self):
+        """Fetched (quoted/parent) cards come back as the bare schema-2.0 DSL
+        ({"schema":"2.0","body":{...}}) with NO `user_dsl` wrapper — this is
+        what im.v1.message.get returns once card_msg_content_type is set.
+        Body + links must still be extracted. Regression for the group-@-quote
+        path where parent cards previously yielded only an upgrade placeholder.
+        """
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        card = {
+            "schema": "2.0",
+            "config": {},
+            "header": {"template": "red", "title": {"content": "通知：示例消息", "tag": "plain_text"}},
+            "body": {
+                "direction": "vertical",
+                "elements": [
+                    {"content": "<font color='grey'>账号</font>\nuser@example.com", "element_id": "_2", "tag": "markdown"},
+                    {"content": "[日志](https://res.example.com/app.zip)", "element_id": "_30", "tag": "markdown"},
+                    {"content": "[详情](https://api.example.com/event?id=1)", "element_id": "_48", "tag": "markdown"},
+                ],
+            },
+        }
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(card, ensure_ascii=False),
+        )
+        text = normalized.text_content
+        self.assertIn("通知：示例消息", text)
+        self.assertIn("user@example.com", text)
+        self.assertIn("https://res.example.com/app.zip", text)
+        self.assertIn("https://api.example.com/event?id=1", text)
+        self.assertNotIn("_2", text.split("\n"))
+
+    def test_normalize_interactive_card_flattens_links_to_bare_labelled_urls(self):
+        """Markdown links are flattened to a bare ``label: url`` form, keeping
+        the FULL literal URL (incl. parens from build numbers like
+        v3.3.0(33077)). Models misread percent-encoded / markdown-wrapped
+        URLs as truncated; a bare URL is reproduced verbatim and Feishu still
+        auto-links it.
+        """
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        url = "https://res.example.com/log/report_v3.3.0(33077)_1779535092775.zip"
+        card = {
+            "schema": "2.0",
+            "header": {"title": {"content": "通知", "tag": "plain_text"}},
+            "body": {
+                "elements": [
+                    {"content": f"[日志]({url})", "tag": "markdown"},
+                    {"content": "[统计](https://api.example.com/stats?id=1)", "tag": "markdown"},
+                ]
+            },
+        }
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(card, ensure_ascii=False),
+        )
+        text = normalized.text_content
+
+        # Flattened to "label: url" with the complete literal URL preserved.
+        self.assertIn(f"日志: {url}", text)
+        self.assertIn("统计: https://api.example.com/stats?id=1", text)
+        # No markdown link wrapper and no percent-encoding left behind.
+        self.assertNotIn("[日志](", text)
+        self.assertNotIn("%2833077%29", text)
+        # The full URL (including the trailing _...zip) survives intact.
+        self.assertIn("report_v3.3.0(33077)_1779535092775.zip", text)
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {

@@ -108,14 +108,14 @@ export type CommandDispatchResponse =
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
 
-export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
+export type SidebarNavId = 'artifacts' | 'browser' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
   id: SidebarNavId
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
-  action?: 'new-session'
+  action?: 'browser' | 'new-session'
 }
 
 export interface ClientSessionState {

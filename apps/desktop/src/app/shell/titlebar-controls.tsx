@@ -40,12 +40,20 @@ export type TitlebarToolSide = 'left' | 'right'
 export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], side?: TitlebarToolSide) => void
 
 interface TitlebarControlsProps extends ComponentProps<'div'> {
+  browserFeedbackMinimized?: boolean
   leftTools?: readonly TitlebarTool[]
+  onOpenBrowserFeedback: () => void
   tools?: readonly TitlebarTool[]
   onOpenSettings: () => void
 }
 
-export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+export function TitlebarControls({
+  browserFeedbackMinimized = false,
+  leftTools = [],
+  onOpenBrowserFeedback,
+  tools = [],
+  onOpenSettings
+}: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
@@ -116,6 +124,16 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       id: 'haptics',
       label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
       onSelect: toggleHaptics
+    },
+    {
+      active: browserFeedbackMinimized,
+      icon: <Codicon className={browserFeedbackMinimized ? 'text-sky-600 dark:text-sky-300' : undefined} name="globe" />,
+      id: 'browser-feedback',
+      label: t.titlebar.openBrowserFeedback,
+      onSelect: () => {
+        triggerHaptic('open')
+        onOpenBrowserFeedback()
+      }
     },
     {
       icon: <Codicon name="keyboard" />,

@@ -154,6 +154,7 @@ export const zh: Translations = {
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
+    openBrowserFeedback: 'Open Web Browser',
     openKeybinds: '键盘快捷键'
   },
 

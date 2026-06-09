@@ -19,6 +19,8 @@ function getColumnTemplate(container: HTMLElement): string[] {
   return (container.style.gridTemplateColumns ?? '').split(/\s+/).filter(Boolean)
 }
 
+const MAIN_TRACK = 'minmax(var(--chat-min-width,0px),1fr)'
+
 function mockWidth(element: HTMLElement, width: number) {
   Object.defineProperty(element, 'getBoundingClientRect', {
     configurable: true,
@@ -60,7 +62,7 @@ describe('PaneShell composition', () => {
 
     const tracks = getColumnTemplate(gridContainer(rendered))
 
-    expect(tracks).toEqual(['240px', 'minmax(0,1fr)'])
+    expect(tracks).toEqual(['240px', MAIN_TRACK])
   })
 
   it('orders panes left-to-right by side, preserving source order within a side', () => {
@@ -84,7 +86,7 @@ describe('PaneShell composition', () => {
 
     const tracks = getColumnTemplate(gridContainer(rendered))
 
-    expect(tracks).toEqual(['240px', '200px', 'minmax(0,1fr)', '320px', '280px'])
+    expect(tracks).toEqual(['240px', '200px', MAIN_TRACK, '320px', '280px'])
   })
 
   it('collapses a closed pane to 0px', () => {
@@ -99,7 +101,7 @@ describe('PaneShell composition', () => {
 
     const tracks = getColumnTemplate(gridContainer(rendered))
 
-    expect(tracks).toEqual(['0px', 'minmax(0,1fr)'])
+    expect(tracks).toEqual(['0px', MAIN_TRACK])
   })
 
   it('reads open state from the panes store', () => {
@@ -114,7 +116,7 @@ describe('PaneShell composition', () => {
       </PaneShell>
     )
 
-    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['0px', 'minmax(0,1fr)'])
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['0px', MAIN_TRACK])
   })
 
   it('disabled forces the track to 0px even when the store says open', () => {
@@ -129,7 +131,7 @@ describe('PaneShell composition', () => {
       </PaneShell>
     )
 
-    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['0px', 'minmax(0,1fr)'])
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['0px', MAIN_TRACK])
   })
 
   it('disabled does NOT mutate the store-persisted open state', () => {
@@ -147,20 +149,20 @@ describe('PaneShell composition', () => {
     expect($paneStates.get().files?.open).toBe(true)
   })
 
-  it('uses widthOverride from the store when set', () => {
+  it('uses widthOverride from the store when set on a resizable pane', () => {
     setPaneOpen('files', true)
     setPaneWidthOverride('files', 320)
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>
       </PaneShell>
     )
 
-    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['320px', 'minmax(0,1fr)'])
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['320px', MAIN_TRACK])
   })
 
   it('preserves CSS-string widths verbatim (clamp, var, etc.)', () => {
@@ -188,7 +190,23 @@ describe('PaneShell composition', () => {
       </PaneShell>
     )
 
-    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['224px', 'minmax(0,1fr)'])
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['224px', MAIN_TRACK])
+  })
+
+  it('clamps rendered pane tracks with configured min/max widths', () => {
+    setPaneOpen('files', true)
+    setPaneWidthOverride('files', 180)
+
+    const rendered = render(
+      <PaneShell>
+        <Pane id="files" maxWidth="40rem" minWidth="20rem" resizable side="left" width="20rem">
+          files
+        </Pane>
+        <PaneMain>main</PaneMain>
+      </PaneShell>
+    )
+
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['clamp(20rem,180px,40rem)', MAIN_TRACK])
   })
 
   it('emits per-pane width as a CSS variable', () => {

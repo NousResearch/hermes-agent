@@ -39,7 +39,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     import httpx
@@ -512,18 +512,35 @@ class PhotonAdapter(BasePlatformAdapter):
         except ValueError:
             timestamp = datetime.now(tz=timezone.utc)
 
-        # Content normalization.  Spectrum is a discriminated union;
-        # text vs attachment metadata.  Attachments are metadata-only
-        # today (no download URL) — log + carry the name so the agent
-        # at least knows something was sent.
+        # Content normalization.  Spectrum is a discriminated union of
+        # text / attachment / reaction. For attachments the sidecar has
+        # already streamed the bytes to a temp file (the SDK's read()/stream()
+        # closures can't survive JSON serialization), so we surface the local
+        # path via media_urls — mirroring the BlueBubbles iMessage channel.
+        media_urls: List[str] = []
+        media_types: List[str] = []
         if content.get("type") == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
         elif content.get("type") == "attachment":
             name = content.get("name") or "(unnamed)"
-            mime = content.get("mimeType") or ""
-            text = f"[Photon attachment received: {name} ({mime}) — no download URL yet]"
+            mime = (content.get("mimeType") or "").lower()
+            local_path = content.get("localPath")
             mtype = _attachment_message_type(mime)
+            if local_path and os.path.isfile(local_path):
+                media_urls.append(local_path)
+                media_types.append(mime)
+                text = ""  # attachments usually arrive without caption text
+            else:
+                text = (
+                    f"[Photon attachment received: {name} ({mime}) "
+                    "— download unavailable]"
+                )
+        elif content.get("type") == "reaction":
+            emoji = content.get("emoji") or ""
+            target = content.get("target") or ""
+            text = f"[Reaction {emoji} on {target}]" if emoji else "[Reaction]"
+            mtype = MessageType.TEXT
         else:
             text = f"[Photon content type not handled: {content.get('type')}]"
             mtype = MessageType.TEXT
@@ -555,6 +572,8 @@ class PhotonAdapter(BasePlatformAdapter):
             message_id=msg.get("id"),
             raw_message=payload,
             timestamp=timestamp,
+            media_urls=media_urls,
+            media_types=media_types,
         )
         await self.handle_message(event)
 

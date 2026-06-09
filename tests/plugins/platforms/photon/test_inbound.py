@@ -123,6 +123,117 @@ async def test_dispatch_attachment_surfaces_marker(
     assert event.message_type == MessageType.PHOTO
 
 
+@pytest.mark.asyncio
+async def test_dispatch_attachment_with_local_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """When the sidecar has downloaded the bytes and forwarded ``localPath``,
+    the adapter surfaces the real file via ``media_urls`` (vision-tool access)
+    instead of the metadata-only marker."""
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    img = tmp_path / "IMG_4127.jpg"
+    img.write_bytes(b"\xff\xd8\xff\xe0 jpeg bytes")
+
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-att-dl",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "attachment",
+                "name": "IMG_4127.jpg",
+                "mimeType": "image/jpeg",
+                "size": 12,
+                "localPath": str(img),
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.media_urls == [str(img)]
+    assert event.media_types == ["image/jpeg"]
+    assert event.message_type == MessageType.PHOTO
+    # No metadata marker once the real file is available.
+    assert "Photon attachment received" not in event.text
+
+
+@pytest.mark.asyncio
+async def test_dispatch_attachment_missing_local_path_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-existent ``localPath`` (download failed in the sidecar) falls back
+    to the metadata marker rather than handing the agent a dead path."""
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-att-fail",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "attachment",
+                "name": "IMG_4127.jpg",
+                "mimeType": "image/jpeg",
+                "size": 12,
+                "localPath": "/tmp/does-not-exist-xyz.jpg",
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    event = captured[0]
+    assert event.media_urls == []
+    assert "Photon attachment received" in event.text
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tapback / emoji reactions arrive on the same stream and are surfaced."""
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-react",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "reaction",
+                "emoji": "❤️",
+                "target": "spc-msg-abc",
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    event = captured[0]
+    assert "❤️" in event.text
+    assert event.message_type == MessageType.TEXT
+
+
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     assert adapter._is_duplicate("id-1") is False

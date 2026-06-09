@@ -1,10 +1,13 @@
 // Hermes Agent — Photon Spectrum sidecar
 //
-// Spawned by `plugins/platforms/photon/adapter.py` to bridge outbound
-// messaging to Photon's Spectrum platform. Inbound messages go directly
-// from Photon's webhook to Hermes' Python aiohttp receiver — this
-// sidecar handles ONLY outbound calls (which require the spectrum-ts
-// SDK because Photon has no public HTTP send endpoint today).
+// Spawned by `plugins/platforms/photon/adapter.py` to bridge messaging to
+// Photon's Spectrum platform. Outbound calls require the spectrum-ts SDK
+// (Photon has no public HTTP send endpoint today). Inbound is bridged here too:
+// the sidecar consumes spectrum-ts' `app.messages` gRPC stream and forwards
+// each message to the adapter's loopback webhook — necessary because attachment
+// bytes are only reachable from this Node process (the SDK's read()/stream()
+// closures are lost on JSON serialization), so the sidecar downloads them to a
+// temp file and forwards the local path.
 //
 // Protocol:
 //   - The sidecar listens on http://127.0.0.1:${PORT} (loopback only)
@@ -35,6 +38,13 @@
 //                         honours it)
 
 import http from "node:http";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
@@ -71,17 +81,200 @@ const app = await Spectrum({
   providers: [imessage.config()],
 });
 
-// Drain the inbound stream — Photon's webhook is the canonical inbound path,
-// but we still consume `app.messages` so spectrum-ts' reconnect/heartbeat logic
-// keeps running.  We also cache each live Space here: spectrum-ts removed the
-// `app.space(id)` lookup, so outbound replies resolve their Space from this
-// cache (an outbound reply always follows an inbound that populated it).
+// ---------------------------------------------------------------------------
+// Inbound bridge (sidecar -> adapter).
+//
+// We consume spectrum-ts' `app.messages` gRPC stream and forward each inbound
+// message to the adapter's loopback webhook in the `{event:"messages", message}`
+// shape it parses. We MUST do this here (not let Photon's cloud webhook deliver
+// inbound) for attachments: spectrum-ts hands attachment content as an
+// `asAttachment({ read(), stream() })` object whose byte-fetching closures are
+// LOST the moment the message is JSON-serialized. So the bytes are only
+// reachable from this Node process — we stream them to a temp file and forward
+// the local path. The same loop also caches each live Space so outbound replies
+// can resolve a real Space from just its id (spectrum-ts 1.x removed
+// `app.space(id)`).
+// ---------------------------------------------------------------------------
 const spaceCache = new Map();
+
+const WEBHOOK_HOST = "127.0.0.1"; // sidecar -> adapter is always loopback
+const WEBHOOK_PORT = parseInt(process.env.PHOTON_WEBHOOK_PORT || "8788", 10);
+const WEBHOOK_PATH = process.env.PHOTON_WEBHOOK_PATH || "/photon/webhook";
+const WEBHOOK_SECRET = process.env.PHOTON_WEBHOOK_SECRET || "";
+const ALLOW = new Set(
+  (process.env.PHOTON_ALLOWED_USERS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+const DOWNLOAD_DIR = path.join(os.tmpdir(), "photon-attachments");
+
+const senderId = (m) =>
+  typeof m?.sender?.id === "string"
+    ? m.sender.id
+    : m?.sender?.id?.phone || m?.sender?.phone || "";
+
+// In-memory dedup (the adapter dedups too; this is belt-and-suspenders and also
+// covers the spectrum reconnect/catch-up replay that re-emits recent messages).
+const _seen = new Map();
+const _DEDUP_MAX = 5000;
+const _DEDUP_TTL_MS = 10 * 60 * 1000;
+function isDuplicate(id) {
+  const now = Date.now();
+  if (_seen.size > _DEDUP_MAX) {
+    for (const [k, t] of _seen) if (now - t > _DEDUP_TTL_MS) _seen.delete(k);
+  }
+  if (_seen.has(id)) return true;
+  _seen.set(id, now);
+  return false;
+}
+
+// Bounded-concurrency scheduler so a slow attachment download (large video)
+// never head-of-line-blocks the message loop or other senders' messages.
+const MAX_INFLIGHT = 8;
+let _active = 0;
+const _queue = [];
+function schedule(fn) {
+  _queue.push(fn);
+  pump();
+}
+function pump() {
+  while (_active < MAX_INFLIGHT && _queue.length) {
+    const fn = _queue.shift();
+    _active++;
+    Promise.resolve()
+      .then(fn)
+      .catch((e) =>
+        console.error(
+          "photon-sidecar: inbound task error: " + (e && e.stack ? e.stack : e)
+        )
+      )
+      .finally(() => {
+        _active--;
+        pump();
+      });
+  }
+}
+
+// Stream an inbound attachment's bytes to a temp file: write to `<final>.part`,
+// verify the received byte count against the declared size, then atomically
+// rename into place. Partial files are unlinked on any failure.
+async function downloadAttachmentToFile(content) {
+  await fsp.mkdir(DOWNLOAD_DIR, { recursive: true });
+  const guid = content.id || crypto.randomUUID();
+  const safeName = String(content.name || guid).replace(/[^\w.\-]+/g, "_");
+  const finalPath = path.join(DOWNLOAD_DIR, `${guid}-${safeName}`);
+  const partPath = `${finalPath}.part`;
+  let received = 0;
+  try {
+    // `stream()` yields a WHATWG ReadableStream of the primaryChunk bytes.
+    const webStream = await content.stream();
+    const nodeReadable = Readable.fromWeb(webStream);
+    nodeReadable.on("data", (c) => {
+      received += c.length;
+    });
+    await pipeline(nodeReadable, fs.createWriteStream(partPath));
+    if (
+      typeof content.size === "number" &&
+      content.size > 0 &&
+      received !== content.size
+    ) {
+      throw new Error(
+        `byte-count mismatch: received ${received}, declared ${content.size}`
+      );
+    }
+    await fsp.rename(partPath, finalPath);
+    return { localPath: finalPath, bytes: received };
+  } catch (e) {
+    await fsp.rm(partPath, { force: true }).catch(() => {});
+    throw e;
+  }
+}
+
+async function forwardInbound(message) {
+  const url = `http://${WEBHOOK_HOST}:${WEBHOOK_PORT}${WEBHOOK_PATH}`;
+  const bodyStr = JSON.stringify({ event: "messages", message });
+  const headers = { "Content-Type": "application/json" };
+  // Sign when a webhook secret is configured so the adapter's verify_signature
+  // accepts the loopback delivery: v0=HMAC_SHA256(secret, "v0:{ts}:{body}").
+  if (WEBHOOK_SECRET) {
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const sig =
+      "v0=" +
+      crypto
+        .createHmac("sha256", WEBHOOK_SECRET)
+        .update(`v0:${ts}:${bodyStr}`)
+        .digest("hex");
+    headers["X-Spectrum-Timestamp"] = ts;
+    headers["X-Spectrum-Signature"] = sig;
+  }
+  try {
+    await fetch(url, { method: "POST", headers, body: bodyStr });
+  } catch (e) {
+    console.error(
+      "photon-sidecar: inbound forward failed: " + (e && e.message ? e.message : e)
+    );
+  }
+}
+
+async function handleInbound(space, message) {
+  const id = message?.id;
+  if (!id || isDuplicate(id)) return;
+  const from = senderId(message);
+  if (ALLOW.size && from && !ALLOW.has(from)) {
+    console.error(`photon-sidecar: drop non-allowlisted sender ${from}`);
+    return;
+  }
+  const content = message?.content || {};
+
+  if (content.type === "attachment" && typeof content.stream === "function") {
+    // Download here — the read()/stream() closures cannot survive JSON.
+    let localPath = null;
+    let bytes = null;
+    try {
+      ({ localPath, bytes } = await downloadAttachmentToFile(content));
+    } catch (e) {
+      console.error(
+        `photon-sidecar: attachment download failed for ${id}: ` +
+          (e && e.message ? e.message : e)
+      );
+    }
+    return forwardInbound({
+      ...message,
+      content: {
+        type: "attachment",
+        id: content.id,
+        name: content.name,
+        mimeType: content.mimeType,
+        size: content.size,
+        localPath,
+        bytes,
+      },
+    });
+  }
+
+  if (content.type === "reaction") {
+    // Tapback / emoji reaction — forward so the adapter can surface it.
+    return forwardInbound({
+      ...message,
+      content: {
+        type: "reaction",
+        emoji: content.emoji,
+        target: content.target,
+      },
+    });
+  }
+
+  // text / other — JSON.stringify silently drops any non-serializable fields.
+  return forwardInbound(message);
+}
+
 (async () => {
   try {
     for await (const [space, message] of app.messages) {
       if (space?.id) spaceCache.set(space.id, space);
       if (message?.space?.id && space) spaceCache.set(message.space.id, space);
+      schedule(() => handleInbound(space, message));
     }
   } catch (e) {
     console.error(

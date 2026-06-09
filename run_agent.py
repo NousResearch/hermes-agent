@@ -521,6 +521,17 @@ class AIAgent:
                 cwd=_launch_cwd_for_session(source),
             )
             self._session_db_created = True
+            # Mirror the new session into the JSON index when running as a
+            # standalone CLI (no gateway present to do it for us).  Without
+            # this, hermes.exe / PowerShell sessions never show up in
+            # sessions.json and stay invisible to status / mcp_serve /
+            # channel_directory.  See issue #29073.
+            if (self.platform or "") == "cli":
+                try:
+                    from hermes_cli.session_index import index_cli_session
+                    index_cli_session(self.session_id, source="cli")
+                except Exception:
+                    logger.debug("sessions.json index update failed", exc_info=True)
         except Exception as e:
             # Transient failure (e.g. SQLite lock). Keep _session_db alive —
             # _session_db_created stays False so next run_conversation() retries.

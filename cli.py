@@ -998,6 +998,16 @@ def _run_cleanup():
         )
     except Exception:
         pass
+    # Refresh sessions.json so the standalone CLI session (hermes.exe /
+    # PowerShell on Windows in particular) shows a sane updated_at and is
+    # discoverable by status / mcp_serve.  See issue #29073.
+    try:
+        if _active_agent_ref and getattr(_active_agent_ref, "session_id", None) \
+                and getattr(_active_agent_ref, "platform", "") == "cli":
+            from hermes_cli.session_index import index_cli_session
+            index_cli_session(_active_agent_ref.session_id, source="cli")
+    except Exception:
+        pass
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             # Forward the agent's own transcript so memory providers'

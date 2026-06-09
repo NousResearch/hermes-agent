@@ -1793,9 +1793,9 @@ export const ja = defineLocale({
     binaryTitle: 'これはバイナリファイルのようです',
     binaryBody: label => `${label} をプレビューすると読み取り不能なテキストが表示される場合があります。`,
     largeTitle: 'このファイルは大きいです',
-    largeBody: (label, size) => `${label} は ${size} です。Hermes は最初の 512 KB のみを表示します。`,
+    largeBody: (label, size) => `${label} は ${size} です。Hermes はファイル全体をプレビュー用に読み込みます。`,
     previewAnyway: 'とにかくプレビュー',
-    truncated: '最初の 512 KB を表示しています。',
+    truncated: 'ファイル全体を表示しています。',
     noInlineTitle: 'インラインプレビューなし',
     noInlineBody: mimeType => `${mimeType || 'このファイルタイプ'} はコンテキストとして添付できます。`,
     console: {

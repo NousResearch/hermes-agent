@@ -22,7 +22,6 @@ import type { PreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
-const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -462,7 +461,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !forcePreview && Boolean(target.binary)
 
   useEffect(() => {
     let active = true
@@ -498,7 +497,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         const result = await readTextPreview(filePath)
 
         if (active) {
-          const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
+          const shouldBlock = !forcePreview && Boolean(result.binary)
 
           setState({
             binary: result.binary,
@@ -537,7 +536,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   if (
     !isImage &&
     !forcePreview &&
-    (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
+    (target.binary || state.binary)
   ) {
     const binary = target.binary || state.binary
     const size = target.byteSize || state.byteSize

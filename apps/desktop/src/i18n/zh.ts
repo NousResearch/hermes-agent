@@ -1844,9 +1844,9 @@ export const zh: Translations = {
     binaryTitle: '这看起来像二进制文件',
     binaryBody: label => `预览 ${label} 可能会显示不可读文本。`,
     largeTitle: '此文件较大',
-    largeBody: (label, size) => `${label} 大小为 ${size}。Hermes 只会显示前 512 KB。`,
+    largeBody: (label, size) => `${label} 大小为 ${size}。Hermes 会加载完整文件进行预览。`,
     previewAnyway: '仍然预览',
-    truncated: '显示前 512 KB。',
+    truncated: '显示完整文件。',
     noInlineTitle: '没有内联预览',
     noInlineBody: mimeType => `${mimeType || '此文件类型'} 仍可作为上下文附件。`,
     console: {

@@ -5,7 +5,6 @@ const { fileURLToPath } = require('node:url')
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
-const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
@@ -268,7 +267,6 @@ async function resolveReadableFileForIpc(filePath, options = {}) {
 module.exports = {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,

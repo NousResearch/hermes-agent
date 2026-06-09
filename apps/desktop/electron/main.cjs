@@ -74,7 +74,6 @@ const {
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret: encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
@@ -526,7 +525,6 @@ const MEDIA_MIME_TYPES = {
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
-const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const PREVIEW_LANGUAGE_BY_EXT = {
   '.c': 'c',
   '.conf': 'ini',
@@ -602,7 +600,7 @@ function previewFileMetadata(filePath, mimeType) {
   return {
     binary,
     byteSize,
-    large: byteSize > TEXT_PREVIEW_MAX_BYTES
+    large: false
   }
 }
 
@@ -5680,29 +5678,18 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
-    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
-    purpose: 'Text preview'
-  })
+  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, { purpose: 'Text preview' })
   const ext = path.extname(resolvedPath).toLowerCase()
-  const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
+  const buffer = await fs.promises.readFile(resolvedPath)
 
-  try {
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
-
-    return {
-      binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
-      byteSize: stat.size,
-      language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-      mimeType: mimeTypeForPath(resolvedPath),
-      path: resolvedPath,
-      text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
-    }
-  } finally {
-    await handle.close()
+  return {
+    binary: looksBinary(buffer.subarray(0, Math.min(buffer.byteLength, 4096))),
+    byteSize: stat.size,
+    language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
+    mimeType: mimeTypeForPath(resolvedPath),
+    path: resolvedPath,
+    text: buffer.toString('utf8'),
+    truncated: false
   }
 })
 

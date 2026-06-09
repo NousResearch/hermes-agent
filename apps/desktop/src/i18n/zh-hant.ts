@@ -1737,9 +1737,9 @@ export const zhHant = defineLocale({
     binaryTitle: '這看起來像二進位檔案',
     binaryBody: label => `預覽 ${label} 可能會顯示無法讀取的文字。`,
     largeTitle: '此檔案較大',
-    largeBody: (label, size) => `${label} 大小為 ${size}。Hermes 只會顯示前 512 KB。`,
+    largeBody: (label, size) => `${label} 大小為 ${size}。Hermes 會載入完整檔案進行預覽。`,
     previewAnyway: '仍然預覽',
-    truncated: '顯示前 512 KB。',
+    truncated: '顯示完整檔案。',
     noInlineTitle: '沒有行內預覽',
     noInlineBody: mimeType => `${mimeType || '此檔案類型'} 仍可作為脈絡附件。`,
     console: {

@@ -2219,6 +2219,22 @@ class AIAgent:
                 if "content" in msg:
                     msg = dict(msg)
                     msg["content"] = self._redact_message_content(msg.get("content"))
+                # Redact tool call arguments at the persistence boundary
+                # so session logs don't store raw credentials. The in-memory
+                # messages list keeps unredacted arguments so the model can
+                # replay them correctly on subsequent turns. (#43083)
+                if msg.get("tool_calls"):
+                    if "content" not in msg:
+                        msg = dict(msg)
+                    redacted_tcs = []
+                    for tc in msg["tool_calls"]:
+                        tc = dict(tc)
+                        fn = tc.get("function")
+                        if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                            tc["function"] = dict(fn)
+                            tc["function"]["arguments"] = redact_sensitive_text(fn["arguments"])
+                        redacted_tcs.append(tc)
+                    msg["tool_calls"] = redacted_tcs
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.

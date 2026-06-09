@@ -1390,14 +1390,13 @@ class SignalAdapter(BasePlatformAdapter):
         # indicator immediately instead of waiting for Signal's ~5s built-in
         # timeout.  Failures are best-effort — the backoff state must still be
         # cleared so the next agent turn starts clean.
-        params: Dict[str, Any] = {"account": self.account}
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
-        params["stop"] = True
-
         try:
+            params: Dict[str, Any] = {"account": self.account}
+            if chat_id.startswith("group:"):
+                params["groupId"] = chat_id[6:]
+            else:
+                params["recipient"] = [await self._resolve_recipient(chat_id)]
+            params["stop"] = True
             await self._rpc(
                 "sendTyping",
                 params,
@@ -1405,7 +1404,8 @@ class SignalAdapter(BasePlatformAdapter):
                 log_failures=False,
             )
         except Exception:
-            # Best-effort: any RPC failure must not prevent backoff cleanup.
+            # Best-effort: any RPC failure (or recipient-resolution failure)
+            # must not prevent backoff cleanup.
             pass
 
         self._typing_failures.pop(chat_id, None)

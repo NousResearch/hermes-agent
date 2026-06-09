@@ -1229,10 +1229,10 @@ class TestSignalStopTypingExplicitRPC:
 
         adapter._rpc = _noop
         for _ in range(3):
-            await adapter.send_typing("+15555550000")
+            await adapter.send_typing("+155****0000")
 
-        assert adapter._typing_failures.get("+15555550000") == 3
-        assert "+15555550000" in adapter._typing_skip_until
+        assert adapter._typing_failures.get("+155****0000") == 3
+        assert "+155****0000" in adapter._typing_skip_until
 
         # Now make the stop RPC raise — backoff state must still be cleared.
         async def failing_rpc(method, params, rpc_id=None, **kwargs):
@@ -1240,10 +1240,38 @@ class TestSignalStopTypingExplicitRPC:
 
         adapter._rpc = failing_rpc
 
-        await adapter._stop_typing_indicator("+15555550000")
+        await adapter._stop_typing_indicator("+155****0000")
 
-        assert "+15555550000" not in adapter._typing_failures
-        assert "+15555550000" not in adapter._typing_skip_until
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_best_effort_on_recipient_failure(self, monkeypatch):
+        # When _resolve_recipient() raises, the per-chat backoff state must
+        # still be cleared — otherwise a transient resolution failure would
+        # silently keep the chat in cooldown forever.
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(
+            side_effect=RuntimeError("recipient resolution failed")
+        )
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        adapter._typing_failures["+155****0000"] = 2
+        adapter._typing_skip_until["+155****0000"] = 9999999999.0
+
+        await adapter._stop_typing_indicator("+155****0000")
+
+        # No RPC must be issued when recipient resolution itself fails.
+        assert captured == []
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
 
 
 # ---------------------------------------------------------------------------

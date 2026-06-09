@@ -35,6 +35,10 @@ SNAPSHOT_TTL_SECONDS = 120
 _SCAN_LOCK = threading.Lock()
 _SNAPSHOT_CACHE: Optional[Dict[str, Any]] = None
 _SNAPSHOT_CACHE_AT = 0
+
+# Checkpoint schema version.  Bump this when the per-session stats format
+# changes so that stale cached data is discarded on the next scan.
+_CURRENT_CHECKPOINT_SCHEMA = 2
 _SCAN_STATUS: Dict[str, Any] = {
     "state": "idle",
     "started_at": None,
@@ -202,18 +206,22 @@ def save_snapshot(data: Dict[str, Any]) -> None:
 def load_checkpoint() -> Dict[str, Any]:
     path = checkpoint_path()
     if not path.exists():
-        return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+        return {"schema_version": _CURRENT_CHECKPOINT_SCHEMA, "generated_at": 0, "sessions": {}}
     try:
         data = json.loads(path.read_text())
         if isinstance(data, dict):
-            data.setdefault("schema_version", 1)
+            # Discard checkpoints from an older schema so stale per-session
+            # stats (e.g. pre-fix memory_write_events) are not reused.
+            if data.get("schema_version", 1) < _CURRENT_CHECKPOINT_SCHEMA:
+                return {"schema_version": _CURRENT_CHECKPOINT_SCHEMA, "generated_at": 0, "sessions": {}}
+            data.setdefault("schema_version", _CURRENT_CHECKPOINT_SCHEMA)
             data.setdefault("generated_at", 0)
             data.setdefault("sessions", {})
             if isinstance(data.get("sessions"), dict):
                 return data
     except Exception:
         pass
-    return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+    return {"schema_version": _CURRENT_CHECKPOINT_SCHEMA, "generated_at": 0, "sessions": {}}
 
 
 def save_checkpoint(data: Dict[str, Any]) -> None:
@@ -307,9 +315,35 @@ def is_local_model_name(model_name: str) -> bool:
     return any(marker in name for marker in local_markers)
 
 
+def _get_tool_args(call: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract parsed arguments dict from a tool call object.
+
+    Handles both direct ``call["arguments"]`` and the nested
+    ``call["function"]["arguments"]`` shapes used by different
+    OpenAI-compatible API versions.  Returns ``None`` when arguments
+    cannot be extracted or parsed.
+    """
+    fn = call.get("function")
+    if not isinstance(fn, dict):
+        fn = {}
+    raw = call.get("arguments") or fn.get("arguments")
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+    return None
+
+
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     tool_names: Set[str] = set()
     tool_sequence: List[str] = []
+    memory_write_count: int = 0
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
@@ -329,6 +363,16 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)
+            # Count memory write operations: mnemosyne_remember always counts,
+            # and memory tool with action 'add' or 'replace' counts as write.
+            if name == "mnemosyne_remember":
+                memory_write_count += 1
+            elif name == "memory":
+                args = _get_tool_args(call)
+                if isinstance(args, dict):
+                    action = str(args.get("action", "")).lower()
+                    if action in ("add", "replace"):
+                        memory_write_count += 1
         if ERROR_RE.search(text):
             error_count += 1
         blob = text
@@ -354,7 +398,7 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     skill_events = _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower))
     skill_manage_events = _count_tool(tool_sequence, "skill_manage")
     memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
-    memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember", "memory")
+    memory_write_events = memory_write_count
 
     return {
         "session_id": session_id,
@@ -649,7 +693,7 @@ def scan_sessions(
                     pass
 
         save_checkpoint({
-            "schema_version": 1,
+            "schema_version": _CURRENT_CHECKPOINT_SCHEMA,
             "generated_at": int(time.time()),
             "sessions": checkpoint_sessions,
         })

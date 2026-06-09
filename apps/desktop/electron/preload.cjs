@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   gitStage: (cwd, filePath) => ipcRenderer.invoke('hermes:gitStage', cwd, filePath),
   gitUnstage: (cwd, filePath) => ipcRenderer.invoke('hermes:gitUnstage', cwd, filePath),
   gitDiscard: (cwd, filePath) => ipcRenderer.invoke('hermes:gitDiscard', cwd, filePath),
+  gitCommit: (cwd, message) => ipcRenderer.invoke('hermes:gitCommit', cwd, message),
+  gitLog: (cwd, count) => ipcRenderer.invoke('hermes:gitLog', cwd, count),
   gitStatus: cwd => ipcRenderer.invoke('hermes:gitStatus', cwd),
   writeFileText: (filePath, content) => ipcRenderer.invoke('hermes:writeFileText', filePath, content),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),

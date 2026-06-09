@@ -1750,7 +1750,10 @@ export const zh: Translations = {
     addToChat: '添加到对话',
     stageChanges: '暂存更改',
     unstageChanges: '取消暂存',
-    discardChanges: '放弃更改'
+    discardChanges: '放弃更改',
+    commitMessagePlaceholder: '消息...',
+    commitButton: '提交',
+    commitHistory: '提交记录'
   },
 
   preview: {

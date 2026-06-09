@@ -1664,7 +1664,10 @@ export const zhHant = defineLocale({
     addToChat: '新增至聊天',
     stageChanges: '暫存變更',
     unstageChanges: '取消暫存',
-    discardChanges: '捨棄變更'
+    discardChanges: '捨棄變更',
+    commitMessagePlaceholder: '訊息...',
+    commitButton: '提交',
+    commitHistory: '提交記錄'
   },
 
   preview: {

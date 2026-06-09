@@ -1233,6 +1233,9 @@ export interface Translations {
     stageChanges: string
     unstageChanges: string
     discardChanges: string
+    commitMessagePlaceholder: string
+    commitButton: string
+    commitHistory: string
   }
 
   preview: {

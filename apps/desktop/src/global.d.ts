@@ -49,6 +49,8 @@ declare global {
       gitStage: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
       gitUnstage: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
       gitDiscard: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
+      gitCommit: (cwd: string, message: string) => Promise<{ success: boolean; error?: string; output?: string }>
+      gitLog: (cwd: string, count?: number) => Promise<HermesGitLogEntry[]>
       gitStatus: (cwd: string) => Promise<HermesGitStatusResult>
       writeFileText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
@@ -186,6 +188,14 @@ export interface HermesGitStatusResult {
   entries: HermesGitStatusEntry[]
   error?: string
   root: string | null
+}
+
+export interface HermesGitLogEntry {
+  oid: string
+  shortOid: string
+  message: string
+  author: string
+  timestamp: number
 }
 
 export interface DesktopVersionInfo {

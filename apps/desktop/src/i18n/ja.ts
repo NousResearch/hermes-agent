@@ -1703,7 +1703,10 @@ export const ja = defineLocale({
     addToChat: 'チャットに追加',
     stageChanges: 'ステージング',
     unstageChanges: 'ステージング解除',
-    discardChanges: '変更を破棄'
+    discardChanges: '変更を破棄',
+    commitMessagePlaceholder: 'メッセージ...',
+    commitButton: 'コミット',
+    commitHistory: 'コミット履歴'
   },
 
   preview: {

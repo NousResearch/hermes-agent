@@ -5543,6 +5543,21 @@ ipcMain.handle('hermes:gitCommit', async (_event, cwd, message) => {
   }
 })
 
+ipcMain.handle('hermes:gitLog', async (_event, cwd, count = 10) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return []
+  try {
+    const result = await runGit(['log', `-${Math.max(1, Math.min(100, count || 10))}`, '--format=%H|%h|%s|%an|%ct', '--no-color'], { cwd: root })
+    if (result.code !== 0 || !result.stdout.trim()) return []
+    return result.stdout.trim().split('\n').filter(Boolean).map(line => {
+      const [oid, shortOid, message, author, timestamp] = line.split('|')
+      return { oid, shortOid, message: message || '', author: author || '', timestamp: Number(timestamp) || 0 }
+    })
+  } catch {
+    return []
+  }
+})
+
 ipcMain.handle('hermes:gitDiscard', async (_event, cwd, filePath) => {
   const root = findGitRoot(path.resolve(String(cwd || '')))
   if (!root) return { success: false, error: 'Not a git repository' }

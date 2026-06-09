@@ -1,8 +1,9 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import type { HermesGitStatusEntry, HermesGitStatusResult } from '@/global'
+import { Input } from '@/components/ui/input'
+import type { HermesGitLogEntry, HermesGitStatusEntry, HermesGitStatusResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
@@ -90,6 +91,33 @@ export function GitPanel({ active, cwd, onOpenChange }: GitPanelProps) {
     [gitRoot, refresh]
   )
 
+  const [commitMessage, setCommitMessage] = useState('')
+  const [committing, setCommitting] = useState(false)
+  const [commits, setCommits] = useState<HermesGitLogEntry[]>([])
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const handleCommit = useCallback(async () => {
+    if (!window.hermesDesktop?.gitCommit || !commitMessage.trim()) return
+    setCommitting(true)
+    try {
+      await window.hermesDesktop.gitCommit(gitRoot, commitMessage.trim())
+      setCommitMessage('')
+      void refresh()
+      if (window.hermesDesktop?.gitLog) {
+        window.hermesDesktop.gitLog(gitRoot, 5).then(setCommits)
+      }
+    } finally {
+      setCommitting(false)
+    }
+  }, [gitRoot, commitMessage, refresh])
+
+  useEffect(() => {
+    if (!gitRoot) { setCommits([]); return }
+    let cancelled = false
+    window.hermesDesktop?.gitLog?.(gitRoot, 5).then(log => { if (!cancelled) setCommits(log) })
+    return () => { cancelled = true }
+  }, [gitRoot])
+
   const branch = status.branch.name || (status.branch.detached ? status.branch.oid.slice(0, 8) : '')
 
   return (
@@ -117,6 +145,30 @@ export function GitPanel({ active, cwd, onOpenChange }: GitPanelProps) {
           <Codicon name="refresh" size="0.8125rem" spinning={loading} />
         </Button>
       </RightSidebarSectionHeader>
+      {status.root && groups.some(g => g.id === 'staged' && g.entries.length > 0) && (
+        <div className="flex items-center gap-1 border-b border-(--ui-border-subtle) px-2 py-1.5">
+          <Input
+            className="h-6 min-w-0 flex-1 text-[0.6875rem]"
+            disabled={committing}
+            onChange={e => setCommitMessage(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && commitMessage.trim()) { e.preventDefault(); void handleCommit() } }}
+            placeholder={t.rightSidebar.commitMessagePlaceholder}
+            ref={inputRef}
+            size="sm"
+            value={commitMessage}
+          />
+          <Button
+            aria-label={t.rightSidebar.commitButton}
+            className="shrink-0 text-emerald-500 hover:text-emerald-400"
+            disabled={committing || !commitMessage.trim()}
+            onClick={() => void handleCommit()}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="check" size="0.8125rem" />
+          </Button>
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!cwd ? (
           <GitEmpty body={t.rightSidebar.noProjectBody} title={t.rightSidebar.noProjectTitle} />
@@ -124,97 +176,116 @@ export function GitPanel({ active, cwd, onOpenChange }: GitPanelProps) {
           <GitEmpty body={status.error} title={t.rightSidebar.sourceControlUnavailable} />
         ) : !status.root ? (
           <GitEmpty body={t.rightSidebar.notGitRepositoryBody} title={t.rightSidebar.notGitRepository} />
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && commits.length === 0 ? (
           <GitEmpty body={t.rightSidebar.noChangesBody} title={t.rightSidebar.noChanges} />
         ) : (
-          groups.map(group => (
-            <section key={group.id}>
-              <div className="sticky top-0 z-10 flex h-6 items-center bg-(--ui-sidebar-surface-background) px-2.5 text-[0.625rem] font-semibold uppercase tracking-[0.06em] text-(--ui-text-tertiary)">
-                <span className="min-w-0 flex-1 truncate">{group.label}</span>
-                <span className="tabular-nums text-(--ui-text-quaternary)">{group.entries.length}</span>
-              </div>
-              {group.entries.map(entry => {
-                const pathParts = entry.path.split('/')
-                const name = pathParts.pop() || entry.path
-                const parent = pathParts.join('/')
-                const code = statusCode(entry, group.id)
-                const isStaged = group.id === 'staged'
-                const isChange = group.id === 'changes' || group.id === 'untracked'
+          <>
+            {groups.map(group => (
+              <section key={group.id}>
+                <div className="sticky top-0 z-10 flex h-6 items-center bg-(--ui-sidebar-surface-background) px-2.5 text-[0.625rem] font-semibold uppercase tracking-[0.06em] text-(--ui-text-tertiary)">
+                  <span className="min-w-0 flex-1 truncate">{group.label}</span>
+                  <span className="tabular-nums text-(--ui-text-quaternary)">{group.entries.length}</span>
+                </div>
+                {group.entries.map(entry => {
+                  const pathParts = entry.path.split('/')
+                  const name = pathParts.pop() || entry.path
+                  const parent = pathParts.join('/')
+                  const code = statusCode(entry, group.id)
+                  const isStaged = group.id === 'staged'
 
-                return (
-                  <div
-                    className="group/change flex w-full min-w-0 items-center gap-0 hover:bg-(--ui-row-hover-background)"
-                    key={`${group.id}:${entry.path}`}
-                  >
-                    {isStaged ? (
-                      <button
-                        aria-label={t.rightSidebar.unstageChanges}
-                        className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-(--ui-text-primary)"
-                        onClick={e => {
-                          e.stopPropagation()
-                          void handleUnstage(entry)
-                        }}
-                        title={t.rightSidebar.unstageChanges}
-                        type="button"
-                      >
-                        <Codicon name="remove" size="0.75rem" />
-                      </button>
-                    ) : (
-                      <>
+                  return (
+                    <div
+                      className="group/change flex w-full min-w-0 items-center gap-0 hover:bg-(--ui-row-hover-background)"
+                      key={`${group.id}:${entry.path}`}
+                    >
+                      {isStaged ? (
                         <button
-                          aria-label={t.rightSidebar.stageChanges}
-                          className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-emerald-500"
+                          aria-label={t.rightSidebar.unstageChanges}
+                          className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-(--ui-text-primary)"
                           onClick={e => {
                             e.stopPropagation()
-                            void handleStage(entry)
+                            void handleUnstage(entry)
                           }}
-                          title={t.rightSidebar.stageChanges}
-                          type="button"
-                        >
-                          <Codicon name="add" size="0.75rem" />
-                        </button>
-                        <button
-                          aria-label={t.rightSidebar.discardChanges}
-                          className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-rose-500"
-                          onClick={e => {
-                            e.stopPropagation()
-                            void handleDiscard(entry)
-                          }}
-                          title={t.rightSidebar.discardChanges}
+                          title={t.rightSidebar.unstageChanges}
                           type="button"
                         >
                           <Codicon name="remove" size="0.75rem" />
                         </button>
-                      </>
-                    )}
-                    <button
-                      className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-[0.6875rem]"
-                      onClick={() => onOpenChange(entry, status.root || cwd)}
-                      title={entry.originalPath ? `${entry.originalPath} → ${entry.path}` : entry.path}
-                      type="button"
-                    >
-                      <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="file" size="0.75rem" />
-                      <span className="min-w-0 flex-1 truncate text-(--ui-text-secondary)">
-                        {name}
-                        {parent && <span className="ml-1 text-(--ui-text-quaternary)">{parent}</span>}
-                      </span>
-                      <span
-                        className={cn(
-                          'mr-1 w-4 shrink-0 text-center font-mono font-bold',
-                          isStaged && 'text-emerald-500',
-                          group.id === 'changes' && 'text-amber-500',
-                          group.id === 'untracked' && 'text-emerald-500',
-                          group.id === 'conflicts' && 'text-rose-500'
-                        )}
+                      ) : (
+                        <>
+                          <button
+                            aria-label={t.rightSidebar.stageChanges}
+                            className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-emerald-500"
+                            onClick={e => {
+                              e.stopPropagation()
+                              void handleStage(entry)
+                            }}
+                            title={t.rightSidebar.stageChanges}
+                            type="button"
+                          >
+                            <Codicon name="add" size="0.75rem" />
+                          </button>
+                          <button
+                            aria-label={t.rightSidebar.discardChanges}
+                            className="flex shrink-0 items-center justify-center px-0.5 text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/change:opacity-100 hover:text-rose-500"
+                            onClick={e => {
+                              e.stopPropagation()
+                              void handleDiscard(entry)
+                            }}
+                            title={t.rightSidebar.discardChanges}
+                            type="button"
+                          >
+                            <Codicon name="remove" size="0.75rem" />
+                          </button>
+                        </>
+                      )}
+                      <button
+                        className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-[0.6875rem]"
+                        onClick={() => onOpenChange(entry, status.root || cwd)}
+                        title={entry.originalPath ? `${entry.originalPath} → ${entry.path}` : entry.path}
+                        type="button"
                       >
-                        {code}
-                      </span>
-                    </button>
+                        <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="file" size="0.75rem" />
+                        <span className="min-w-0 flex-1 truncate text-(--ui-text-secondary)">
+                          {name}
+                          {parent && <span className="ml-1 text-(--ui-text-quaternary)">{parent}</span>}
+                        </span>
+                        <span
+                          className={cn(
+                            'mr-1 w-4 shrink-0 text-center font-mono font-bold',
+                            isStaged && 'text-emerald-500',
+                            group.id === 'changes' && 'text-amber-500',
+                            group.id === 'untracked' && 'text-emerald-500',
+                            group.id === 'conflicts' && 'text-rose-500'
+                          )}
+                        >
+                          {code}
+                        </span>
+                      </button>
+                    </div>
+                  )
+                })}
+              </section>
+            ))}
+            {commits.length > 0 && (
+              <section>
+                <div className="sticky top-0 z-10 flex h-6 items-center bg-(--ui-sidebar-surface-background) px-2.5 text-[0.625rem] font-semibold uppercase tracking-[0.06em] text-(--ui-text-tertiary)">
+                  <span>{t.rightSidebar.commitHistory}</span>
+                </div>
+                {commits.map(commit => (
+                  <div
+                    className="flex min-w-0 items-start gap-2 px-2.5 py-1 text-[0.6875rem] text-(--ui-text-tertiary)"
+                    key={commit.oid}
+                    title={commit.message}
+                  >
+                    <Codicon className="mt-0.5 shrink-0 text-(--ui-text-quaternary)" name="git-commit" size="0.6875rem" />
+                    <span className="min-w-0 flex-1 truncate">{commit.message}</span>
+                    <span className="shrink-0 font-mono text-[0.625rem] text-(--ui-text-quaternary)">{commit.shortOid}</span>
                   </div>
-                )
-              })}
-            </section>
-          ))
+                ))}
+              </section>
+            )}
+          </>
         )}
       </div>
     </div>

@@ -295,14 +295,16 @@ class _Runtime:
         raw_response: dict[str, Any] = {"set": False, "value": None}
         # NeMo Relay's native managed execution may wrap callback failures; keep
         # the real downstream error so Hermes retry classification still sees it.
+        callback_error: Exception | None = None
         downstream_error: BaseException | None = None
 
         def _impl(next_request: Any) -> Any:
-            nonlocal downstream_error
+            nonlocal callback_error, downstream_error
             next_body = getattr(next_request, "content", next_request)
             try:
                 raw = next_call(next_body if isinstance(next_body, dict) else request_body)
             except Exception as exc:
+                callback_error = exc
                 downstream_error = _original_downstream_error(exc)
                 raise
             raw_response["set"] = True
@@ -333,7 +335,7 @@ class _Runtime:
         try:
             managed_result = _resolve_awaitable(_managed_execute())
         except Exception as exc:
-            if downstream_error is not None and _is_relay_internal_error(exc):
+            if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
                 raise downstream_error
             raise
         return raw_response["value"] if raw_response["set"] else managed_result
@@ -349,14 +351,16 @@ class _Runtime:
         raw_response: dict[str, Any] = {"set": False, "value": None}
         # NeMo Relay's native managed execution may wrap callback failures; keep
         # the real downstream error so Hermes retry classification still sees it.
+        callback_error: Exception | None = None
         downstream_error: BaseException | None = None
 
         def _impl(next_args: Any) -> Any:
-            nonlocal downstream_error
+            nonlocal callback_error, downstream_error
             effective_args = next_args if isinstance(next_args, dict) else args
             try:
                 raw = next_call(effective_args)
             except Exception as exc:
+                callback_error = exc
                 downstream_error = _original_downstream_error(exc)
                 raise
             raw_response["set"] = True
@@ -386,7 +390,7 @@ class _Runtime:
         try:
             managed_result = _resolve_awaitable(_managed_execute())
         except Exception as exc:
-            if downstream_error is not None and _is_relay_internal_error(exc):
+            if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
                 raise downstream_error
             raise
         return raw_response["value"] if raw_response["set"] else managed_result
@@ -841,8 +845,11 @@ def _original_downstream_error(exc: Exception) -> BaseException:
     return exc
 
 
-def _is_relay_internal_error(exc: Exception) -> bool:
-    return isinstance(exc, RuntimeError) and str(exc).lower().startswith("internal error:")
+def _is_relay_wrapped_callback_error(exc: Exception, callback_error: Exception | None) -> bool:
+    if callback_error is None or not isinstance(exc, RuntimeError):
+        return False
+    expected = f"internal error: {callback_error.__class__.__name__}: {callback_error}"
+    return str(exc) == expected
 
 
 def _llm_response_payload(response: Any) -> Any:

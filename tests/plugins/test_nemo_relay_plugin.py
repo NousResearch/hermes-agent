@@ -870,6 +870,37 @@ def test_nemo_relay_adaptive_llm_execution_keeps_unrelated_internal_error(tmp_pa
     assert caught.value is relay_error
 
 
+def test_nemo_relay_adaptive_llm_execution_keeps_wrapped_relay_error_after_downstream_failure(
+    tmp_path, monkeypatch
+):
+    fake = _FakeNemoRelay()
+    relay_error = RuntimeError("internal error: RuntimeError: relay policy blocked after downstream")
+
+    def translated_execute(name, request, func, **kwargs):
+        try:
+            return func(_FakeLLMRequest(request.headers, {"intercepted": True, **request.content}))
+        except Exception:
+            raise relay_error
+
+    fake.llm.execute = translated_execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_adaptive_plugin(tmp_path, monkeypatch)
+
+    def next_call(request):
+        raise _wrapped_downstream_error(RuntimeError("provider failed"))
+
+    with pytest.raises(RuntimeError) as caught:
+        plugin.on_llm_execution_middleware(
+            session_id="s1",
+            provider="anthropic",
+            model="demo-model",
+            request={"messages": [{"role": "user", "content": "hi"}]},
+            next_call=next_call,
+        )
+
+    assert caught.value is relay_error
+
+
 def test_nemo_relay_adaptive_llm_execution_keeps_relay_translated_error(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
 
@@ -1094,6 +1125,36 @@ def test_nemo_relay_adaptive_tool_execution_keeps_unrelated_internal_error(tmp_p
             tool_name="terminal",
             args={"command": "pwd"},
             next_call=lambda args: {"raw": args},
+        )
+
+    assert caught.value is relay_error
+
+
+def test_nemo_relay_adaptive_tool_execution_keeps_wrapped_relay_error_after_downstream_failure(
+    tmp_path, monkeypatch
+):
+    fake = _FakeNemoRelay()
+    relay_error = RuntimeError("internal error: RuntimeError: relay policy blocked after downstream")
+
+    def translated_execute(name, args, func, **kwargs):
+        try:
+            return func({"intercepted": True, **args})
+        except Exception:
+            raise relay_error
+
+    fake.tools.execute = translated_execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_adaptive_plugin(tmp_path, monkeypatch)
+
+    def next_call(args):
+        raise _wrapped_downstream_error(RuntimeError("tool failed"))
+
+    with pytest.raises(RuntimeError) as caught:
+        plugin.on_tool_execution_middleware(
+            session_id="s1",
+            tool_name="terminal",
+            args={"command": "pwd"},
+            next_call=next_call,
         )
 
     assert caught.value is relay_error

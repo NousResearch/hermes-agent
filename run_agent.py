@@ -358,6 +358,7 @@ class AIAgent:
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
+        tool_progress_mode: str = "all",
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
@@ -430,6 +431,7 @@ class AIAgent:
             save_trajectories=save_trajectories,
             verbose_logging=verbose_logging,
             quiet_mode=quiet_mode,
+            tool_progress_mode=tool_progress_mode,
             ephemeral_system_prompt=ephemeral_system_prompt,
             log_prefix_chars=log_prefix_chars,
             log_prefix=log_prefix,
@@ -3087,6 +3089,17 @@ class AIAgent:
         except Exception:
             pass
 
+        # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
+        # soft-eviction clear — close() is the hard teardown for true session
+        # boundaries (/new, /reset, session expiry), so the message list won't
+        # be reused.  Drops the reference proactively rather than waiting for
+        # the agent object itself to be collected, which matters when a caller
+        # still holds the closed agent (e.g. a draining background task).
+        try:
+            self._session_messages = []
+        except Exception:
+            pass
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.
@@ -3904,6 +3917,13 @@ class AIAgent:
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
+        # Defensive: strip Responses-only kwargs that can leak in under an
+        # api_mode-flip race (the Anthropic SDK raises a non-retryable
+        # TypeError on them). See #31673.
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+        sanitize_anthropic_kwargs(
+            api_kwargs, log_prefix=getattr(self, "log_prefix", "")
+        )
         return self._anthropic_client.messages.create(**api_kwargs)
 
     def _rebuild_anthropic_client(self) -> None:

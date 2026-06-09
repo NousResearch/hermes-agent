@@ -130,7 +130,7 @@ _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
-_sessions_lock = threading.Lock()
+_sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
@@ -202,10 +202,26 @@ atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
 
+
+class _DropTransport:
+    """Detached WS sink: keep sessions resumable without writing stale frames."""
+
+    def write(self, obj: dict) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
+
+
 # Module-level stdio transport — fallback sink when no transport is bound via
 # contextvar or session. Stream resolved through a lambda so runtime monkey-
 # patches of `_real_stdout` (used extensively in tests) still land correctly.
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
+
+# Detached websocket sessions use a drop sink instead of stdio. Desktop embeds
+# the gateway in-process and captures stdout into logs, so stale JSON-RPC frames
+# must not fall through there while the session waits for resume or reap.
+_detached_ws_transport = _DropTransport()
 
 
 class _SlashWorker:
@@ -227,6 +243,7 @@ class _SlashWorker:
         if model:
             argv += ["--model", model]
 
+        self._closed = False
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -281,15 +298,33 @@ class _SlashWorker:
             )
 
     def close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        proc = self.proc
         try:
-            if self.proc.poll() is None:
-                self.proc.terminate()
-                self.proc.wait(timeout=1)
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except Exception:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=1)  # reap the zombie SIGKILL leaves behind
+                    except Exception:
+                        pass
         except Exception:
             try:
-                self.proc.kill()
+                proc.kill()
+                proc.wait(timeout=1)
             except Exception:
                 pass
+        finally:
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
 
 def _load_busy_input_mode() -> str:
@@ -310,11 +345,44 @@ def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
         pass
 
 
+def _claim_active_session_slot(
+    session_key: str,
+    *,
+    live_session_id: str,
+    surface: str = "tui",
+) -> tuple[Any, str | None]:
+    try:
+        from hermes_cli.active_sessions import try_acquire_active_session
+
+        return try_acquire_active_session(
+            session_id=session_key,
+            surface=surface,
+            config=_load_cfg(),
+            metadata={"live_session_id": live_session_id},
+        )
+    except Exception as exc:
+        logger.warning("Failed to claim active session slot: %s", exc)
+        return None, None
+
+
+def _release_active_session_slot(session: dict | None) -> None:
+    if not session:
+        return
+    lease = session.pop("active_session_lease", None)
+    if lease is None:
+        return
+    try:
+        lease.release()
+    except Exception:
+        logger.debug("Failed to release active session slot", exc_info=True)
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit for a session."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
@@ -348,30 +416,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         except Exception:
             pass
 
-
-def _teardown_session(session: dict | None) -> None:
-    """Fully tear down a session: finalize, unregister, close agent + worker.
-
-    Shared by ``session.close`` and the orphaned-WS-session reaper so the
-    slash-worker subprocess is always closed exactly once via the same path.
-    Idempotent: the ``_finalized`` guard in ``_finalize_session`` and the
-    ``poll()`` guard in ``_SlashWorker.close`` make repeat calls harmless.
-    """
-    if not session:
-        return
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
-
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
+    # Close the slash-worker subprocess as part of finalize itself, not just
+    # in the callers. Defense-in-depth: every session-end path goes through
+    # _finalize_session (it's the single ``_finalized``-guarded chokepoint), so
+    # folding worker cleanup in here means a future code path that calls
+    # _finalize_session directly — without the surrounding _teardown_session /
+    # _shutdown_sessions worker.close() — can't reintroduce the #38095 leak.
+    # Idempotent: _SlashWorker.close() is poll()-guarded, so the explicit
+    # close() still in those callers is harmless.
     try:
         worker = session.get("slash_worker")
         if worker:
@@ -380,19 +432,76 @@ def _teardown_session(session: dict | None) -> None:
         pass
 
 
+def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
+    """Fully tear down a session: finalize, unregister, close agent + worker.
+
+    Shared by ``session.close`` and the orphaned-WS-session reaper. The
+    slash-worker subprocess is closed inside ``_finalize_session`` (the single
+    finalize chokepoint); this still unregisters the approval notifier and
+    closes the in-process agent. Idempotent: the ``_finalized`` guard in
+    ``_finalize_session`` and the ``poll()`` guard in ``_SlashWorker.close``
+    make repeat calls harmless.
+    """
+    if not session:
+        return
+    _finalize_session(session, end_reason=end_reason)
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        if key := session.get("session_key"):
+            unregister_gateway_notify(key)
+    except Exception:
+        pass
+    try:
+        agent = session.get("agent")
+        if agent is not None and hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+    # NOTE: the slash-worker is closed inside _finalize_session (the single
+    # _finalized-guarded chokepoint that main folded it into), exactly once.
+    # We deliberately do NOT re-close it here — _teardown_session's job beyond
+    # finalize is unregistering the notifier and closing the in-process agent.
+
+
+def _attach_worker(sid: str, session: dict, worker) -> None:
+    """Store worker on session iff sid still maps to it, else close it — a
+    concurrent teardown already popped the session and would orphan the
+    worker. Closes the create/close race at every slash-worker spawn site."""
+    with _sessions_lock:
+        if _sessions.get(sid) is session:
+            session["slash_worker"] = worker
+            return
+    worker.close()
+
+
+def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+    """Single idempotent teardown for one session: pop it under the sessions
+    lock, then finalize, unregister notify, close agent + slash worker via the
+    shared ``_teardown_session`` path. Returns True iff it closed a live
+    session. The ``_finalized`` / worker ``_closed`` guards make concurrent or
+    repeat calls (e.g. session.close racing the WS-orphan reaper) harmless."""
+    with _sessions_lock:
+        session = _sessions.pop(sid, None)
+    if session is None:
+        return False
+    _teardown_session(session, end_reason=end_reason)
+    return True
+
+
+
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
-    After ``handle_ws`` detaches a disconnected client it points the session
-    at ``_stdio_transport``. In the dashboard's in-process gateway there is no
-    real stdio peer reading those frames, so a session left on the stdio
-    transport (and not mid-turn) is genuinely orphaned and safe to reap.
+    After ``handle_ws`` detaches a disconnected client it points the session at
+    ``_detached_ws_transport``. A session left on that transport (and not
+    mid-turn) is genuinely orphaned and safe to reap.
     """
     if not session or session.get("_finalized"):
         return False
     if session.get("running"):
         return False
-    return session.get("transport") is _stdio_transport
+    return session.get("transport") is _detached_ws_transport
 
 
 def _schedule_ws_orphan_reap(sid: str) -> None:
@@ -406,35 +515,125 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         return
 
     def _reap() -> None:
+        # Serialize the orphan re-check against session.resume (which re-binds a
+        # live transport under _session_resume_lock and would make this session
+        # non-orphaned). The actual pop + teardown then goes through the shared
+        # _close_session_by_id funnel so the dict mutation happens under
+        # _sessions_lock — consistent with every other _sessions mutator
+        # (#39591: _reap previously popped under _session_resume_lock, giving no
+        # mutual exclusion against _init_session / _close_session_by_id, which
+        # guard with _sessions_lock). _sessions_lock is an RLock and the global
+        # ordering is always resume_lock -> sessions_lock, so nesting is safe.
         with _session_resume_lock:
-            session = _sessions.get(sid)
-            if not _ws_session_is_orphaned(session):
+            if not _ws_session_is_orphaned(_sessions.get(sid)):
                 return
-            _sessions.pop(sid, None)
-        try:
-            _teardown_session(session)
-        except Exception:
-            pass
+            _close_session_by_id(sid, end_reason="ws_orphan_reap")
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
     timer.daemon = True
     timer.start()
 
 
+def _close_sessions_for_transport(
+    transport, *, end_reason: str = "ws_disconnect"
+) -> tuple[int, int]:
+    """On transport disconnect, reap the sessions that opted into
+    close_on_disconnect (sidecar/dashboard) immediately via the unified
+    ``_close_session_by_id`` path, and re-point the rest back to stdio so later
+    emits don't hit a dead socket.
+
+    Non-flagged detached sessions are handed to the grace-windowed WS-orphan
+    reaper (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume
+    that re-binds a live transport cancels the reap, otherwise the orphan is
+    torn down through the same idempotent ``_teardown_session`` path. This is
+    the single WS-disconnect teardown entry point — there is no second
+    independent reap loop in ``handle_ws``.
+
+    Returns ``(reaped, detached)`` counts for disconnect-path observability."""
+    with _sessions_lock:
+        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+    reaped = 0
+    detached = 0
+    for sid, session in owned:
+        if session.get("close_on_disconnect"):
+            _close_session_by_id(sid, end_reason=end_reason)
+            reaped += 1
+        else:
+            # Point detached sessions at the drop sentinel (NOT real stdio) so
+            # _ws_session_is_orphaned recognizes them and the grace-reap can
+            # actually fire; a standalone `hermes --tui` keeps real _stdio.
+            session["transport"] = _detached_ws_transport
+            detached += 1
+            try:
+                _schedule_ws_orphan_reap(sid)
+            except Exception:
+                pass
+    return reaped, detached
+
+
 def _shutdown_sessions() -> None:
     with _sessions_lock:
-        snapshot = list(_sessions.values())
-    for session in snapshot:
-        _finalize_session(session, end_reason="tui_shutdown")
-        try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
+        sids = list(_sessions)
+    for sid in sids:
+        _close_session_by_id(sid, end_reason="tui_shutdown")
+
+
+# Last-resort net for any disconnect path that slips past the WS finally. TTL is
+# hours-scale because last_active freezes during a long turn and on passive
+# viewing — running/pending/starting/live-transport are hard exemptions instead.
+try:
+    _SESSION_TTL_S = float(os.environ.get("HERMES_TUI_SESSION_TTL_S") or 6 * 3600)
+except (TypeError, ValueError):
+    _SESSION_TTL_S = float(6 * 3600)
+_SESSION_TTL_S = max(0.0, _SESSION_TTL_S)
+_REAPER_SCAN_S = 300.0
+
+
+def _transport_is_dead(transport) -> bool:
+    # _detached_ws_transport is the post-WS-disconnect drop sentinel; a session
+    # parked on it has no live client. _stdio_transport is the REAL transport
+    # for a standalone `hermes --tui`, so it must NOT count as dead here (doing
+    # so let the idle reaper evict healthy standalone TUI sessions).
+    if transport is _detached_ws_transport:
+        return True
+    return getattr(transport, "_closed", None) is True
+
+
+def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
+    if session.get("running") or _session_pending_kind(sid):
+        return False
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set():  # still starting
+        return False
+    if not _transport_is_dead(session.get("transport")):
+        return False
+    last_active = float(session.get("last_active") or 0.0)
+    created_at = float(session.get("created_at") or 0.0)
+    return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S
+
+
+def _reap_idle_sessions() -> None:
+    now = time.time()
+    with _sessions_lock:
+        victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
+    for sid in victims:
+        _close_session_by_id(sid, end_reason="idle_timeout")
+
+
+def _start_idle_reaper() -> None:
+    def _loop():
+        while True:
+            time.sleep(_REAPER_SCAN_S)
+            try:
+                _reap_idle_sessions()
+            except Exception:
+                pass
+
+    threading.Thread(target=_loop, daemon=True).start()
 
 
 atexit.register(_shutdown_sessions)
+_start_idle_reaper()
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -705,7 +904,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
-                current["slash_worker"] = worker
+                _attach_worker(sid, current, worker)
             except Exception:
                 pass
 
@@ -750,21 +949,18 @@ def _start_agent_build(sid: str, session: dict) -> None:
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
+            # _attach_worker already closed the worker if this session was
+            # reaped mid-build; only the late notify registration can still
+            # leak (session.close unregistered before _build registered it).
             with _sessions_lock:
                 replaced = _sessions.get(sid) is not current
-            if replaced:
-                if worker is not None:
-                    try:
-                        worker.close()
-                    except Exception:
-                        pass
-                if notify_registered:
-                    try:
-                        from tools.approval import unregister_gateway_notify
+            if replaced and notify_registered:
+                try:
+                    from tools.approval import unregister_gateway_notify
 
-                        unregister_gateway_notify(key)
-                    except Exception:
-                        pass
+                    unregister_gateway_notify(key)
+                except Exception:
+                    pass
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
@@ -845,6 +1041,7 @@ def _git_branch_for_cwd(cwd: str) -> str:
             text=True,
             timeout=1.5,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             branch = result.stdout.strip()
@@ -856,6 +1053,7 @@ def _git_branch_for_cwd(cwd: str) -> str:
             text=True,
             timeout=1.5,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         return head.stdout.strip() if head.returncode == 0 else ""
     except Exception:
@@ -1419,7 +1617,7 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
-def _restart_slash_worker(session: dict):
+def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
     if worker:
         try:
@@ -1427,12 +1625,18 @@ def _restart_slash_worker(session: dict):
         except Exception:
             pass
     try:
-        session["slash_worker"] = _SlashWorker(
+        new_worker = _SlashWorker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
         )
     except Exception:
         session["slash_worker"] = None
+        return
+    # Route through the same store-iff-still-mapped guard as the spawn sites:
+    # the post-turn restart runs as `running` flips false, exactly when a
+    # close_on_disconnect reap can pop this session — a bare store would orphan
+    # the fresh worker (it self-heals only on gateway exit via the watchdog).
+    _attach_worker(sid, session, new_worker)
 
 
 def _persist_model_switch(result) -> None:
@@ -1518,7 +1722,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             base_url=result.base_url,
             api_mode=result.api_mode,
         )
-        _restart_slash_worker(session)
+        _restart_slash_worker(sid, session)
         _emit("session.info", sid, _session_info(agent, session))
 
     # Record the switch as a PER-SESSION override so a later rebuild of THIS
@@ -1671,7 +1875,7 @@ def _sync_session_key_after_compress(
         session["pending_title"] = None
     if restart_slash_worker:
         try:
-            _restart_slash_worker(session)
+            _restart_slash_worker(sid, session)
         except Exception:
             pass
 
@@ -1788,7 +1992,8 @@ def _current_profile_name() -> str:
 # backend reporting less than its required value (or none at all — a pre-GUI
 # checkout), surfacing a one-click "update to align" prompt instead of failing
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
-DESKTOP_BACKEND_CONTRACT = 1
+# v2: adds the file.attach RPC (remote-gateway non-image file upload).
+DESKTOP_BACKEND_CONTRACT = 2
 
 
 def _session_info(agent, session: dict | None = None) -> dict:
@@ -2383,6 +2588,29 @@ def _parse_tui_skills_env() -> list[str]:
     return skills
 
 
+def _load_fallback_model():
+    """Return the configured fallback chain for TUI-created agents.
+
+    Delegates to the shared ``get_fallback_chain`` helper so the TUI path
+    stays in parity with ``HermesCLI.__init__`` and ``gateway/run.py``:
+    ``fallback_providers`` is the primary source of truth and keeps its
+    order, with legacy ``fallback_model`` entries merged in afterwards
+    (deduped on provider/model/base_url).
+    """
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    return get_fallback_chain(_load_cfg())
+
+
+def _agent_fallback_model(agent):
+    """Return an agent's fallback chain without rehydrating deliberately empty chains."""
+    if hasattr(agent, "_fallback_chain"):
+        return getattr(agent, "_fallback_chain") or []
+    if hasattr(agent, "_fallback_model"):
+        return getattr(agent, "_fallback_model", None)
+    return _load_fallback_model()
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -2417,7 +2645,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
-        "fallback_model": getattr(agent, "_fallback_model", None),
+        "fallback_model": _agent_fallback_model(agent),
     }
 
 
@@ -2576,7 +2804,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(new_agent, session)
     _emit("session.info", sid, info)
-    _restart_slash_worker(session)
+    _restart_slash_worker(sid, session)
     return info
 
 
@@ -2676,6 +2904,7 @@ def _make_agent(
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
 
@@ -2724,8 +2953,10 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
     _register_session_cwd(_sessions[sid])
     try:
-        _sessions[sid]["slash_worker"] = _SlashWorker(
-            key, getattr(agent, "model", _resolve_model())
+        _attach_worker(
+            sid,
+            _sessions[sid],
+            _SlashWorker(key, getattr(agent, "model", _resolve_model())),
         )
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
@@ -3113,6 +3344,9 @@ def _(rid, params: dict) -> dict:
 
     ready = threading.Event()
     now = time.time()
+    lease, limit_message = _claim_active_session_slot(key, live_session_id=sid)
+    if limit_message is not None:
+        return _err(rid, 4090, limit_message)
 
     with _sessions_lock:
         _sessions[sid] = {
@@ -3120,6 +3354,8 @@ def _(rid, params: dict) -> dict:
             "agent_error": None,
             "agent_ready": ready,
             "attached_images": [],
+            "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
+            "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
             "edit_snapshots": {},
@@ -3325,6 +3561,9 @@ def _(rid, params: dict) -> dict:
     # _session_resume_lock across it would stall session.close on the main
     # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
     sid = uuid.uuid4().hex[:8]
+    lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
+    if limit_message is not None:
+        return _err(rid, 4090, limit_message)
     _enable_gateway_prompts()
     home_token = (
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
@@ -3348,6 +3587,8 @@ def _(rid, params: dict) -> dict:
         finally:
             _clear_session_context(tokens)
     except Exception as e:
+        if lease is not None:
+            lease.release()
         return _err(rid, 5000, f"resume failed: {e}")
     finally:
         if home_token is not None:
@@ -3364,6 +3605,8 @@ def _(rid, params: dict) -> dict:
                     agent.close()
             except Exception:
                 pass
+            if lease is not None:
+                lease.release()
             other_sid, other_session = live
             payload = _live_session_payload(
                 other_sid,
@@ -3383,7 +3626,10 @@ def _(rid, params: dict) -> dict:
                 # skills — must resolve to the resumed profile too).
                 if profile_home is not None:
                     _sessions[sid]["profile_home"] = str(profile_home)
+                _sessions[sid]["active_session_lease"] = lease
         except Exception as e:
+            if lease is not None:
+                lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
     return _ok(
@@ -3563,10 +3809,26 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5036, f"could not enumerate active sessions: {e}")
 
+    # Liveness filter (#38950): a session whose teardown has begun (``_finalized``)
+    # is dead — its agent/worker are being released and it is no longer
+    # attachable — but it can briefly remain in ``_sessions`` until the reaper
+    # pops it (the WS grace-reap and idle reaper both set ``_finalized`` inside
+    # ``_teardown_session`` before the pop). Counting these inflated the footer's
+    # "N sessions" count, which only ever went up until a gateway restart. Drop
+    # them here so the count reflects genuinely attachable sessions. We do NOT
+    # filter on ``transport is _detached_ws_transport`` (the WS-detached drop
+    # sentinel): a detached session is still attachable via a quick reconnect /
+    # session.resume until the grace-reap finalizes it, and a standalone
+    # ``hermes --tui`` session legitimately rides the real stdio transport and
+    # must stay visible.
     # Keep the natural creation/insertion order from ``_sessions``.  The
     # frontend marks the focused session with ``current``; it should not jump to
     # the top just because the user switched to it.
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    rows = [
+        _session_live_item(sid, session, current)
+        for sid, session in snapshot
+        if not session.get("_finalized")
+    ]
     return _ok(rid, {"sessions": rows})
 
 
@@ -3981,17 +4243,13 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    with _sessions_lock:
-        current = _sessions.get(sid)
-    if not current:
-        return _ok(rid, {"closed": False})
+    # Serialize against the WS-orphan reaper (which also pops under
+    # _session_resume_lock) so a disconnect-reap and an explicit close can't
+    # both tear the same session down. _close_session_by_id is the single
+    # idempotent teardown path (pop + _teardown_session) and returns False
+    # when the session is already gone.
     with _session_resume_lock:
-        with _sessions_lock:
-            session = _sessions.pop(sid, None)
-        if not session:
-            return _ok(rid, {"closed": False})
-        _teardown_session(session)
-    return _ok(rid, {"closed": True})
+        return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
 
 
 @method("session.branch")
@@ -4008,6 +4266,10 @@ def _(rid, params: dict) -> dict:
     if not history:
         return _err(rid, 4008, "nothing to branch — send a message first")
     new_key = _new_session_key()
+    new_sid = uuid.uuid4().hex[:8]
+    lease, limit_message = _claim_active_session_slot(new_key, live_session_id=new_sid)
+    if limit_message is not None:
+        return _err(rid, 4090, limit_message)
     branch_name = params.get("name", "")
     try:
         if branch_name:
@@ -4040,8 +4302,9 @@ def _(rid, params: dict) -> dict:
             )
         db.set_session_title(new_key, title)
     except Exception as e:
+        if lease is not None:
+            lease.release()
         return _err(rid, 5008, f"branch failed: {e}")
-    new_sid = uuid.uuid4().hex[:8]
     try:
         tokens = _set_session_context(new_key)
         try:
@@ -4051,7 +4314,11 @@ def _(rid, params: dict) -> dict:
         _init_session(
             new_sid, new_key, agent, list(history), cols=session.get("cols", 80)
         )
+        if new_sid in _sessions:
+            _sessions[new_sid]["active_session_lease"] = lease
     except Exception as e:
+        if lease is not None:
+            lease.release()
         return _err(rid, 5000, f"agent init failed on branch: {e}")
     return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
 
@@ -5331,7 +5598,7 @@ def _(rid, params: dict) -> dict:
             str(pdf_path), str(out_prefix),
         ]
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -5363,6 +5630,197 @@ def _(rid, params: dict) -> dict:
                 "text": f"[User attached PDF: {display_name} ({len(attached_pages)} page(s))]",
             },
         )
+
+
+_ATTACHMENT_REF_NEEDS_QUOTING_RE = None
+
+
+def _format_ref_value(value: str) -> str:
+    """Quote a context-ref value when it contains whitespace or bracket chars.
+
+    Mirrors the desktop ``formatRefValue`` so the staged ``@file:`` ref round-trips
+    through ``agent.context_references`` cleanly.
+    """
+    import re as _re
+
+    global _ATTACHMENT_REF_NEEDS_QUOTING_RE
+    if _ATTACHMENT_REF_NEEDS_QUOTING_RE is None:
+        _ATTACHMENT_REF_NEEDS_QUOTING_RE = _re.compile(r"""[\s()\[\]{}<>"'`]""")
+    if not value or not _ATTACHMENT_REF_NEEDS_QUOTING_RE.search(value):
+        return value
+    if "`" not in value:
+        return f"`{value}`"
+    if '"' not in value:
+        return f'"{value}"'
+    if "'" not in value:
+        return f"'{value}'"
+    return value
+
+
+def _attachment_ref_path(session: dict, target: Path) -> str:
+    """Workspace-relative path for an attachment, or the absolute path if outside."""
+    workspace = Path(_session_cwd(session)).resolve()
+    try:
+        rel = target.resolve().relative_to(workspace)
+        return str(rel).replace(os.sep, "/")
+    except ValueError:
+        return str(target.resolve())
+
+
+def _desktop_attachment_dir(session: dict) -> Path:
+    root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _sanitize_attachment_name(name: str) -> str:
+    import re as _re
+
+    candidate = Path(str(name or "").strip()).name
+    candidate = _re.sub(r"[\x00-\x1f]+", "_", candidate)
+    candidate = candidate.strip().strip(".")
+    return candidate or "attachment"
+
+
+def _unique_attachment_path(root: Path, filename: str) -> Path:
+    candidate = root / filename
+    if not candidate.exists():
+        return candidate
+    stem = Path(filename).stem or "attachment"
+    suffix = Path(filename).suffix
+    counter = 2
+    while True:
+        next_candidate = root / f"{stem}-{counter}{suffix}"
+        if not next_candidate.exists():
+            return next_candidate
+        counter += 1
+
+
+def _resolve_gateway_attachment_path(raw: str) -> Path | None:
+    """Resolve a raw path token to a gateway-visible file, or None."""
+    if not raw:
+        return None
+    try:
+        from cli import _detect_file_drop, _resolve_attachment_path, _split_path_input
+    except Exception:
+        return None
+
+    dropped = _detect_file_drop(raw)
+    if dropped:
+        return Path(dropped["path"]).resolve()
+    path_token, _remainder = _split_path_input(raw)
+    resolved = _resolve_attachment_path(path_token)
+    return Path(resolved).resolve() if resolved is not None else None
+
+
+def _decode_attachment_data_url(data_url: str) -> bytes:
+    """Decode a ``data:<any-mime>;base64,<b64>`` payload to bytes.
+
+    Unlike ``_decode_attach_base64`` (image-mime-specific), this accepts any
+    media type — text/csv, application/pdf, etc. — so non-image file uploads
+    round-trip. Also tolerates a bare base64 string with no data-URL prefix.
+    """
+    import base64 as _base64
+    import binascii as _binascii
+    import re as _re
+
+    cleaned = (data_url or "").strip()
+    m = _re.match(r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", cleaned, _re.DOTALL | _re.I)
+    if m:
+        cleaned = m.group(1)
+    cleaned = _re.sub(r"\s+", "", cleaned)
+    try:
+        return _base64.b64decode(cleaned, validate=True)
+    except (ValueError, _binascii.Error) as exc:
+        raise ValueError("invalid data_url payload") from exc
+
+
+def _stage_session_file_attachment(
+    session: dict,
+    *,
+    raw_path: str,
+    data_url: str,
+    name: str,
+) -> tuple[Path, bool]:
+    """Make a desktop file attachment available to the remote gateway agent.
+
+    Three cases:
+      1. The path resolves to a file already INSIDE the session workspace — use
+         it as-is (no copy, ``uploaded=False``).
+      2. The path resolves to a gateway-visible file OUTSIDE the workspace — copy
+         it into ``.hermes/desktop-attachments/`` so the ``@file:`` ref resolves.
+      3. The path doesn't exist on the gateway (the common remote case: it's a
+         path on the CLIENT's disk) — decode the uploaded ``data_url`` bytes and
+         write them into ``.hermes/desktop-attachments/``.
+
+    Returns ``(stored_path, uploaded)``.
+    """
+    workspace = Path(_session_cwd(session)).resolve()
+    resolved = _resolve_gateway_attachment_path(raw_path)
+    if resolved is not None:
+        try:
+            resolved.relative_to(workspace)
+            return resolved, False
+        except ValueError:
+            payload = resolved.read_bytes()
+            filename = resolved.name
+    else:
+        if not data_url:
+            raise ValueError("file not found on gateway and no data_url provided")
+        payload = _decode_attachment_data_url(data_url)
+        filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
+
+    upload_dir = _desktop_attachment_dir(session)
+    target = _unique_attachment_path(upload_dir, _sanitize_attachment_name(filename))
+    target.write_bytes(payload)
+    return target.resolve(), True
+
+
+@method("file.attach")
+def _(rid, params: dict) -> dict:
+    """Stage a non-image file attachment into the session workspace.
+
+    The image/PDF path renders to vision tiles; this one keeps the file as a
+    readable artifact and returns a workspace-relative ``@file:`` ref so the
+    agent's file tools (and ``agent.context_references``) can read it. Solves the
+    remote-gateway case where the desktop passes a path that only exists on the
+    CLIENT's disk: the client uploads ``data_url`` bytes and we materialize the
+    file on the gateway.
+
+    Params:
+      session_id (str, required)
+      path (str): client/host path of the file (used for naming + local-mode
+        gateway-visible resolution).
+      data_url (str): ``data:<mime>;base64,<b64>`` upload of the file bytes,
+        required when the path isn't visible to the gateway.
+      name (str, optional): preferred filename.
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    raw = str(params.get("path", "") or "").strip()
+    data_url = str(params.get("data_url", "") or "").strip()
+    name = str(params.get("name", "") or "").strip()
+    if not raw and not data_url:
+        return _err(rid, 4015, "path or data_url required")
+    try:
+        stored_path, uploaded = _stage_session_file_attachment(
+            session, raw_path=raw, data_url=data_url, name=name
+        )
+        ref_path = _attachment_ref_path(session, stored_path)
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "name": stored_path.name,
+                "path": str(stored_path),
+                "ref_path": ref_path,
+                "ref_text": f"@file:{_format_ref_value(ref_path)}",
+                "uploaded": uploaded,
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5028, str(e))
 
 
 @method("image.detach")
@@ -6605,6 +7063,7 @@ def _(rid, params: dict) -> dict:
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
             env=os.environ.copy(),
+            stdin=subprocess.DEVNULL,
         )
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
@@ -6665,6 +7124,7 @@ def _(rid, params: dict) -> dict:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                stdin=subprocess.DEVNULL,
             )
             output = (
                 (r.stdout or "")
@@ -7055,6 +7515,7 @@ def _list_repo_files(root: str) -> list[str]:
             capture_output=True,
             timeout=2.0,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
@@ -7072,6 +7533,7 @@ def _list_repo_files(root: str) -> list[str]:
                 capture_output=True,
                 timeout=2.0,
                 check=False,
+                stdin=subprocess.DEVNULL,
             )
             if list_result.returncode == 0:
                 for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
@@ -7772,7 +8234,7 @@ def _(rid, params: dict) -> dict:
                 session["session_key"],
                 getattr(session.get("agent"), "model", _resolve_model()),
             )
-            session["slash_worker"] = worker
+            _attach_worker(params.get("session_id", ""), session, worker)
         except Exception as e:
             return _err(rid, 5030, f"slash worker start failed: {e}")
 
@@ -8805,7 +9267,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            stdin=subprocess.DEVNULL,
         )
         return _ok(
             rid,

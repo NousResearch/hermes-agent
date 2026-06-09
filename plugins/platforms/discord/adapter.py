@@ -520,6 +520,7 @@ class VoiceReceiver:
                 ],
                 check=True,
                 timeout=10,
+                stdin=subprocess.DEVNULL,
             )
         finally:
             try:

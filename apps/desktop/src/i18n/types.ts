@@ -219,6 +219,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeProfileNote: (profile: string) => string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -937,9 +938,13 @@ export interface Translations {
     unsupportedMessage: string
     connectionRetry: string
     latestBody: string
+    latestBodyBackend: string
     allSetTitle: string
     availableTitle: string
     availableBody: string
+    availableTitleBackend: string
+    availableBodyBackend: string
+    availableBodyNoChangelog: string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
@@ -950,10 +955,19 @@ export interface Translations {
     copied: string
     done: string
     applyingBody: string
+    applyingBodyBackend: string
     applyingClose: string
     errorTitle: string
     errorBody: string
     notNow: string
+    applyStatus: {
+      preparing: string
+      pulling: string
+      restarting: string
+      notAvailable: string
+      failed: string
+      noReturn: string
+    }
   }
 
   install: {
@@ -1111,6 +1125,9 @@ export interface Translations {
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
       desktopVersion: (version: string) => string
+      backendVersion: (version: string) => string
+      clientLabel: (version: string) => string
+      backendLabel: (version: string) => string
       commit: (sha: string) => string
       branch: (branch: string) => string
       closeCommandCenter: string

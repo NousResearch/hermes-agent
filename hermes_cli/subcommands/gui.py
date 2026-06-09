@@ -60,4 +60,14 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         action="store_true",
         help="Force a full rebuild even if the content stamp matches",
     )
+    gui_parser.add_argument(
+        "--install-launcher",
+        action="store_true",
+        help="Install macOS Desktop and Spotlight launchers, then exit",
+    )
+    gui_parser.add_argument(
+        "--launcher-name",
+        default="Hermes Desktop",
+        help="Launcher name for --install-launcher (default: Hermes Desktop)",
+    )
     gui_parser.set_defaults(func=cmd_gui)

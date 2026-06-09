@@ -32,6 +32,14 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+On macOS, you can also install launchers for Spotlight and the Desktop:
+
+```bash
+hermes desktop --install-launcher --cwd ~/Projects/my-project
+```
+
+This creates `~/Applications/Hermes Desktop.app` for Command-Space search and `~/Desktop/Hermes Desktop.command` for users who prefer a Desktop icon.
+
 ## What's in the app
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
@@ -131,6 +139,8 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 | `--build-only`       | Build the desktop app but do not launch it (used by `hermes update`)                      |
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
 | `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
+| `--install-launcher` | Install macOS Spotlight/Desktop launchers, then exit                                      |
+| `--launcher-name`    | Override the macOS launcher name used with `--install-launcher`                           |
 | `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
 | `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |

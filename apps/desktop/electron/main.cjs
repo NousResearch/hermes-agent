@@ -60,6 +60,7 @@ const {
   resolveReadableFileForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const { installSingleInstanceGuard } = require('./single-instance.cjs')
 
 let nodePty = null
 
@@ -521,6 +522,13 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+installSingleInstanceGuard({
+  app,
+  createWindow,
+  getMainWindow: () => mainWindow,
+  lockDir: path.join(HERMES_HOME, 'desktop-single-instance.lock'),
+  log: message => console.log(message)
+})
 let hermesProcess = null
 let connectionPromise = null
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend

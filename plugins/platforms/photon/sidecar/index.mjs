@@ -48,6 +48,14 @@ const port = parseInt(process.env.PHOTON_SIDECAR_PORT || "8789", 10);
 const bind = process.env.PHOTON_SIDECAR_BIND || "127.0.0.1";
 const sharedToken = process.env.PHOTON_SIDECAR_TOKEN;
 
+// Inbound attachments are read into memory and base64-inlined on the NDJSON
+// event so the Python adapter can cache the real bytes (and the agent can see
+// the image). Cap the size we inline — above it we forward metadata only and
+// the adapter surfaces a text marker, so one large video can't balloon a
+// single NDJSON line. Override via PHOTON_MAX_INLINE_ATTACHMENT_BYTES.
+const MAX_INLINE_ATTACHMENT_BYTES =
+  Number(process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES) || 20 * 1024 * 1024;
+
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
     "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
@@ -118,7 +126,7 @@ async function deliver(line) {
   }
 }
 
-function normalizeContent(content) {
+async function normalizeContent(content) {
   if (!content || typeof content !== "object") {
     return { type: "unknown" };
   }
@@ -126,20 +134,55 @@ function normalizeContent(content) {
     return { type: "text", text: content.text || "" };
   }
   if (content.type === "attachment") {
-    // Bytes are reachable via content.read()/stream(); we surface metadata
-    // here and leave byte download to a follow-up (keeps the event small).
-    return {
+    const meta = {
       type: "attachment",
       id: content.id ?? null,
       name: content.name ?? null,
       mimeType: content.mimeType ?? null,
       size: typeof content.size === "number" ? content.size : null,
     };
+    // Read the bytes eagerly and base64-inline them as `data` so the Python
+    // adapter can cache the real file (the agent then sees the image itself).
+    // The spectrum-ts attachment object may not outlive this stream
+    // iteration, so a lazy/on-demand fetch isn't safe. Over-cap attachments
+    // (when size is known up front) are forwarded as metadata only and the
+    // adapter falls back to a text marker. A read failure must never break
+    // the inbound loop — we just drop `data` and forward metadata.
+    if (meta.size !== null && meta.size > MAX_INLINE_ATTACHMENT_BYTES) {
+      console.error(
+        `photon-sidecar: attachment ${meta.name ?? meta.id} (${meta.size} bytes) ` +
+          `exceeds inline cap ${MAX_INLINE_ATTACHMENT_BYTES}; forwarding metadata only`
+      );
+      return meta;
+    }
+    if (typeof content.read === "function") {
+      try {
+        const buf = await content.read();
+        // Guard the case where size was unknown but the bytes turn out to be
+        // over the cap.
+        if (buf && buf.length > MAX_INLINE_ATTACHMENT_BYTES) {
+          console.error(
+            `photon-sidecar: attachment ${meta.name ?? meta.id} (${buf.length} bytes) ` +
+              `exceeds inline cap after read; forwarding metadata only`
+          );
+          return meta;
+        }
+        meta.data = Buffer.from(buf).toString("base64");
+        meta.encoding = "base64";
+      } catch (e) {
+        console.error(
+          "photon-sidecar: failed to read attachment bytes " +
+            "(forwarding metadata only): " +
+            (e && e.stack ? e.stack : String(e))
+        );
+      }
+    }
+    return meta;
   }
   return { type: content.type || "unknown" };
 }
 
-function normalizeEvent(space, message) {
+async function normalizeEvent(space, message) {
   try {
     const msgSpace = message.space || {};
     const ts = message.timestamp;
@@ -153,7 +196,7 @@ function normalizeEvent(space, message) {
         phone: space.phone ?? msgSpace.phone ?? null,
       },
       sender: { id: message.sender ? message.sender.id : null },
-      content: normalizeContent(message.content),
+      content: await normalizeContent(message.content),
       timestamp:
         ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
     };
@@ -172,7 +215,7 @@ function normalizeEvent(space, message) {
       if (message && message.direction && message.direction !== "inbound") {
         continue;
       }
-      const event = normalizeEvent(space, message);
+      const event = await normalizeEvent(space, message);
       if (!event) continue;
       await deliver(JSON.stringify(event));
     }

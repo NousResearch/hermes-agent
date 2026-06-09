@@ -25,6 +25,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_cli.colors import Colors, color
+
 from . import auth as photon_auth
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
@@ -175,19 +177,18 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     # 4. Register the operator's phone number as a Spectrum user (idempotent).
     phone = args.phone or _prompt(
-        "[4/5] Your iMessage phone number (E.164, e.g. +15551234567): "
+        color(
+            "[4/5] Your iMessage phone number (E.164, e.g. +15551234567): ",
+            Colors.CYAN,
+        )
     )
     if not phone:
         print("      Skipped user registration (no phone given). Re-run with --phone later.")
     else:
+        # Name/email are optional and never prompted for — pass --first-name /
+        # --email if you want them sent to the dashboard.
         first_name = args.first_name
         email = args.email
-        # The dashboard may require a name/email; prompt interactively when
-        # we have a TTY and they weren't supplied, but allow skipping.
-        if first_name is None:
-            first_name = _prompt("      First name (optional, Enter to skip): ") or None
-        if email is None:
-            email = _prompt("      Email (optional, Enter to skip): ") or None
         try:
             _user, created = photon_auth.register_user_if_absent(
                 token, dashboard_id,

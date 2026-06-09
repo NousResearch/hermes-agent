@@ -4491,6 +4491,39 @@ def test_health_guard_spurious_malformed_overruled_by_readonly_arbiter(
     assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
 
 
+def test_health_guard_flickering_arbiter_verdict_is_transient(tmp_path, monkeypatch):
+    """A damage verdict that does not PERSIST across the arbiter's spaced
+    attempts must not quarantine.
+
+    Regression for the third spurious-quarantine shape: the arbiter samples
+    at the hottest possible moment — immediately after every r/w probe
+    failed — and even a read-only open was observed to transiently report
+    SQLITE_CORRUPT there (the quarantined copy itself later checked out
+    ``ok``). Real corruption is permanent: it reports damage on every
+    attempt, seconds apart. One clean read anywhere in the window means
+    transient — raw ``OperationalError``, nothing quarantined.
+    """
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        kb, "_run_integrity_probe",
+        lambda _p: "sqlite refused to open file: database disk image is malformed",
+    )
+    # First arbiter read still hits the contention window; the second is clean.
+    verdicts = iter(["read-only open failed: database disk image is malformed",
+                     None])
+    monkeypatch.setattr(kb, "_readonly_integrity_verdict", lambda _p: next(verdicts))
+
+    with pytest.raises(sqlite3.OperationalError, match="read-only integrity_check passed"):
+        kb._guard_existing_db_is_healthy(db_path)
+    assert resolved not in kb._LAST_HEALTH_OK
+    assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
+
+
 def test_readonly_integrity_verdict(tmp_path):
     """Arbiter semantics: healthy → None (no quarantine), damaged → reason
     string (positive evidence, quarantine proceeds)."""

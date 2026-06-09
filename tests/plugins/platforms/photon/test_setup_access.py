@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli.config import get_env_value, save_env_value
+from plugins.platforms.photon.adapter import _env_enablement
 from plugins.platforms.photon import cli
 
 
@@ -36,3 +37,33 @@ def test_autoconfigure_access_preserves_existing_allowlist(
     assert get_env_value("PHOTON_ALLOWED_USERS") == "+19998887777,+15551112222"
     # The still-unset home channel is filled.
     assert get_env_value("PHOTON_HOME_CHANNEL") == "+15551234567"
+
+
+def test_env_enablement_seeds_home_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "project_123")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "secret_123")
+    monkeypatch.setenv("PHOTON_HOME_CHANNEL", "+15551234567")
+    monkeypatch.setenv("PHOTON_HOME_CHANNEL_NAME", "Primary DM")
+
+    seed = _env_enablement()
+
+    assert seed is not None
+    assert seed["home_channel"] == {
+        "chat_id": "+15551234567",
+        "name": "Primary DM",
+    }
+
+
+def test_env_enablement_home_channel_defaults_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "project_123")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "secret_123")
+    monkeypatch.setenv("PHOTON_HOME_CHANNEL", "+15551234567")
+    monkeypatch.delenv("PHOTON_HOME_CHANNEL_NAME", raising=False)
+
+    seed = _env_enablement()
+
+    assert seed is not None
+    assert seed["home_channel"] == {
+        "chat_id": "+15551234567",
+        "name": "Home",
+    }

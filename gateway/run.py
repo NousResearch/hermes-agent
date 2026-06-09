@@ -692,6 +692,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "video_generate",
 }
 
 # Tools in this set return their deliverable artifact as a JSON payload with a
@@ -700,6 +701,10 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
 # extracts the path from these fields so delivery is deterministic and does not
 # depend on the model restating the path in its final reply.
 _JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
+# video_generate returns {"success": true, "video": "/abs/path.mp4"} when the
+# backend saves the video locally (remote CDN URLs are not matched by
+# _TOOL_MEDIA_RE and still require the model to restate them).
+_JSON_VIDEO_TOOL_PATH_FIELD = "video"
 
 
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
@@ -767,9 +772,9 @@ def _collect_auto_append_media_tags(
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)
-        # JSON-payload tools (image_generate) return a local-file path in a
-        # known field rather than a MEDIA: tag. Extract it so delivery is
-        # deterministic even when the model omits the path from its reply.
+        # JSON-payload tools (image_generate, video_generate) return a local-file
+        # path in a known field rather than a MEDIA: tag. Extract it so delivery
+        # is deterministic even when the model omits the path from its reply.
         if tool_name == "image_generate" and "MEDIA:" not in content:
             try:
                 payload = json.loads(content)
@@ -783,6 +788,18 @@ def _collect_auto_append_media_tags(
                             and path not in history_media_paths):
                         media_tags.append(f"MEDIA:{path}")
                         break
+            continue
+        if tool_name == "video_generate" and "MEDIA:" not in content:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict) and payload.get("success"):
+                path = payload.get(_JSON_VIDEO_TOOL_PATH_FIELD)
+                if (isinstance(path, str)
+                        and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
+                        and path not in history_media_paths):
+                    media_tags.append(f"MEDIA:{path}")
             continue
         if "MEDIA:" not in content:
             continue

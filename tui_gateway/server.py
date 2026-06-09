@@ -4698,6 +4698,28 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
     )
 
 
+def _drain_owned_notifications(process_registry, session: dict) -> list[tuple[dict, str]]:
+    """Drain pending process notifications owned by this TUI session.
+
+    ``process_registry.drain_notifications()`` drains the global completion
+    queue. In Desktop/TUI, multiple live sessions share that queue, so a
+    post-turn drain in session B must not consume a completion event that was
+    started by session A. Foreign events are put back for their owning poller.
+    """
+    owned: list[tuple[dict, str]] = []
+    deferred: list[dict] = []
+    for evt, text in process_registry.drain_notifications():
+        if _notification_event_belongs_elsewhere(session, evt):
+            deferred.append(evt)
+            continue
+        owned.append((evt, text))
+
+    for evt in deferred:
+        process_registry.completion_queue.put(evt)
+
+    return owned
+
+
 def _notification_event_dedup_key(evt: dict) -> tuple:
     """Return the UI-emission identity for a process notification event.
 
@@ -5254,7 +5276,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         try:
             from tools.process_registry import process_registry
 
-            for _evt, synth in process_registry.drain_notifications():
+            for _evt, synth in _drain_owned_notifications(process_registry, session):
                 with session["history_lock"]:
                     if session.get("running"):
                         process_registry.completion_queue.put(_evt)

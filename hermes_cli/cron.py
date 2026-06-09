@@ -152,6 +152,7 @@ def cron_list(show_all: bool = False):
         print(f"    Schedule:  {schedule}")
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
+
         print(f"    Deliver:   {deliver_str}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
@@ -282,6 +283,9 @@ def cron_status():
 def _print_active_jobs_summary(jobs) -> None:
     """Print the '<N> active job(s)' + next-run line shared by every status
     path (built-in ticker AND external provider)."""
+    # Default listings include retained completed jobs; status counts only
+    # jobs that can still run.
+    jobs = [job for job in jobs if job.get("enabled", True)]
     if jobs:
         next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
         print(f"  {len(jobs)} active job(s)")
@@ -310,6 +314,7 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        delete_after=getattr(args, "delete_after", 7),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -373,6 +378,7 @@ def cron_edit(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
+        delete_after=getattr(args, "delete_after", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))

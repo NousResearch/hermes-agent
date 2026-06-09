@@ -32,7 +32,10 @@ A misformatted schedule silently defaults to one-shot or is rejected entirely. T
 | `30m` | 30 minutes from now |
 | `2025-06-01T09:00:00` | June 1, 2025 at 9:00 AM UTC |
 
-If the job fires once and then disappears from the list, it's a one-shot schedule (`30m`, `1d`, or an ISO timestamp) — expected behavior.
+If the job fires once and shows `[completed]`, it's a one-shot schedule (`30m`,
+`1d`, or an ISO timestamp). Completed one-shot jobs remain listed for
+`--delete-after` days (seven by default), then disappear. A job created with
+`--delete-after 0` disappears immediately after running.
 
 ### Check 3: Is the gateway running?
 

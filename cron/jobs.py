@@ -1036,6 +1036,13 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _validate_delete_after(value: Any) -> int:
+    """Return a valid completed-job deletion delay."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("delete_after must be a non-negative integer")
+    return value
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1054,6 +1061,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    delete_after: Optional[int] = 7,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1098,11 +1106,15 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        delete_after: Days to retain a completed finite job. Zero removes it
+                      immediately. Defaults to seven days for new jobs.
 
     Returns:
         The created job dict
     """
     parsed_schedule = parse_schedule(schedule)
+
+    delete_after = _validate_delete_after(delete_after)
 
     # Normalize repeat: treat 0 or negative values as None (infinite)
     if repeat is not None and repeat <= 0:
@@ -1204,6 +1216,7 @@ def create_job(
             "times": repeat,  # None = forever
             "completed": 0
         },
+        "delete_after": delete_after,
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
@@ -1282,10 +1295,14 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
-    """List all jobs, optionally including disabled ones."""
+    """List active/completed jobs, optionally including other disabled jobs."""
     jobs = [_normalize_job_record(j) for j in load_jobs()]
     if not include_disabled:
-        jobs = [j for j in jobs if j.get("enabled", True)]
+        jobs = [
+            j
+            for j in jobs
+            if j.get("enabled", True) or j.get("state") == "completed"
+        ]
     return jobs
 
 
@@ -1298,6 +1315,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     if bad_fields:
         raise ValueError(
             f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
+        )
+
+    if "delete_after" in updates:
+        updates["delete_after"] = _validate_delete_after(
+            updates["delete_after"]
         )
 
     with _jobs_lock():
@@ -1471,13 +1493,37 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
+def _mark_job_completed(job: Dict[str, Any], now: datetime) -> bool:
+    """Mark a job completed and return whether to delete it immediately.
+
+    Jobs without ``delete_after`` keep the previous immediate-delete behavior.
+    """
+    job["state"] = "completed"
+    job["enabled"] = False
+    job["next_run_at"] = None
+    job["run_claim"] = None
+    job["fire_claim"] = None
+
+    try:
+        delete_after = _validate_delete_after(job.get("delete_after", 0))
+    except ValueError:
+        return True
+    if delete_after == 0:
+        return True
+
+    if not job.get("delete_at"):
+        job["delete_at"] = (now + timedelta(days=delete_after)).isoformat()
+    return False
+
+
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
     Mark a job as having been run.
     
-    Updates last_run_at, last_status, increments completed count,
-    computes next_run_at, and auto-deletes if repeat limit reached.
+    Updates last_run_at and last_status, then schedules the next run or
+    completes the job. Finite one-shots pre-claimed by claim_dispatch() are
+    not incremented again here.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
@@ -1486,8 +1532,9 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
-                now = _hermes_now().isoformat()
-                job["last_run_at"] = now
+                now = _hermes_now()
+                now_iso = now.isoformat()
+                job["last_run_at"] = now_iso
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
@@ -1522,14 +1569,19 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         repeat["completed"] = completed
 
                     # Check if we've hit the repeat limit
+                    # Pre-claimed finite one-shots were already counted by
+                    # claim_dispatch().
                     if times is not None and times > 0 and completed >= times:
-                        # Remove the job (limit reached)
-                        jobs.pop(i)
+                        # Complete or delete the job (limit reached)
+                        if _mark_job_completed(job, now):
+                            jobs.pop(i)
                         save_jobs(jobs)
                         return
                 
                 # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                job["next_run_at"] = compute_next_run(
+                    job["schedule"], now_iso
+                )
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
@@ -1537,6 +1589,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Recurring jobs must NEVER be silently disabled: that turns a
                 # missing runtime dep into "job completed" and the user's
                 # schedule quietly goes off. See issue #16265.
+                # Legacy one-shots without a finite repeat use the same
+                # completion path, applying delete_after when present.
                 if job["next_run_at"] is None:
                     kind = job.get("schedule", {}).get("kind")
                     if kind in {"cron", "interval"}:
@@ -1554,9 +1608,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                             job.get("name", job.get("id", "?")),
                             kind,
                         )
-                    else:
+                    elif "delete_after" not in job:
                         job["enabled"] = False
                         job["state"] = "completed"
+                    elif _mark_job_completed(job, now):
+                        jobs.pop(i)
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
@@ -1577,7 +1633,8 @@ def claim_dispatch(job_id: str) -> bool:
     instead of infinitely (issue #38758).
 
     Returns ``True`` if the caller may proceed to run the job, ``False`` if the
-    dispatch limit is already reached (in which case the stale job is removed).
+    dispatch limit is already reached (in which case the stale job is marked
+    completed or deleted immediately).
 
     Only claims jobs with ``schedule.kind == "once"`` and ``repeat.times > 0``.
     Recurring jobs (they use ``advance_next_run``) and infinite-repeat / no-repeat
@@ -1599,15 +1656,18 @@ def claim_dispatch(job_id: str) -> bool:
             completed = repeat.get("completed", 0)
             if completed >= times:
                 # Already dispatched the max number of times (e.g. a prior
-                # tick claimed then died before mark_job_run could remove it).
-                # Clean up so it stops appearing as due on every tick.
-                jobs.pop(i)
+                # tick claimed then died before mark_job_run could complete it).
+                # Complete it so it stops appearing as due on every tick.
+                delete_job = _mark_job_completed(job, _hermes_now())
+                if delete_job:
+                    jobs.pop(i)
                 save_jobs(jobs)
                 logger.info(
-                    "Job '%s': dispatch limit reached (%d/%d) — removing",
+                    "Job '%s': dispatch limit reached (%d/%d) — %s",
                     job.get("name", job.get("id", "?")),
                     completed,
                     times,
+                    "deleting" if delete_job else "keeping completed",
                 )
                 return False
             # Claim this dispatch before the side effect runs.
@@ -1780,10 +1840,43 @@ def get_due_jobs() -> List[Dict[str, Any]]:
         return _get_due_jobs_locked()
 
 
+def _delete_completed_jobs_after_delete_at(
+    raw_jobs: List[Dict[str, Any]], now: datetime
+) -> List[Dict[str, Any]]:
+    """Delete completed jobs after their delete_at time."""
+    valid_jobs = []
+    needs_delete = False
+    for job in raw_jobs:
+        delete_at_str = job.get("delete_at")
+        if job.get("state") != "completed":
+            valid_jobs.append(job)
+            continue
+        if delete_at_str:
+            try:
+                delete_at = _ensure_aware(
+                    datetime.fromisoformat(delete_at_str)
+                )
+                if delete_at <= now:
+                    logger.info(
+                        "Job '%s' reached delete_at, deleting",
+                        job["id"],
+                    )
+                    needs_delete = True
+                    continue
+            except Exception:
+                pass
+        valid_jobs.append(job)
+
+    if needs_delete:
+        save_jobs(valid_jobs)
+    return valid_jobs
+
+
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
+    raw_jobs = _delete_completed_jobs_after_delete_at(raw_jobs, now)
     needs_save = False
 
     # Repair id-less records BEFORE anything keys off ``job["id"]``. A direct
@@ -2037,7 +2130,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # claimed via claim_dispatch() but whose tick died before
                 # mark_job_run could remove it will have completed >= times while
                 # still looking due (last_run_at was never written, so the
-                # recovery helper re-armed it). Remove it instead of re-firing.
+                # recovery helper re-armed it). Complete it instead of
+                # re-firing.
                 if kind == "once":
                     repeat = job.get("repeat")
                     if repeat:
@@ -2065,14 +2159,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 continue
                             logger.info(
                                 "Job '%s': one-shot dispatch limit reached (%d/%d) "
-                                "— removing stale due entry",
+                                "— completing stale due entry",
                                 job.get("name", job.get("id", "?")),
                                 completed,
                                 times,
                             )
                             for rj in raw_jobs:
                                 if rj["id"] == job["id"]:
-                                    raw_jobs.remove(rj)
+                                    if _mark_job_completed(rj, now):
+                                        raw_jobs.remove(rj)
                                     needs_save = True
                                     break
                             continue

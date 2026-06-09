@@ -51,6 +51,8 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
     "times": null,
     "completed": 42
   },
+  "delete_after": 7,
+  "delete_at": null,
   "state": "scheduled",
   "enabled": true,
   "next_run_at": "2025-01-16T09:00:00Z",
@@ -69,12 +71,16 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 |-------|---------|
 | `scheduled` | Active, will fire at next scheduled time |
 | `paused` | Suspended — won't fire until resumed |
-| `completed` | Repeat count exhausted or one-shot that has fired |
+| `completed` | Repeat exhausted or one-shot fired; retained until `delete_at` |
 | `running` | Currently executing (transient state) |
 
 ### Backward Compatibility
 
 Older jobs may have a single `skill` field instead of the `skills` array. The scheduler normalizes this at load time — single `skill` is promoted to `skills: [skill]`.
+
+Older jobs may also be missing `delete_after`. Exhausted finite jobs without
+the field keep the old immediate-delete behavior, while newly created jobs
+default to seven days.
 
 ## Scheduler Runtime
 
@@ -86,18 +92,19 @@ The scheduler runs on a periodic tick (default: every 60 seconds):
 tick()
   1. Acquire scheduler lock (prevents overlapping ticks)
   2. Load all jobs from jobs.json
-  3. Filter to due jobs (next_run <= now AND state == "scheduled")
-  4. For each due job:
+  3. Delete completed jobs after `delete_at`
+  4. Filter to due jobs (next_run <= now AND state == "scheduled")
+  5. For each due job:
      a. Set state to "running"
      b. Create fresh AIAgent session (no conversation history)
      c. Load attached skills in order (injected as user messages)
      d. Run the job prompt through the agent
      e. Deliver the response to the configured target
      f. Update run_count, compute next_run
-     g. If repeat count exhausted → state = "completed"
+     g. If repeat exhausted → retain until delete_at, or delete immediately
      h. Otherwise → state = "scheduled"
-  5. Write updated jobs back to jobs.json
-  6. Release scheduler lock
+  6. Write updated jobs back to jobs.json
+  7. Release scheduler lock
 ```
 
 ### Gateway Integration

@@ -40,6 +40,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument(
+        "--delete-after",
+        type=int,
+        default=7,
+        help="Days to keep job after completion.",
+    )
+    cron_create.add_argument(
         "--skill",
         dest="skills",
         action="append",
@@ -81,6 +87,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    cron_edit.add_argument(
+        "--delete-after",
+        type=int,
+        help="Days to keep job after completion.",
+    )
     cron_edit.add_argument(
         "--skill",
         dest="skills",

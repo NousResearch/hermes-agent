@@ -677,6 +677,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    delete_after: Optional[int] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -750,6 +751,9 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                delete_after=(
+                    7 if delete_after is None else delete_after
+                ),
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -947,6 +951,8 @@ def cronjob(
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
+            if delete_after is not None:
+                updates["delete_after"] = delete_after
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
                 updates["schedule"] = parsed_schedule
@@ -1012,6 +1018,15 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "repeat": {
                 "type": "integer",
                 "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+            },
+            "delete_after": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 7,
+                "description": (
+                    "Days to retain a completed finite job. Use 0 to "
+                    "remove it immediately."
+                ),
             },
             "deliver": {
                 "type": "string",
@@ -1140,6 +1155,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
+        delete_after=args.get("delete_after"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

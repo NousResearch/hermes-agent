@@ -571,9 +571,59 @@ class TestMarkJobRun:
         assert updated["last_status"] == "ok"
 
     def test_repeat_limit_removes_job(self, tmp_cron_dir):
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job = create_job(
+            prompt="Once", schedule="30m", repeat=1, delete_after=0
+        )
         mark_job_run(job["id"], success=True)
         # Job should be removed after hitting repeat limit
+        assert get_job(job["id"]) is None
+
+    def test_repeat_limit_retains_job_without_double_counting(
+        self, tmp_cron_dir
+    ):
+        job = create_job(
+            prompt="Once", schedule="30m", repeat=1, delete_after=7
+        )
+
+        assert claim_dispatch(job["id"]) is True
+        mark_job_run(job["id"], success=True)
+
+        retained = get_job(job["id"])
+        assert retained["repeat"]["completed"] == 1
+        assert retained["state"] == "completed"
+        assert retained["enabled"] is False
+        assert retained["last_status"] == "ok"
+        assert retained["next_run_at"] is None
+        assert datetime.fromisoformat(retained["delete_at"]) > datetime.now(
+            timezone.utc
+        )
+
+    @pytest.mark.parametrize("value", [-1, -7])
+    def test_delete_after_must_be_non_negative(
+        self, tmp_cron_dir, value
+    ):
+        with pytest.raises(ValueError, match="non-negative"):
+            create_job(prompt="Once", schedule="30m", delete_after=value)
+
+        job = create_job(prompt="Later", schedule="every 1h")
+        with pytest.raises(ValueError, match="non-negative"):
+            update_job(job["id"], {"delete_after": value})
+
+    def test_completed_job_is_deleted_after_delete_at(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+        job = create_job(
+            prompt="Once", schedule="30m", repeat=1, delete_after=2
+        )
+        assert claim_dispatch(job["id"]) is True
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        mark_job_run(job["id"], success=True)
+
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now", lambda: now + timedelta(days=2)
+        )
+        assert get_due_jobs() == []
         assert get_job(job["id"]) is None
 
     def test_repeat_negative_one_is_infinite(self, tmp_cron_dir):
@@ -1820,14 +1870,17 @@ class TestClaimDispatch:
     a tick that dies mid-execution (gateway kill, OOM, hard-timeout) can re-fire
     the job at most ``repeat.times`` times instead of infinitely."""
 
-    def _oneshot(self, times=1, completed=0):
-        return {
+    def _oneshot(self, times=1, completed=0, delete_after=None):
+        job = {
             "id": "os1",
             "name": "one-shot",
             "enabled": True,
             "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
             "repeat": {"times": times, "completed": completed},
         }
+        if delete_after is not None:
+            job["delete_after"] = delete_after
+        return job
 
     def test_claim_increments_and_persists(self, tmp_cron_dir):
         save_jobs([self._oneshot(times=1, completed=0)])
@@ -1841,6 +1894,20 @@ class TestClaimDispatch:
         save_jobs([self._oneshot(times=1, completed=1)])
         assert claim_dispatch("os1") is False
         assert load_jobs() == []  # removed, will not re-fire
+
+    def test_already_dispatched_oneshot_is_retained(self, tmp_cron_dir):
+        save_jobs([
+            self._oneshot(times=1, completed=1, delete_after=7)
+        ])
+
+        assert claim_dispatch("os1") is False
+
+        retained = load_jobs()[0]
+        assert retained["repeat"]["completed"] == 1
+        assert retained["state"] == "completed"
+        assert retained["enabled"] is False
+        assert retained["next_run_at"] is None
+        assert retained["delete_at"]
 
     def test_recurring_job_is_not_claimed(self, tmp_cron_dir):
         job = {
@@ -1908,6 +1975,28 @@ class TestClaimDispatch:
         due = get_due_jobs()
         assert due == []
         assert load_jobs() == []  # cleaned up
+
+    def test_get_due_jobs_retains_stale_maxed_oneshot(
+        self, tmp_cron_dir
+    ):
+        past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "os1",
+            "name": "one-shot",
+            "enabled": True,
+            "schedule": {"kind": "once", "run_at": past},
+            "repeat": {"times": 1, "completed": 1},
+            "delete_after": 7,
+            "next_run_at": None,
+        }])
+
+        assert get_due_jobs() == []
+
+        retained = load_jobs()[0]
+        assert retained["repeat"]["completed"] == 1
+        assert retained["state"] == "completed"
+        assert retained["enabled"] is False
+        assert retained["delete_at"]
 
     def test_bad_schedule_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
         """Regression for a job with non-dict 'schedule' (null / string / etc.

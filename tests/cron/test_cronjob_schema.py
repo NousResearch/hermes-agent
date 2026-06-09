@@ -39,3 +39,13 @@ def test_cronjob_schema_required_array_unchanged():
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     assert CRONJOB_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_cronjob_schema_rejects_negative_delete_after():
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    delete_after = CRONJOB_SCHEMA["parameters"]["properties"][
+        "delete_after"
+    ]
+    assert delete_after["minimum"] == 0
+    assert delete_after["default"] == 7

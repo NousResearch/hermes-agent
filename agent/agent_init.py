@@ -1486,10 +1486,13 @@ def init_agent(
         # Try general plugin system as fallback
         if _selected_engine is None:
             try:
+                import copy
                 from hermes_cli.plugins import get_plugin_context_engine
                 _candidate = get_plugin_context_engine()
                 if _candidate and _candidate.name == _engine_name:
-                    _selected_engine = _candidate
+                    # Deep-copy the singleton so that update_model() on this
+                    # instance does not mutate the parent agent's engine.
+                    _selected_engine = copy.deepcopy(_candidate)
             except Exception:
                 pass
 

@@ -1854,6 +1854,110 @@ class TestMatrixMarkdownHtmlSecurity:
 
 
 # ---------------------------------------------------------------------------
+# _sanitize_html_output: unit tests
+# ---------------------------------------------------------------------------
+
+class TestMatrixSanitizeHtmlOutput:
+    """Tests for _sanitize_html_output — post-processing on markdown library output."""
+
+    def setup_method(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        self.sanitize = MatrixAdapter._sanitize_html_output
+
+    def test_javascript_href_stripped(self):
+        """javascript: URLs in href attributes must be stripped."""
+        result = self.sanitize('<a href="javascript:alert(1)">click</a>')
+        assert 'href="javascript:' not in result
+
+    def test_data_href_stripped(self):
+        """data: URLs in href attributes must be stripped."""
+        result = self.sanitize('<a href="data:text/html,<script>">click</a>')
+        assert 'href="data:' not in result
+
+    def test_vbscript_href_stripped(self):
+        """vbscript: URLs in href attributes must be stripped."""
+        result = self.sanitize('<a href="vbscript:bad">click</a>')
+        assert 'href="vbscript:' not in result
+
+    def test_safe_href_preserved(self):
+        """Safe https: URLs must be preserved."""
+        result = self.sanitize('<a href="https://example.com">link</a>')
+        assert 'href="https://example.com"' in result
+
+    def test_script_tag_escaped(self):
+        """<script> tags must be escaped (not in allowed set)."""
+        result = self.sanitize('<script>alert(1)</script>')
+        assert '<script>' not in result
+        assert '&lt;script&gt;' in result
+
+    def test_img_onerror_stripped(self):
+        """<img> is allowed but onerror attribute must be stripped."""
+        result = self.sanitize('<img src=x onerror="alert(1)">')
+        assert 'onerror' not in result
+        assert '<img' in result  # tag itself is allowed
+
+    def test_allowed_tags_preserved(self):
+        """Matrix-allowed tags must pass through."""
+        result = self.sanitize('<strong>bold</strong> <em>italic</em> <code>code</code>')
+        assert '<strong>' in result
+        assert '<em>' in result
+        assert '<code>' in result
+
+    def test_allowed_block_tags_preserved(self):
+        """Block-level allowed tags must pass through."""
+        result = self.sanitize('<blockquote>quote</blockquote>')
+        assert '<blockquote>' in result
+
+    def test_self_closing_img_allowed(self):
+        """<img> is in the allowed set but must not carry onerror."""
+        result = self.sanitize('<img src="https://example.com/img.png" />')
+        assert '<img' in result
+
+
+# ---------------------------------------------------------------------------
+# _markdown_to_html: security tests on the primary (markdown library) path
+# ---------------------------------------------------------------------------
+
+class TestMatrixMarkdownToHtmlSecurity:
+    """Tests for HTML injection prevention in the primary _markdown_to_html path."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_javascript_link_sanitized(self):
+        """[text](javascript:...) must not survive in formatted_body."""
+        result = self.adapter._markdown_to_html("[click](javascript:alert(1))")
+        assert 'href="javascript:' not in result
+
+    def test_data_link_sanitized(self):
+        """[text](data:...) must not survive in formatted_body."""
+        result = self.adapter._markdown_to_html("[click](data:text/html,<script>)")
+        assert 'href="data:' not in result
+
+    def test_script_tag_escaped(self):
+        """Raw <script> tags must be escaped."""
+        result = self.adapter._markdown_to_html("<script>alert(1)</script>")
+        assert '<script>' not in result
+
+    def test_img_onerror_neutralized(self):
+        """Raw <img onerror=...> must be escaped or stripped."""
+        result = self.adapter._markdown_to_html('<img src=x onerror="alert(1)">')
+        # Either the tag is HTML-escaped (safe) or onerror is stripped (safe)
+        assert '&lt;img' in result or 'onerror' not in result
+
+    def test_safe_markdown_still_works(self):
+        """Normal markdown formatting must not be broken by sanitization."""
+        result = self.adapter._markdown_to_html("**bold** and *italic*")
+        assert '<strong>' in result or '<b>' in result
+        assert '<em>' in result or '<i>' in result
+
+    def test_safe_link_preserved(self):
+        """Normal links must survive sanitization."""
+        result = self.adapter._markdown_to_html("[example](https://example.com)")
+        assert 'href="https://example.com"' in result
+
+
+# ---------------------------------------------------------------------------
 # Markdown to HTML: extended formatting tests
 # ---------------------------------------------------------------------------
 

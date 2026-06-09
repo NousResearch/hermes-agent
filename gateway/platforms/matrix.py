@@ -2798,6 +2798,57 @@ class MatrixAdapter(BasePlatformAdapter):
         parts = mxc_url[6:]  # strip mxc://
         return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
 
+    # Tags that the Matrix HTML spec (org.matrix.custom.html) allows.
+    _MATRIX_ALLOWED_TAGS: set[str] = {
+        "font", "del", "h1", "h2", "h3", "h4", "h5", "h6",
+        "blockquote", "p", "a", "ul", "ol", "sup", "sub",
+        "li", "b", "u", "strong", "em", "i", "s", "code",
+        "hr", "br", "div", "table", "thead", "tbody",
+        "tr", "th", "td", "caption", "pre", "span", "img",
+        "details", "summary",
+    }
+
+    # Event-handler attributes that must never appear in outbound HTML.
+    _DANGEROUS_ATTR_RE: "re.Pattern[str]" = re.compile(
+        r"""\s+on\w+\s*=\s*(['"][^'"]*['"]|\S+)""",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _sanitize_html_output(html: str) -> str:
+        """Sanitize HTML output from the ``markdown`` library.
+
+        The ``markdown`` library preserves raw inline HTML and does not
+        filter dangerous URL schemes.  This method applies three layers
+        of protection:
+
+        1. Strip ``href`` values with ``javascript:``, ``data:``, or
+           ``vbscript:`` schemes (reuses :meth:`_sanitize_link_url`).
+        2. Strip event-handler attributes (``onclick``, ``onerror``, …)
+           from all tags.
+        3. Escape any raw HTML tags that are not in the Matrix-allowed
+           set to prevent content injection via ``<script>`` etc.
+        """
+        # 1. Sanitize dangerous URL schemes in href attributes.
+        html = re.sub(
+            r'href="([^"]*)"',
+            lambda m: f'href="{MatrixAdapter._sanitize_link_url(m.group(1))}"',
+            html,
+        )
+
+        # 2. Strip event-handler attributes (onclick, onerror, onload, …).
+        html = MatrixAdapter._DANGEROUS_ATTR_RE.sub("", html)
+
+        # 3. Escape disallowed HTML tags.
+        def _escape_tag(m: "re.Match[str]") -> str:
+            tag = m.group(1).split()[0].split("/")[0].lower()
+            if tag in MatrixAdapter._MATRIX_ALLOWED_TAGS:
+                return m.group(0)
+            return _html_escape(m.group(0))
+
+        html = re.sub(r"<(/?\w[^>]*)/?>", _escape_tag, html)
+        return html
+
     def _markdown_to_html(self, text: str) -> str:
         """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
@@ -2818,6 +2869,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
             html = md.convert(text)
             md.reset()
+
+            html = self._sanitize_html_output(html)
 
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")

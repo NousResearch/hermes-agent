@@ -4411,15 +4411,16 @@ def test_health_guard_honors_ttl_cache_then_reprobes(tmp_path, monkeypatch):
     assert resolved not in kb._LAST_HEALTH_OK
 
 
-def test_health_guard_ignores_transient_single_probe_failure(tmp_path, monkeypatch):
-    """A lone non-ok integrity probe must NOT quarantine a healthy DB.
+def test_health_guard_flickering_damage_fails_open_no_quarantine(tmp_path, monkeypatch):
+    """A damage verdict that does not PERSIST across spaced probes must not
+    quarantine — and must not error the caller.
 
-    Regression for the spurious-``.corrupt.bak`` storm: under concurrent
-    writers on a no-FUA disk a read/write probe can transiently read a
-    mid-checkpoint page as malformed while the DB is fine. Observed live as
-    ~45 quarantine copies of a *healthy, progressing* board in 20 min. The
-    guard now requires every probe in a row to fail; a single clean probe
-    means the DB is healthy and nothing is quarantined.
+    Regression for the spurious-``.corrupt.bak`` storms: probe⇄checkpoint
+    contention can make an integrity probe transiently report damage on a
+    healthy, progressing board (observed live as ~45 quarantine copies in
+    20 min). Real corruption is permanent; one clean read anywhere in the
+    confirmation window means transient. The guard fails OPEN (no exception)
+    and stamps the health cache from the clean read.
     """
     db_path = tmp_path / "kanban.db"
     resolved = str(db_path.resolve())
@@ -4428,11 +4429,13 @@ def test_health_guard_ignores_transient_single_probe_failure(tmp_path, monkeypat
     kb._LAST_HEALTH_OK.pop(resolved, None)
     monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
 
-    # First two probes flag corruption, the third comes back clean → transient.
-    probes = iter(["integrity_check returned 'malformed'",
-                   "integrity_check returned 'malformed'",
-                   None])
-    monkeypatch.setattr(kb, "_run_integrity_probe", lambda _p: next(probes))
+    # First two probes flag damage, the third comes back clean → transient.
+    probes = iter([
+        (kb._RO_DAMAGE, "integrity_check returned 'malformed'"),
+        (kb._RO_DAMAGE, "integrity_check returned 'malformed'"),
+        (kb._RO_OK, None),
+    ])
+    monkeypatch.setattr(kb, "_readonly_probe", lambda _p: next(probes))
 
     kb._guard_existing_db_is_healthy(db_path)  # must not raise
     assert kb._LAST_HEALTH_OK.get(resolved) is not None
@@ -4459,49 +4462,33 @@ def test_health_guard_quarantines_persistent_corruption(tmp_path, monkeypatch):
     assert list(tmp_path.glob("*.corrupt.*.bak"))  # quarantine happened
 
 
-def test_health_guard_spurious_malformed_overruled_by_readonly_arbiter(
-    tmp_path, monkeypatch,
-):
-    """A persistent r/w probe failure on a *healthy* file must not quarantine.
-
-    Regression for the second spurious-quarantine shape: under checkpoint
-    contention the r/w probe can fail with a hard SQLITE_CORRUPT ("database
-    disk image is malformed") on open/first-read that clears on the next
-    read. That string is identical to real damage, so it cannot be
-    pattern-matched as transient — instead the read-only arbiter (which
-    stays out of WAL recovery and has never false-positived) gets the last
-    word: it reads the healthy file, says ok, and the guard surfaces a raw
-    ``OperationalError`` with no quarantine copy.
+def test_health_guard_undecided_probe_fails_open_without_stamp(tmp_path, monkeypatch):
+    """An undecided probe (lock/busy, hot WAL, unreadable pages) must fail
+    OPEN: no exception, no quarantine — but also no health stamp, so the
+    next connect re-probes once contention clears. Quarantine (and blocking
+    the caller at all) requires positive evidence of damage.
     """
     db_path = tmp_path / "kanban.db"
     resolved = str(db_path.resolve())
-    kb.init_db(db_path=db_path)  # healthy on disk
+    kb.init_db(db_path=db_path)
     kb._INITIALIZED_PATHS.discard(resolved)
     kb._LAST_HEALTH_OK.pop(resolved, None)
-    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
-    # The r/w probe persistently reports the hard-corrupt open failure.
-    monkeypatch.setattr(
-        kb, "_run_integrity_probe",
-        lambda _p: "sqlite refused to open file: database disk image is malformed",
-    )
+    monkeypatch.setattr(kb, "_readonly_probe", lambda _p: (kb._RO_UNDECIDED, None))
 
-    with pytest.raises(sqlite3.OperationalError, match="read-only integrity_check passed"):
-        kb._guard_existing_db_is_healthy(db_path)
-    assert resolved not in kb._LAST_HEALTH_OK
+    kb._guard_existing_db_is_healthy(db_path)  # must not raise
+    assert resolved not in kb._LAST_HEALTH_OK  # no stamp without evidence
     assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
 
 
-def test_health_guard_flickering_arbiter_verdict_is_transient(tmp_path, monkeypatch):
-    """A damage verdict that does not PERSIST across the arbiter's spaced
-    attempts must not quarantine.
+def test_health_guard_damage_going_undecided_is_transient(tmp_path, monkeypatch):
+    """A damage verdict that degrades to undecided mid-window must not
+    quarantine and must not stamp.
 
-    Regression for the third spurious-quarantine shape: the arbiter samples
-    at the hottest possible moment — immediately after every r/w probe
-    failed — and even a read-only open was observed to transiently report
-    SQLITE_CORRUPT there (the quarantined copy itself later checked out
-    ``ok``). Real corruption is permanent: it reports damage on every
-    attempt, seconds apart. One clean read anywhere in the window means
-    transient — raw ``OperationalError``, nothing quarantined.
+    Regression for the hottest-moment sampling shape: a probe taken right
+    after another probe reported damage was observed to transiently report
+    SQLITE_CORRUPT on a healthy board (the quarantined copy itself later
+    checked out ``ok``). Real corruption reports damage on every attempt,
+    seconds apart; anything less is contention.
     """
     db_path = tmp_path / "kanban.db"
     resolved = str(db_path.resolve())
@@ -4509,32 +4496,35 @@ def test_health_guard_flickering_arbiter_verdict_is_transient(tmp_path, monkeypa
     kb._INITIALIZED_PATHS.discard(resolved)
     kb._LAST_HEALTH_OK.pop(resolved, None)
     monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        kb, "_run_integrity_probe",
-        lambda _p: "sqlite refused to open file: database disk image is malformed",
-    )
-    # First arbiter read still hits the contention window; the second is clean.
-    verdicts = iter(["read-only open failed: database disk image is malformed",
-                     None])
-    monkeypatch.setattr(kb, "_readonly_integrity_verdict", lambda _p: next(verdicts))
+    probes = iter([
+        (kb._RO_DAMAGE, "read-only open failed: database disk image is malformed"),
+        (kb._RO_UNDECIDED, None),
+    ])
+    monkeypatch.setattr(kb, "_readonly_probe", lambda _p: next(probes))
 
-    with pytest.raises(sqlite3.OperationalError, match="read-only integrity_check passed"):
-        kb._guard_existing_db_is_healthy(db_path)
+    kb._guard_existing_db_is_healthy(db_path)  # must not raise
     assert resolved not in kb._LAST_HEALTH_OK
     assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
 
 
-def test_readonly_integrity_verdict(tmp_path):
-    """Arbiter semantics: healthy → None (no quarantine), damaged → reason
-    string (positive evidence, quarantine proceeds)."""
+def test_readonly_probe_verdicts(tmp_path, monkeypatch):
+    """Probe semantics: healthy → ok, damaged → damage (positive evidence),
+    lock/busy → undecided (never evidence)."""
     healthy = tmp_path / "healthy.db"
     kb.init_db(db_path=healthy)
-    assert kb._readonly_integrity_verdict(healthy.resolve()) is None
+    assert kb._readonly_probe(healthy.resolve()) == (kb._RO_OK, None)
 
     damaged = tmp_path / "damaged.db"
     _write_corrupt_db(damaged)
-    verdict = kb._readonly_integrity_verdict(damaged.resolve())
-    assert verdict is not None
+    verdict, reason = kb._readonly_probe(damaged.resolve())
+    assert verdict == kb._RO_DAMAGE
+    assert reason is not None
+
+    def locked_connect(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kb.sqlite3, "connect", locked_connect)
+    assert kb._readonly_probe(healthy.resolve()) == (kb._RO_UNDECIDED, None)
 
 
 # Real-world shape of an integrity_check racing a concurrent WAL checkpoint:
@@ -4549,34 +4539,41 @@ _SHORT_READ_INTEGRITY_TEXT = (
 )
 
 
-def test_health_guard_persistent_short_read_raises_operational_not_quarantine(
+def test_health_guard_short_read_report_is_undecided_not_quarantine(
     tmp_path, monkeypatch,
 ):
-    """An integrity failure that is *only* unreadable pages (IOERR family,
-    e.g. 522 SHORT_READ) must not quarantine, even when it outlives the whole
-    confirmation loop.
+    """An integrity report that is *only* unreadable pages (IOERR family,
+    e.g. 522 SHORT_READ) classifies as undecided: fail open, no quarantine,
+    no health stamp.
 
-    Regression for the post-confirm-loop quarantine storm: under sustained
-    worker load the probe⇄checkpoint race persisted across all
-    ``_HEALTH_CONFIRM_ATTEMPTS`` probes, so a healthy, progressing board was
-    still copied to ``.corrupt.bak`` and connects failed closed. The read
-    failing is not the content being malformed — surface it like the
-    lock/busy case (raw ``OperationalError``), no backup, and evict the
-    health stamp so the next connect re-probes.
+    Regression for the quarantine storm under sustained worker load: the
+    probe⇄checkpoint race makes page reads fail (the read failed — the
+    content is not malformed), and a healthy, progressing board was copied
+    to ``.corrupt.bak`` with connects failing closed. Exercises the real
+    ``_readonly_probe`` → ``_integrity_failure_is_transient_io`` path via a
+    stubbed connection that returns the observed SHORT_READ report.
     """
     db_path = tmp_path / "kanban.db"
     resolved = str(db_path.resolve())
     kb.init_db(db_path=db_path)
     kb._INITIALIZED_PATHS.discard(resolved)
     kb._LAST_HEALTH_OK.pop(resolved, None)
-    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
+
+    class _ShortReadConn:
+        def execute(self, _sql):
+            return self
+
+        def fetchone(self):
+            return (_SHORT_READ_INTEGRITY_TEXT,)
+
+        def close(self):
+            pass
+
     monkeypatch.setattr(
-        kb, "_run_integrity_probe",
-        lambda _p: f"integrity_check returned {_SHORT_READ_INTEGRITY_TEXT!r}",
+        kb.sqlite3, "connect", lambda *_a, **_k: _ShortReadConn()
     )
 
-    with pytest.raises(sqlite3.OperationalError):
-        kb._guard_existing_db_is_healthy(db_path)
+    kb._guard_existing_db_is_healthy(db_path)  # must not raise
     assert resolved not in kb._LAST_HEALTH_OK
     assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
 

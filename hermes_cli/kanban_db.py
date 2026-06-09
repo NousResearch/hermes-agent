@@ -1293,32 +1293,27 @@ _INITIALIZED_PATHS: set[str] = set()
 # writer notices post-init corruption within one window instead of never.
 _LAST_HEALTH_OK: dict[str, float] = {}
 _HEALTH_CHECK_TTL_SECONDS = 30.0
-# A single non-ok integrity_check is NOT trusted as corruption: under concurrent
-# writers on a weak-durability FS (WSL2 virtual disk reports no DPO/FUA), a
-# read/write probe can transiently read a mid-checkpoint page as malformed even
-# though the DB is fine and the very next read is clean. Empirically a swarm of
-# workers produced ~45 spurious .corrupt.bak of a *healthy*, progressing board
-# in 20 min. Real corruption reproduces on every probe; a transient torn read
-# does not. So require N consecutive non-ok probes (with a brief backoff) before
-# quarantining + failing closed. Only the suspected-corrupt path pays this cost;
-# a healthy DB returns after the first ok probe.
-_HEALTH_CONFIRM_ATTEMPTS = 4
-# Exponential: 0.15s, 0.45s, 1.35s between attempts (~2s total). Real
-# corruption is *permanent* — it still fails after seconds. The probe⇄
-# checkpoint contention that produces every observed false positive clears
-# within a second or two (each quarantined copy later checked out ok and the
-# next connect succeeded), so a sub-second confirmation window cannot
-# distinguish the two; a multi-second one can. Only the suspected-corrupt
-# path ever sleeps.
-_HEALTH_CONFIRM_BACKOFF_SECONDS = 0.15
-_HEALTH_CONFIRM_BACKOFF_FACTOR = 3.0
-# The read-only arbiter gets the same persistence treatment: it samples at
-# the *hottest* possible moment (immediately after every r/w probe failed),
-# where even a read-only open can transiently report SQLITE_CORRUPT. Require
-# the damage verdict to repeat across spaced attempts; any single clean or
-# undecided read means transient.
-_ARBITER_CONFIRM_ATTEMPTS = 3
-_ARBITER_BACKOFF_SECONDS = 1.0
+# The scheduled probe is READ-ONLY. A read/write integrity probe participates
+# in WAL recovery/checkpointing, and under concurrent writers on a
+# weak-durability FS (WSL2 virtual disk reports no DPO/FUA) it false-positived
+# four distinct ways in production: a transient mid-checkpoint page read as
+# malformed (~45 spurious .corrupt.bak of a *healthy*, progressing board in
+# 20 min), an all-IOERR SHORT_READ storm that outlived a multi-probe
+# confirmation loop, a hard SQLITE_CORRUPT at open that cleared on the very
+# next read, and even a read-only arbiter sampled at the hottest possible
+# moment (right after those r/w failures). A read-only probe at a *random*
+# moment — which is what a TTL expiry is — never produced a false positive
+# across the same period. So the guard probes ro-first and only ever opens
+# read/write for the real connection.
+#
+# A damage verdict still must PERSIST before quarantining: real corruption is
+# permanent, while probe⇄checkpoint contention clears in seconds. Require
+# every spaced probe in a multi-second window to independently report damage;
+# one clean or undecided read anywhere in the window means transient — log it
+# and fail open (no error, no quarantine). Only the suspected-corrupt path
+# ever sleeps; a healthy DB returns after the first ok probe.
+_HEALTH_CONFIRM_ATTEMPTS = 4  # total spaced ro probes that must all report damage
+_HEALTH_CONFIRM_SPACING_SECONDS = 1.0
 # ``PRAGMA integrity_check`` can fail without the database being malformed:
 # when the probe races a concurrent WAL checkpoint (a swarm of workers on the
 # dispatch board), page reads come back as SQLITE_IOERR_SHORT_READ (522) —
@@ -1677,21 +1672,33 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
 
 
 def _guard_existing_db_is_healthy(path: Path) -> None:
-    """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
+    """Verify an existing non-empty DB file via READ-ONLY integrity probes.
 
-    Opens the probe in read/write mode so SQLite can recover or
-    checkpoint a healthy WAL/hot-journal DB before we declare it
-    corrupt. If the file is malformed, copy it (and any WAL/SHM
-    sidecars) to a timestamped backup and raise
-    :class:`KanbanDbCorruptError` so callers cannot silently recreate
-    the schema on top of a damaged DB.
+    The probe never opens the file read/write: a r/w ``integrity_check``
+    participates in WAL recovery/checkpointing and false-positived four
+    distinct ways under concurrent writers on a weak-durability FS (see the
+    constants block above). The real connection that :func:`connect` opens
+    right after this guard is the only r/w open.
 
-    Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
-    treated as corruption; they propagate raw so the caller sees a
-    normal lock failure and no spurious ``.corrupt`` backup is made.
+    Verdicts:
 
-    No-op for missing files, zero-byte files (treated as fresh), and
-    paths already proven healthy this process (cache hit).
+    * **ok** — stamp the TTL cache and return.
+    * **undecided** (lock/busy, hot WAL a ro connection cannot recover,
+      all-IOERR read failure) — fail OPEN without stamping: no error, no
+      quarantine; the next connect past the absent stamp re-probes.
+      Quarantine requires positive evidence of damage, and the connection
+      about to open will surface real problems itself (``cell_size_check``
+      is ON and ``write_txn`` checks the page-count invariant post-commit).
+    * **damage** — must PERSIST: every spaced probe across a multi-second
+      window has to independently report damage. Real corruption is
+      permanent; probe⇄checkpoint contention clears in seconds. Only then
+      copy the file (and WAL/SHM sidecars) to a quarantine backup and raise
+      :class:`KanbanDbCorruptError` so callers cannot silently recreate the
+      schema on top of a damaged DB. A verdict that flickers clean mid-window
+      is logged and fails open.
+
+    No-op for missing files, zero-byte files (treated as fresh), and paths
+    proven healthy within the TTL (cache hit).
 
     Path-trust note: ``path`` arrives via :func:`connect`, which itself
     resolves it from an explicit ``db_path`` argument, the
@@ -1719,92 +1726,70 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     last_ok = _LAST_HEALTH_OK.get(str(resolved))
     if last_ok is not None and (time.monotonic() - last_ok) < _HEALTH_CHECK_TTL_SECONDS:
         return
-    # Confirm before quarantining: a lone non-ok result is often a transient
-    # mid-checkpoint read on a no-FUA disk, not real corruption. Only declare
-    # the DB damaged if it fails every probe in a row; a single clean probe
-    # means it was a transient and the DB is healthy. ``OperationalError``
-    # (lock/busy) still propagates raw from the first occurrence — never a
-    # quarantine. The healthy path costs exactly one probe (first ok → return).
-    reason: Optional[str] = None
-    for attempt in range(_HEALTH_CONFIRM_ATTEMPTS):
-        reason = _run_integrity_probe(resolved)
-        if reason is None:
-            break
-        if attempt + 1 < _HEALTH_CONFIRM_ATTEMPTS:
-            time.sleep(
-                _HEALTH_CONFIRM_BACKOFF_SECONDS
-                * (_HEALTH_CONFIRM_BACKOFF_FACTOR ** attempt)
-            )
-    if reason is None:
+    verdict, reason = _readonly_probe(resolved)
+    if verdict == _RO_OK:
         _LAST_HEALTH_OK[str(resolved)] = time.monotonic()
         return
-    # Non-ok on every probe: force the next connect to re-probe instead of
-    # honoring a stale "ok" timestamp.
+    if verdict == _RO_UNDECIDED:
+        # No evidence either way. Fail open WITHOUT stamping so the next
+        # connect re-probes once the contention clears.
+        if reason:
+            _log.warning(
+                "kanban health probe: undecided read-only verdict on %s "
+                "(transient I/O, no quarantine): %s", resolved, reason,
+            )
+        return
+    # Damage reported once. Force later connects to re-probe instead of
+    # honoring a stale "ok" stamp, then require the verdict to persist.
     _LAST_HEALTH_OK.pop(str(resolved), None)
-    # An all-IOERR failure means the probe could not *read* the file (e.g. a
-    # checkpoint-truncate race that outlived the confirmation loop), not that
-    # the content is malformed. Surface it like the lock/busy case — a raw
-    # transient error, no quarantine copy, no fail-closed corruption state.
-    if _integrity_failure_is_transient_io(reason):
-        _log.warning(
-            "kanban health probe: transient IOERR-family failure on %s "
-            "(checkpoint race, no quarantine): %s", resolved, reason,
-        )
-        raise sqlite3.OperationalError(
-            f"kanban integrity probe could not read {resolved} after "
-            f"{_HEALTH_CONFIRM_ATTEMPTS} attempts (SQLITE_IOERR-family, e.g. "
-            f"SHORT_READ racing a checkpoint — transient I/O, not corruption): "
-            f"{reason}"
-        )
-    # Last word goes to a READ-ONLY probe, and the damage verdict must
-    # PERSIST. The read/write probe participates in WAL recovery/
-    # checkpointing, so under concurrent writers the race can surface as a
-    # hard SQLITE_CORRUPT ("database disk image is malformed") that clears
-    # on the next read — indistinguishable by string from real damage. A
-    # read-only connection avoids recovery, but it samples at the hottest
-    # possible moment (every r/w probe just failed), where even ro opens
-    # have been observed to transiently report SQLITE_CORRUPT on a healthy
-    # board. Real corruption is permanent; contention clears in seconds. So
-    # quarantine only if every spaced ro attempt independently confirms
-    # damage — one clean or undecided read means transient.
-    ro_reason: Optional[str] = None
-    for attempt in range(_ARBITER_CONFIRM_ATTEMPTS):
-        ro_reason = _readonly_integrity_verdict(resolved)
-        if ro_reason is None:
-            break
-        if attempt + 1 < _ARBITER_CONFIRM_ATTEMPTS:
-            time.sleep(_ARBITER_BACKOFF_SECONDS)
-    if ro_reason is None:
-        _log.warning(
-            "kanban health probe: r/w probe failed %dx on %s but read-only "
-            "verification passed (probe/checkpoint race, no quarantine): %s",
-            _HEALTH_CONFIRM_ATTEMPTS, resolved, reason,
-        )
-        raise sqlite3.OperationalError(
-            f"kanban integrity probe failed {_HEALTH_CONFIRM_ATTEMPTS}x on "
-            f"{resolved} but a read-only integrity_check passed — transient "
-            f"probe/checkpoint race, not corruption: {reason}"
-        )
-    # Damage confirmed by every read-only arbiter attempt over a multi-second
+    confirmed = reason
+    for _attempt in range(_HEALTH_CONFIRM_ATTEMPTS - 1):
+        time.sleep(_HEALTH_CONFIRM_SPACING_SECONDS)
+        verdict, confirmed = _readonly_probe(resolved)
+        if verdict == _RO_OK:
+            _log.warning(
+                "kanban health probe: damage verdict on %s did not persist "
+                "(first probe: %s) — transient contention, no quarantine",
+                resolved, reason,
+            )
+            _LAST_HEALTH_OK[str(resolved)] = time.monotonic()
+            return
+        if verdict == _RO_UNDECIDED:
+            _log.warning(
+                "kanban health probe: damage verdict on %s went undecided "
+                "(first probe: %s; later: %s) — transient contention, "
+                "no quarantine", resolved, reason, confirmed or "<lock/busy>",
+            )
+            return
+    # Damage confirmed by every spaced read-only probe over a multi-second
     # window: this is the permanent kind. Quarantine and fail closed.
     backup = _backup_corrupt_db(resolved)
     raise KanbanDbCorruptError(
         resolved,
         backup,
-        f"{reason} (read-only verification x{_ARBITER_CONFIRM_ATTEMPTS}: {ro_reason})",
+        f"{reason} (read-only verification x{_HEALTH_CONFIRM_ATTEMPTS}: {confirmed})",
     )
 
 
-def _readonly_integrity_verdict(resolved: Path) -> Optional[str]:
-    """Arbiter probe for the about-to-quarantine path: ``PRAGMA
-    integrity_check`` over a read-only (``mode=ro``) connection.
+_RO_OK = "ok"
+_RO_UNDECIDED = "undecided"
+_RO_DAMAGE = "damage"
 
-    Returns ``None`` when the DB is healthy **or** the verdict is
-    undecidable (lock/busy/cannot-open-readonly) — quarantine requires
-    positive evidence of damage, and an undecided probe just means the next
-    connect re-probes (the "ok" stamp was already evicted). Returns a short
-    reason string only when the read-only view itself reports damage, which
-    real corruption always does and the probe⇄checkpoint race never does.
+
+def _readonly_probe(resolved: Path) -> tuple[str, Optional[str]]:
+    """One ``PRAGMA integrity_check`` over a read-only (``mode=ro``) connection.
+
+    Returns ``(verdict, reason)`` where verdict is :data:`_RO_OK` (healthy),
+    :data:`_RO_UNDECIDED` (no verdict either way: lock/busy, a hot WAL that a
+    read-only connection cannot recover, or an all-IOERR report such as 522
+    SHORT_READ racing a checkpoint — *the read failed*, not *the content is
+    bad*), or :data:`_RO_DAMAGE` (the read-only view itself reports malformed
+    content, which real corruption always does and the probe⇄checkpoint race
+    never does persistently).
+
+    Read-only on purpose: it stays out of WAL recovery/checkpointing, so it
+    cannot tear anything and does not contend with concurrent writers the way
+    a read/write probe does.
     """
     try:
         probe = sqlite3.connect(
@@ -1817,12 +1802,15 @@ def _readonly_integrity_verdict(resolved: Path) -> Optional[str]:
         finally:
             probe.close()
     except sqlite3.OperationalError:
-        return None  # undecided — never quarantine without evidence
+        return (_RO_UNDECIDED, None)
     except sqlite3.DatabaseError as exc:
-        return f"read-only open failed: {exc}"
+        return (_RO_DAMAGE, f"read-only open failed: {exc}")
     if not row or (row[0] or "").lower() != "ok":
-        return f"integrity_check returned {row[0] if row else '<no row>'!r}"
-    return None
+        reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        if _integrity_failure_is_transient_io(reason):
+            return (_RO_UNDECIDED, reason)
+        return (_RO_DAMAGE, reason)
+    return (_RO_OK, None)
 
 
 def _integrity_failure_is_transient_io(reason: str) -> bool:
@@ -1841,7 +1829,7 @@ def _integrity_failure_is_transient_io(reason: str) -> bool:
     prefix = "integrity_check returned "
     if not reason.startswith(prefix):
         return False
-    # _run_integrity_probe embeds the raw integrity_check row via !r; recover
+    # _readonly_probe embeds the raw integrity_check row via !r; recover
     # the original (possibly multi-line) text from its repr.
     try:
         text = ast.literal_eval(reason[len(prefix):])
@@ -1857,30 +1845,6 @@ def _integrity_failure_is_transient_io(reason: str) -> bool:
         for line in text.splitlines()
         if line.strip()
     )
-
-
-def _run_integrity_probe(resolved: Path) -> Optional[str]:
-    """One ``PRAGMA integrity_check`` pass. Returns ``None`` if healthy, else a
-    short reason string describing why it looked corrupt.
-
-    Opens read/write so SQLite can replay a healthy WAL/hot-journal before the
-    check (a pure read-only open would flag a recoverable DB as corrupt).
-    ``sqlite3.OperationalError`` (lock/busy/transient IO) is re-raised, never
-    classified as corruption — the caller lets it propagate.
-    """
-    try:
-        probe = _sqlite_connect(resolved)
-        try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
-        finally:
-            probe.close()
-    except sqlite3.OperationalError:
-        raise
-    except sqlite3.DatabaseError as exc:
-        return f"sqlite refused to open file: {exc}"
-    if not row or (row[0] or "").lower() != "ok":
-        return f"integrity_check returned {row[0] if row else '<no row>'!r}"
-    return None
 
 
 def connect(
@@ -1945,8 +1909,8 @@ def connect(
         # and other invalid-header cases without opening a sqlite connection.
         _validate_sqlite_header(path)
         # Full integrity probe — catches corruption past the header (malformed
-        # pages, broken internal metadata). Cached per-path after first success
-        # via _INITIALIZED_PATHS so it only runs once per process per path.
+        # pages, broken internal metadata). Read-only, and rate-limited by the
+        # TTL'd _LAST_HEALTH_OK stamp so it runs at most once per TTL window.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
         conn = _sqlite_connect(path)

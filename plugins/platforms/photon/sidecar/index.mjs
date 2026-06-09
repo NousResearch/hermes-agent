@@ -71,17 +71,17 @@ const app = await Spectrum({
   providers: [imessage.config()],
 });
 
-// Drain the inbound stream — Photon's webhook is the canonical inbound
-// path, but we still consume `app.messages` so spectrum-ts' internal
-// reconnect/heartbeat logic keeps running.  Each event is logged at
-// debug level; everything else is a no-op here.
+// Drain the inbound stream — Photon's webhook is the canonical inbound path,
+// but we still consume `app.messages` so spectrum-ts' reconnect/heartbeat logic
+// keeps running.  We also cache each live Space here: spectrum-ts removed the
+// `app.space(id)` lookup, so outbound replies resolve their Space from this
+// cache (an outbound reply always follows an inbound that populated it).
+const spaceCache = new Map();
 (async () => {
   try {
-    for await (const [, message] of app.messages) {
-      console.error(
-        `photon-sidecar: drained inbound from ${message.platform} ` +
-          `space=${message.space?.id}`
-      );
+    for await (const [space, message] of app.messages) {
+      if (space?.id) spaceCache.set(space.id, space);
+      if (message?.space?.id && space) spaceCache.set(message.space.id, space);
     }
   } catch (e) {
     console.error(
@@ -130,26 +130,47 @@ function ok(res, data) {
   res.end(JSON.stringify({ ok: true, ...data }));
 }
 
-async function resolveSpace(spaceId) {
-  // spectrum-ts exposes the same Space methods via `app.space(spaceId)` /
-  // narrowed helpers; we fall back through a few accessor shapes to
-  // tolerate small SDK API drift.
-  if (typeof app.space === "function") {
-    return await app.space(spaceId);
-  }
-  if (app.spaces && typeof app.spaces.get === "function") {
-    return await app.spaces.get(spaceId);
-  }
-  // Last resort — the platform-narrowed helper.
-  if (imessage) {
-    const im = imessage(app);
-    if (typeof im.space === "function") {
-      try {
-        return await im.space({ id: spaceId });
-      } catch {
-        /* fall through */
-      }
+// Outbound sends occasionally race a gRPC channel that idled out while the
+// agent was thinking; Photon surfaces this as a one-off `Connection dropped` /
+// gRPC UNAVAILABLE. The next call re-establishes the channel, so retry such
+// transient failures with capped exponential backoff + jitter (the idiomatic
+// gRPC mitigation), and only for retryable codes — never for permanent ones
+// like PERMISSION_DENIED ("Target not allowed for this project").
+const _RETRYABLE_GRPC = new Set([14, 4, 8]); // UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED
+const _RETRYABLE_MSG =
+  /connection dropped|unavailable|deadline exceeded|resource exhausted|econnreset|socket hang up|goaway/i;
+const isTransient = (e) =>
+  _RETRYABLE_GRPC.has(e?.grpcCode) || _RETRYABLE_MSG.test(e?.message || "");
+
+async function withRetry(fn, { tries = 4, baseMs = 250, capMs = 4000 } = {}) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i >= tries - 1 || !isTransient(e)) throw e;
+      const backoff = Math.min(baseMs * 2 ** i, capMs);
+      await new Promise((r) => setTimeout(r, backoff + Math.random() * backoff * 0.2));
     }
+  }
+  throw lastErr;
+}
+
+async function resolveSpace(spaceId) {
+  // spectrum-ts dropped the `app.space(id)` lookup, and `space.send()` needs a
+  // real resolved Space. Prefer the live Space cached from the inbound stream
+  // (an outbound reply always follows an inbound that populated the cache).
+  // Fall back for DMs by rebuilding the Space from the phone embedded in the id
+  // (iMessage DM ids are `any;-;+E164`).
+  const cached = spaceCache.get(spaceId);
+  if (cached) return cached;
+  const dm = spaceId.match(/;-;(\+\d+)/);
+  if (dm) {
+    const im = imessage(app);
+    const space = await im.space(await im.user({ phone: dm[1] }));
+    spaceCache.set(spaceId, space);
+    return space;
   }
   throw new Error(`unable to resolve space id ${spaceId}`);
 }
@@ -173,19 +194,20 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, replyTo } = body || {};
+      const { spaceId, text } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
       const space = await resolveSpace(spaceId);
-      const result = replyTo
-        ? await space.send(text, { replyTo })
-        : await space.send(text);
+      // spectrum-ts send() is variadic-content: a positional options object is
+      // treated as a second content item and throws `c.build is not a function`.
+      // Threaded replies in 1.x need the reply() builder + the original Message,
+      // which the adapter doesn't hand us, so replyTo is not forwarded here.
+      const result = await withRetry(() => space.send(text));
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/send-attachment") {
-      const { spaceId, path, name, mimeType, caption, kind, replyTo } =
-        body || {};
+      const { spaceId, path, name, mimeType, caption, kind } = body || {};
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
       }
@@ -202,16 +224,13 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const sendOpts = replyTo ? { replyTo } : undefined;
-      const result = sendOpts
-        ? await space.send(builder, sendOpts)
-        : await space.send(builder);
+      const result = await withRetry(() => space.send(builder));
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.
       if (caption && typeof caption === "string") {
         try {
-          await space.send(caption);
+          await withRetry(() => space.send(caption));
         } catch (e) {
           console.error(
             "photon-sidecar: attachment sent but caption failed: " +

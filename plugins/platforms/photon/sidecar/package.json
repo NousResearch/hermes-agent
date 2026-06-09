@@ -9,9 +9,9 @@
     "start": "node index.mjs"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20"
   },
   "dependencies": {
-    "spectrum-ts": "^0.1.0"
+    "spectrum-ts": "^1.18.0"
   }
 }

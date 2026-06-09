@@ -5,6 +5,8 @@ import argparse
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from plugins.platforms.photon import cli as photon_cli
 
 
@@ -85,6 +87,20 @@ def test_install_sidecar_verifies_after_npm_success(monkeypatch, capsys) -> None
     captured = capsys.readouterr()
     assert rc == 0
     assert "sidecar runtime verified" in captured.out
+
+
+def test_gateway_setup_propagates_setup_failure(monkeypatch) -> None:
+    def fake_setup(args: argparse.Namespace) -> int:
+        assert args.photon_command == "setup"
+        assert args.skip_sidecar_install is False
+        return 7
+
+    monkeypatch.setattr(photon_cli, "_cmd_setup", fake_setup)
+
+    with pytest.raises(SystemExit) as exc_info:
+        photon_cli.gateway_setup()
+
+    assert exc_info.value.code == 7
 
 
 def test_status_prints_sidecar_runtime(monkeypatch, tmp_path: Path, capsys) -> None:

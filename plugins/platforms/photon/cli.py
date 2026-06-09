@@ -464,7 +464,9 @@ def gateway_setup() -> None:
         no_browser=False,
         skip_sidecar_install=False,
     )
-    _cmd_setup(args)
+    rc = _cmd_setup(args)
+    if rc != 0:
+        raise SystemExit(rc)
 
 
 # ---------------------------------------------------------------------------

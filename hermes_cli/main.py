@@ -8742,12 +8742,63 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
     # If origin/main has commits not on upstream, don't trample
     if origin_ahead > 0:
+        if upstream_ahead == 0:
+            print()
+            print(f"  ✓ Fork already has {origin_ahead} commit(s) ahead of upstream")
+            return
+
+        # Fork has diverged — merge upstream into origin/main to keep fork
+        # up to date without losing local changes. This is the standard fork
+        # workflow: origin/main = upstream/main + your features.
         print()
-        print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
-        print("  Skipping upstream sync to preserve your changes.")
-        print("  If you want to merge upstream changes, run:")
-        print("    git pull upstream main")
-        return
+        print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream, and is")
+        print(f"  {upstream_ahead} commit(s) behind. Merging upstream into fork main...")
+
+        try:
+            # Checkout local main (tracking origin/main)
+            subprocess.run(
+                git_cmd + ["checkout", "main"],
+                cwd=cwd,
+                capture_output=True,
+                check=True,
+            )
+            # Merge upstream/main into local main
+            merge_result = subprocess.run(
+                git_cmd + ["merge", "upstream/main", "--no-edit", "--no-ff"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if merge_result.returncode != 0:
+                # Merge conflict or other error — don't corrupt the fork
+                print("  ✗ Merge failed (conflict). Skipping upstream sync.")
+                print("  Resolve manually: cd ~/.hermes/hermes-agent && git merge upstream/main")
+                return
+
+            # Push the merged result to origin/main
+            push_result = subprocess.run(
+                git_cmd + ["push", "origin", "main"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if push_result.returncode != 0:
+                stderr = push_result.stderr.strip()
+                if "rejected" in stderr:
+                    print("  ✗ Push rejected. Fork main may have been updated elsewhere.")
+                    print("  Run: git pull upstream main && git push origin main")
+                else:
+                    print("  ✗ Push failed.")
+                    if stderr:
+                        print(f"  {stderr.splitlines()[0]}")
+                return
+
+            print(f"  ✓ Merged upstream into fork main and pushed ({origin_ahead} fork + {upstream_ahead} upstream commits)")
+        except subprocess.CalledProcessError as exc:
+            print(f"  ✗ Sync failed: {exc}")
+            return
 
     # If upstream is not ahead, fork is up to date
     if upstream_ahead == 0:

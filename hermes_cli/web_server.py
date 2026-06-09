@@ -87,7 +87,15 @@ except ImportError:
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
         )
 
-WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
+_web_dist_env = os.environ.get("HERMES_WEB_DIST", "")
+if _web_dist_env:
+    _web_dist_env_path = Path(_web_dist_env)
+    if _web_dist_env_path.exists():
+        WEB_DIST = _web_dist_env_path
+    else:
+        WEB_DIST = Path(__file__).parent / "web_dist"
+else:
+    WEB_DIST = Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

@@ -5105,6 +5105,18 @@ class TelegramAdapter(BasePlatformAdapter):
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
         if not self._is_group_chat(message):
+            # Apply TELEGRAM_ALLOWED_USERS to DMs (wildcard '*' = allow all)
+            from_user = getattr(message, "from_user", None)
+            if from_user is None:
+                logger.debug("[Telegram] DM with no from_user; rejecting (fail-closed)")
+                return False
+            allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+            if allowed_csv:
+                allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+                user_id_str = str(getattr(from_user, "id", ""))
+                if "*" not in allowed_ids and user_id_str not in allowed_ids:
+                    logger.debug("[Telegram] DM user %s not in TELEGRAM_ALLOWED_USERS; rejecting", user_id_str)
+                    return False
             return True
 
         thread_id = getattr(message, "message_thread_id", None)

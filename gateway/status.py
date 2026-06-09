@@ -467,7 +467,18 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if not resolved_lock_path.exists():
         return False
 
-    handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    try:
+        handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    except PermissionError:
+        # Stale root-owned lock file from a previous launchd Background
+        # session that ran as root.  The parent directory owner can unlink
+        # files even when they don't own them, so remove the stale lock
+        # and report inactive — the new process will create a fresh one.
+        try:
+            resolved_lock_path.unlink()
+        except OSError:
+            pass
+        return False
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)

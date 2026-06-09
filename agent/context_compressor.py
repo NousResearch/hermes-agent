@@ -2096,24 +2096,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"}:
-            summary_role = "user"
-        else:
-            summary_role = "assistant"
-        # If the chosen role collides with the tail AND flipping wouldn't
-        # collide with the head, flip it.
-        if summary_role == first_tail_role:
-            flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
-                summary_role = flipped
-            else:
-                # Both roles would create consecutive same-role messages
-                # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
+        # Always use role="user" for the compaction summary so the model
+        # treats it as background reference rather than its own prior output.
+        # Using "assistant" causes the model to reproduce the summary
+        # verbatim, creating a compaction loop (#42768).  The explicit end
+        # marker ("--- END OF CONTEXT SUMMARY ---") and the SUMMARY_PREFIX
+        # already prevent weak models from reading the summary as fresh
+        # input (#11475, #14521), so role alternation at the API level is
+        # not required — all major providers tolerate consecutive same-role
+        # messages.
+        summary_role = "user"
 
         # When the summary lands as a standalone role="user" message,
         # weak models read the verbatim "## Active Task" quote of a past

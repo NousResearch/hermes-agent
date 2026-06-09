@@ -210,6 +210,10 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         # no dedicated entry in /lines, so this per-user field is the source of
         # truth — and we already have it from the (reused) user object.
         agent_number = photon_auth.user_assigned_line(user)
+        # Allowlist the operator and make their DM the cron home channel —
+        # otherwise the gateway denies their own inbound messages
+        # ("Unauthorized user") and has no default space for cron delivery.
+        _autoconfigure_access(phone)
 
     # 5. Surface the agent's iMessage number (the number to text the agent).
     if not agent_number:
@@ -246,6 +250,33 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     print("✓ Photon setup complete.")
     print("  Start the gateway:  hermes gateway start --platform photon")
     return 0
+
+
+def _autoconfigure_access(phone: str) -> None:
+    """Allowlist the operator and set their DM as the cron home channel.
+
+    Writes ``PHOTON_ALLOWED_USERS`` (so the gateway authorizes the operator's
+    own inbound messages instead of denying them) and ``PHOTON_HOME_CHANNEL``
+    (the default space for cron delivery) to the operator's E.164 number. Each
+    is only filled when unset, so a hand-tuned allowlist / home channel is
+    never clobbered on a re-run.
+    """
+    try:
+        from hermes_cli.config import get_env_value, save_env_value
+    except ImportError:
+        return
+    for key, label in (
+        ("PHOTON_ALLOWED_USERS", "allowlisted your number"),
+        ("PHOTON_HOME_CHANNEL", "set your DM as the cron home channel"),
+    ):
+        try:
+            if get_env_value(key):
+                print(f"      {key} already set — leaving it as-is.")
+                continue
+            save_env_value(key, phone)
+            print(f"  ✓ {label} ({key})")
+        except Exception as e:
+            print(f"      could not set {key}: {e}", file=sys.stderr)
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:

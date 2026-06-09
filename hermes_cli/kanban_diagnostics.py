@@ -536,6 +536,14 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         cfg.get("spawn_failure_threshold", 3),
     ), 3)
     failure_limit = _positive_int(cfg.get("failure_limit"), threshold)
+    limit_source = "dispatcher"
+    task_max_retries = _task_field(task, "max_retries", None)
+    if task_max_retries is not None:
+        parsed_task_limit = _positive_int(task_max_retries, 0)
+        if parsed_task_limit >= 1:
+            failure_limit = parsed_task_limit
+            limit_source = "task"
+    threshold = min(threshold, failure_limit)
     # Read the new unified counter name, with a fallback to the legacy
     # column name so this rule keeps working against old DB rows the
     # caller somehow materialised without running the migration.
@@ -633,6 +641,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             "last_error": last_err,
             "failure_threshold": threshold,
             "failure_limit": failure_limit,
+            "failure_limit_source": limit_source,
         },
     )]
 

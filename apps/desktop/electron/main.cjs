@@ -127,6 +127,13 @@ const {
   resolveRequestedPathForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const {
+  createRemoteRevalidateState,
+  recordRemoteRevalidateFailure,
+  resetRemoteRevalidateState,
+  shouldRemoteRevalidateKeepState,
+  waitForRemoteHermes: waitForRemoteHermesWithBackoff
+} = require('./desktop-remote-reconnect.cjs')
 
 let nodePty = null
 let nodePtyDir = null
@@ -792,6 +799,7 @@ const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDL
 // killing one to honor the soft cap would abort a running agent.
 const POOL_KEEPALIVE_FRESH_MS = 90_000
 let poolIdleReaper = null
+const REMOTE_REVALIDATE_FAILURE_KEEP_MS = 120_000
 // Auto-reload budget for renderer crashes. A deterministic startup crash would
 // otherwise loop forever (reload → crash → reload), pinning CPU and spamming
 // logs. Allow a few reloads per rolling window, then stop and leave the dead
@@ -813,6 +821,7 @@ let backendStartFailure = null
 let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
+const remoteRevalidateStates = new Map() // baseUrl -> { failures, windowStartedAt }
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -3918,6 +3927,29 @@ function closePreviewWatchers() {
   }
 }
 
+function canonicalRemoteBaseUrl(baseUrl) {
+  return String(baseUrl || '').replace(/\/+$/, '')
+}
+
+function trimRemoteRevalidateStates(now = Date.now()) {
+  for (const [key, state] of remoteRevalidateStates.entries()) {
+    const ageMs = now - (state.windowStartedAt || 0)
+    if (!shouldRemoteRevalidateKeepState(state) || !state.windowStartedAt || ageMs > REMOTE_REVALIDATE_FAILURE_KEEP_MS) {
+      remoteRevalidateStates.delete(key)
+    }
+  }
+}
+
+function remoteRevalidateStateFor(baseUrl) {
+  const normalized = canonicalRemoteBaseUrl(baseUrl)
+  const existing = remoteRevalidateStates.get(normalized)
+  if (existing) return existing
+
+  const next = createRemoteRevalidateState()
+  remoteRevalidateStates.set(normalized, next)
+  return next
+}
+
 async function waitForHermes(baseUrl, token) {
   const deadline = Date.now() + 45_000
   let lastError = null
@@ -3933,6 +3965,19 @@ async function waitForHermes(baseUrl, token) {
   }
 
   throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+}
+
+async function waitForRemoteHermes(baseUrl, token) {
+  try {
+    await waitForRemoteHermesWithBackoff(baseUrl, token, {
+      fetcher: fetchJson,
+      maxAttempts: 16,
+      timeoutMs: 90_000,
+      fetcherOptions: {}
+    })
+  } catch (error) {
+    throw new Error(`Hermes remote backend did not become ready: ${error.message}`)
+  }
 }
 
 function getWindowButtonPosition() {
@@ -5207,6 +5252,7 @@ function resetHermesConnection() {
   stopBackendChild(hermesProcess)
 
   hermesProcess = null
+  remoteRevalidateStates.clear()
   resetBootProgressForReconnect()
 }
 
@@ -5345,7 +5391,7 @@ async function spawnPoolBackend(profile, entry) {
   // tolerate.
   const remote = await resolveRemoteBackend(profile)
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token)
+    await waitForRemoteHermes(remote.baseUrl, remote.token)
     return {
       ...remote,
       profile,
@@ -5540,7 +5586,7 @@ async function startHermes() {
     const remote = await resolveRemoteBackend(primaryProfileKey())
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token)
+      await waitForRemoteHermes(remote.baseUrl, remote.token)
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
@@ -6126,14 +6172,24 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   }
 
   const base = conn.baseUrl.replace(/\/+$/, '')
+  trimRemoteRevalidateStates()
+  const state = remoteRevalidateStateFor(base)
   try {
     await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    resetRemoteRevalidateState(state)
     return { ok: true, rebuilt: false }
   } catch {
-    // Unreachable remote: drop the stale cache so the renderer's next reconnect
-    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
-    // nulls connectionPromise for a remote (no child to SIGTERM).
-    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    const failure = recordRemoteRevalidateFailure(state)
+    if (!failure.shouldReset) {
+      rememberLog(
+        `Cached remote Hermes backend failed liveness probe (${failure.failures}/3); preserving cached connection during restart window.`
+      )
+      return { ok: true, rebuilt: false }
+    }
+
+    // Repeated misses across the same short window mean the cached remote is
+    // genuinely stale, so let the next reconnect rebuild from config.
+    rememberLog('Cached remote Hermes backend failed repeated liveness probes; dropping stale connection.')
     resetHermesConnection()
     return { ok: true, rebuilt: true }
   }

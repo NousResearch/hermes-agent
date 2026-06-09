@@ -1652,6 +1652,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
+
+            # Mark as ineffective so the anti-thrashing logic won't retry
+            # compression on the next turn — the fallback produced minimal
+            # savings and retrying would just loop.
+            self._ineffective_compression_count = max(self._ineffective_compression_count, 1)
+
             summary = (
                 f"{SUMMARY_PREFIX}\n"
                 f"Summary generation was unavailable. {n_dropped} message(s) were "
@@ -1663,36 +1669,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"}:
-            summary_role = "user"
-        else:
-            summary_role = "assistant"
-        # If the chosen role collides with the tail AND flipping wouldn't
-        # collide with the head, flip it.
-        if summary_role == first_tail_role:
-            flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
-                summary_role = flipped
-            else:
-                # Both roles would create consecutive same-role messages
-                # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
-
-        # When the summary lands as a standalone role="user" message,
-        # weak models read the verbatim "## Active Task" quote of a past
-        # user request as fresh input (#11475, #14521). Append the explicit
-        # end marker — the same one used in the merge-into-tail path — so
-        # the model has a clear "summary above, not new input" signal.
-        if not _merge_summary_into_tail and summary_role == "user":
-            summary = (
-                summary
-                + "\n\n--- END OF CONTEXT SUMMARY — "
-                "respond to the message below, not the summary above ---"
-            )
+        # Always insert as role="user" with the end marker.
+        # Using "assistant" causes the model to echo the summary as its own
+        # prior output, which leaks into the channel as a response.
+        # PR #20169 fixed the "user" role case (#11475, #14521) but left
+        # the "assistant" role path unfixed — this closes that gap.
+        summary_role = "user"
+        summary = (
+            summary
+            + "\n\n--- END OF CONTEXT SUMMARY — "
+            "respond to the message below, not the summary above ---"
+        )
+        # If head is also "user", merge into tail to avoid consecutive same-role.
+        if last_head_role == "user":
+            _merge_summary_into_tail = True
 
         if not _merge_summary_into_tail:
             compressed.append({"role": summary_role, "content": summary})

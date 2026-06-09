@@ -150,6 +150,29 @@ export function useSessionStateCache({
 
       pendingViewStateRef.current = { sessionId, state }
 
+      // Terminal / attention transitions (turn finished, error, or the agent is
+      // now waiting on the user) MUST reach the view immediately. Electron
+      // throttles `requestAnimationFrame` to ~0 while the window is
+      // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
+      // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
+      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
+      // (cancelling any in-flight RAF, since we're about to publish the latest
+      // state anyway). The plain busy heartbeat stays RAF-batched: that
+      // coalescing exists only to keep periodic `session.info` updates from
+      // churning `$messages` and jerking the scroll position while reading.
+      const isCriticalTransition = !state.busy || state.needsInput
+
+      if (isCriticalTransition) {
+        if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+          window.cancelAnimationFrame(viewSyncRafRef.current)
+          viewSyncRafRef.current = null
+        }
+
+        flushPendingViewState()
+
+        return
+      }
+
       if (viewSyncRafRef.current !== null) {
         return
       }

@@ -305,6 +305,10 @@ CREATE TABLE IF NOT EXISTS compression_locks (
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+-- Covering index for sidebar session list and auto-archive queries.
+-- Covers archived=0 AND message_count>=1 ORDER BY started_at DESC
+-- to avoid full table scans on large databases.
+CREATE INDEX IF NOT EXISTS idx_sessions_sidebar ON sessions(archived, message_count, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 -- Covering index for last_active subquery (SELECT MAX(timestamp) WHERE session_id = ...)
@@ -789,6 +793,34 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
+        # Covering indexes for common subqueries:
+        # - last_active: SELECT MAX(timestamp) WHERE session_id = ?
+        # - preview: SELECT content WHERE session_id, role='user' ORDER BY timestamp, id
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_session_ts_max "
+                "ON messages(session_id, timestamp DESC)"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_messages_session_ts_max create skipped: %s", exc)
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_session_role_ts_id "
+                "ON messages(session_id, role, timestamp, id)"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_messages_session_role_ts_id create skipped: %s", exc)
+
+        # v16 sidebar index — already in SCHEMA_SQL for new DBs, but
+        # ensure it exists on existing DBs that predate v16.
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_sidebar "
+                "ON sessions(archived, message_count, started_at DESC)"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_sessions_sidebar create skipped: %s", exc)
+
         # Deferred indexes that reference the reconciler-added ``active``
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
@@ -975,10 +1007,8 @@ class SessionDB:
 
         self._conn.commit()
 
-    # =========================================================================
-    # Session lifecycle
-    # =========================================================================
-
+    # ==================================================================    # Session lifecycle
+    # ==================================================================
     def _insert_session_row(
         self,
         session_id: str,
@@ -1747,6 +1777,44 @@ class SessionDB:
             f"            AND {alias}.started_at >= p.ended_at))"
         )
 
+    def _batch_compression_tips(self, root_ids: List[str]) -> Dict[str, str]:
+        """Walk compression-continuation chains for multiple roots in one query.
+
+        Returns a dict mapping root_id -> tip_id for each root that has a
+        continuation chain. Roots with no continuation map to themselves.
+        Replaces the N+1 ``get_compression_tip()`` calls in ``list_sessions_rich``.
+        """
+        if not root_ids:
+            return {}
+
+        placeholders = ",".join("?" * len(root_ids))
+        query = f"""
+            WITH RECURSIVE chain(root_id, cur_id) AS (
+                SELECT id, id FROM sessions WHERE id IN ({placeholders})
+                UNION ALL
+                SELECT c.root_id, child.id
+                FROM chain c
+                JOIN sessions parent ON parent.id = c.cur_id
+                JOIN sessions child ON child.parent_session_id = c.cur_id
+                WHERE parent.end_reason = 'compression'
+                  AND child.started_at >= parent.ended_at
+            )
+            SELECT root_id, MAX(cur_id) AS tip_id
+            FROM chain
+            GROUP BY root_id
+        """
+        with self._lock:
+            cursor = self._conn.execute(query, root_ids * 2)
+            rows = cursor.fetchall()
+
+        tips = {}
+        for row in rows:
+            rid = row["root_id"]
+            tid = row["tip_id"]
+            if tid != rid:
+                tips[rid] = tid
+        return tips
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -1964,12 +2032,22 @@ class SessionDB:
         # as the live conversation. Keep the root's started_at to preserve
         # chronological ordering by original conversation start.
         if project_compression_tips and not include_children:
+            # Batch project: collect compression roots, walk all chains in
+            # a single SQL query, then fetch tip rows individually.
+            compression_roots = [
+                s["id"] for s in sessions if s.get("end_reason") == "compression"
+            ]
+            if compression_roots:
+                tips = self._batch_compression_tips(compression_roots)
+            else:
+                tips = {}
+
             projected = []
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     projected.append(s)
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                tip_id = tips.get(s["id"], s["id"])
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
@@ -1992,6 +2070,256 @@ class SessionDB:
             sessions = projected
 
         return sessions
+
+    def archive_sessions(self, session_ids: List[str]) -> int:
+        """Soft-archive the listed sessions. Unknown IDs are skipped.
+
+        Returns the number of rows that were actually archived.
+        """
+        if not session_ids:
+            return 0
+
+        def _do(conn):
+            updated = 0
+            for start in range(0, len(session_ids), 500):
+                chunk = session_ids[start:start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
+
+        return self._execute_write(_do)
+
+    def archive_descendants(self) -> int:
+        """Archive sessions whose entire ancestor chain is already archived.
+
+        Catches compression-continuation children that were created after the
+        root was archived but before the auto-archive ran again.
+        Returns the number of rows archived.
+        """
+        def _do(conn):
+            rows = conn.execute(
+                """
+                WITH RECURSIVE archive_tree(id) AS (
+                    SELECT id FROM sessions WHERE archived = 1
+                    UNION ALL
+                    SELECT child.id
+                    FROM sessions child
+                    JOIN archive_tree parent_tree ON child.parent_session_id = parent_tree.id
+                    LEFT JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE child.archived = 0
+                      AND json_extract(child.model_config, '$._branched_from') IS NULL
+                      AND NOT (
+                          COALESCE(parent.end_reason, '') = 'branched'
+                          AND child.started_at >= parent.ended_at
+                      )
+                )
+                SELECT s.id
+                FROM sessions s
+                JOIN archive_tree tree ON tree.id = s.id
+                WHERE s.archived = 0
+                """
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            updated = 0
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
+        return self._execute_write(_do)
+
+    def maybe_auto_archive_old_sessions(
+        self,
+        *,
+        keep_recent: int = 100,
+        older_than_days: int = 14,
+        min_interval_hours: float = 6,
+        min_message_count: int = 1,
+        preserve_ids: Optional[List[str]] = None,
+        active_grace_seconds: int = 300,
+    ) -> Dict[str, Any]:
+        """Idempotent auto-maintenance: archive old, low-value sessions.
+
+        Skips if the last run was within ``min_interval_hours``.
+        Archives sessions that are:
+        - Older than ``older_than_days``
+        - Have fewer than ``min_message_count`` messages (default: 1)
+        - Not in the ``preserve_ids`` list
+        - Not recently active (within ``active_grace_seconds``)
+        - Beyond the ``keep_recent`` most recent sessions
+
+        Returns ``{"skipped": bool, "archived": int, "error": str|None}``.
+        """
+        result: Dict[str, Any] = {"skipped": False, "archived": 0}
+        try:
+            last_raw = self.get_meta("last_auto_archive")
+            now = time.time()
+            interval_seconds = max(0.0, float(min_interval_hours or 0)) * 3600
+            if last_raw and interval_seconds > 0:
+                try:
+                    last_ts = float(last_raw)
+                    if now - last_ts < interval_seconds:
+                        result["skipped"] = True
+                        return result
+                except (TypeError, ValueError):
+                    pass
+
+            older_than_days = max(0, int(older_than_days or 0))
+            keep_recent = max(0, int(keep_recent or 0))
+            min_message_count = max(0, int(min_message_count or 0))
+            if keep_recent <= 0 and older_than_days <= 0:
+                return result
+
+            preserved = {
+                str(sid).strip()
+                for sid in (preserve_ids or [])
+                if str(sid).strip()
+            }
+            cutoff = now - older_than_days * 86400 if older_than_days > 0 else None
+
+            def _do(conn):
+                # Find sessions eligible for archiving: old, few messages, not preserved
+                clauses = ["s.archived = 0"]
+                params = []
+
+                if min_message_count > 0:
+                    clauses.append("s.message_count >= ?")
+                    params.append(min_message_count)
+
+                if cutoff is not None:
+                    clauses.append("s.started_at < ?")
+                    params.append(cutoff)
+
+                # Keep the keep_recent most recent by started_at
+                if keep_recent > 0:
+                    # Find the boundary timestamp
+                    cursor = conn.execute(
+                        f"SELECT started_at FROM sessions s "
+                        f"WHERE {' AND '.join(clauses)} "
+                        f"AND s.id NOT IN ({','.join('?' for _ in preserved) if preserved else '1=0'}) "
+                        f"ORDER BY s.started_at DESC LIMIT 1 OFFSET ?",
+                        params + list(preserved) + [keep_recent],
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        return 0  # fewer sessions than keep_recent
+                    boundary = row["started_at"]
+                    clauses.append("s.started_at < ?")
+                    params.append(boundary)
+
+                if preserved:
+                    placeholders = ",".join("?" * len(preserved))
+                    clauses.append(f"s.id NOT IN ({placeholders})")
+                    params.extend(preserved)
+
+                where_sql = " AND ".join(clauses)
+                cursor = conn.execute(
+                    f"SELECT id FROM sessions s WHERE {where_sql}",
+                    params,
+                )
+                ids = [row["id"] for row in cursor.fetchall()]
+
+                updated = 0
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    placeholders = ",".join("?" * len(chunk))
+                    cursor = conn.execute(
+                        f"UPDATE sessions SET archived = 1 "
+                        f"WHERE archived = 0 AND id IN ({placeholders})",
+                        chunk,
+                    )
+                    updated += cursor.rowcount
+                return updated
+
+            archived = self._execute_write(_do)
+            result["archived"] = archived
+            self.set_meta("last_auto_archive", str(now))
+            if archived > 0:
+                logger.info(
+                    "state.db auto-maintenance: archived %d old session(s) "
+                    "(keep_recent=%d, older_than_days=%d)",
+                    archived, keep_recent, older_than_days,
+                )
+        except Exception as exc:
+            logger.warning("state.db auto-archive failed: %s", exc)
+            result["error"] = str(exc)
+        return result
+
+    def list_cron_job_runs(
+        self,
+        job_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List the run sessions produced by a single cron job, newest first.
+
+        Cron runs are flat, independent sessions whose id is
+        ``cron_{job_id}_{timestamp}`` (see ``cron/scheduler.run_job``). They are
+        never compression roots and never branch, so this deliberately skips the
+        ``list_sessions_rich`` recursive compression-chain CTE / leading-wildcard
+        ``id_query`` path — that path seeds from *every* ``source='cron'`` row in
+        the DB and only filters to one job's runs after the scan, so it scales
+        with the whole cron pile (a heavy history makes the desktop run-history
+        endpoint time out before it eventually populates).
+
+        Instead this binds to one job with a ``[prefix, prefix_hi)`` range over
+        the id (an index range scan, not a ``%...%`` substring), filters
+        ``source='cron'``, and orders by ``started_at DESC``. Work scales with
+        the requested window, not the total cron history.
+
+        Returns the same enriched row shape as ``list_sessions_rich`` (adds
+        ``preview`` + ``last_active``) so callers can reuse it.
+        """
+        prefix = f"cron_{job_id}_"
+        # Half-open upper bound for an index range scan: increment the final
+        # byte of the prefix so the range covers exactly the ids that start
+        # with ``prefix`` and nothing else. ``prefix`` always ends in '_', but
+        # compute it generically rather than hardcoding the successor char.
+        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+
+        query = """
+            SELECT s.*,
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS _preview_raw,
+                COALESCE(
+                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                    s.started_at
+                ) AS last_active
+            FROM sessions s
+            WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
+            ORDER BY s.started_at DESC, s.id DESC
+            LIMIT ? OFFSET ?
+        """
+        with self._lock:
+            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+            rows = cursor.fetchall()
+
+        runs: List[Dict[str, Any]] = []
+        for row in rows:
+            s = dict(row)
+            raw = s.pop("_preview_raw", "").strip()
+            if raw:
+                text = raw[:60]
+                s["preview"] = text + ("..." if len(raw) > 60 else "")
+            else:
+                s["preview"] = ""
+            runs.append(s)
+        return runs
 
     def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
@@ -2028,10 +2356,8 @@ class SessionDB:
             s["preview"] = ""
         return s
 
-    # =========================================================================
-    # Message storage
-    # =========================================================================
-
+    # ==================================================================    # Message storage
+    # ==================================================================
     # Sentinel prefix used to distinguish JSON-encoded structured content
     # (multimodal messages: lists of parts like text + image_url) from plain
     # string content. The NUL byte is not legal in normal text, so this
@@ -2679,10 +3005,8 @@ class SessionDB:
                 return False
         return False
 
-    # =========================================================================
-    # Rewind (soft-delete) — see /rewind slash command + issue #21910
-    # =========================================================================
-
+    # ==================================================================    # Rewind (soft-delete) — see /rewind slash command + issue #21910
+    # ==================================================================
     def rewind_to_message(
         self, session_id: str, target_message_id: int
     ) -> Dict[str, Any]:
@@ -2848,10 +3172,8 @@ class SessionDB:
             )
         return result
 
-    # =========================================================================
-    # Search
-    # =========================================================================
-
+    # ==================================================================    # Search
+    # ==================================================================
     @staticmethod
     def _sanitize_fts5_query(query: str) -> str:
         """Sanitize user input for safe use in FTS5 MATCH queries.
@@ -3335,10 +3657,8 @@ class SessionDB:
                 )
             return [dict(row) for row in cursor.fetchall()]
 
-    # =========================================================================
-    # Utility
-    # =========================================================================
-
+    # ==================================================================    # Utility
+    # ==================================================================
     def session_count(
         self,
         source: str = None,
@@ -3431,10 +3751,8 @@ class SessionDB:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
             return cursor.fetchone()[0]
 
-    # =========================================================================
-    # Export and cleanup
-    # =========================================================================
-
+    # ==================================================================    # Export and cleanup
+    # ==================================================================
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)

@@ -12971,9 +12971,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
+
+            # Markdown-capable platforms render a terminal command as a fenced
+            # code block (full command, no truncation) instead of the compact
+            # `terminal: "cmd…"` preview.  Gated on the adapter's
+            # ``supports_code_blocks`` capability so plain-text platforms keep
+            # the short line.  No language tag is emitted — Slack mrkdwn renders
+            # the tag as a literal first code line ("bash"), and a bare fence
+            # renders correctly everywhere that supports blocks.
+            _code_block = None
+            try:
+                _progress_adapter = self.adapters.get(source.platform)
+            except Exception:
+                _progress_adapter = None
+            if (
+                getattr(_progress_adapter, "supports_code_blocks", False)
+                and tool_name == "terminal"
+                and isinstance(args, dict)
+                and isinstance(args.get("command"), str)
+                and args["command"].strip()
+            ):
+                _code_block = f"{emoji} {tool_name}\n```\n{args['command'].rstrip()}\n```"
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
+                if _code_block is not None:
+                    progress_queue.put(_code_block)
+                    return
                 if args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
@@ -12994,7 +13018,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
-            if preview:
+            # Terminal commands on markdown platforms get the full fenced block
+            # built above instead of the truncated preview.
+            if _code_block is not None:
+                msg = _code_block
+            elif preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40

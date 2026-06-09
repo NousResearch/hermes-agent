@@ -1641,8 +1641,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
-            await self._app.start()
-
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
 
@@ -1716,9 +1714,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                     error_callback=_polling_error_callback,
                 )
+
+            # Match python-telegram-bot's run_polling lifecycle: initialize,
+            # start polling/webhook, then start the application so the update
+            # processor is attached after the updater is actively receiving.
+            app = self._app
+            if app is None:
+                raise RuntimeError("Telegram application was not initialized")
+            await app.start()
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
@@ -1781,6 +1787,23 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
+            app = self._app
+            if app is not None:
+                try:
+                    updater = getattr(app, "updater", None)
+                    if updater and getattr(updater, "running", False):
+                        await updater.stop()
+                    if getattr(app, "running", False):
+                        await app.stop()
+                    shutdown = getattr(app, "shutdown", None)
+                    if shutdown:
+                        await shutdown()
+                except Exception:
+                    logger.debug(
+                        "[%s] Telegram startup cleanup failed (non-fatal)",
+                        self.name,
+                        exc_info=True,
+                    )
             self._release_platform_lock()
             message = f"Telegram startup failed: {e}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)

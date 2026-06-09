@@ -288,6 +288,122 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_starts_polling_before_application_without_dropping_updates(monkeypatch):
+    """Initial polling startup must match PTB's run_polling lifecycle.
+
+    Starting the PTB application before the updater can leave Hermes reporting
+    "Connected to Telegram" while no long-poll consumer drains incoming DMs.
+    Dropping pending updates on the same startup then discards the queued DM
+    that would prove the poller was wedged.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    calls = []
+    start_polling_kwargs = {}
+
+    async def fake_start_polling(**kwargs):
+        calls.append("start_polling")
+        start_polling_kwargs.update(kwargs)
+
+    async def fake_app_start():
+        calls.append("app_start")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(side_effect=fake_app_start),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert calls[:2] == ["start_polling", "app_start"]
+    assert start_polling_kwargs["drop_pending_updates"] is False
+
+
+@pytest.mark.asyncio
+async def test_connect_cleans_up_polling_when_application_start_fails(monkeypatch):
+    """A post-polling app.start failure must not leave getUpdates running."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    release = MagicMock()
+    monkeypatch.setattr("gateway.status.release_scoped_lock", release)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(side_effect=RuntimeError("app start failed")),
+        stop=AsyncMock(),
+        shutdown=AsyncMock(),
+        running=False,
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.fatal_error_code == "telegram_connect_error"
+    updater.start_polling.assert_awaited_once()
+    updater.stop.assert_awaited_once()
+    app.shutdown.assert_awaited_once()
+    release.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 

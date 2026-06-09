@@ -564,6 +564,8 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        enabled_toolsets: list[str] | None = None,
+        disabled_toolsets: list[str] | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -590,9 +592,18 @@ class SessionManager:
 
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
+            "enabled_toolsets": (
+                list(enabled_toolsets)
+                if enabled_toolsets is not None
+                else _expand_acp_enabled_toolsets(
+                    ["hermes-acp"],
+                    mcp_server_names=configured_mcp_servers,
+                )
+            ),
+            "disabled_toolsets": (
+                list(disabled_toolsets)
+                if disabled_toolsets is not None
+                else None
             ),
             "quiet_mode": True,
             "session_id": session_id,

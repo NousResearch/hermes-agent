@@ -941,6 +941,7 @@ class TestSessionConfiguration:
     @pytest.mark.asyncio
     async def test_set_session_model_accepts_provider_prefixed_choice(self, tmp_path, monkeypatch):
         runtime_calls = []
+        agent_calls = []
 
         def fake_resolve_runtime_provider(requested=None, **kwargs):
             runtime_calls.append(requested)
@@ -955,11 +956,14 @@ class TestSessionConfiguration:
             }
 
         def fake_agent(**kwargs):
+            agent_calls.append(dict(kwargs))
             return SimpleNamespace(
                 model=kwargs.get("model"),
                 provider=kwargs.get("provider"),
                 base_url=kwargs.get("base_url"),
                 api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
             )
 
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
@@ -996,6 +1000,20 @@ class TestSessionConfiguration:
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
         assert runtime_calls[-1] == "anthropic"
+
+        # Recreated ACP agents must preserve any session-scoped MCP toolsets
+        # the session already accumulated before the model switch.
+        state.agent.enabled_toolsets = ["hermes-acp", "mcp-demo-search"]
+        state.agent.disabled_toolsets = ["browser"]
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            result = await acp_agent.set_session_model(
+                model_id="anthropic:claude-sonnet-4-6",
+                session_id=state.session_id,
+            )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert agent_calls[-1]["enabled_toolsets"] == ["hermes-acp", "mcp-demo-search"]
+        assert agent_calls[-1]["disabled_toolsets"] == ["browser"]
 
 
 # ---------------------------------------------------------------------------
@@ -1657,11 +1675,14 @@ class TestSlashCommands:
             }
 
         def fake_agent(**kwargs):
+            runtime_calls.append(kwargs.get("enabled_toolsets"))
             return SimpleNamespace(
                 model=kwargs.get("model"),
                 provider=kwargs.get("provider"),
                 base_url=kwargs.get("base_url"),
                 api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
             )
 
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
@@ -1690,11 +1711,15 @@ class TestSlashCommands:
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             acp_agent = HermesACPAgent(session_manager=manager)
             state = manager.create_session(cwd="/tmp")
+            state.agent.enabled_toolsets = ["hermes-acp", "mcp-demo-search"]
+            state.agent.disabled_toolsets = ["browser"]
             result = acp_agent._cmd_model("anthropic:claude-sonnet-4-6", state)
 
         assert "Provider: anthropic" in result
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-demo-search"]
+        assert state.agent.disabled_toolsets == ["browser"]
         # ``state.agent.provider == "anthropic"`` plus the base_url check above
         # already prove ``fake_resolve_runtime_provider`` was called with
         # ``requested="anthropic"`` for the model-switch step — the agent's

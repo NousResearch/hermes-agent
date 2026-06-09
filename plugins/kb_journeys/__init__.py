@@ -899,11 +899,11 @@ def _restore_tools(target: str, receipt: dict[str, Any]) -> tuple[str, str]:
 
 def _restore_preview_text(payload: Any) -> str:
     if isinstance(payload, dict) and payload.get("error"):
-        return f"Queue restore preview failed\n{payload['error']}"
+        return f"Review restore preview failed\n{payload['error']}"
     if not isinstance(payload, dict):
-        return f"Queue restore preview\n{_short(payload, 'No structured response returned.')}"
+        return f"Review restore preview\n{_short(payload, 'No structured response returned.')}"
     lines = [
-        "Queue restore preview",
+        "Review restore preview",
         f"Status: {_short(payload.get('status') or payload.get('state'))} · ok: {_short(payload.get('ok'))}",
     ]
     restorable = _id_list(payload.get("restorable_ids"))
@@ -960,12 +960,12 @@ def _render_restore_preview(
     try:
         from tools.kb_callback_registry import KbAction
     except Exception:
-        return {"title": "KB Queue Restore", "text": "KB Queue Restore\nAction buttons are unavailable. Use /kb queue to refresh.", "actions": []}
+        return {"title": "KB Review Restore", "text": "KB Review Restore\nAction buttons are unavailable. Use /kb review to refresh.", "actions": []}
     preview_tool, _confirm_tool = _restore_tools(target, receipt)
     preview_payload = _result_payload(ctx.dispatch_tool(preview_tool, _restore_args_from_receipt(receipt)))
     text = _restore_preview_text(preview_payload)
     if not _preview_allows_confirmation(preview_payload):
-        return {"title": "KB Queue Restore", "text": text, "actions": []}
+        return {"title": "KB Review Restore", "text": text, "actions": []}
     preview_metadata = _queue_preview_metadata(preview_payload)
     confirm_action = KbAction(
         label="Confirm Restore",
@@ -985,7 +985,7 @@ def _render_restore_preview(
         },
     )
     return {
-        "title": "KB Queue Restore",
+        "title": "KB Review Restore",
         "text": text + "\n\nConfirm restore only if these ids match the receipt you intended to undo.",
         "actions": [confirm_action],
     }
@@ -1004,7 +1004,7 @@ def _render_restore_confirm(
     if not effective_metadata.get("preview_lease"):
         preview_payload = _result_payload(ctx.dispatch_tool(preview_tool, _restore_args_from_receipt(receipt)))
         if not _preview_allows_confirmation(preview_payload):
-            return {"title": "KB Queue Restore", "text": _restore_preview_text(preview_payload), "actions": []}
+            return {"title": "KB Review Restore", "text": _restore_preview_text(preview_payload), "actions": []}
         effective_metadata.update(_queue_preview_metadata(preview_payload))
     args = _restore_args_from_receipt(receipt)
     review_session_id = _review_session_id(effective_metadata)
@@ -1030,7 +1030,7 @@ def _render_restore_confirm(
     packet_card = _render_supported_result_packet(payload, ctx=ctx, target=target)
     if packet_card is not None:
         return packet_card
-    return {"title": "KB Queue Restore", "text": _restore_preview_text(payload).replace("preview", "result", 1), "actions": []}
+    return {"title": "KB Review Restore", "text": _restore_preview_text(payload).replace("preview", "result", 1), "actions": []}
 
 
 def _render_request_receipt_packet(
@@ -1040,7 +1040,7 @@ def _render_request_receipt_packet(
     target: str = "",
 ) -> dict[str, Any]:
     route = _short(packet.get("route"), "")
-    title = "KB Queue Receipt" if route.startswith("queue.") else "KB Request Receipt"
+    title = "KB Review Receipt" if route.startswith("queue.") else "KB Request Receipt"
     lines = [
         title,
         f"State: {_short(packet.get('state') or packet.get('status'))}",
@@ -1325,8 +1325,11 @@ def _todo_count_from_summary(summary: dict[str, Any]) -> Any:
 
 def _display_text(value: Any) -> str:
     text = _short(value, "")
-    if text == "Review prioritized queue items through workbench.queue.":
-        return "Review prioritized attention items; use /kb queue for proposal review."
+    if text in {
+        "Review prioritized queue items through workbench.queue.",
+        "Review prioritized review items through workbench.queue.",
+    }:
+        return "Review prioritized attention items; use /kb review for proposal review."
     return text
 
 
@@ -1339,8 +1342,8 @@ def _dashboard_section_title(section: dict[str, Any], summary: dict[str, Any]) -
         todo_count = _todo_count_from_summary(summary)
         legacy_queue_count = summary.get("queue_item_count")
         if proposal_count is None or (todo_count is not None and legacy_queue_count == todo_count):
-            return "Attention Queue"
-        return "Proposal Queue"
+            return "Attention Review"
+        return "Proposal Review"
     return title
 
 
@@ -2792,10 +2795,10 @@ def _queue_decision_commands(item: dict[str, Any], *, index: int) -> list[str]:
             label = "Reject proposal"
         elif decision == "archive" and not any(d in {"complete", "keep", "demote"} for d, _ in decisions):
             label = "Archive proposal"
-        lines.append(f"- {label}: /kb queue {decision} {index}")
+        lines.append(f"- {label}: /kb review {decision} {index}")
     if decisions:
         example_decision = decisions[0][0]
-        lines.append(f"Confirm from the preview button; text fallback: /kb queue {example_decision} {index} confirm")
+        lines.append(f"Confirm from the preview button; text fallback: /kb review {example_decision} {index} confirm")
     return lines
 
 
@@ -2872,7 +2875,7 @@ def _queue_descriptor_actions(
                 action_id="queue.advisory_guidance",
                 handler=lambda callback_ctx, d=descriptor_copy: _render_descriptor_guidance(
                     d,
-                    title="KB Queue LLM Guidance",
+                    title="KB Review LLM Guidance",
                 ),
                 metadata={
                     "target_kind": "proposal_queue",
@@ -3194,7 +3197,7 @@ def _render_control_action_preview(
     try:
         from tools.kb_callback_registry import KbAction
     except Exception:
-        return {"title": "KB Control", "text": "KB Control\nAction buttons are unavailable. Refresh from /kb queue.", "actions": []}
+        return {"title": "KB Control", "text": "KB Control\nAction buttons are unavailable. Refresh from /kb review.", "actions": []}
 
     label = _short(action.get("label") or "Apply", "Apply")
     missing_inputs = _action_required_inputs(action)
@@ -3317,12 +3320,12 @@ def _render_queue_descriptor_preview(
     try:
         from tools.kb_callback_registry import KbAction
     except Exception:
-        return {"title": "KB Queue", "text": "KB Queue\nAction buttons are unavailable. Use /kb queue to refresh.", "actions": []}
+        return {"title": "KB Review", "text": "KB Review\nAction buttons are unavailable. Use /kb review to refresh.", "actions": []}
 
     params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
     decision = str(params.get("decision") or "").strip().lower()
     if not decision:
-        return {"title": "KB Queue", "text": "KB Queue\nThis action is missing a proposal decision.", "actions": []}
+        return {"title": "KB Review", "text": "KB Review\nThis action is missing a proposal decision.", "actions": []}
     proposal_ids = [str(proposal_id) for proposal_id in (params.get("proposal_ids") or []) if str(proposal_id)] or _proposal_ids_for_item(item)
     actor = _queue_callback_actor(callback_ctx)
     source = "Hermes Telegram Action Card"
@@ -3343,7 +3346,7 @@ def _render_queue_descriptor_preview(
     selection = [(index, item)]
     text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
     if not _preview_allows_confirmation(preview_payload):
-        return {"title": "KB Queue", "text": text, "actions": []}
+        return {"title": "KB Review", "text": text, "actions": []}
     preview_metadata = _queue_preview_metadata(preview_payload)
     label = _short(descriptor.get("label") or decision.replace("_", " ").title(), decision.title())
     action_id = _short(descriptor.get("action_id") or f"queue.{decision}", f"queue.{decision}")
@@ -3369,7 +3372,7 @@ def _render_queue_descriptor_preview(
         },
     )
     return {
-        "title": "KB Queue",
+        "title": "KB Review",
         "text": text + "\n\nConfirm with the button below only if the preview matches your intent.",
         "actions": [confirm_action],
     }
@@ -3388,7 +3391,7 @@ def _render_queue_descriptor_confirm(
     params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
     decision = str(params.get("decision") or "").strip().lower()
     if not decision:
-        return {"title": "KB Queue", "text": "KB Queue\nThis action is missing a proposal decision.", "actions": []}
+        return {"title": "KB Review", "text": "KB Review\nThis action is missing a proposal decision.", "actions": []}
     proposal_ids = [str(proposal_id) for proposal_id in (params.get("proposal_ids") or []) if str(proposal_id)] or _proposal_ids_for_item(item)
     actor = _queue_callback_actor(callback_ctx)
     source = "Hermes Telegram Action Card"
@@ -3411,7 +3414,7 @@ def _render_queue_descriptor_confirm(
             )
         )
         if not _preview_allows_confirmation(preview_payload):
-            return {"title": "KB Queue", "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection), "actions": []}
+            return {"title": "KB Review", "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection), "actions": []}
         effective_metadata.update(_queue_preview_metadata(preview_payload))
     confirmed_args = _queue_descriptor_call_args(
         descriptor,
@@ -3437,7 +3440,7 @@ def _render_queue_descriptor_confirm(
     if packet_card is not None:
         return packet_card
     return {
-        "title": "KB Queue",
+        "title": "KB Review",
         "text": _confirmed_text(decision, confirmed_payload, selection=selection, proposal_ids=proposal_ids),
         "actions": [],
     }
@@ -3446,7 +3449,7 @@ def _render_queue_descriptor_confirm(
 def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
     proposal_ids = _proposal_ids_for_item(item)
     lines = [
-        f"Queue Item {index}",
+        f"Review Item {index}",
         f"Title: {_item_title(item)}",
     ]
     kind = _item_kind(item)
@@ -3489,7 +3492,7 @@ def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
 def _queue_review_text(data: Any, visible_items: list[Any], *, total: int | None, offset: int) -> str:
     item = visible_items[0] if visible_items and isinstance(visible_items[0], dict) else None
     if item is None:
-        return "KB Queue\nNo proposal previews returned."
+        return "KB Review\nNo proposal previews returned."
     current = offset + 1
     total_label = total if total is not None else len(visible_items)
     title = _item_title(item)
@@ -3605,7 +3608,7 @@ def _queue_selection_from_snapshot(snapshots: Any) -> list[tuple[int, dict[str, 
             index = offset
         proposal_ids = [str(item) for item in (snapshot.get("proposal_ids") or []) if str(item).strip()]
         item = {
-            "title": _short(snapshot.get("title"), "Queue item"),
+            "title": _short(snapshot.get("title"), "Review item"),
             "kind": _short(snapshot.get("kind"), ""),
             "target": _short(snapshot.get("target"), ""),
             "detail": _short(snapshot.get("detail"), ""),
@@ -3772,7 +3775,7 @@ def _preview_text(
     if selection is None:
         selection = [(0, item)] if isinstance(item, dict) else []
     if isinstance(payload, dict) and payload.get("error"):
-        return f"Queue {decision} preview failed\n{payload['error']}"
+        return f"Review {decision} preview failed\n{payload['error']}"
     if isinstance(payload, dict):
         status = _short(payload.get("status"))
         ok = _short(payload.get("ok"))
@@ -3782,7 +3785,7 @@ def _preview_text(
             or _get_path(payload, "plan", "summary")
             or f"{decision.title()} {len(proposal_ids)} proposal(s).",
         )
-        lines = [f"Queue {decision} preview"]
+        lines = [f"Review {decision} preview"]
         if selection:
             lines.append(f"Items: {len(selection)}")
             lines.extend(_selection_lines(selection))
@@ -3796,7 +3799,7 @@ def _preview_text(
         )
         lines.extend(_queue_scope_lines(payload))
         return "\n".join(lines)
-    lines = [f"Queue {decision} preview"]
+    lines = [f"Review {decision} preview"]
     if selection:
         lines.extend(_selection_lines(selection))
     lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
@@ -3863,7 +3866,7 @@ def _confirmed_text(
     proposal_ids: list[str] | None = None,
 ) -> str:
     if isinstance(payload, dict) and payload.get("error"):
-        return f"Queue {decision} failed\n{payload['error']}"
+        return f"Review {decision} failed\n{payload['error']}"
     packet_card = _render_supported_result_packet(payload)
     if packet_card is not None:
         return packet_card["text"]
@@ -3885,18 +3888,18 @@ def _confirmed_text(
             "validation_failed",
         }:
             lines = [
-                f"Queue {decision.title()} Blocked",
+                f"Review {decision.title()} Blocked",
                 f"Status: {status or 'blocked'} · ok: {_short(payload.get('ok'))}",
             ]
             if reason:
                 lines.append("Reason: " + _clip(reason, 220))
             lines.extend(_receipt_lines(payload))
-            lines.append("Next: /kb queue")
+            lines.append("Next: /kb review")
             return "\n".join(lines)
         publication = payload.get("publication") if isinstance(payload.get("publication"), dict) else {}
         git_state = payload.get("git") if isinstance(payload.get("git"), dict) else {}
         lines = [
-            f"Queue {decision.title()} Applied",
+            f"Review {decision.title()} Applied",
             f"{past_tense} {len(proposal_ids) or len(selection)} proposal(s).",
         ]
         if selection:
@@ -3921,15 +3924,15 @@ def _confirmed_text(
             git_summary = _git_summary(git_state)
             if git_summary:
                 lines.append("Git: " + git_summary)
-        lines.append("Next: /kb queue")
+        lines.append("Next: /kb review")
         return "\n".join(lines)
     lines = [
-        f"Queue {decision.title()} Applied",
+        f"Review {decision.title()} Applied",
         f"{past_tense} {len(proposal_ids) or len(selection)} proposal(s).",
     ]
     if selection:
         lines.extend(["", "Changed:", *_selection_lines(selection)])
-    lines.append("Next: /kb queue")
+    lines.append("Next: /kb review")
     return "\n".join(lines)
 
 
@@ -4291,10 +4294,10 @@ def _iterative_queue_next_text(data: Any, *, session_id: str = "") -> str:
     if not items:
         if session_id:
             _clear_iterative_queue_reply_state(session_id)
-        return "Queue is empty."
+        return "Review is empty."
     item = items[0] if isinstance(items[0], dict) else {}
     if not item:
-        return "Next queue item could not be rendered. Use /kb queue to refresh."
+        return "Next review item could not be rendered. Use /kb review to refresh."
     _store_iterative_state_from_item(session_id, item)
     count = _queue_count(data)
     proposal_ids = _proposal_ids_for_item(item)
@@ -4304,7 +4307,7 @@ def _iterative_queue_next_text(data: Any, *, session_id: str = "") -> str:
             decisions.append(fallback)
     lines: list[str] = []
     if count is not None:
-        lines.append(f"Queue now has {count} proposal(s).")
+        lines.append(f"Review now has {count} proposal(s).")
         lines.append("")
     lines.extend(["Next item:", "", _item_title(item)])
     detail = _item_detail(item)
@@ -4326,7 +4329,7 @@ def _iterative_selection_from_state(state: dict[str, Any]) -> list[tuple[int, di
         (
             1,
             {
-                "title": _short(state.get("title"), "Current queue item"),
+                "title": _short(state.get("title"), "Current review item"),
                 "raw": {"proposal_ids": list(state.get("proposal_ids") or [])},
             },
         )
@@ -4342,18 +4345,18 @@ def _render_iterative_queue_reply_decision(
     decision: str,
 ) -> dict[str, Any]:
     proposal_ids = [str(item) for item in (state.get("proposal_ids") or []) if str(item).strip()]
-    title = _short(state.get("title"), "current queue item")
+    title = _short(state.get("title"), "current review item")
     selection = _iterative_selection_from_state(state)
     if decision == "detail":
         lines = [
-            "Queue Item",
+            "Review Item",
             f"Title: {title}",
             f"Proposal ids: {', '.join(proposal_ids)}",
             "Reply: " + ", ".join(state.get("choices") or sorted(QUEUE_REPLY_DECISIONS)) + ".",
         ]
-        return {"title": "KB Queue", "text": "\n".join(lines), "actions": []}
+        return {"title": "KB Review", "text": "\n".join(lines), "actions": []}
     if decision not in QUEUE_REPLY_TOOL_DECISIONS:
-        return {"title": "KB Queue", "text": "That queue reply is not supported. Use /kb queue to refresh.", "actions": []}
+        return {"title": "KB Review", "text": "That review reply is not supported. Use /kb review to refresh.", "actions": []}
     actor = "telegram:operator"
     source = "Hermes Telegram iterative queue"
     preview_tool = _mcp_tool_name(target, "queue.decision_preview")
@@ -4365,14 +4368,14 @@ def _render_iterative_queue_reply_decision(
                 "decision": decision,
                 "actor": actor,
                 "source": source,
-                "note": f"Previewed from Telegram iterative queue reply for {title}",
+                "note": f"Previewed from Telegram iterative review reply for {title}",
             },
         )
     )
     text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
     if _preview_allows_confirmation(preview_payload):
-        text += f"\nTo apply: /kb queue {decision} 1 confirm"
-    return {"title": "KB Queue", "text": text, "actions": []}
+        text += f"\nTo apply: /kb review {decision} 1 confirm"
+    return {"title": "KB Review", "text": text, "actions": []}
 
 
 def _render_visible_scope_all_decision(
@@ -4386,17 +4389,17 @@ def _render_visible_scope_all_decision(
     selection = _queue_selection_from_snapshot(visible_record.get("selection")) if visible_record else []
     if not selection:
         return {
-            "title": "KB Queue",
+            "title": "KB Review",
             "text": (
-                "KB Queue\n"
+                "KB Review\n"
                 f"I can only {decision} all against the proposals currently shown in this Telegram thread. "
-                "Run /kb queue first, then ask again."
+                "Run /kb review first, then ask again."
             ),
             "actions": [],
         }
     proposal_ids = _proposal_ids_for_selection(selection)
     if not proposal_ids:
-        return {"title": "KB Queue", "text": "KB Queue\nThe visible queue window did not include proposal ids.", "actions": []}
+        return {"title": "KB Review", "text": "KB Review\nThe visible review window did not include proposal ids.", "actions": []}
     actor = "telegram:operator"
     source = "Hermes Telegram visible queue"
     preview_tool = _mcp_tool_name(target, "queue.decision_preview")
@@ -4418,7 +4421,7 @@ def _render_visible_scope_all_decision(
         )
     )
     text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
-    text += "\nScope: visible Telegram queue window only, not the full pending queue."
+    text += "\nScope: visible Telegram review window only, not the full pending review inbox."
     if _preview_allows_confirmation(preview_payload):
         indices = [index for index, _ in selection]
         _store_queue_text_preview_scope(
@@ -4428,8 +4431,8 @@ def _render_visible_scope_all_decision(
             selection=selection,
             preview_payload=preview_payload,
         )
-        text += f"\nTo apply: /kb queue {decision} {_format_indices(indices)} confirm"
-    return {"title": "KB Queue", "text": text, "actions": []}
+        text += f"\nTo apply: /kb review {decision} {_format_indices(indices)} confirm"
+    return {"title": "KB Review", "text": text, "actions": []}
 
 
 def _queue_summary_payload(
@@ -5054,17 +5057,17 @@ def _parse_queue_command_args(args: str, *, command: str) -> tuple[str, list[int
 
 def _queue_command_help() -> dict[str, Any]:
     return {
-        "title": "KB Queue",
+        "title": "KB Review",
         "text": "\n".join(
             [
-                "KB Queue",
-                "Use /kb queue to list proposals.",
-                "Use /kb queue review 1 to inspect one item.",
-                "Use /kb queue reject 1 to preview a decision.",
-                "Use /kb queue complete 1 for a TODO-backed proposal.",
+                "KB Review",
+                "Use /kb review to list proposals.",
+                "Use /kb review 1 to inspect one item.",
+                "Use /kb review reject 1 to preview a decision.",
+                "Use /kb review complete 1 for a TODO-backed proposal.",
                 "Confirm from the Telegram preview button when available.",
-                "Text fallback: /kb queue reject 1 confirm only after that exact Telegram preview.",
-                "Reply Reject all to preview only the queue items currently shown in Telegram.",
+                "Text fallback: /kb review reject 1 confirm only after that exact Telegram preview.",
+                "Reply Reject all to preview only the review items currently shown in Telegram.",
             ]
         ),
         "actions": [],
@@ -5076,12 +5079,12 @@ def _render_queue_item(data: Any, *, index: int, ctx: Any, target: str) -> dict[
     if item is None:
         total = len(_queue_items_from_payload(data))
         return {
-            "title": "KB Queue",
-            "text": f"KB Queue\nNo item {index} in the current queue window ({total} shown). Use /kb queue to refresh.",
+            "title": "KB Review",
+            "text": f"KB Review\nNo item {index} in the current review window ({total} shown). Use /kb review to refresh.",
             "actions": [],
         }
     return {
-        "title": "KB Queue",
+        "title": "KB Review",
         "text": _queue_item_text(item, index=index),
         "actions": _queue_descriptor_actions(
             ctx,
@@ -5124,7 +5127,7 @@ def _render_queue_skip(
             card = _render_queue_item(server_data, index=1, ctx=ctx, target=target)
             card["text"] = (
                 f"Skipped item {offset + index} locally. No KB state changed.\n"
-                "Advanced to the next kb-engine queue window.\n\n"
+                "Advanced to the next kb-engine review window.\n\n"
                 + card["text"]
             )
             return card
@@ -5135,8 +5138,8 @@ def _render_queue_skip(
         if session_id:
             _clear_iterative_queue_reply_state(session_id)
         return {
-            "title": "KB Queue",
-            "text": "KB Queue\nNo more items are visible in this Telegram window. Refresh with /kb queue.",
+            "title": "KB Review",
+            "text": "KB Review\nNo more items are visible in this Telegram window. Refresh with /kb review.",
             "actions": [],
         }
     _store_iterative_state_from_item(session_id, next_item)
@@ -5238,9 +5241,9 @@ def _render_queue_text_decision(
         missing: list[int] = []
         if not selection:
             return {
-                "title": "KB Queue",
+                "title": "KB Review",
                 "text": (
-                    "KB Queue\n"
+                    "KB Review\n"
                     "That confirmation is not tied to a current Telegram preview. "
                     "Preview the exact item(s) again, then confirm from that preview."
                 ),
@@ -5251,8 +5254,8 @@ def _render_queue_text_decision(
         if not selection:
             total = len(_queue_items_from_payload(data))
             return {
-                "title": "KB Queue",
-                "text": f"KB Queue\nNo selected items in the current queue window ({total} shown). Use /kb queue to refresh.",
+                "title": "KB Review",
+                "text": f"KB Review\nNo selected items in the current review window ({total} shown). Use /kb review to refresh.",
                 "actions": [],
             }
         if missing:
@@ -5261,7 +5264,7 @@ def _render_queue_text_decision(
             pass
     proposal_ids = _proposal_ids_for_selection(selection)
     if not proposal_ids:
-        return {"title": "KB Queue", "text": "No proposal ids were available for the selected queue item(s).", "actions": []}
+        return {"title": "KB Review", "text": "No proposal ids were available for the selected review item(s).", "actions": []}
     selected_titles = ", ".join(_item_title(item) for _, item in selection)
     index_text = _format_indices([index for index, _ in selection])
     preview_tool = _mcp_tool_name(target, "queue.decision_preview")
@@ -5281,7 +5284,7 @@ def _render_queue_text_decision(
                     "displayed_count": len(proposal_ids),
                     "actor": actor,
                     "source": source,
-                    "note": f"Previewed from Telegram /kb queue text command for {selected_titles}",
+                    "note": f"Previewed from Telegram /kb review text command for {selected_titles}",
                 },
             )
         )
@@ -5290,7 +5293,7 @@ def _render_queue_text_decision(
     if not confirm:
         text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
         if missing:
-            text += "\nMissing queue item(s): " + ", ".join(str(index) for index in missing)
+            text += "\nMissing review item(s): " + ", ".join(str(index) for index in missing)
         actions: list[Any] = []
         if _preview_allows_confirmation(preview_payload):
             _store_queue_text_preview_scope(
@@ -5301,7 +5304,7 @@ def _render_queue_text_decision(
                 preview_payload=preview_payload,
             )
             text += "\nConfirm with the button below when it matches your intent."
-            text += f"\nText fallback: /kb queue {decision} {index_text} confirm"
+            text += f"\nText fallback: /kb review {decision} {index_text} confirm"
             try:
                 from tools.kb_callback_registry import KbAction
 
@@ -5331,10 +5334,10 @@ def _render_queue_text_decision(
                 ]
             except Exception:
                 actions = []
-        return {"title": "KB Queue", "text": text, "actions": actions}
+        return {"title": "KB Review", "text": text, "actions": actions}
     if not preview_metadata.get("preview_lease") and not _preview_allows_confirmation(preview_payload):
         return {
-            "title": "KB Queue",
+            "title": "KB Review",
             "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection),
             "actions": [],
         }
@@ -5349,10 +5352,10 @@ def _render_queue_text_decision(
             "surface": "telegram",
             "action": f"queue.{decision}",
             "preview_required": True,
-            "confirmation_text": f"/kb queue {decision} {index_text} confirm",
+            "confirmation_text": f"/kb review {decision} {index_text} confirm",
             "proposal_ids": proposal_ids,
         },
-        "note": f"Confirmed from Telegram /kb queue text command for {selected_titles}",
+        "note": f"Confirmed from Telegram /kb review text command for {selected_titles}",
     }
     _apply_queue_preview_metadata(confirmed_args, preview_metadata)
     _apply_queue_confirmation_preview_metadata(confirmed_args["user_confirmation"], preview_metadata)
@@ -5360,12 +5363,12 @@ def _render_queue_text_decision(
     packet_card = _render_supported_result_packet(confirmed_payload, ctx=ctx, target=target)
     if packet_card is not None:
         if missing:
-            packet_card["text"] += "\nSkipped missing queue item(s): " + ", ".join(str(index) for index in missing)
+            packet_card["text"] += "\nSkipped missing review item(s): " + ", ".join(str(index) for index in missing)
         return packet_card
     text = _confirmed_text(decision, confirmed_payload, selection=selection, proposal_ids=proposal_ids)
     if missing:
-        text += "\nSkipped missing queue item(s): " + ", ".join(str(index) for index in missing)
-    return {"title": "KB Queue", "text": text, "actions": []}
+        text += "\nSkipped missing review item(s): " + ", ".join(str(index) for index in missing)
+    return {"title": "KB Review", "text": text, "actions": []}
 
 
 def _workflow_id_from_args(args: str) -> tuple[str, str]:
@@ -5714,7 +5717,7 @@ def _render_queue(
     session_id: str = "",
 ) -> dict[str, Any]:
     if isinstance(data, str):
-        return {"title": "KB Queue", "text": f"KB Queue\n{data}", "actions": []}
+        return {"title": "KB Review", "text": f"KB Review\n{data}", "actions": []}
     count = None
     if isinstance(data, dict):
         count = data.get("total") or data.get("count") or _count_from(data, "queue", "proposals")
@@ -5729,11 +5732,11 @@ def _render_queue(
     elif session_id:
         _clear_iterative_queue_reply_state(session_id)
     if not items:
-        lines = ["KB Queue"]
+        lines = ["KB Review"]
         if count is not None:
             lines.append(f"{count} pending")
         lines.append("No proposal previews returned.")
-        return {"title": "KB Queue", "text": "\n".join(lines), "actions": []}
+        return {"title": "KB Review", "text": "\n".join(lines), "actions": []}
     return {
         "title": "KB Review",
         "text": _queue_review_text(data, visible_items, total=total, offset=offset),
@@ -5982,7 +5985,7 @@ def _card_for_command(
             return _queue_command_help()
         data, errors = _queue_summary_payload(ctx, target, scope=queue_scope, limit=5)
         if data is None:
-            return _render_error("KB Queue", target, errors)
+            return _render_error("KB Review", target, errors)
         if mode == "review" and indices:
             return _render_queue_item(data, index=indices[0], ctx=ctx, target=target)
         if mode == "decision" and indices and decision:

@@ -241,7 +241,7 @@ def test_kb_command_renders_live_dashboard_without_calling_todo_count_queue(monk
     assert "kb status: runtime degraded · publication dirty" in text
     assert "TODOs 309" in text
     assert "Queue 309" not in text
-    assert "Attention Queue" in text
+    assert "Attention Review" in text
     assert "Review prioritized attention items" in text
     assert "Commands: /kb status · /kb sync · /kb review" in text
 
@@ -1268,7 +1268,7 @@ def test_dashboard_proposal_queue_descriptor_uses_generic_preview_confirm_with_l
     if asyncio.iscoroutine(confirm_card):
         confirm_card = asyncio.run(confirm_card)
 
-    assert "KB Queue Receipt" in confirm_card["text"]
+    assert "KB Review Receipt" in confirm_card["text"]
     assert "Affected ids: act_acme" in confirm_card["text"]
     assert [call[0] for call in ctx.calls] == [
         "mcp_kb_engine_prod_dashboard_live",
@@ -1309,7 +1309,7 @@ def test_descriptor_guidance_facets_are_advisory_and_redacted():
         },
     }
 
-    card = kb_journeys._render_descriptor_guidance(descriptor, title="KB Queue LLM Guidance")
+    card = kb_journeys._render_descriptor_guidance(descriptor, title="KB Review LLM Guidance")
     assert [action.label for action in card["actions"]] == ["Why", "Recommend", "Evidence", "Missing Context"]
     assert "Advisory output never confirms" in card["text"]
 
@@ -1337,7 +1337,7 @@ def test_descriptor_guidance_unavailable_and_stale_states_are_non_authoritative(
             "unavailable_reason": "No guidance route is attached.",
         },
     }
-    unavailable_card = kb_journeys._render_descriptor_guidance(unavailable, title="KB Queue LLM Guidance")
+    unavailable_card = kb_journeys._render_descriptor_guidance(unavailable, title="KB Review LLM Guidance")
     assert "Guidance unavailable" in unavailable_card["text"]
     assert "No guidance route" in unavailable_card["text"]
     assert unavailable_card["actions"] == []
@@ -1353,7 +1353,7 @@ def test_descriptor_guidance_unavailable_and_stale_states_are_non_authoritative(
             "summary": "This recommendation came from an old queue packet.",
         },
     }
-    stale_card = kb_journeys._render_descriptor_guidance(stale, title="KB Queue LLM Guidance")
+    stale_card = kb_journeys._render_descriptor_guidance(stale, title="KB Review LLM Guidance")
     assert "Status: stale" in stale_card["text"]
     assert "Advisory output never confirms" in stale_card["text"]
     assert stale_card["actions"] == []
@@ -1461,7 +1461,7 @@ def test_send_card_falls_back_to_text_when_native_action_card_fails():
             adapter,
             _event("/kb"),
             {
-                "title": "KB Queue",
+                "title": "KB Review",
                 "text": "Review proposal",
                 "actions": [
                     KbAction(label="Preview Reject", action_id="preview", handler=lambda _ctx: None),
@@ -1518,7 +1518,7 @@ def test_kb_root_queue_dashboard_starts_guided_first_item(monkeypatch):
     assert "Scope: accounts/stanford-das-lab · 2 proposals · 1 visible · 9 total" in text
     assert "Rail: Details" in text
     assert "Nothing applies until kb-engine returns a preview lease and you confirm." in text
-    assert "Review: /kb queue review 1" not in text
+    assert "Review: /kb review 1" not in text
     assert "Text fallback:" not in text
     assert "Batch:" not in text
     assert [action.label for action in adapter.sent[0]["actions"]] == ["Details"]
@@ -1616,7 +1616,7 @@ def test_kb_queue_guided_card_buttons_preview_and_skip(monkeypatch, tmp_path):
     assert "Rail: Approve, Reject, Archive, Details, Ask LLM, Skip" in text
     assert "Decision Card" not in text
     assert "Preview Reject" not in text
-    assert "/kb queue review 1" not in text
+    assert "/kb review 1" not in text
     assert "Text fallback:" not in text
     assert [action.label for action in adapter.sent[0]["actions"]] == ["Approve", "Reject", "Archive", "Details", "Ask LLM", "Skip"]
     assert kb_journeys.scoped_mcp_tool_allowlist_for_message(
@@ -1630,7 +1630,7 @@ def test_kb_queue_guided_card_buttons_preview_and_skip(monkeypatch, tmp_path):
     if asyncio.iscoroutine(preview_card):
         preview_card = asyncio.run(preview_card)
 
-    assert "Queue reject preview" in preview_card["text"]
+    assert "Review reject preview" in preview_card["text"]
     assert preview_card["actions"][0].label == "Confirm Reject"
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_decision_preview"
     assert ctx.calls[-1][1]["proposal_ids"] == ["act_2"]
@@ -1642,7 +1642,7 @@ def test_kb_queue_guided_card_buttons_preview_and_skip(monkeypatch, tmp_path):
         skip_card = asyncio.run(skip_card)
 
     assert "Skipped item 1 locally. No KB state changed." in skip_card["text"]
-    assert "Queue Item 2" in skip_card["text"]
+    assert "Review Item 2" in skip_card["text"]
     assert "Keio University" in skip_card["text"]
 
 
@@ -1805,7 +1805,7 @@ def test_kb_queue_tasks_renders_nonproposal_review_card_and_control_preview(monk
     hook = build_pre_gateway_dispatch_hook(ctx)
     store = FakeSessionStore("session-tasks")
 
-    result = hook(event=_event("/kb queue tasks"), gateway=_authorized_gateway(adapter), session_store=store)
+    result = hook(event=_event("/kb review tasks"), gateway=_authorized_gateway(adapter), session_store=store)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -1815,7 +1815,7 @@ def test_kb_queue_tasks_renders_nonproposal_review_card_and_control_preview(monk
     assert "Confirm Acme launch contract" in text
     assert "Rail: Complete, Delegate, Archive, Details, Ask LLM, Skip" in text
     assert "Nothing applies until kb-engine previews the control route and you confirm." in text
-    assert "/kb queue review 1" not in text
+    assert "/kb review 1" not in text
     assert "Text fallback:" not in text
     assert [action.label for action in adapter.sent[0]["actions"]] == [
         "Complete",
@@ -1918,7 +1918,7 @@ def test_kb_queue_skip_uses_server_window_when_available(monkeypatch, tmp_path):
         skip_card = asyncio.run(skip_card)
 
     assert ctx.calls[-1] == ("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5, "offset": 1})
-    assert "Advanced to the next kb-engine queue window" in skip_card["text"]
+    assert "Advanced to the next kb-engine review window" in skip_card["text"]
     assert "Keio University" in skip_card["text"]
 
 
@@ -1952,8 +1952,8 @@ def test_kb_review_without_index_starts_guided_queue(monkeypatch):
     assert ctx.calls == [("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5})]
     assert "KB Review" in adapter.sent[0]["text"]
     assert "1 of 1 · Visible scope" in adapter.sent[0]["text"]
-    assert "Use /kb queue to list proposals." not in adapter.sent[0]["text"]
-    assert "/kb queue review 1" not in adapter.sent[0]["text"]
+    assert "Use /kb review to list proposals." not in adapter.sent[0]["text"]
+    assert "/kb review 1" not in adapter.sent[0]["text"]
 
 
 def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
@@ -1982,17 +1982,17 @@ def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb review 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert adapter.sent
     text = adapter.sent[0]["text"]
-    assert "Queue Item 1" in text
+    assert "Review Item 1" in text
     assert "Keio University" in text
     assert "Target: accounts/keio-university" in text
     assert "Fallback text actions:" in text
-    assert "/kb queue reject 1" in text
+    assert "/kb review reject 1" in text
     assert adapter.sent[0]["actions"] == []
 
 
@@ -2043,17 +2043,17 @@ def test_kbqueue_review_todo_item_shows_todo_native_actions(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb review 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     text = adapter.sent[0]["text"]
     assert "Fallback text actions:" in text
-    assert "Complete TODO: /kb queue complete 1" in text
-    assert "Keep unchanged: /kb queue keep 1" in text
-    assert "Demote priority: /kb queue demote 1" in text
-    assert "Archive TODO: /kb queue archive 1" in text
-    assert "/kb queue approve 1" not in text
+    assert "Complete TODO: /kb review complete 1" in text
+    assert "Keep unchanged: /kb review keep 1" in text
+    assert "Demote priority: /kb review demote 1" in text
+    assert "Archive TODO: /kb review archive 1" in text
+    assert "/kb review approve 1" not in text
 
 
 def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monkeypatch):
@@ -2107,7 +2107,7 @@ def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monk
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb review 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -2118,7 +2118,7 @@ def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monk
     guidance_card = guidance_action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
     if asyncio.iscoroutine(guidance_card):
         guidance_card = asyncio.run(guidance_card)
-    assert "KB Queue LLM Guidance" in guidance_card["text"]
+    assert "KB Review LLM Guidance" in guidance_card["text"]
     assert "Use advisory guidance to reason about Reject" in guidance_card["text"]
     assert "kb.review_guidance" in guidance_card["text"]
     assert "Advisory output never confirms" in guidance_card["text"]
@@ -2130,14 +2130,14 @@ def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monk
     if asyncio.iscoroutine(preview_card):
         preview_card = asyncio.run(preview_card)
 
-    assert "Queue reject preview" in preview_card["text"]
+    assert "Review reject preview" in preview_card["text"]
     assert preview_card["actions"][0].label == "Confirm Reject"
 
     confirm_card = preview_card["actions"][0].handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
     if asyncio.iscoroutine(confirm_card):
         confirm_card = asyncio.run(confirm_card)
 
-    assert "Queue Reject Applied" in confirm_card["text"]
+    assert "Review Reject Applied" in confirm_card["text"]
     assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
     assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
@@ -2216,7 +2216,7 @@ def test_kbqueue_descriptor_confirm_carries_lease_session_and_blocks_stale_resul
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb review 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -2236,9 +2236,9 @@ def test_kbqueue_descriptor_confirm_carries_lease_session_and_blocks_stale_resul
     if asyncio.iscoroutine(confirm_card):
         confirm_card = asyncio.run(confirm_card)
 
-    assert "Queue Reject Blocked" in confirm_card["text"]
+    assert "Review Reject Blocked" in confirm_card["text"]
     assert "Preview lease expired" in confirm_card["text"]
-    assert "Queue Reject Applied" not in confirm_card["text"]
+    assert "Review Reject Applied" not in confirm_card["text"]
     assert [call[0] for call in ctx.calls] == [
         "mcp_kb_engine_prod_queue_summary",
         "mcp_kb_engine_prod_queue_decision_preview",
@@ -2374,7 +2374,7 @@ def test_kbqueue_confirm_advances_to_backend_next_review_card(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb review 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -2416,7 +2416,7 @@ def test_kbqueue_receipt_renders_changed_queue_next_review_as_refresh_required()
             "route": "queue.batch_decide_confirmed",
             "saved": False,
             "ok": False,
-            "safe_message": "Queue confirmation blocked because the preview lease did not match.",
+            "safe_message": "Review confirmation blocked because the preview lease did not match.",
             "next_review": {
                 "packet_type": "guided_kb_review_next",
                 "status": "changed_queue",
@@ -2429,7 +2429,7 @@ def test_kbqueue_receipt_renders_changed_queue_next_review_as_refresh_required()
         target="kb_engine_prod",
     )
 
-    assert card["title"] == "KB Queue Receipt"
+    assert card["title"] == "KB Review Receipt"
     assert "Next review: refresh required" in card["text"]
     assert "proposal_ids_hash" in card["text"]
     assert "Next review from kb-engine" not in card["text"]
@@ -2638,27 +2638,27 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    preview = hook(event=_event("/kb queue reject 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    preview = hook(event=_event("/kb review reject 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert preview == {"action": "skip", "reason": "kb_journeys"}
-    assert "Queue reject preview" in adapter.sent[0]["text"]
+    assert "Review reject preview" in adapter.sent[0]["text"]
     assert "Confirm with the button below" in adapter.sent[0]["text"]
-    assert "Text fallback: /kb queue reject 1 confirm" in adapter.sent[0]["text"]
+    assert "Text fallback: /kb review reject 1 confirm" in adapter.sent[0]["text"]
     assert adapter.sent[0]["actions"][0].label == "Confirm Reject"
 
-    applied = hook(event=_event("/kb queue reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    applied = hook(event=_event("/kb review reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert applied == {"action": "skip", "reason": "kb_journeys"}
     applied_text = adapter.sent[1]["text"]
-    assert "KB Queue Receipt" in applied_text
+    assert "KB Review Receipt" in applied_text
     assert "Applied queue decision to 1 proposal(s)." in applied_text
     assert "Affected ids: act_2" in applied_text
     assert "Counts: 1 reviewed · 1 confirmed" in applied_text
     assert adapter.sent[1]["actions"][0].label == "Preview Restore"
     restore_preview = adapter.sent[1]["actions"][0].handler(SimpleNamespace(actor_id="777", actor_name="Ada"))
-    assert "Queue restore preview" in restore_preview["text"]
+    assert "Review restore preview" in restore_preview["text"]
     assert "Restorable ids: act_2" in restore_preview["text"]
     assert restore_preview["actions"][0].label == "Confirm Restore"
     restore_result = restore_preview["actions"][0].handler(SimpleNamespace(actor_id="777", actor_name="Ada"))
@@ -2732,9 +2732,9 @@ def test_kbqueue_text_confirm_uses_preview_scope_when_queue_shifts(monkeypatch, 
     hook = build_pre_gateway_dispatch_hook(ctx)
     store = FakeSessionStore("session-shift")
 
-    preview = hook(event=_event("/kb queue reject 1"), gateway=_authorized_gateway(adapter), session_store=store)
+    preview = hook(event=_event("/kb review reject 1"), gateway=_authorized_gateway(adapter), session_store=store)
     _drain_scheduled_tasks()
-    applied = hook(event=_event("/kb queue reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=store)
+    applied = hook(event=_event("/kb review reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=store)
     _drain_scheduled_tasks()
 
     assert preview == {"action": "skip", "reason": "kb_journeys"}
@@ -2802,8 +2802,8 @@ def test_kbqueue_reject_all_previews_visible_window_only(monkeypatch, tmp_path):
     assert ctx.calls[-1][1]["decision_scope"] == "all_viewed"
     assert ctx.calls[-1][1]["candidate_count"] == 11
     assert ctx.calls[-1][1]["displayed_count"] == 5
-    assert "Scope: visible Telegram queue window only" in adapter.sent[-1]["text"]
-    assert "To apply: /kb queue reject 1,2,3,4,5 confirm" in adapter.sent[-1]["text"]
+    assert "Scope: visible Telegram review window only" in adapter.sent[-1]["text"]
+    assert "To apply: /kb review reject 1,2,3,4,5 confirm" in adapter.sent[-1]["text"]
     assert "mcp_kb_engine_prod_queue_batch_decide_confirmed" not in [call[0] for call in ctx.calls]
 
 
@@ -2825,7 +2825,7 @@ def test_kbqueue_reject_all_without_visible_scope_does_not_fall_through(monkeypa
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert ctx.calls == []
-    assert "Run /kb queue first" in adapter.sent[0]["text"]
+    assert "Run /kb review first" in adapter.sent[0]["text"]
 
 
 def test_kbqueue_visible_scope_all_phrases_are_narrow_decisions():
@@ -2934,14 +2934,14 @@ def test_kbqueue_bare_reply_uses_visible_iterative_item_state(monkeypatch, tmp_p
             "decision": "archive",
             "actor": "telegram:operator",
             "source": "Hermes Telegram iterative queue",
-            "note": "Previewed from Telegram iterative queue reply for GTC Taipei 2026",
+            "note": "Previewed from Telegram iterative review reply for GTC Taipei 2026",
         },
     )
     assert len(ctx.calls) == 1
     assert "act_huang1" not in json.dumps(ctx.calls)
     assert adapter.sent
     assert "GTC Taipei 2026" in adapter.sent[0]["text"]
-    assert "To apply: /kb queue archive 1 confirm" in adapter.sent[0]["text"]
+    assert "To apply: /kb review archive 1 confirm" in adapter.sent[0]["text"]
 
 
 def test_kbqueue_bare_reply_records_options_presented_as_pending_action(monkeypatch, tmp_path):
@@ -2994,7 +2994,7 @@ def test_kbqueue_bare_reply_records_options_presented_as_pending_action(monkeypa
     assert ctx.calls[0][1]["decision"] == "reject"
     assert len(ctx.calls) == 1
     assert "Hitachi" in adapter.sent[0]["text"]
-    assert "To apply: /kb queue reject 1 confirm" in adapter.sent[0]["text"]
+    assert "To apply: /kb review reject 1 confirm" in adapter.sent[0]["text"]
 
 
 def test_kbqueue_pending_action_exposes_scoped_mcp_tools(monkeypatch, tmp_path):
@@ -3064,17 +3064,17 @@ def test_kbqueue_todo_complete_decision_uses_queue_decision_contract(monkeypatch
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    preview = hook(event=_event("/kb queue complete 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    preview = hook(event=_event("/kb review complete 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
-    confirmed = hook(event=_event("/kb queue complete 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    confirmed = hook(event=_event("/kb review complete 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert preview == {"action": "skip", "reason": "kb_journeys"}
     assert confirmed == {"action": "skip", "reason": "kb_journeys"}
-    assert "Queue complete preview" in adapter.sent[0]["text"]
+    assert "Review complete preview" in adapter.sent[0]["text"]
     assert "Confirm with the button below" in adapter.sent[0]["text"]
-    assert "Text fallback: /kb queue complete 1 confirm" in adapter.sent[0]["text"]
-    assert "Queue Complete Applied" in adapter.sent[1]["text"]
+    assert "Text fallback: /kb review complete 1 confirm" in adapter.sent[0]["text"]
+    assert "Review Complete Applied" in adapter.sent[1]["text"]
     assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
     assert ctx.calls[-2][1]["decision"] == "complete"
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
@@ -3126,7 +3126,7 @@ def test_kbqueue_decision_supports_batch_text_commands_and_legacy_alias(monkeypa
 
     assert preview == {"action": "skip", "reason": "kb_journeys"}
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert "Queue Reject Applied" in adapter.sent[1]["text"]
+    assert "Review Reject Applied" in adapter.sent[1]["text"]
     assert "1. Keio University" in adapter.sent[1]["text"]
     assert "2. Mistral" in adapter.sent[1]["text"]
     assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
@@ -3161,11 +3161,11 @@ def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/kb queue approve 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb review approve 1"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert "Queue approve preview failed" in adapter.sent[0]["text"]
+    assert "Review approve preview failed" in adapter.sent[0]["text"]
     assert adapter.sent[0]["actions"] == []
 
 

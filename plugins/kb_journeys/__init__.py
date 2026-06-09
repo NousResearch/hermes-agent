@@ -1,7 +1,8 @@
 """Telegram KB journey renderer plugin.
 
 Intercepts a small set of Telegram slash commands and renders concise,
-read-only KB status summaries from the configured KB MCP target.
+read-only KB status, sync, and review receipts from the configured KB MCP
+target.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_TARGET = "kb_engine_prod"
 MENU_COMMANDS = {"kb"}
-LEGACY_COMMANDS = {"kbtoday", "kbstatus", "kbruns", "kbqueue", "kbreview", "kbrun"}
+LEGACY_COMMANDS = {"kbtoday", "kbstatus", "kbruns", "kbqueue", "kbreview", "kbrun", "kbsync"}
 SUPPORTED_COMMANDS = MENU_COMMANDS
 KB_REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 QUEUE_REPLY_DECISIONS = {"approve", "reject", "archive", "skip", "complete", "keep", "demote", "detail"}
@@ -30,6 +31,7 @@ QUEUE_REPLY_TOOL_DECISIONS = {"approve", "reject", "archive", "skip", "complete"
 QUEUE_REPLY_STATE_TTL_SECONDS = 15 * 60
 QUEUE_SCOPE_STATE_TTL_SECONDS = 15 * 60
 MEETING_HANDOFF_STATE_TTL_SECONDS = 15 * 60
+SYNC_PREVIEW_STATE_TTL_SECONDS = 15 * 60
 SEMANTIC_WRITE_RECEIPT_PACKET_TYPES = {
     "semantic_write_receipt",
     "semantic_write_through_receipt",
@@ -97,6 +99,12 @@ def _meeting_handoff_state_path():
     return get_hermes_home() / "state" / "kb_meeting_handoff_state.json"
 
 
+def _sync_preview_state_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "state" / "kb_sync_preview_state.json"
+
+
 def _load_queue_reply_states() -> dict[str, Any]:
     path = _queue_reply_state_path()
     try:
@@ -142,6 +150,15 @@ def _load_meeting_handoff_states() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _load_sync_preview_states() -> dict[str, Any]:
+    path = _sync_preview_state_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _save_meeting_handoff_states(states: dict[str, Any]) -> None:
     path = _meeting_handoff_state_path()
     try:
@@ -151,6 +168,15 @@ def _save_meeting_handoff_states(states: dict[str, Any]) -> None:
         logger.debug("kb_journeys: failed to persist meeting handoff state", exc_info=True)
 
 
+def _save_sync_preview_states(states: dict[str, Any]) -> None:
+    path = _sync_preview_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(states, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError:
+        logger.debug("kb_journeys: failed to persist sync preview state", exc_info=True)
+
+
 def _clear_meeting_handoff_state(session_id: str) -> None:
     if not session_id:
         return
@@ -158,6 +184,15 @@ def _clear_meeting_handoff_state(session_id: str) -> None:
     if session_id in states:
         states.pop(session_id, None)
         _save_meeting_handoff_states(states)
+
+
+def _clear_sync_preview_state(session_id: str) -> None:
+    if not session_id:
+        return
+    states = _load_sync_preview_states()
+    if session_id in states:
+        states.pop(session_id, None)
+        _save_sync_preview_states(states)
 
 
 def _clear_iterative_queue_reply_state(session_id: str) -> None:
@@ -1391,7 +1426,7 @@ def _render_today(data: Any) -> dict[str, Any]:
 
 def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     if not isinstance(data, dict):
-        return {"title": "KB Cockpit", "text": f"KB Cockpit\n{_short(data, 'No cockpit details returned.')}", "actions": []}
+        return {"title": "KB", "text": f"KB\n{_short(data, 'No KB details returned.')}", "actions": []}
 
     summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
     readiness = _short(
@@ -1411,9 +1446,8 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         todo_count = _count_from(data, "todo", "todos")
     active_runs = summary.get("active_run_count")
     lines = [
-        "KB Cockpit",
-        f"Runtime: {readiness}",
-        f"Publication: {publication}",
+        "KB",
+        f"kb status: runtime {readiness} · publication {publication}",
     ]
     if data.get("llm_invoked_by_read_surface") is not None:
         lines.append(
@@ -1426,10 +1460,10 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         counts.append(f"Proposals {queue_count}")
     if todo_count is not None:
         counts.append(f"TODOs {todo_count}")
-    if active_runs is not None:
-        counts.append(f"Runs {active_runs}")
     if counts:
-        lines.append(" · ".join(counts))
+        lines.append("kb review: " + " · ".join(counts))
+    if active_runs is not None:
+        lines.append(f"kb sync: {active_runs} active run(s)")
     for section in sections[:4]:
         if not isinstance(section, dict):
             continue
@@ -1461,8 +1495,8 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     if refresh:
         lines.append(f"Refresh: every {_short(refresh.get('ttl_seconds'), '60')}s target")
     lines.append("")
-    lines.append("Commands: /kb queue · /kb status · /kb runs · /kb today")
-    return {"title": "KB Dashboard", "text": "\n".join(lines), "actions": _dashboard_descriptor_actions(ctx, target, sections)}
+    lines.append("Commands: /kb status · /kb sync · /kb review")
+    return {"title": "KB", "text": "\n".join(lines), "actions": _dashboard_descriptor_actions(ctx, target, sections)}
 
 
 _WORKBENCH_SECTION_IDS = {"closeout", "now", "reports", "situations", "workbench"}
@@ -1484,7 +1518,7 @@ def _dashboard_card_descriptors(card: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _render_workbench(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     if not isinstance(data, dict):
-        return {"title": "KB Workbench", "text": f"KB Workbench\n{_short(data, 'No workbench details returned.')}", "actions": []}
+        return {"title": "KB Review", "text": f"KB Review\n{_short(data, 'No review details returned.')}", "actions": []}
 
     summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
     readiness = _short(summary.get("readiness_status") or _readiness_status(data))
@@ -1493,9 +1527,8 @@ def _render_workbench(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     queue_count = _proposal_count_from_summary(summary)
     todo_count = _todo_count_from_summary(summary)
     lines = [
-        "KB Workbench",
-        f"Runtime: {readiness}",
-        f"Publication: {publication}",
+        "KB Review",
+        f"Status: runtime {readiness} · publication {publication}",
     ]
     counts: list[str] = []
     if queue_count is not None:
@@ -1542,10 +1575,10 @@ def _render_workbench(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         [
             "",
             "Buttons open or preview canonical kb-engine actions; writes still require confirmation.",
-            "Fallback: /kb queue · /kb publish · /kb status",
+            "Fallback: /kb status",
         ]
     )
-    return {"title": "KB Workbench", "text": "\n".join(lines), "actions": _dashboard_descriptor_actions(ctx, target, sections)}
+    return {"title": "KB Review", "text": "\n".join(lines), "actions": _dashboard_descriptor_actions(ctx, target, sections)}
 
 
 def _workbench_review_kind(card: dict[str, Any], descriptors: list[dict[str, Any]]) -> str:
@@ -2253,6 +2286,8 @@ def _render_status(
     if hermes_reasoning:
         snap["reasoning"] = hermes_reasoning
     kb = _provider_status_summary(provider_data, snap)
+    if isinstance(data, dict) and data.get("kind") in {"kb_status_proof_packet", "noc_kb_status_receipt"}:
+        return _render_status_proof(data, target, kb, snap)
     readiness = "unknown"
     publication = "unknown"
     if isinstance(data, dict):
@@ -2273,6 +2308,124 @@ def _render_status(
         f"Readiness: {readiness}",
         f"Publication: {publication}",
     ]
+    return {"title": "KB Status", "text": "\n".join(lines), "actions": []}
+
+
+def _status_line_value(packet: dict[str, Any], *paths: tuple[str, ...], default: str = "unknown") -> str:
+    for path in paths:
+        value = _get_path(packet, *path)
+        if value not in (None, "", [], {}):
+            return _short(value, default)
+    return default
+
+
+def _dirty_summary(packet: dict[str, Any]) -> str:
+    dirty_scope = packet.get("dirty_scope") if isinstance(packet.get("dirty_scope"), dict) else {}
+    worktrees = packet.get("worktrees") if isinstance(packet.get("worktrees"), dict) else {}
+    publication = packet.get("publication") if isinstance(packet.get("publication"), dict) else {}
+    dirty_count = None
+    for candidate in (
+        dirty_scope.get("count"),
+        dirty_scope.get("dirty_path_count"),
+        worktrees.get("dirty_path_count"),
+        publication.get("dirty_path_count"),
+        publication.get("changed_count"),
+    ):
+        if candidate is not None:
+            dirty_count = candidate
+            break
+    if dirty_count not in (None, ""):
+        return f"{_short(dirty_count, '0')} dirty"
+    dirty_bits = [
+        name
+        for name, value in dirty_scope.items()
+        if isinstance(value, bool) and value
+    ]
+    if dirty_bits:
+        return ", ".join(dirty_bits[:4])
+    return _status_line_value(packet, ("worktrees", "status"), ("workspace", "status"), default="unknown")
+
+
+def _next_action_summary(packet: dict[str, Any]) -> str:
+    next_action = packet.get("next_action")
+    if isinstance(next_action, dict):
+        return _short(
+            next_action.get("command")
+            or next_action.get("label")
+            or next_action.get("summary")
+            or next_action.get("next_safe_action"),
+            "",
+        )
+    return _short(next_action, "")
+
+
+def _render_status_proof(
+    packet: dict[str, Any],
+    target: str,
+    kb: dict[str, str],
+    snap: dict[str, str],
+) -> dict[str, Any]:
+    status = _short(packet.get("status") or packet.get("state"), "unknown")
+    lane = _status_line_value(
+        packet,
+        ("active_target", "target"),
+        ("active_target", "name"),
+        ("workspace", "lane"),
+        ("workspace", "target"),
+        default=target,
+    )
+    runtime = _status_line_value(
+        packet,
+        ("runtime", "version"),
+        ("runtime", "installed_ref"),
+        ("runtime", "status"),
+    )
+    transport = _status_line_value(
+        packet,
+        ("transport", "status"),
+        ("runtime", "transport_status"),
+        ("runtime", "mcp_transport_status"),
+    )
+    publication = _status_line_value(
+        packet,
+        ("publication", "status"),
+        ("publication", "state"),
+        ("publication", "publication_state"),
+    )
+    review = _status_line_value(
+        packet,
+        ("review", "pending_count"),
+        ("review", "status"),
+        ("review", "state"),
+    )
+    sync = _status_line_value(
+        packet,
+        ("sync", "status"),
+        ("sync", "state"),
+        ("sync", "last_run_status"),
+    )
+    privacy = packet.get("privacy") if isinstance(packet.get("privacy"), dict) else {}
+    privacy_ok = not any(bool(value) for value in privacy.values())
+    next_action = _next_action_summary(packet)
+    lines = [
+        "KB Status",
+        "Request: /kb status",
+        f"Outcome: {status}",
+        f"Lane: {lane}",
+        f"Runtime: {runtime}",
+        f"Transport: {transport}",
+        f"Publication: {publication}",
+        f"Pending review: {review}",
+        f"Sync: {sync}",
+        f"Dirty: {_dirty_summary(packet)}",
+        f"Privacy: {'ok' if privacy_ok else 'check receipt'}",
+        f"KB model: {kb['provider']} / {kb['model']} / {kb['reasoning']}",
+        f"KB reasoning: {kb['reasoning']}",
+        f"Hermes reasoning: {snap['reasoning']}",
+    ]
+    if next_action:
+        lines.append(f"Next: {next_action}")
+    lines.append("Commands: /kb sync · /kb review")
     return {"title": "KB Status", "text": "\n".join(lines), "actions": []}
 
 
@@ -3992,6 +4145,81 @@ def _get_meeting_handoff_state(session_id: str) -> dict[str, Any] | None:
     return state
 
 
+def _telegram_user_id(source: Any) -> str:
+    return _short(getattr(source, "user_id", ""), "")
+
+
+def _sync_preview_lease(plan: dict[str, Any], *, recorded_at: float | None = None) -> dict[str, Any]:
+    preview_lease = plan.get("preview_lease") if isinstance(plan.get("preview_lease"), dict) else {}
+    if preview_lease:
+        return dict(preview_lease)
+    workflow = plan.get("workflow") if isinstance(plan.get("workflow"), dict) else {}
+    payload = {
+        "workflow_id": str(workflow.get("workflow_id") or ""),
+        "request_id": str(plan.get("request_id") or ""),
+        "idempotency_key": str(plan.get("idempotency_key") or ""),
+        "recorded_at": int(recorded_at or time.time()),
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return {
+        "kind": "telegram_workflow_preview",
+        "preview_lease_id": f"sha256:{digest}",
+        **{key: value for key, value in payload.items() if value},
+    }
+
+
+def _get_sync_preview_state(session_id: str, source: Any) -> tuple[dict[str, Any] | None, str]:
+    if not session_id:
+        return None, "missing_session"
+    states = _load_sync_preview_states()
+    state = states.get(session_id)
+    if not isinstance(state, dict):
+        return None, "missing"
+    recorded_at = float(state.get("recorded_at") or 0.0)
+    if not recorded_at or time.time() - recorded_at > SYNC_PREVIEW_STATE_TTL_SECONDS:
+        states.pop(session_id, None)
+        _save_sync_preview_states(states)
+        return None, "stale"
+    actor_id = _short(state.get("actor_id"), "")
+    current_actor = _telegram_user_id(source)
+    if actor_id and current_actor and actor_id != current_actor:
+        return None, "wrong_actor"
+    plan = state.get("plan")
+    if not isinstance(plan, dict):
+        return None, "invalid"
+    return state, ""
+
+
+def _store_sync_preview_state(
+    session_id: str,
+    *,
+    source: Any,
+    target: str,
+    workflow_id: str,
+    intent: str,
+    plan: dict[str, Any],
+) -> None:
+    if not session_id:
+        return
+    recorded_at = time.time()
+    preview_lease = _sync_preview_lease(plan, recorded_at=recorded_at)
+    stored_plan = dict(plan)
+    stored_plan.setdefault("preview_lease", preview_lease)
+    states = _load_sync_preview_states()
+    states[session_id] = {
+        "schema_version": 1,
+        "recorded_at": recorded_at,
+        "actor_id": _telegram_user_id(source),
+        "actor_name": _short(getattr(source, "user_name", ""), ""),
+        "target": target,
+        "workflow_id": workflow_id,
+        "intent": intent,
+        "preview_lease": preview_lease,
+        "plan": stored_plan,
+    }
+    _save_sync_preview_states(states)
+
+
 def _store_meeting_handoff_state(
     session_id: str,
     *,
@@ -5184,6 +5412,8 @@ def _workflow_envelope(plan: dict[str, Any], callback_ctx: Any) -> dict[str, Any
             "confirmed_by": actor_name or actor_id,
             "confirmed_at": confirmed_at,
             "confirmation_text": "Confirmed by Telegram text command after workflow preview.",
+            "preview_required": True,
+            "preview_lease": _sync_preview_lease(plan),
             "preview_status": _short(plan.get("status")),
             "surface": "telegram",
             "actor_id": actor_id,
@@ -5426,17 +5656,20 @@ def _render_workflow_plan(
     target: str,
     adapter: Any,
     start_hint: str = "/kb run sync confirm",
+    title: str = "Workflow",
+    heading: str = "Workflow Preview",
 ) -> dict[str, Any]:
     if isinstance(data, dict) and data.get("error"):
-        return {"title": "Workflow", "text": f"Workflow plan failed\n{data['error']}", "actions": []}
+        return {"title": title, "text": f"{heading} failed\n{data['error']}", "actions": []}
     if not isinstance(data, dict):
-        return {"title": "Workflow", "text": f"Workflow\n{_short(data, 'No plan returned.')}", "actions": []}
+        return {"title": title, "text": f"{title}\n{_short(data, 'No plan returned.')}", "actions": []}
     workflow = data.get("workflow") if isinstance(data.get("workflow"), dict) else {}
     request = data.get("request") if isinstance(data.get("request"), dict) else {}
     effect_plan = data.get("effect_plan") if isinstance(data.get("effect_plan"), dict) else {}
     effects = effect_plan.get("effects") if isinstance(effect_plan.get("effects"), list) else []
     lines = [
-        "Workflow Preview",
+        heading,
+        f"Request: {start_hint.removesuffix(' confirm') if start_hint.endswith(' confirm') else start_hint}",
         f"Workflow: {_short(workflow.get('workflow_id'))}",
         f"Status: {_short(data.get('status'))}",
         f"Risk: {_short(workflow.get('risk') or effect_plan.get('risk'))}",
@@ -5454,7 +5687,23 @@ def _render_workflow_plan(
         lines.append("Follow-through: " + _short(follow.get("watch_tool")) + " -> " + _short(follow.get("terminal_summary_tool")))
     if data.get("status") == "confirmation_required":
         lines.append(f"To start: {start_hint}")
-    return {"title": "Workflow", "text": "\n".join(lines), "actions": []}
+    return {"title": title, "text": "\n".join(lines), "actions": []}
+
+
+def _sync_confirm_blocked_text(reason: str) -> str:
+    messages = {
+        "stale": "The pending /kb sync preview is stale. Run /kb sync again, then confirm from that fresh preview.",
+        "wrong_actor": "The pending /kb sync preview belongs to another Telegram user. Run /kb sync yourself, then confirm.",
+        "invalid": "The pending /kb sync preview is invalid. Run /kb sync again before confirming.",
+        "missing_session": "Hermes could not identify this chat session. Run /kb sync again before confirming.",
+    }
+    return "\n".join(
+        [
+            "KB Sync",
+            messages.get(reason, "No fresh /kb sync preview is pending for this chat. Run /kb sync first."),
+            "No KB state changed.",
+        ]
+    )
 
 
 def _render_queue(
@@ -5555,7 +5804,9 @@ def _kb_root_command(args: str) -> tuple[str, str]:
         review_head, _, review_tail = rest.partition(" ")
         if review_head.strip().lower() in {"lifecycle", "stewardship"}:
             return "kblifecycle", review_tail.strip()
-        return "kbqueue", f"review {rest}".strip() if rest else ""
+        if review_head.strip().lower() in {"proposal", "proposals", "queue", "inbox"}:
+            return "kbqueue", review_tail.strip()
+        return "kbqueue", rest
     if key in {"lifecycle", "stewardship"}:
         return "kblifecycle", rest
     if key in {"publish", "publication"}:
@@ -5565,7 +5816,7 @@ def _kb_root_command(args: str) -> tuple[str, str]:
     if key in {"meeting", "meetings", "notes"}:
         return "kbmeeting", rest
     if key == "sync":
-        return "kbrun", f"sync {rest}".strip()
+        return "kbsync", rest
     return "kbhelp", text
 
 
@@ -5575,21 +5826,10 @@ def _kb_command_help() -> dict[str, Any]:
         "text": "\n".join(
             [
                 "KB Commands",
-                "/kb - compact cockpit/status",
-                "/kb workbench - guided Decision Cards and next safe actions",
-                "/kb queue - proposal review list",
-                "/kb queue review 1 - inspect one queue item",
-                "/kb queue reject 1 - preview a decision",
-                "Confirm queue decisions from the preview button when available",
-                "/kb queue reject 1 confirm - text fallback for a previewed decision",
-                "/kb review lifecycle [target] - lifecycle review with preview/confirm proposal queueing",
-                "/kb publish - preview KB Git publication",
-                "/kb publish confirm - commit and push after preview",
-                "/kb status - lane, Hermes/KB reasoning, readiness, publication",
-                "/kb reasoning xhigh - set KB engine reasoning and reload MCP",
-                "/kb runs - active and recent workflow runs",
-                "/kb run sync - preview a KB sync",
-                "/kb meeting <meeting-file> -- <notes> - preview Telegram notes handoff",
+                "/kb status - prove lane, runtime, transport, publication, review, sync, dirtiness, and next action",
+                "/kb sync - preview evidence gathering and factual KB update workflow",
+                "/kb review - proposal-backed decision inbox",
+                "Advanced/debug aliases are still accepted for operators, but these three verbs are the normal KB surface.",
             ]
         ),
         "actions": [],
@@ -5710,7 +5950,14 @@ def _card_for_command(
         _, data, errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
         return _render_error("KB Today", target, errors) if data is None else _render_today(data)
     if command == "kbstatus":
-        _, data, _errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
+        _, data, _errors = _dispatch_first(
+            ctx,
+            target,
+            [
+                ("status.proof", {}),
+                ("attention.cockpit", cockpit_args),
+            ],
+        )
         _, provider_data, _provider_errors = _dispatch_first(ctx, target, [("provider.status", {})])
         hermes_reasoning = _live_hermes_reasoning(gateway, source)
         return _render_status(data, target, provider_data, hermes_reasoning=hermes_reasoning)
@@ -5761,6 +6008,55 @@ def _card_for_command(
             source=source,
             session_store=session_store,
             adapter=adapter,
+        )
+    if command == "kbsync":
+        sync_args = f"sync {args}".strip()
+        workflow_id, intent, confirm = _workflow_args_from_text(sync_args)
+        if confirm:
+            state, reason = _get_sync_preview_state(queue_session_id, source)
+            if state is None:
+                return {"title": "KB Sync", "text": _sync_confirm_blocked_text(reason), "actions": []}
+            plan = state.get("plan") if isinstance(state.get("plan"), dict) else {}
+            text = _workflow_start_text(ctx, target, plan)
+            _clear_sync_preview_state(queue_session_id)
+            return {"title": "KB Sync", "text": text, "actions": []}
+        _, data, errors = _dispatch_first(
+            ctx,
+            target,
+            [
+                (
+                    "workflow.plan_request",
+                    {
+                        "workflow_id": workflow_id or "sync",
+                        "intent": intent,
+                        "actor": "telegram:operator",
+                        "source": "Hermes Telegram",
+                        "session_id": f"telegram-kb-sync-{int(time.time())}",
+                    },
+                )
+            ],
+        )
+        if data is None:
+            return _render_error("KB Sync", target, errors)
+        if isinstance(data, dict) and data.get("status") == "confirmation_required":
+            _store_sync_preview_state(
+                queue_session_id,
+                source=source,
+                target=target,
+                workflow_id=workflow_id or "sync",
+                intent=intent,
+                plan=data,
+            )
+        else:
+            _clear_sync_preview_state(queue_session_id)
+        return _render_workflow_plan(
+            data,
+            ctx=ctx,
+            target=target,
+            adapter=adapter,
+            start_hint="/kb sync confirm",
+            title="KB Sync",
+            heading="KB Sync Preview",
         )
     if command == "kbrun":
         workflow_id, intent, confirm = _workflow_args_from_text(args)
@@ -5968,14 +6264,14 @@ def _on_post_llm_call(
 
 def register(ctx: Any) -> None:
     def _command_help(_: str = "") -> str:
-        return "Use /kb in Telegram. Try: /kb queue, /kb status, /kb reasoning xhigh, /kb run sync."
+        return "Use /kb in Telegram. Try: /kb status, /kb sync, or /kb review."
 
     for command in sorted(MENU_COMMANDS):
         try:
             ctx.register_command(
                 command,
                 _command_help,
-                description="KB dashboard, queue, status, reasoning, runs, and sync.",
+                description="KB status, sync, and review.",
             )
         except Exception:
             logger.debug("kb_journeys: failed to register /%s", command, exc_info=True)

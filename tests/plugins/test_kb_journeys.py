@@ -90,15 +90,15 @@ class FailingKbActionsAdapter(FakeAdapter):
         return SimpleNamespace(success=False, error="button rendering unavailable")
 
 
-def _event(text="/kb"):
+def _event(text="/kb", *, user_id="user-1", user_name="tester"):
     return MessageEvent(
         text=text,
         message_id="m1",
         source=SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="chat-1",
-            user_id="user-1",
-            user_name="tester",
+            user_id=user_id,
+            user_name=user_name,
             chat_type="dm",
             thread_id="topic-1",
         ),
@@ -237,13 +237,13 @@ def test_kb_command_renders_live_dashboard_without_calling_todo_count_queue(monk
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert ctx.calls[0][0] == "mcp_kb_engine_prod_dashboard_live"
     text = adapter.sent[0]["text"]
-    assert "KB Cockpit" in text
-    assert "Runtime: degraded" in text
-    assert "Publication: dirty" in text
+    assert "KB" in text
+    assert "kb status: runtime degraded · publication dirty" in text
     assert "TODOs 309" in text
     assert "Queue 309" not in text
     assert "Attention Queue" in text
     assert "Review prioritized attention items" in text
+    assert "Commands: /kb status · /kb sync · /kb review" in text
 
 
 def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
@@ -301,12 +301,11 @@ def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
         )
     ]
     text = adapter.sent[0]["text"]
-    assert "KB Cockpit" in text
-    assert "Runtime: ready" in text
-    assert "Publication: clean" in text
+    assert "KB" in text
+    assert "kb status: runtime ready · publication clean" in text
     assert "Proposals 2" in text
     assert "Review one proposal" in text
-    assert "Commands: /kb queue" in text
+    assert "Commands: /kb status · /kb sync · /kb review" in text
     assert adapter.sent[0]["actions"] == []
 
 
@@ -482,7 +481,7 @@ def test_kb_workbench_renders_guided_decision_cards(monkeypatch):
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     text = adapter.sent[0]["text"]
-    assert "KB Workbench" in text
+    assert "KB Review" in text
     assert "Decision Cards" in text
     assert "Review Acme proposal" in text
     assert "Buttons open or preview canonical kb-engine actions" in text
@@ -502,6 +501,54 @@ def test_kb_workbench_renders_guided_decision_cards(monkeypatch):
 
     assert "Acme context" in detail_card["text"]
     assert ctx.calls[-1] == ("mcp_kb_engine_prod_object_context", {"object_path": "accounts/acme/state.md"})
+
+
+def test_kb_review_opens_proposal_backed_decision_inbox(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "scope": "proposals",
+                    "total": 1,
+                    "items": [
+                        {
+                            "item_id": "proposal_1",
+                            "kind": "proposal",
+                            "title": "Review Acme proposal",
+                            "summary": "Decide whether to admit the cleaned account note.",
+                            "proposal_ids": ["proposal_1"],
+                            "safe_actions": [
+                                {
+                                    "action_id": "review.approve",
+                                    "label": "Approve",
+                                    "preview_tool": "queue.decision_preview",
+                                    "confirm_tool": "queue.batch_decide_confirmed",
+                                    "params": {"decision": "approve"},
+                                    "mutation": "workspace_write",
+                                    "dashboard_owned_write": False,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb review"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls[0] == ("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5})
+    text = adapter.sent[0]["text"]
+    assert "KB Review" in text
+    assert "Review Acme proposal" in text
+    assert "Approve" in text
 
 
 def test_kb_workbench_renders_situation_compact_rail_and_handoff_buttons(monkeypatch):
@@ -597,7 +644,7 @@ def test_kb_workbench_renders_situation_compact_rail_and_handoff_buttons(monkeyp
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     text = adapter.sent[0]["text"]
-    assert "Situation Review" in text
+    assert "kb review" in text.lower() or "KB Review" in text
     assert "Rail: Open brief, Add update, Add commitment, Ask LLM, Skip" in text
     assert "Writes: handoff-only until kb-engine returns a confirmed workflow." in text
     assert [action.label for action in adapter.sent[0]["actions"]] == [
@@ -615,6 +662,170 @@ def test_kb_workbench_renders_situation_compact_rail_and_handoff_buttons(monkeyp
     assert "This is a kb-engine handoff action, not a durable write." in handoff_card["text"]
     assert "Required input: update_text" in handoff_card["text"]
     assert "No KB state changed." in handoff_card["text"]
+
+
+def test_kb_sync_command_previews_sync_workflow(monkeypatch, tmp_path):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_workflow_plan_request": {
+                "result": {
+                    "status": "confirmation_required",
+                    "workflow": {"workflow_id": "update_kb", "risk": "write_broad"},
+                    "request": {"args": {}, "force": False},
+                    "effect_plan": {"effects": [{"id": "workflow.sync.fetch_sources"}]},
+                    "outcome": {"family": "workflow_start_plan"},
+                    "receipt": {
+                        "state": "ready_to_confirm",
+                        "durable_effect": "none",
+                        "llm_invoked_by_read_surface": False,
+                    },
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb sync"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls[0] == (
+        "mcp_kb_engine_prod_workflow_plan_request",
+        {
+            "workflow_id": "update_kb",
+            "intent": "sync",
+            "actor": "telegram:operator",
+            "source": "Hermes Telegram",
+            "session_id": ctx.calls[0][1]["session_id"],
+        },
+    )
+    text = adapter.sent[0]["text"]
+    assert "KB Sync Preview" in text
+    assert "Request: /kb sync" in text
+    assert "Receipt: ready_to_confirm" in text
+    assert "Outcome: workflow_start_plan" in text
+    assert "To start: /kb sync confirm" in text
+    assert adapter.sent[0]["actions"] == []
+
+
+def test_kb_sync_confirm_requires_pending_preview(monkeypatch, tmp_path):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext({})
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb sync confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert "No fresh /kb sync preview" in adapter.sent[0]["text"]
+    assert "No KB state changed." in adapter.sent[0]["text"]
+    assert ctx.calls == []
+
+
+def test_kb_sync_confirm_consumes_fresh_preview_lease(monkeypatch, tmp_path):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_workflow_plan_request": {
+                "result": {
+                    "status": "confirmation_required",
+                    "schema_version": 1,
+                    "tool": "workflow.start_confirmed",
+                    "workflow": {"workflow_id": "update_kb", "risk": "write_broad"},
+                    "request": {"args": {}, "queue_gate_limit": 0, "force": False},
+                    "request_id": "sync_preview_1",
+                    "idempotency_key": "workflow:update_kb:telegram",
+                    "effect_plan": {"effects": [{"id": "workflow.sync.fetch_sources"}]},
+                    "receipt": {"state": "ready_to_confirm", "durable_effect": "none"},
+                }
+            },
+            "mcp_kb_engine_prod_workflow_start_confirmed": {
+                "result": {
+                    "status": "started",
+                    "started": True,
+                    "run": {"run_id": "gen-123", "workflow_id": "update_kb"},
+                    "receipt": {"state": "workflow_running", "durable_effect": "workflow_run"},
+                }
+            },
+            "mcp_kb_engine_prod_run_watch": {
+                "result": {"status": "running", "terminal": False, "progress_digest": {"status": "running"}},
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    preview = hook(event=_event("/kb sync"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+    confirmed = hook(event=_event("/kb sync confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert preview == {"action": "skip", "reason": "kb_journeys"}
+    assert confirmed == {"action": "skip", "reason": "kb_journeys"}
+    assert [call[0] for call in ctx.calls].count("mcp_kb_engine_prod_workflow_plan_request") == 1
+    assert ctx.calls[-2][0] == "mcp_kb_engine_prod_workflow_start_confirmed"
+    envelope = ctx.calls[-2][1]["envelope"]
+    assert envelope["plan"]["request_id"] == "sync_preview_1"
+    assert envelope["user_confirmation"]["preview_required"] is True
+    assert envelope["user_confirmation"]["preview_lease"]["preview_lease_id"].startswith("sha256:")
+    assert "Workflow start result" in adapter.sent[-1]["text"]
+
+
+def test_kb_sync_confirm_fails_closed_for_stale_or_wrong_actor_preview(monkeypatch, tmp_path):
+    from plugins import kb_journeys
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_workflow_plan_request": {
+                "result": {
+                    "status": "confirmation_required",
+                    "workflow": {"workflow_id": "update_kb"},
+                    "request": {"args": {}, "force": False},
+                    "request_id": "sync_preview_stale",
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+    store = FakeSessionStore(session_id="shared-session")
+
+    monkeypatch.setattr(kb_journeys.time, "time", lambda: 1000.0)
+    hook(event=_event("/kb sync"), gateway=_authorized_gateway(adapter), session_store=store)
+    _drain_scheduled_tasks()
+    wrong_actor = hook(
+        event=_event("/kb sync confirm", user_id="user-2", user_name="other"),
+        gateway=_authorized_gateway(adapter),
+        session_store=store,
+    )
+    _drain_scheduled_tasks()
+
+    assert wrong_actor == {"action": "skip", "reason": "kb_journeys"}
+    assert "belongs to another Telegram user" in adapter.sent[-1]["text"]
+    assert "mcp_kb_engine_prod_workflow_start_confirmed" not in [call[0] for call in ctx.calls]
+
+    monkeypatch.setattr(kb_journeys.time, "time", lambda: 1000.0 + kb_journeys.SYNC_PREVIEW_STATE_TTL_SECONDS + 1)
+    stale = hook(event=_event("/kb sync confirm"), gateway=_authorized_gateway(adapter), session_store=store)
+    _drain_scheduled_tasks()
+
+    assert stale == {"action": "skip", "reason": "kb_journeys"}
+    assert "pending /kb sync preview is stale" in adapter.sent[-1]["text"]
+    assert "mcp_kb_engine_prod_workflow_start_confirmed" not in [call[0] for call in ctx.calls]
 
 
 def test_dashboard_validation_descriptor_renders_graph_receipt(monkeypatch):
@@ -1211,11 +1422,33 @@ def test_register_exposes_single_clear_kb_menu_command():
     kb_journeys.register(ctx)
 
     assert sorted(ctx.commands) == ["kb"]
-    assert ctx.commands["kb"]["description"] == "KB dashboard, queue, status, reasoning, runs, and sync."
+    assert ctx.commands["kb"]["description"] == "KB status, sync, and review."
     assert ctx.commands["kb"]["handler"]("") == (
-        "Use /kb in Telegram. Try: /kb queue, /kb status, /kb reasoning xhigh, /kb run sync."
+        "Use /kb in Telegram. Try: /kb status, /kb sync, or /kb review."
     )
     assert "pre_gateway_dispatch" in ctx.hooks
+
+
+def test_kb_help_exposes_only_three_primary_verbs(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext({})
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb help"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    text = adapter.sent[0]["text"]
+    assert "/kb status" in text
+    assert "/kb sync" in text
+    assert "/kb review" in text
+    assert "/kb queue" not in text
+    assert "/kb publish" not in text
+    assert "/kb runs" not in text
+    assert "/kb reasoning" not in text
 
 
 def test_send_card_falls_back_to_text_when_native_action_card_fails():
@@ -3599,10 +3832,19 @@ def test_kb_status_fetches_provider_status_and_shows_both_reasoning(monkeypatch)
     monkeypatch.setenv("HERMES_REASONING_EFFORT", "xhigh")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_attention_cockpit": {
+            "mcp_kb_engine_prod_status_proof": {
                 "result": {
-                    "readiness": {"status": "degraded"},
+                    "kind": "kb_status_proof_packet",
+                    "status": "ready",
+                    "workspace": {"lane": "prod"},
+                    "runtime": {"version": "0.17.68"},
+                    "transport": {"status": "open"},
                     "publication": {"status": "clean"},
+                    "review": {"pending_count": 3},
+                    "sync": {"status": "idle"},
+                    "dirty_scope": {"dirty_path_count": 0},
+                    "privacy": {"secret_values_exposed": False, "raw_source_bodies_exposed": False},
+                    "next_action": {"command": "/kb review"},
                 }
             },
             "mcp_kb_engine_prod_provider_status": {
@@ -3628,22 +3870,22 @@ def test_kb_status_fetches_provider_status_and_shows_both_reasoning(monkeypatch)
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert ctx.calls == [
-        (
-            "mcp_kb_engine_prod_attention_cockpit",
-            {
-                "attention_limit": 5,
-                "include_publication": True,
-                "include_readiness": True,
-                "run_limit": 3,
-            },
-        ),
+        ("mcp_kb_engine_prod_status_proof", {}),
         ("mcp_kb_engine_prod_provider_status", {}),
     ]
     text = adapter.sent[0]["text"]
+    assert "Request: /kb status" in text
+    assert "Lane: prod" in text
+    assert "Runtime: 0.17.68" in text
+    assert "Transport: open" in text
+    assert "Pending review: 3" in text
+    assert "Sync: idle" in text
+    assert "Dirty: 0 dirty" in text
+    assert "Privacy: ok" in text
+    assert "Next: /kb review" in text
     assert "Hermes reasoning: xhigh" in text
     assert "KB reasoning: low" in text
-    assert "KB model: gpt-5.5" in text
-    assert "KB provider: plugin:openai-compatible" in text
+    assert "KB model: plugin:openai-compatible / gpt-5.5 / low" in text
 
 
 def test_kb_status_uses_profile_env_when_provider_status_hidden(monkeypatch, tmp_path):

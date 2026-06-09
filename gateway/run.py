@@ -13002,13 +13002,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             emoji = get_tool_emoji(tool_name, default="⚙️")
 
             # Markdown-capable platforms render a terminal command as a fenced
-            # code block (full command, no truncation) instead of the compact
-            # `terminal: "cmd…"` preview.  Gated on the adapter's
-            # ``supports_code_blocks`` capability so plain-text platforms keep
-            # the short line.  No language tag is emitted — Slack mrkdwn renders
-            # the tag as a literal first code line ("bash"), and a bare fence
-            # renders correctly everywhere that supports blocks.
-            _code_block = None
+            # code block instead of the compact `terminal: "cmd…"` preview.
+            # Gated on the adapter's ``supports_code_blocks`` capability so
+            # plain-text platforms keep the short line.  No language tag is
+            # emitted — Slack mrkdwn renders the tag as a literal first code
+            # line ("bash"), and a bare fence renders correctly everywhere
+            # that supports blocks.
+            #
+            # Verbose mode shows the FULL command.  Non-verbose ("all"/"new")
+            # modes still wrap in a fence but truncate to a single line capped
+            # at ``tool_preview_length`` (default 40) so a long or multi-line
+            # command doesn't render as a huge block — matching the budget the
+            # non-terminal preview path already applies (#42634).
+            _code_block_full = None
+            _code_block_short = None
             try:
                 _progress_adapter = self.adapters.get(source.platform)
             except Exception:
@@ -13020,12 +13027,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and isinstance(args.get("command"), str)
                 and args["command"].strip()
             ):
-                _code_block = f"{emoji} {tool_name}\n```\n{args['command'].rstrip()}\n```"
+                from agent.display import get_tool_preview_max_len
+                _cmd_full = args["command"].rstrip()
+                _code_block_full = f"{emoji} {tool_name}\n```\n{_cmd_full}\n```"
+                # Single-line, capped preview for non-verbose modes.
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 40
+                _lines = _cmd_full.splitlines()
+                _cmd_short = _lines[0] if _lines else _cmd_full
+                _multiline = len(_lines) > 1
+                if len(_cmd_short) > _cap:
+                    _cmd_short = _cmd_short[:_cap - 3] + "..."
+                elif _multiline:
+                    _cmd_short = _cmd_short + " ..."
+                _code_block_short = f"{emoji} {tool_name}\n```\n{_cmd_short}\n```"
 
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
-                if _code_block is not None:
-                    progress_queue.put(_code_block)
+                if _code_block_full is not None:
+                    progress_queue.put(_code_block_full)
                     return
                 if args:
                     from agent.display import get_tool_preview_max_len
@@ -13047,10 +13067,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
-            # Terminal commands on markdown platforms get the full fenced block
-            # built above instead of the truncated preview.
-            if _code_block is not None:
-                msg = _code_block
+            # Terminal commands on markdown platforms get a single-line capped
+            # fenced block (built above) instead of the truncated preview.
+            if _code_block_short is not None:
+                msg = _code_block_short
             elif preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()

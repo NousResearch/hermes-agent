@@ -194,6 +194,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         self._discovery_fetched_at: float = 0.0
         self._discovery_lock = threading.Lock()
         self._jwks_client: Any = None
+        self._jwks_client_lock = threading.Lock()
 
     # ---- public API (DashboardAuthProvider) -------------------------------
 
@@ -478,16 +479,17 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
     # ---- internals: JWT verification --------------------------------------
 
     def _get_jwks_client(self) -> Any:
-        if self._jwks_client is None:
-            from jwt import PyJWKClient  # lazy import
+        with self._jwks_client_lock:
+            if self._jwks_client is None:
+                from jwt import PyJWKClient  # lazy import
 
-            disco = self._get_discovery()
-            self._jwks_client = PyJWKClient(
-                disco["jwks_uri"],
-                cache_keys=True,
-                lifespan=_JWKS_CACHE_SECONDS,
-            )
-        return self._jwks_client
+                disco = self._get_discovery()
+                self._jwks_client = PyJWKClient(
+                    disco["jwks_uri"],
+                    cache_keys=True,
+                    lifespan=_JWKS_CACHE_SECONDS,
+                )
+            return self._jwks_client
 
     def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
         import jwt  # lazy import — keeps startup fast for the ungated path

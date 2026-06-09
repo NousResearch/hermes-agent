@@ -147,6 +147,14 @@ export async function readProjectDir(dirPath: string, rootPath = dirPath): Promi
   return { ...result, entries: await filterIgnored(result.entries, rootPath, dirPath) }
 }
 
+export async function deletePath(targetPath: string): Promise<{ ok: boolean; error?: string; trashed?: boolean }> {
+  if (!window.hermesDesktop?.deletePath) {
+    return { ok: false, error: 'no-bridge' }
+  }
+
+  return window.hermesDesktop.deletePath(targetPath)
+}
+
 export function clearProjectDirCache(rootPath?: string) {
   if (!rootPath) {
     gitRootCache.clear()

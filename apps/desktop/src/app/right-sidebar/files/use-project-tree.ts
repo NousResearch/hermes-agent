@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
-import { clearProjectDirCache, readProjectDir } from './ipc'
+import { clearProjectDirCache, deletePath, readProjectDir } from './ipc'
 
 export interface TreeNode {
   /** Absolute filesystem path. Doubles as react-arborist node id. */
@@ -42,6 +42,22 @@ function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: 
   })
 }
 
+function removeNode(nodes: TreeNode[] | undefined | null, id: string): TreeNode[] {
+  if (!nodes) {
+    return []
+  }
+
+  const filtered = nodes.filter(n => n.id !== id)
+
+  return filtered.map(n => {
+    if (n.children && n.children.length > 0) {
+      return { ...n, children: removeNode(n.children, id) }
+    }
+
+    return n
+  })
+}
+
 function placeholderChild(parentId: string): TreeNode {
   return { id: `${parentId}::${PLACEHOLDER_ID}`, isDirectory: false, name: 'Loading…' }
 }
@@ -54,6 +70,7 @@ export interface UseProjectTreeResult {
   rootError: string | null
   rootLoading: boolean
   collapseAll: () => void
+  deleteNode: (id: string) => Promise<void>
   loadChildren: (id: string) => Promise<void>
   refreshRoot: () => Promise<void>
   setNodeOpen: (id: string, open: boolean) => void
@@ -235,6 +252,34 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     [cwd]
   )
 
+  const deleteNode = useCallback(
+    async (id: string) => {
+      const result = await deletePath(id)
+
+      if (!result.ok) {
+        throw new Error(result.error || 'Failed to delete')
+      }
+
+      // Remove the node from the tree state
+      setProjectTree(current => {
+        if (current.cwd !== cwd) {
+          return current
+        }
+
+        const newNodeOpen = { ...current.openState }
+
+        delete newNodeOpen[id]
+
+        return {
+          ...current,
+          data: removeNode(current.data, id),
+          openState: newNodeOpen
+        }
+      })
+    },
+    [cwd]
+  )
+
   useEffect(() => {
     void loadRoot(cwd)
   }, [cwd])
@@ -244,6 +289,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       collapseAll,
       collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
       data: state.cwd === cwd ? state.data : [],
+      deleteNode,
       loadChildren,
       openState: state.cwd === cwd ? state.openState : {},
       refreshRoot,
@@ -254,6 +300,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     [
       collapseAll,
       cwd,
+      deleteNode,
       loadChildren,
       refreshRoot,
       setNodeOpen,

@@ -5539,6 +5539,40 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
   }
 })
 
+ipcMain.handle('hermes:fs:deletePath', async (_event, targetPath) => {
+  const resolved = path.resolve(String(targetPath || ''))
+
+  if (!resolved) {
+    return { ok: false, error: 'invalid-path' }
+  }
+
+  try {
+    // Verify the path exists before attempting deletion
+    await fs.promises.stat(resolved)
+
+    // Use shell.trashItem for safe deletion (moves to OS trash)
+    await shell.trashItem(resolved)
+
+    return { ok: true }
+  } catch (error) {
+    // shell.trashItem may not be available on all platforms (e.g. Linux)
+    // Fall back to permanent deletion
+    if (error?.message?.includes('not supported') || error?.code === 'ERR_TRASH_ITEM_NOT_SUPPORTED') {
+      try {
+        const stat = await fs.promises.stat(resolved)
+
+        await fs.promises.rm(resolved, { force: true, recursive: stat.isDirectory() })
+
+        return { ok: true, trashed: false }
+      } catch (rmError) {
+        return { ok: false, error: rmError?.code || 'delete-error' }
+      }
+    }
+
+    return { ok: false, error: error?.code || 'delete-error' }
+  }
+})
+
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
   const input = String(startPath || '')
   const resolved = input.startsWith('file:') ? fileURLToPath(input) : path.resolve(input)

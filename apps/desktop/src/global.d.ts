@@ -59,6 +59,7 @@ declare global {
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
+      deletePath: (path: string) => Promise<HermesDeletePathResult>
       gitRoot?: (path: string) => Promise<string | null>
       terminal: {
         dispose: (id: string) => Promise<boolean>
@@ -407,6 +408,13 @@ export interface HermesReadDirEntry {
 export interface HermesReadDirResult {
   entries: HermesReadDirEntry[]
   error?: string
+}
+
+export interface HermesDeletePathResult {
+  ok: boolean
+  error?: string
+  /** false when the platform does not support trash and the file was permanently deleted */
+  trashed?: boolean
 }
 
 export interface HermesPreviewFileChanged {

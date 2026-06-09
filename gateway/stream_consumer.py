@@ -149,6 +149,10 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # True when fallback is sending only the missing tail after a partial
+        # Telegram overflow delivery.  In that case the already-visible prefix
+        # is intentional content, not a stale preview to delete.
+        self._fallback_preserve_partial_messages = False
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
@@ -261,6 +265,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
         # can't fool the gateway. Safe: got_done returns before any reset, and
@@ -871,7 +876,11 @@ class GatewayStreamConsumer:
         # implement ``delete_message``, the delete fails (flood control still
         # active, bot lacks permission, message too old to delete), the
         # partial remains but at least the full answer was delivered.
-        if stale_message_id and stale_message_id != last_message_id:
+        if (
+            stale_message_id
+            and stale_message_id != last_message_id
+            and not self._fallback_preserve_partial_messages
+        ):
             delete_fn = getattr(self.adapter, "delete_message", None)
             if delete_fn is not None:
                 try:
@@ -888,6 +897,7 @@ class GatewayStreamConsumer:
         self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""
@@ -1274,6 +1284,35 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        raw_response = getattr(result, "raw_response", None)
+                        if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
+                            # Telegram edited/sent one or more overflow chunks,
+                            # but not the complete response.  Preserve the
+                            # visible prefix so the got_done fallback sends the
+                            # missing tail instead of marking a clipped topic
+                            # reply as final delivery.
+                            self._message_id = str(
+                                raw_response.get("last_message_id")
+                                or result.message_id
+                                or self._message_id
+                            )
+                            delivered_prefix = raw_response.get("delivered_prefix")
+                            if isinstance(delivered_prefix, str) and delivered_prefix:
+                                self._last_sent_text = delivered_prefix
+                                self._fallback_prefix = delivered_prefix
+                                self._fallback_preserve_partial_messages = text.startswith(
+                                    delivered_prefix
+                                )
+                            else:
+                                self._fallback_prefix = self._visible_prefix()
+                                self._fallback_preserve_partial_messages = False
+                            self._fallback_final_send = True
+                            self._edit_supported = False
+                            self._already_sent = True
+                            if getattr(result, "continuation_message_ids", ()):
+                                self._notify_new_message()
+                            return False
+
                         # Edit failed.  If this looks like flood control / rate
                         # limiting, use adaptive backoff: double the edit interval
                         # and retry on the next cycle.  Only permanently disable

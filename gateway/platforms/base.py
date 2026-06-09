@@ -4338,9 +4338,28 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
+                    # Extract HERMES_INLINE_BUTTONS: from the response text and pass
+                    # parsed buttons via metadata to platforms that support them.
+                    # (notify marking is already applied via _final_thread_metadata above.)
+                    _cleaned_text_content = text_content
+                    _btn_clean_lines = []
+                    _inline_buttons_parsed = None
+                    for _btn_line in text_content.splitlines():
+                        if _btn_line.strip().startswith("HERMES_INLINE_BUTTONS:"):
+                            _btn_payload = _btn_line.strip()[len("HERMES_INLINE_BUTTONS:"):]
+                            try:
+                                import json as _json
+                                _inline_buttons_parsed = _json.loads(_btn_payload)
+                            except Exception:
+                                _btn_clean_lines.append(_btn_line)
+                        else:
+                            _btn_clean_lines.append(_btn_line)
+                    if _inline_buttons_parsed is not None:
+                        _cleaned_text_content = "\n".join(_btn_clean_lines)
+                        _final_thread_metadata["inline_buttons"] = _inline_buttons_parsed
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
-                        content=text_content,
+                        content=_cleaned_text_content,
                         reply_to=_reply_anchor,
                         metadata=_final_thread_metadata,
                     )

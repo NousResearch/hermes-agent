@@ -760,6 +760,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
+    # Extract HERMES_INLINE_BUTTONS: markers from the delivery content so that
+    # inline keyboard buttons can be forwarded to platforms that support them
+    # (currently Telegram).  The marker is a single line:
+    #   HERMES_INLINE_BUTTONS:[[{"text":"...", "callback_data":"..."}]]
+    inline_buttons = None
+    _btn_lines = []
+    _clean_lines = []
+    for _line in cleaned_delivery_content.splitlines():
+        if _line.strip().startswith("HERMES_INLINE_BUTTONS:"):
+            _btn_payload = _line.strip()[len("HERMES_INLINE_BUTTONS:"):]
+            try:
+                inline_buttons = json.loads(_btn_payload)
+            except Exception:
+                logger.warning("Job '%s': failed to parse HERMES_INLINE_BUTTONS payload", job["id"])
+                _clean_lines.append(_line)
+        else:
+            _clean_lines.append(_line)
+    cleaned_delivery_content = "\n".join(_clean_lines)
+
     try:
         config = load_gateway_config()
     except Exception as e:
@@ -813,6 +832,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
+            if inline_buttons and send_metadata:
+                send_metadata["inline_buttons"] = inline_buttons
+            elif inline_buttons:
+                send_metadata = {"inline_buttons": inline_buttons}
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()

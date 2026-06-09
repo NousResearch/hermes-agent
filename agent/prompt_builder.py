@@ -571,7 +571,15 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
         "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        "URLs in markdown format ![alt](url) and they will be sent as native photos. "
+        "To offer the user tappable inline buttons, include a single line "
+        'HERMES_INLINE_BUTTONS:[[{"text": "Yes", "callback_data": "yes"}]] in your '
+        "response. The payload is a JSON list of button rows, each row a list of "
+        "{text, callback_data} objects. That line is stripped from the visible "
+        "message and rendered as a Telegram inline keyboard. When the user taps a "
+        "button its callback_data comes back to you as their next message, so set "
+        "callback_data to whatever you'd want them to reply. Use buttons when "
+        "offering a small set of clear choices; keep typing free for everything else."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "

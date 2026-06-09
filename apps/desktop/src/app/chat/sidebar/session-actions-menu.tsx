@@ -141,7 +141,17 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+        <DropdownMenuTrigger
+          asChild
+          // Prevent the outer ContextMenu (SessionContextMenu) from intercepting
+          // pointer events on this trigger. Without these handlers the ContextMenu's
+          // document-level listeners capture the click before the DropdownMenu can
+          // process it, breaking "Copy ID" and every other dropdown item (#42468).
+          onContextMenu={(e: React.MouseEvent) => e.stopPropagation()}
+          onPointerDown={(e: React.PointerEvent) => e.stopPropagation()}
+        >
+          {children}
+        </DropdownMenuTrigger>
         <DropdownMenuContent
           align={align}
           aria-label={t.sidebar.row.actionsFor(actions.title)}

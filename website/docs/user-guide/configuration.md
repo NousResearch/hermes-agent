@@ -835,6 +835,7 @@ $ hermes model
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
+[ ] tts_audio_tags       currently: auto / main model
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -910,6 +911,14 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30                # seconds
+
+  # Gemini 3.1 TTS hidden audio-tag insertion
+  tts_audio_tags:
+    provider: "auto"
+    model: ""                  # empty = main chat model
+    base_url: ""
+    api_key: ""
+    timeout: 30
 
   # Context compression timeout (separate from compression.* config)
   compression:
@@ -1197,8 +1206,9 @@ tts:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
-    model: "gemini-2.5-flash-preview-tts"   # or gemini-2.5-pro-preview-tts
+    model: "gemini-2.5-flash-preview-tts"   # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, etc.
+    audio_tags: false           # Hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
     voice_id: "eve"             # xAI TTS voice

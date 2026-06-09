@@ -415,7 +415,8 @@ prompt_caching:
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
-# browser screenshot analysis, web page summarization, and context compression.
+# browser screenshot analysis, web page summarization, TTS audio-tag insertion,
+# and context compression.
 #
 # By default these use Gemini Flash via OpenRouter or Nous Portal and are
 # auto-detected from your credentials.  You do NOT need to change anything
@@ -459,6 +460,12 @@ prompt_caching:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Gemini 3.1 TTS hidden audio-tag insertion
+#   tts_audio_tags:
+#     provider: "auto"       # empty model = your main chat model
+#     model: ""
+#     timeout: 30
 #
 #   # Session search — summarizes matching past sessions
 #   session_search:
@@ -834,6 +841,22 @@ platform_toolsets:
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       log_level: "info"       # audit verbosity
+
+# =============================================================================
+# Text-to-Speech
+# =============================================================================
+# TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.
+# Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
+# can use a hidden auxiliary rewrite pass to insert expressive square-bracket
+# audio tags into the TTS script without showing tags in chat.
+#
+# tts:
+#   provider: "gemini"
+#   gemini:
+#     model: "gemini-3.1-flash-tts-preview"
+#     voice: "Kore"
+#     audio_tags: false
+#     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

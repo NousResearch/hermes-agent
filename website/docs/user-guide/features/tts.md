@@ -66,8 +66,9 @@ tts:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
-    model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
+    model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
@@ -111,6 +112,20 @@ tts:
     voice: Algieba
     persona_prompt_file: ~/.hermes/tts/butler-voice.md
 ```
+
+### Gemini Audio Tags
+
+Gemini 3.1 Flash TTS supports freeform square-bracket audio tags such as `[whispers]`, `[excitedly]`, `[very slow]`, `[laughs]`, and other expressive delivery notes. Enable `tts.gemini.audio_tags` to have Hermes run a hidden rewrite pass before Gemini TTS. The rewrite inserts inline tags into the TTS script only; the visible chat reply stays unchanged.
+
+```yaml
+tts:
+  provider: gemini
+  gemini:
+    model: gemini-3.1-flash-tts-preview
+    audio_tags: true
+```
+
+The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model. Override that auxiliary task if you want tag insertion handled by a cheaper or faster model.
 
 
 ### Input length limits

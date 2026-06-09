@@ -190,6 +190,8 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_GEMINI_AUDIO_TAGS = False
+GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -232,6 +234,23 @@ ELEVENLABS_MODEL_MAX_TEXT_LENGTH: Dict[str, int] = {
     "eleven_flash_v2": 30000,
     "eleven_flash_v2_5": 40000,
 }
+
+
+def _config_bool(value: Any, default: bool = False) -> bool:
+    """Coerce common YAML/env bool spellings without treating random strings as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
 
 # Final fallback when provider isn't recognised at all.
 FALLBACK_MAX_TEXT_LENGTH = 4000
@@ -1069,20 +1088,7 @@ _XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.
 
 
 def _xai_bool_config(value: Any, default: bool = False) -> bool:
-    """Coerce common YAML/env bool spellings without treating random strings as true."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on", "enabled"}:
-            return True
-        if normalized in {"0", "false", "no", "off", "disabled"}:
-            return False
-    return default
+    return _config_bool(value, default=default)
 
 
 def _apply_xai_auto_speech_tags(text: str) -> str:
@@ -1427,10 +1433,105 @@ def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
         return ""
 
 
-def _compose_gemini_tts_prompt(text: str, gemini_config: Dict[str, Any]) -> str:
+def _gemini_model_supports_audio_tags(model: str) -> bool:
+    """Return True for Gemini TTS models known to support expressive audio tags."""
+    normalized = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return "gemini-3.1" in normalized and "tts" in normalized
+
+
+def _gemini_audio_tags_enabled(gemini_config: Dict[str, Any], model: str) -> bool:
+    raw = gemini_config.get("audio_tags")
+    if isinstance(raw, dict):
+        raw = raw.get("enabled")
+    enabled = _config_bool(raw, default=DEFAULT_GEMINI_AUDIO_TAGS)
+    if not enabled:
+        return False
+    if not _gemini_model_supports_audio_tags(model):
+        logger.warning(
+            "Gemini TTS audio_tags enabled, but model %s is not known to support "
+            "Gemini audio tags; skipping hidden tag rewrite",
+            model,
+        )
+        return False
+    return True
+
+
+def _clean_gemini_audio_tag_rewrite(content: str) -> str:
+    clean = (content or "").strip()
+    fence = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```", clean, flags=re.DOTALL)
+    if fence:
+        clean = fence.group(1).strip()
+    return clean
+
+
+def _extract_auxiliary_message_content(response: Any) -> str:
+    try:
+        choice = response.choices[0]
+        message = getattr(choice, "message", None)
+        if isinstance(message, dict):
+            return str(message.get("content") or "")
+        return str(getattr(message, "content", "") or "")
+    except Exception:
+        return ""
+
+
+def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
+    """Use the configured auxiliary model to insert Gemini audio tags."""
+    transcript = text.strip()
+    if not transcript:
+        return text
+
+    system_prompt = (
+        "You rewrite transcripts for Gemini 3.1 Flash TTS by inserting expressive "
+        "audio tags.\n\n"
+        "Audio tags are inline square-bracket modifiers such as [whispers], "
+        "[excitedly], [very slow], [sarcastically], [laughs], [sighs], or [gasp]. "
+        "There is no fixed allowlist. Use creative freeform tags generously but "
+        "naturally to control tone, pace, emotional vibe, emphasis, section-level "
+        "delivery, and non-verbal sounds. Use English audio tags even when the "
+        "spoken transcript is not English.\n\n"
+        "Rules:\n"
+        "- Preserve the spoken words, order, and meaning.\n"
+        "- Do not add new spoken sentences or remove existing spoken words.\n"
+        "- Use square brackets for every audio tag.\n"
+        "- Do not use SSML or XML tags.\n"
+        "- Do not explain or comment.\n"
+        "- Return only the tagged TTS script."
+    )
+    context = persona_prompt.strip() or "(none)"
+    user_prompt = (
+        "PERSONA AND DIRECTOR CONTEXT:\n"
+        f"{context}\n\n"
+        "TRANSCRIPT TO TAG:\n"
+        f"{transcript}"
+    )
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task=GEMINI_AUDIO_TAG_REWRITE_TASK,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.7,
+        )
+        tagged = _clean_gemini_audio_tag_rewrite(_extract_auxiliary_message_content(response))
+        return tagged or text
+    except Exception as exc:
+        logger.warning("Gemini TTS audio tag rewrite failed; using untagged text: %s", exc)
+        return text
+
+
+def _compose_gemini_tts_prompt(
+    text: str,
+    gemini_config: Dict[str, Any],
+    persona_prompt: Optional[str] = None,
+) -> str:
     """Build the Gemini prompt from persona direction plus the live transcript."""
     transcript = text.strip()
-    persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    if persona_prompt is None:
+        persona_prompt = _read_gemini_persona_prompt(gemini_config)
     if not persona_prompt:
         return transcript
 
@@ -1487,7 +1588,15 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         or get_env_value("GEMINI_BASE_URL")
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
-    prompt_text = _compose_gemini_tts_prompt(text, gemini_config)
+    persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    tts_script = text
+    if _gemini_audio_tags_enabled(gemini_config, model):
+        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
+    prompt_text = _compose_gemini_tts_prompt(
+        tts_script,
+        gemini_config,
+        persona_prompt=persona_prompt,
+    )
     max_len = _resolve_max_text_length("gemini", tts_config)
     if len(prompt_text) > max_len:
         logger.warning(

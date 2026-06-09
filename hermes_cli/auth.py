@@ -3627,7 +3627,8 @@ def resolve_codex_runtime_credentials(
     try:
         data = _read_codex_tokens()
     except AuthError:
-        pool_token = _pool_codex_access_token()
+        pool_result = _pool_codex_access_token()
+        pool_token = pool_result.get("access_token", "")
         if pool_token:
             base_url = (
                 os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
@@ -3640,6 +3641,7 @@ def resolve_codex_runtime_credentials(
                 "source": "credential_pool",
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
+                "account_id": pool_result.get("account_id"),
             }
         raise
 
@@ -3670,6 +3672,8 @@ def resolve_codex_runtime_credentials(
         or DEFAULT_CODEX_BASE_URL
     )
 
+    account_id = str(tokens.get("account_id", "") or "").strip() or None
+
     return {
         "provider": "openai-codex",
         "base_url": base_url,
@@ -3677,28 +3681,32 @@ def resolve_codex_runtime_credentials(
         "source": "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
+        "account_id": account_id,
     }
 
 
-def _pool_codex_access_token() -> str:
-    """Return the most-recent usable access_token from the openai-codex pool.
+def _pool_codex_access_token() -> Dict[str, Any]:
+    """Return the most-recent usable entry from the openai-codex pool.
+
+    Returns a dict with ``access_token`` (str) and optionally ``account_id``
+    (str | None) from the first usable pool entry.  Returns
+    ``{"access_token": ""}`` when no usable entry is found (caller handles by
+    raising the original AuthError).
 
     Used as a fallback by ``resolve_codex_runtime_credentials`` when the
     singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
     directly from auth.json and picks the first non-empty access_token,
     preferring entries that are not currently in an exhaustion cooldown.
-    Returns ``""`` when no usable entry is found (caller handles by raising
-    the original AuthError).
     """
     try:
         with _auth_store_lock():
             auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
-            return ""
+            return {"access_token": ""}
         entries = pool.get("openai-codex")
         if not isinstance(entries, list):
-            return ""
+            return {"access_token": ""}
 
         def _entry_usable(entry: Dict[str, Any]) -> bool:
             if not isinstance(entry, dict):
@@ -3714,10 +3722,14 @@ def _pool_codex_access_token() -> str:
 
         for entry in entries:
             if _entry_usable(entry):
-                return str(entry.get("access_token", "")).strip()
+                account_id = str(entry.get("account_id", "") or "").strip() or None
+                return {
+                    "access_token": str(entry.get("access_token", "")).strip(),
+                    "account_id": account_id,
+                }
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
-    return ""
+    return {"access_token": ""}
 
 
 # =============================================================================

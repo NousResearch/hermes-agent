@@ -330,6 +330,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for e in entries]
                 return {
                     "success": False,
                     "error": (
@@ -339,6 +340,7 @@ class MemoryStore:
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
+                    "previews": previews,
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
@@ -372,7 +374,13 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for e in entries]
+                return {
+                    "success": False,
+                    "error": f"No entry matched '{old_text}'. Check the previews below and retry with the exact text of the entry you want to replace.",
+                    "previews": previews,
+                    "current_entries": entries,
+                }
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
@@ -429,7 +437,13 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for e in entries]
+                return {
+                    "success": False,
+                    "error": f"No entry matched '{old_text}'. Check the previews below and retry with the exact text of the entry you want to remove.",
+                    "previews": previews,
+                    "current_entries": entries,
+                }
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one

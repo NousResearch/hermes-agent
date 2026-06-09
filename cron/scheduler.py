@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -2227,6 +2228,163 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _format_loop_alert(job: dict, reason: str) -> str:
+    """Format an auto-pause notification with enough context to resume it."""
+    job_id = str(job["id"])
+    name = job.get("name") or job_id
+    prompt = str(job.get("prompt") or "")
+    snippet = prompt[:60] + ("..." if len(prompt) > 60 else "")
+    runs = int((job.get("repeat") or {}).get("completed", 0)) + 1
+    lines = [f"🔄 Loop job '{name}' ({job_id}) auto-paused: {reason}"]
+    if snippet:
+        lines.append(f"   Goal: {snippet}")
+    lines.extend(
+        [
+            f"   Runs completed: {runs}",
+            f"   Use /loop resume {job_id} to restart.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _run_loop_verify(job: dict) -> Optional[str]:
+    """Run a CLI-created loop verification command and return failure context."""
+    verify_cmd = str(job.get("loop_verify") or "").strip()
+    if not verify_cmd:
+        return None
+
+    from tools.environments.local import _sanitize_subprocess_env
+
+    kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+    try:
+        result = subprocess.run(
+            verify_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=job.get("workdir") or None,
+            env=_sanitize_subprocess_env(os.environ.copy()),
+            **kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        return "verify command timed out after 60s"
+    except Exception as exc:
+        return f"verify command error: {exc}"
+
+    if result.returncode == 0:
+        return None
+
+    try:
+        from agent.redact import redact_sensitive_text
+
+        stderr = redact_sensitive_text((result.stderr or "").strip())
+        stdout = redact_sensitive_text((result.stdout or "").strip())
+    except Exception:
+        logger.warning("Loop verify output redaction failed", exc_info=True)
+        stderr = "[REDACTED - redaction failed]"
+        stdout = "[REDACTED - redaction failed]"
+
+    parts = [f"verify command failed (exit {result.returncode})"]
+    if stderr:
+        parts.append(f"stderr: {stderr[:2000]}")
+    if stdout:
+        parts.append(f"stdout: {stdout[:2000]}")
+    return "\n".join(parts)
+
+
+def _adapt_loop_interval(job: dict, output_changed: bool) -> dict:
+    """Return a clamped schedule update for a dynamic interval loop."""
+    schedule = job.get("schedule") or {}
+    if not job.get("loop_dynamic") or schedule.get("kind") != "interval":
+        return {}
+    old_minutes = int(schedule.get("minutes") or 5)
+    new_minutes = (
+        max(1, old_minutes // 2)
+        if output_changed
+        else min(1440, old_minutes * 2)
+    )
+    if new_minutes == old_minutes:
+        return {}
+    display = f"every {new_minutes}m"
+    return {
+        "schedule": {**schedule, "minutes": new_minutes, "display": display},
+        "schedule_display": display,
+    }
+
+
+def _loop_response_hash(final_response: str) -> str:
+    return hashlib.sha256((final_response or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _acknowledge_loop_delivery(job: dict, final_response: str) -> None:
+    """Record a loop response only after its delivery actually succeeded."""
+    from cron.jobs import update_job
+
+    update_job(
+        job["id"],
+        {"loop_last_delivered_hash": _loop_response_hash(final_response)},
+    )
+
+
+def _evaluate_loop_tick(job: dict, final_response: str) -> tuple[Optional[str], bool]:
+    """Persist loop progress and return ``(pause_alert, skip_delivery)``."""
+    from cron.jobs import pause_job, update_job
+
+    job_id = job["id"]
+    threshold = max(1, int(job.get("loop_no_progress_threshold") or 3))
+    response_hash = _loop_response_hash(final_response)
+    last_hash = job.get("loop_last_output_hash")
+    no_progress_count = int(job.get("loop_no_progress_count") or 0)
+    output_changed = response_hash != last_hash
+    no_progress_count = 0 if output_changed else no_progress_count + 1
+    schedule_update = _adapt_loop_interval(job, output_changed)
+
+    if no_progress_count < threshold:
+        try:
+            from hermes_cli.goals import judge_goal
+
+            verdict, reason, parse_failed, _wait = judge_goal(
+                str(job.get("prompt") or ""),
+                final_response,
+            )
+            logger.info(
+                "Job '%s' loop judge: verdict=%s reason=%s parse_failed=%s",
+                job_id,
+                verdict,
+                reason,
+                parse_failed,
+            )
+            if verdict == "done":
+                no_progress_count += 1
+        except Exception:
+            logger.debug("Job '%s' loop judge failed", job_id, exc_info=True)
+
+    verify_error = _run_loop_verify(job)
+    updates = {
+        "loop_no_progress_count": no_progress_count,
+        "loop_last_output_hash": response_hash,
+        "loop_last_response": final_response,
+        "loop_last_verify_error": verify_error,
+        **schedule_update,
+    }
+    update_job(job_id, updates)
+
+    skip_delivery = (
+        job.get("loop_last_delivered_hash") is not None
+        and response_hash == job.get("loop_last_delivered_hash")
+    )
+    if no_progress_count < threshold:
+        if schedule_update:
+            _notify_provider_jobs_changed()
+        return None, skip_delivery
+
+    pause_job(job_id, reason="no progress detected")
+    _notify_provider_jobs_changed()
+    reason = f"{threshold} consecutive no-progress detections"
+    return _format_loop_alert(job, reason), True
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -2247,6 +2405,37 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # pastes `rm -rf /`), so it must not be scanned with the strict
     # user-prompt pattern set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+
+    if job.get("loop"):
+        previous_response = str(job.get("loop_last_response") or "")
+        if previous_response:
+            previous_response = previous_response[:4000]
+            prompt = (
+                "## Previous tick response\n"
+                "Continue from this prior result and improve or update it.\n\n"
+                f"```\n{previous_response}\n```\n\n{prompt}"
+            )
+            has_injected_data = True
+
+        verify_error = str(job.get("loop_last_verify_error") or "")
+        if verify_error:
+            verify_error = verify_error[:2000]
+            prompt = (
+                "## Post-run verification failure\n"
+                "Address this failure during the next loop run.\n\n"
+                f"```\n{verify_error}\n```\n\n{prompt}"
+            )
+            has_injected_data = True
+
+        if job.get("loop_dynamic"):
+            minutes = int((job.get("schedule") or {}).get("minutes") or 5)
+            count = int(job.get("loop_no_progress_count") or 0)
+            threshold = max(1, int(job.get("loop_no_progress_threshold") or 3))
+            prompt = (
+                "## Loop cadence\n"
+                f"Current interval: {minutes}m | No-progress: {count}/{threshold}\n\n"
+                f"{prompt}"
+            )
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
@@ -3614,6 +3803,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                     "(tool subprocess was killed mid-flight)."
                 )
 
+            loop_alert = None
+            loop_skip_delivery = False
+            if job.get("loop") and success and final_response.strip():
+                loop_alert, loop_skip_delivery = _evaluate_loop_tick(
+                    job,
+                    final_response,
+                )
+
             # Deliver the final response to the origin/target chat.
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
@@ -3622,6 +3819,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            loop_has_delivery_target = (
+                bool(_resolve_delivery_targets(job)) if job.get("loop") else False
+            )
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
             # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
@@ -3632,12 +3832,36 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
 
+            if should_deliver and loop_skip_delivery:
+                logger.info(
+                    "Job '%s': loop output already delivered — skipping duplicate",
+                    job["id"],
+                )
+                should_deliver = False
+
             if should_deliver:
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    if (
+                        job.get("loop")
+                        and success
+                        and loop_has_delivery_target
+                        and delivery_error is None
+                    ):
+                        _acknowledge_loop_delivery(job, final_response)
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+            if loop_alert:
+                try:
+                    alert_error = _deliver_result(job, loop_alert, adapters=adapters, loop=loop)
+                    if alert_error and not delivery_error:
+                        delivery_error = alert_error
+                except Exception as de:
+                    if not delivery_error:
+                        delivery_error = str(de)
+                    logger.warning("Loop alert delivery failed for job %s: %s", job["id"], de)
         finally:
             # Tear down the deferred agent(s) now that save + delivery have run
             # (or raised). Must happen on every path so cron agents never leak

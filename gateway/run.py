@@ -9556,6 +9556,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
 
+            # /loop is safe mid-run — it only manages cron jobs (control-plane).
+            if _cmd_def_inner and _cmd_def_inner.name == "loop":
+                return await self._handle_loop_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -10107,6 +10111,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
+
+        if canonical == "loop":
+            return await self._handle_loop_command(event)
 
         if canonical == "voice":
             return await self._handle_voice_command(event)

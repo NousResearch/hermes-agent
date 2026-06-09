@@ -2199,6 +2199,28 @@ class GatewaySlashCommandsMixin:
         # Let the normal message handler process it
         return await self._handle_message(retry_event)
 
+    async def _handle_loop_command(self, event: "MessageEvent") -> str:
+        """Handle /loop for gateway platforms.
+
+        Subcommands: ``/loop <interval> <prompt>`` / ``/loop status`` /
+        ``/loop pause <id>`` / ``/loop resume <id>`` / ``/loop stop <id>``.
+        """
+        from hermes_cli.loop_command import handle_loop_command, parse_loop_result
+
+        args = (event.get_command_args() or "").strip()
+
+        origin = None
+        if event.source:
+            origin = {
+                "platform": str(event.source.platform),
+                "chat_id": event.source.chat_id,
+                "chat_name": event.source.chat_name,
+                "thread_id": event.source.thread_id,
+            }
+
+        text, _is_error = parse_loop_result(handle_loop_command(args, origin=origin))
+        return text or "Loop command completed."
+
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
 

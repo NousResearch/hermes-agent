@@ -11,6 +11,10 @@ export interface ComposerAttachment {
   previewUrl?: string
   path?: string
   attachedSessionId?: string
+  /** Set while the file/image bytes are being staged into the session
+   * workspace (remote upload or local stage), and 'error' if that failed.
+   * Drives the spinner / error state on the composer attachment card. */
+  uploadState?: 'uploading' | 'error'
 }
 
 export const $composerDraft = atom('')
@@ -71,6 +75,21 @@ export function removeComposerAttachment(id: string): ComposerAttachment | null 
 
 export function clearComposerAttachments() {
   $composerAttachments.set([])
+}
+
+/** Update only the upload state of an existing attachment (no-op if it's gone,
+ * e.g. the user removed it mid-upload). Pass `undefined` to clear it. */
+export function setComposerAttachmentUploadState(id: string, uploadState?: ComposerAttachment['uploadState']) {
+  const current = $composerAttachments.get()
+  const index = current.findIndex(attachment => attachment.id === id)
+
+  if (index < 0) {
+    return
+  }
+
+  const next = [...current]
+  next[index] = { ...next[index]!, uploadState }
+  $composerAttachments.set(next)
 }
 
 const TERMINAL_REF_RE = /@terminal:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g

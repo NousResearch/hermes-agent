@@ -3482,6 +3482,36 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
 
 
+def _resume_stored_session(db, target: str, cols: int = 80) -> dict:
+    """Reopen a persisted session from the DB into a fresh live TUI session.
+
+    Returns a dict with the new in-memory ``sid``, the resolved DB
+    ``target`` id, the decoded display ``messages`` and the live
+    ``agent``.  Shared by ``session.resume`` (resume picker / CLI) and the
+    ``session.activate`` fallback so the ``/sessions`` overlay can attach
+    to a historical session the same way it attaches to a live one.
+    Raises on failure; callers translate to a JSON-RPC error envelope.
+    """
+    sid = uuid.uuid4().hex[:8]
+    _enable_gateway_prompts()
+    db.reopen_session(target)
+    history = db.get_messages_as_conversation(target)
+    display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+    display_history_prefix = display_history[
+        : max(0, len(display_history) - len(history))
+    ]
+    messages = _history_to_messages(display_history)
+    tokens = _set_session_context(target)
+    try:
+        agent = _make_agent(sid, target, session_id=target)
+    finally:
+        _clear_session_context(tokens)
+    _init_session(sid, target, agent, history, cols=cols)
+    if sid in _sessions:
+        _sessions[sid]["display_history_prefix"] = display_history_prefix
+    return {"sid": sid, "target": target, "messages": messages, "agent": agent}
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
@@ -3699,7 +3729,9 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     return {
         "current": sid == current_sid,
         "id": sid,
-        "last_active": float(session.get("last_active") or session.get("created_at") or now),
+        "last_active": float(
+            session.get("last_active") or session.get("created_at") or now
+        ),
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()),
         "preview": preview,
@@ -3767,13 +3799,61 @@ def _live_session_payload(
     return payload
 
 
+# Sources hidden from the ``/sessions`` overlay's historical rows, mirroring
+# ``session.list``: ``tool`` rows are noisy sub-agent runs, not human-facing
+# sessions a user would want to resume.
+_STORED_SESSION_DENY = frozenset({"tool"})
+
+
+def _list_stored_sessions(db, limit: int = 200) -> list[dict]:
+    """Return human-facing persisted sessions, newest first (deny-list filtered).
+
+    Same projection ``session.list`` uses for the resume picker, so the
+    ``/sessions`` overlay and ``hermes sessions list`` agree on which rows
+    are resumable.
+    """
+    fetch_limit = max(limit * 2, 200)
+    rows = [
+        s
+        for s in db.list_sessions_rich(source=None, limit=fetch_limit)
+        if (s.get("source") or "").strip().lower() not in _STORED_SESSION_DENY
+    ]
+    return rows[:limit]
+
+
+def _session_stored_item(row: dict) -> dict:
+    """Map a persisted DB row to the live-switcher item shape.
+
+    Historical rows have no in-memory agent, so they report ``idle`` and use
+    the DB session id as ``id``; selecting one routes through
+    ``session.activate``, which resumes it from disk.
+    """
+    sid = str(row.get("id") or "")
+    started = float(row.get("started_at") or 0)
+    return {
+        "current": False,
+        "id": sid,
+        "last_active": started,
+        "message_count": int(row.get("message_count") or 0),
+        "model": "",
+        "preview": str(row.get("preview") or ""),
+        "session_key": sid,
+        "started_at": started,
+        "status": "idle",
+        "stored": True,
+        "title": str(row.get("title") or ""),
+    }
+
+
 @method("session.active_list")
 def _(rid, params: dict) -> dict:
-    """Return live TUI sessions in this gateway process.
+    """Return resumable TUI sessions for the ``/sessions`` overlay.
 
-    Unlike ``session.list`` this is not a historical DB browser: it reports only
-    sessions with in-memory agents/workers that the current TUI can switch to
-    without closing siblings.
+    Live in-memory sessions (which the TUI can switch to without closing
+    siblings) come first in creation order, followed by historical sessions
+    persisted to the DB from previous runs.  This makes ``/sessions`` a true
+    session browser matching ``hermes sessions list`` rather than only
+    surfacing same-process live agents.
     """
     current = str(params.get("current_session_id") or "")
     try:
@@ -3802,6 +3882,23 @@ def _(rid, params: dict) -> dict:
         for sid, session in snapshot
         if not session.get("_finalized")
     ]
+
+    # Append historical sessions from the DB that aren't already live in this
+    # process, so a restarted TUI still lists prior conversations.  Dedupe by
+    # DB session key so a resumed session shows once (as its live row).
+    db = _get_db()
+    if db is not None:
+        live_keys = {str(r.get("session_key") or r.get("id") or "") for r in rows}
+        try:
+            for stored in _list_stored_sessions(db):
+                if str(stored.get("id") or "") in live_keys:
+                    continue
+                rows.append(_session_stored_item(stored))
+        except Exception:
+            # A DB hiccup shouldn't blank the overlay — keep the live rows.
+            logger.warning(
+                "session.active_list: stored session lookup failed", exc_info=True
+            )
     return _ok(rid, {"sessions": rows})
 
 
@@ -3813,9 +3910,36 @@ def _(rid, params: dict) -> dict:
     returns enough state for Ink to redraw around another live session id.
     """
     sid = str(params.get("session_id") or "")
-    session, err = _sess_nowait({"session_id": sid}, rid)
-    if err:
-        return err
+    session, _ = _sess_nowait({"session_id": sid}, rid)
+    if session is None:
+        # Not live in this process: the overlay is attaching to a historical
+        # session persisted from a previous run.  Resume it from the DB into a
+        # fresh live session, then return the same activate-shaped payload so
+        # the frontend treats it like any other switch.
+        db = _get_db()
+        if db is None:
+            return _db_unavailable_error(rid, code=5036)
+        if not db.get_session(sid):
+            return _err(rid, 4001, "session not found")
+        try:
+            resumed = _resume_stored_session(db, sid, cols=int(params.get("cols", 80)))
+        except Exception as e:
+            return _err(rid, 5000, f"activate failed: {e}")
+        new_sid = resumed["sid"]
+        new_session = _sessions.get(new_sid, {})
+        return _ok(
+            rid,
+            {
+                "info": _fallback_session_info(new_session),
+                "message_count": len(resumed["messages"]),
+                "messages": resumed["messages"],
+                "running": False,
+                "session_id": new_sid,
+                "session_key": resumed["target"],
+                "started_at": float(new_session.get("created_at") or time.time()),
+                "status": "idle",
+            },
+        )
 
     return _ok(
         rid,

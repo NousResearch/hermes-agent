@@ -820,6 +820,118 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_active_list_appends_historical_sessions(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, source=None, limit=0):
+            return [
+                {
+                    "id": "stored-1",
+                    "title": "old chat",
+                    "preview": "hello from yesterday",
+                    "started_at": 100.0,
+                    "message_count": 4,
+                    "source": "tui",
+                },
+                {"id": "tool-run", "title": "", "source": "tool"},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {}}
+        )
+        sessions = resp["result"]["sessions"]
+        # Only the human-facing historical row is surfaced; ``tool`` rows are
+        # filtered like ``session.list`` does.
+        assert [s["id"] for s in sessions] == ["stored-1"]
+        stored = sessions[0]
+        assert stored["stored"] is True
+        assert stored["status"] == "idle"
+        assert stored["title"] == "old chat"
+        assert stored["session_key"] == "stored-1"
+    finally:
+        server._sessions.clear()
+
+
+def test_active_list_dedupes_resumed_session(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, source=None, limit=0):
+            return [{"id": "session-key", "title": "resumed", "source": "tui"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(model="m"), created_at=1.0
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {}}
+        )
+        ids = [s["id"] for s in resp["result"]["sessions"]]
+        # The live row uses ``session_key`` == "session-key"; the DB row with the
+        # same id must not appear a second time.
+        assert ids == ["sid"]
+    finally:
+        server._sessions.clear()
+
+
+def test_activate_resumes_stored_session(monkeypatch):
+    class _DB:
+        def get_session(self, target):
+            return {"id": target}
+
+        def reopen_session(self, target):
+            return None
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            return [{"role": "user", "content": "from disk"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="m")
+    )
+    monkeypatch.setattr(
+        server, "_init_session", lambda sid, key, agent, history, cols=80: None
+    )
+    monkeypatch.setattr(
+        server, "_session_info", lambda agent: {"model": "m", "tools": {}, "skills": {}}
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.activate",
+                "params": {"session_id": "stored-9"},
+            }
+        )
+        result = resp["result"]
+        assert result["session_key"] == "stored-9"
+        assert result["status"] == "idle"
+        assert result["messages"] == [{"role": "user", "text": "from disk"}]
+        # A fresh live sid is minted for the resumed session.
+        assert result["session_id"] != "stored-9"
+    finally:
+        server._sessions.clear()
+
+
+def test_activate_unknown_session_reports_not_found(monkeypatch):
+    class _DB:
+        def get_session(self, target):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.activate", "params": {"session_id": "nope"}}
+    )
+    assert resp["error"]["code"] == 4001
+
+
 def test_status_callback_emits_kind_and_text():
     with patch("tui_gateway.server._emit") as emit:
         cb = server._agent_cbs("sid")["status_callback"]
@@ -4997,6 +5109,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     )
     assert any(
         "No supported Chromium-family browser executable was found" in line
+        or "Start a Chromium-family browser with remote debugging" in line
         for line in resp["result"]["messages"]
     )
     assert any(

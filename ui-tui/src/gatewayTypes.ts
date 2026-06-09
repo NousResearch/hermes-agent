@@ -145,6 +145,9 @@ export interface SessionActiveItem {
   session_key?: string
   started_at?: number
   status: LiveSessionStatus
+  // True for historical sessions surfaced from the DB (no live in-memory
+  // agent); selecting one resumes it via `session.activate`.
+  stored?: boolean
   title?: string
 }
 

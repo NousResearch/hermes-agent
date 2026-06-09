@@ -136,7 +136,7 @@ def knowledge_retrieval(query: str, kb_ids: Optional[list] = None) -> str:
             "kb_ids": target_dataset_ids,
             "query": query.strip(),
             "top_k": top_k,
-            "engines": ["tree"],
+            "engines": [],
         }
 
         response = _http_request("POST", retrieval_url, body=request_body)

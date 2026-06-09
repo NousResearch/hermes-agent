@@ -552,6 +552,42 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
 
+    def test_fetch_uses_body_peek_not_rfc822(self):
+        """_fetch_new_messages must use BODY.PEEK[] to avoid marking messages as read.
+
+        RFC822 fetch implicitly sets \\Seen on Gmail and other IMAP servers,
+        which marks emails as read even when Hermes discards them (non-allowlisted
+        sender, automated sender filter, etc.). BODY.PEEK[] returns the same
+        raw bytes without the \\Seen side effect.
+        """
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        fetch_calls = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"42"])
+            if command == "fetch":
+                fetch_calls.append(args)
+                return ("OK", [(b"42", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(fetch_calls), 1)
+        self.assertIn("BODY.PEEK[]", fetch_calls[0][1])
+        self.assertNotIn("RFC822", fetch_calls[0][1])
+
 
 class TestPollLoop(unittest.TestCase):
     """Test the async polling loop."""

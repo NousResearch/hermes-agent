@@ -68,6 +68,18 @@ def _ra():
     return run_agent
 
 
+_codex_gpt55_notice_emitted = False
+
+
+def _claim_codex_gpt55_autoraise_notice() -> bool:
+    """Return True once per process for the Codex gpt-5.5 autoraise notice."""
+    global _codex_gpt55_notice_emitted
+    if _codex_gpt55_notice_emitted:
+        return False
+    _codex_gpt55_notice_emitted = True
+    return True
+
+
 def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     """Build the one-time notice shown when Codex gpt-5.5 raises compaction.
 
@@ -1684,7 +1696,7 @@ def init_agent(
         # gateway users get the same text replayed via _compression_warning on
         # turn 1 (set below, after the warning slot is initialized).
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
+        if _autoraise and compression_enabled and _claim_codex_gpt55_autoraise_notice():
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
@@ -1695,7 +1707,7 @@ def init_agent(
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if _autoraise and compression_enabled and _claim_codex_gpt55_autoraise_notice():
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network

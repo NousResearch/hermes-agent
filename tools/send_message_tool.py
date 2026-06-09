@@ -40,6 +40,11 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# Photon iMessage targets are opaque chat GUIDs like `any;-;+E164`
+# (DM) or `any;+;<guid>` (group). The channel directory lists those exact
+# values, so send_message must treat them as explicit IDs instead of trying
+# name resolution.
+_PHOTON_SPACE_TARGET_RE = re.compile(r"^\s*any;[+-];.+\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -399,6 +404,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         topic = target_ref.strip()
         if topic:
             return topic, None, True
+    if platform_name == "photon":
+        match = _PHOTON_SPACE_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return target_ref.strip(), None, True
     if platform_name == "email":
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:

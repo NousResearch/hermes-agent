@@ -46,7 +46,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_setup.add_argument("--project-name", default=None,
                          help="Project name (default: 'Hermes Agent')")
     p_setup.add_argument("--phone", default=None,
-                         help="Your E.164 phone number (e.g. +15551234567)")
+                         help="Your E.164 phone number (e.g. +155****4567)")
     p_setup.add_argument("--first-name", default=None)
     p_setup.add_argument("--last-name", default=None)
     p_setup.add_argument("--email", default=None)
@@ -178,7 +178,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # 4. Register the operator's phone number as a Spectrum user (idempotent).
     phone = args.phone or _prompt(
         color(
-            "[4/5] Your iMessage phone number (E.164, e.g. +15551234567): ",
+            "[4/5] Your iMessage phone number (E.164, e.g. +155****4567): ",
             Colors.CYAN,
         )
     )
@@ -251,11 +251,15 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"      (could not save Photon status metadata: {e})", file=sys.stderr)
 
-    # 6. Sidecar deps (spectrum-ts).
+    # 6. Sidecar deps + runtime import check.
     if args.skip_sidecar_install:
         print("[5/5] Skipping sidecar npm install (--skip-sidecar-install)")
+        print(
+            "      Sidecar runtime was not verified; run "
+            "`hermes photon install-sidecar` before declaring Photon ready."
+        )
     else:
-        print("[5/5] Installing Node sidecar deps (spectrum-ts)...")
+        print("[5/5] Installing and verifying Node sidecar deps (spectrum-ts)...")
         rc = _install_sidecar()
         if rc != 0:
             return rc
@@ -293,16 +297,92 @@ def _autoconfigure_access(phone: str) -> None:
             print(f"      could not set {key}: {e}", file=sys.stderr)
 
 
+def _resolve_node_bin() -> str | None:
+    configured = os.getenv("PHOTON_NODE_BIN")
+    if configured:
+        if shutil.which(configured) or Path(configured).exists():
+            return configured
+        return None
+    return shutil.which("node")
+
+
+def _run_sidecar_runtime_probe(node_bin: str) -> tuple[bool, str]:
+    """Verify the installed sidecar can load under the active Node runtime."""
+    check = subprocess.run(  # noqa: S603
+        [node_bin, "--check", "index.mjs"],
+        cwd=str(_SIDECAR_DIR),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if check.returncode != 0:
+        return False, _summarize_probe_output(check)
+
+    # Node 18 exposes Blob/fetch but not global File. The sidecar polyfills
+    # File before importing spectrum-ts; the setup/status probe must exercise
+    # the same compatibility path so "setup complete" means the sidecar can
+    # actually start on this machine.
+    probe = """
+        import { File as NodeFile } from 'node:buffer';
+        if (typeof globalThis.File === 'undefined') globalThis.File = NodeFile;
+        const spectrum = await import('spectrum-ts');
+        const imessageProvider = await import('spectrum-ts/providers/imessage');
+        if (typeof spectrum.Spectrum !== 'function') {
+          throw new Error('spectrum-ts did not export Spectrum');
+        }
+        if (typeof imessageProvider.imessage !== 'function') {
+          throw new Error('spectrum-ts/providers/imessage did not export imessage');
+        }
+        console.log('ok');
+    """
+    runtime = subprocess.run(  # noqa: S603
+        [node_bin, "--input-type=module", "-e", probe],
+        cwd=str(_SIDECAR_DIR),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if runtime.returncode != 0:
+        return False, _summarize_probe_output(runtime)
+    return True, "ok"
+
+
+def _summarize_probe_output(proc: subprocess.CompletedProcess) -> str:
+    combined = "\n".join(
+        part.strip() for part in (proc.stdout, proc.stderr) if part and part.strip()
+    ).strip()
+    if not combined:
+        return f"node exited {proc.returncode}"
+    one_line = " ".join(combined.split())
+    return one_line[:700]
+
+
+def _sidecar_runtime_status() -> str:
+    node_bin = _resolve_node_bin()
+    if not node_bin:
+        return "✗ missing (install Node.js 18.17+ or set PHOTON_NODE_BIN)"
+    if not (_SIDECAR_DIR / "node_modules").exists():
+        return "✗ deps missing (run `hermes photon install-sidecar`)"
+    ok, detail = _run_sidecar_runtime_probe(node_bin)
+    return "✓ import OK" if ok else f"✗ {detail}"
+
+
 def _cmd_status(_args: argparse.Namespace) -> int:
     _refresh_status_numbers()
     # Defer the credential rows to auth.print_credential_summary — its emit
     # callback is the only sink that sees credential-derived strings, so
     # cli.py keeps zero taint flow according to CodeQL.
     photon_auth.print_credential_summary(print)
-    node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
+    # The non-credential rows live here so the helper stays purely about
+    # credentials.
+    node_bin = _resolve_node_bin()
     sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
-    print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
-    print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
+    print(f"  node binary         : {node_bin or '✗ missing (install Node.js 18.17+)'}")
+    print(
+        "  sidecar deps        : "
+        f"{'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}"
+    )
+    print(f"  sidecar runtime     : {_sidecar_runtime_status()}")
     return 0
 
 
@@ -327,24 +407,39 @@ def _install_sidecar() -> int:
     npm = shutil.which("npm") or "npm"
     if not shutil.which(npm):
         print(
-            "npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) "
+            "npm is not on PATH. Install Node.js 18.17+ (https://nodejs.org/) "
             "and re-run.",
             file=sys.stderr,
         )
         return 1
-    # Always pull the newest published spectrum-ts so every setup runs against
-    # the latest SDK. `spectrum-ts@latest` bumps package.json + package-lock.json
-    # to the current release before installing — a plain `npm install` would
-    # stay pinned to whatever the committed lockfile already resolved.
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} install spectrum-ts@latest")
+    print(f"  $ cd {_SIDECAR_DIR} && {npm} install")
     proc = subprocess.run(  # noqa: S603
-        [npm, "install", "spectrum-ts@latest"],
+        [npm, "install"],
         cwd=str(_SIDECAR_DIR),
         check=False,
     )
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
-    return proc.returncode
+        return proc.returncode
+
+    node_bin = _resolve_node_bin()
+    if not node_bin:
+        print("Node.js disappeared after npm install", file=sys.stderr)
+        return 1
+    ok, detail = _run_sidecar_runtime_probe(node_bin)
+    if not ok:
+        print(
+            "sidecar runtime verification failed after npm install: " + detail,
+            file=sys.stderr,
+        )
+        print(
+            "Fix Node/dependency compatibility, then re-run "
+            "`hermes photon install-sidecar`.",
+            file=sys.stderr,
+        )
+        return 1
+    print("  ✓ sidecar runtime verified")
+    return 0
 
 
 # ---------------------------------------------------------------------------

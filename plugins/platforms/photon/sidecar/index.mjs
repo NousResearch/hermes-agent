@@ -41,6 +41,14 @@
 
 import http from "node:http";
 import { once } from "node:events";
+import { File as NodeFile } from "node:buffer";
+
+// Node 18 exposes Blob/fetch but not global File. Recent spectrum-ts pulls
+// undici 7, which expects File during module import. Polyfill before the
+// lazy import so the sidecar can run on the Hermes container's Node 18.
+if (typeof globalThis.File === "undefined") {
+  globalThis.File = NodeFile;
+}
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;

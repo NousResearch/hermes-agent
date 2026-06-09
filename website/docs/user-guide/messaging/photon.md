@@ -59,7 +59,7 @@ hermes gateway setup
 
 ```bash
 # Device-code login + project + user + sidecar deps, all in one
-hermes photon setup --phone +15551234567
+hermes photon setup --phone +155****4567
 ```
 
 The setup, in order:
@@ -73,7 +73,10 @@ The setup, in order:
    user with that number already exists, so re-running is safe.
 5. **Prints your assigned iMessage line** — the number you text to reach
    your agent.
-6. **Runs `npm install`** inside the plugin's sidecar directory.
+6. **Runs `npm install`** inside the plugin's sidecar directory, then
+   verifies the sidecar entrypoint and `spectrum-ts` imports under the
+   current Node runtime. If that runtime check fails, setup exits
+   non-zero instead of claiming Photon is ready.
 
 Runtime credentials are written to `~/.hermes/.env`
 (`PHOTON_PROJECT_ID` = the Spectrum project id, `PHOTON_PROJECT_SECRET`),
@@ -98,7 +101,7 @@ Use `hermes pairing list` to see pending codes and approved users.
 **Pre-authorize specific numbers** (in `~/.hermes/.env`):
 
 ```bash
-PHOTON_ALLOWED_USERS=+15551234567,+15559876543
+PHOTON_ALLOWED_USERS=+155****4567,+155****6543
 ```
 
 **Open access** (dev only, in `~/.hermes/.env`):
@@ -174,8 +177,8 @@ Photon iMessage status
   dashboard project   : 3c90c3cc-0d44-4b50-...
   spectrum project id : sp-...
   project secret      : ✓ stored
-  my number           : +15551234567
-  assigned number     : +16282679185
+  my number           : +155****4567
+  assigned number     : +162****9185
   node binary         : /usr/bin/node
   sidecar deps        : ✓ installed
 ```
@@ -188,6 +191,11 @@ Common issues:
 - **`No iMessage line assigned yet`** — Spectrum is enabled but no line
   has been provisioned; re-run `hermes photon setup` or check the
   [dashboard][app].
+- **`sidecar runtime : ✗ ...`** — `npm install` completed, but the
+  sidecar cannot start under the current Node/dependency combination.
+  Re-run `hermes photon install-sidecar` after fixing the reported
+  Node/dependency issue; setup will not report success until this check
+  passes.
 - **Sidecar won't start** — confirm `node --version` is 18.17+ and that
   `hermes photon install-sidecar` completed without errors.
 

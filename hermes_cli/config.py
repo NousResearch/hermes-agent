@@ -3988,6 +3988,59 @@ def _coerce_config_version(value: Any) -> int:
     return max(version, 0)
 
 
+# Schema markers — keys/sections whose presence in the raw on-disk config
+# indicates the user is already running a current-schema layout, even if the
+# raw file predates ``_config_version`` (i.e. has no version key at all). When
+# ALL of these are present we treat the config as up-to-date and avoid a
+# spurious "v0 → vN" doctor warning. Each marker is a (key_path, min_version)
+# pair, sourced from the migration history in ``migrate_config``:
+#   - ``providers``         added in v12 (custom_providers list → providers dict)
+#   - ``display.interim_assistant_messages``  added in v15
+#   - ``display.platforms``  added in v16
+#   - ``curator``            added in v22
+#   - ``model_catalog``      added in v24
+#   - ``context``            top-level since the deep-merge refactor (v25+)
+#   - ``streaming``          top-level since v25+
+#   - ``updates``            top-level since v25+
+#   - ``sessions``           top-level since v25+
+_LATEST_SCHEMA_MARKERS: tuple = (
+    "providers",
+    "credential_pool_strategies",
+    "toolsets",
+    "display.interim_assistant_messages",
+    "display.platforms",
+    "curator",
+    "model_catalog",
+    "context",
+    "streaming",
+    "updates",
+    "sessions",
+)
+
+
+def _raw_config_has_latest_schema(config: dict) -> bool:
+    """True when ``config`` (a raw on-disk YAML dict) carries the markers of
+    the current schema even though it may not have an explicit
+    ``_config_version`` key.  This is the heuristic that lets a manually
+    maintained config (or one that was hand-edited from a pre-versioning era)
+    satisfy doctor and migrate_config without requiring a forced
+    ``_config_version`` rewrite.
+    """
+    if not isinstance(config, dict) or not config:
+        return False
+    for dotted in _LATEST_SCHEMA_MARKERS:
+        cursor: Any = config
+        for part in dotted.split("."):
+            if not isinstance(cursor, dict) or part not in cursor:
+                cursor = None
+                break
+            cursor = cursor[part]
+        # Use `is None` not `not cursor` — empty dicts/strings are valid markers
+        if cursor is None:
+            return False
+    return True
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check the raw on-disk config schema version.
@@ -3997,6 +4050,13 @@ def check_config_version() -> Tuple[int, int]:
     whether the user's persisted schema has been migrated. A config file with no
     raw ``_config_version`` must remain visible as legacy instead of inheriting
     the latest default version in memory.
+
+    However, a legacy config that was hand-edited and now contains every
+    schema marker of the *current* version (see
+    :data:`_LATEST_SCHEMA_MARKERS`) is functionally up-to-date and should not
+    be flagged as "v0 → vN". In that case we treat the current version as
+    ``latest`` for diagnostics; ``migrate_config`` still runs the full chain
+    and writes ``_config_version`` only if any other field is missing.
 
     Returns (current_version, latest_version).
     """
@@ -4017,6 +4077,12 @@ def check_config_version() -> Tuple[int, int]:
     if not isinstance(config, dict):
         config = {}
     current = _coerce_config_version(config.get("_config_version"))
+    # Legacy config (no _config_version key) that already carries every
+    # current-schema marker is functionally at the latest version.  This
+    # prevents doctor from spuriously reporting "v0 → vN" for hand-edited
+    # configs that simply predate the version field.
+    if current == 0 and _raw_config_has_latest_schema(config):
+        return latest, latest
     return current, latest
 
 

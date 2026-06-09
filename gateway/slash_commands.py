@@ -768,6 +768,43 @@ class GatewaySlashCommandsMixin:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
+        # P0-9: On Windows, use the transactional restart coordinator.
+        # No automatic legacy fallback.  If the coordinator fails, the
+        # error is logged and the user is notified.  Legacy
+        # request_restart() is preserved only for non-Windows platforms.
+        if sys.platform == "win32":
+            try:
+                import asyncio as _aio
+                from hermes_cli.gateway_windows_restart import schedule_restart_handoff
+                # B1: Offload blocking I/O (lock acquire, intent write, worker
+                # spawn, claim-wait poll) to a thread so the asyncio event loop
+                # is never blocked by the restart coordinator.
+                result = await _aio.to_thread(
+                    schedule_restart_handoff,
+                    origin="slash-command",
+                    wait=False,
+                )
+            except Exception as exc:
+                # Error isolation: coordinator failure must NOT crash the
+                # gateway chat loop.  Log and return error to user.
+                logger.error("Coordinator exception: %s", exc)
+                return EphemeralReply(
+                    f"Gateway restart failed: coordinator error: {exc}"
+                )
+            if result.get("scheduled"):
+                logger.info(
+                    "Gateway restart scheduled via coordinator (request_id=%s)",
+                    result["request_id"],
+                )
+                if active_agents:
+                    return t("gateway.draining", count=active_agents)
+                return EphemeralReply(t("gateway.restart.restarting"))
+            else:
+                logger.error("Coordinator failed: %s", result.get("detail"))
+                # P0-9: Do NOT fall through to legacy.  Return error message.
+                return EphemeralReply(
+                    f"Gateway restart failed: {result.get('detail', 'unknown')}"
+                )
         # When running under a service manager (systemd/launchd) or inside a
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts

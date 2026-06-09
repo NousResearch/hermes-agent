@@ -6508,8 +6508,38 @@ def _gateway_command_inner(args):
                 print(f"✓ Stopped {get_service_name()} service")
 
     elif subcmd == "restart":
-        # Defense: refuse self-targeting gateway restart from inside the gateway.
-        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
+        restart_all = getattr(args, "all", False)
+
+        # Windows single-profile restart: route through transactional
+        # coordinator BEFORE the _HERMES_GATEWAY self-target guard.
+        # The coordinator delegates to a detached worker process, so it
+        # is safe to call from inside the gateway -- no recursive self-kill.
+        # --all bypasses the coordinator (multi-profile stop+start).
+        if is_windows() and not restart_all:
+            from hermes_cli.gateway_windows_restart import (
+                schedule_restart_handoff,
+            )
+
+            _profile = getattr(args, "profile", None) or "default"
+            result = schedule_restart_handoff(
+                origin="cli", profile=_profile, wait=True,
+            )
+            if result.get("completed"):
+                _old_p = result.get("old_pid", 0)
+                _new_p = result.get("new_pid", 0)
+                _launcher = result.get("launcher", "unknown")
+                print(f"\u2713 Gateway restarted (PID {_old_p} \u2192 {_new_p})")
+                print(f"  Launcher: {_launcher}")
+            elif result.get("scheduled"):
+                _rid = result.get("request_id", "")
+                print(f"\u2713 Restart scheduled (request_id: {_rid})")
+            else:
+                print_error(
+                    f"Restart failed: {result.get('detail', 'unknown error')}"
+                )
+                sys.exit(1)
+            return
+
         if os.getenv("_HERMES_GATEWAY") == "1":
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
@@ -6521,7 +6551,6 @@ def _gateway_command_inner(args):
         # Try service first, fall back to killing and restarting
         service_available = False
         system = getattr(args, "system", False)
-        restart_all = getattr(args, "all", False)
         service_configured = False
 
         # Phase 4: inside a container with s6, dispatch via the service
@@ -6607,22 +6636,9 @@ def _gateway_command_inner(args):
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
-        elif is_windows():
-            from hermes_cli import gateway_windows
-
-            # Prefer the Windows-specific restart path: it supports both
-            # registered Scheduled Task / Startup installs and no-service
-            # detached restarts.  In the normal successful Telegram-triggered
-            # restart flow, this avoids the generic foreground run_gateway()
-            # path that can be reaped with the old gateway process.  If the
-            # Windows backend raises, intentionally preserve the existing
-            # generic failure fallback below.
-            service_configured = gateway_windows.is_installed()
-            try:
-                gateway_windows.restart()
-                return
-            except (subprocess.CalledProcessError, RuntimeError, OSError):
-                pass
+        # NOTE: Windows single-profile restart is handled above by the
+        # transactional coordinator (before the _HERMES_GATEWAY guard).
+        # No Windows fallback here.
 
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue

@@ -563,7 +563,8 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
                     continue
                 try:
-                    cached_path, ext = await self._fetch_attachment(att_id)
+                    att_filename = att.get("filename", "")
+                    cached_path, ext = await self._fetch_attachment(att_id, filename=att_filename)
                     if cached_path:
                         # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
@@ -602,6 +603,8 @@ class SignalAdapter(BasePlatformAdapter):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
+            elif any(mt.startswith(("application/", "text/")) for mt in media_types):
+                msg_type = MessageType.DOCUMENT
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -695,7 +698,7 @@ class SignalAdapter(BasePlatformAdapter):
     # Attachment Handling
     # ------------------------------------------------------------------
 
-    async def _fetch_attachment(self, attachment_id: str) -> tuple:
+    async def _fetch_attachment(self, attachment_id: str, *, filename: str = "") -> tuple:
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
         result = await self._rpc("getAttachment", {
             "account": self.account,
@@ -716,12 +719,15 @@ class SignalAdapter(BasePlatformAdapter):
         raw_data = base64.b64decode(result)
         ext = _guess_extension(raw_data)
 
+        # Use original filename if available, otherwise fall back to generic name
+        cache_name = filename if filename else f"document{ext}"
+
         if _is_image_ext(ext):
             path = cache_image_from_bytes(raw_data, ext)
         elif _is_audio_ext(ext):
             path = cache_audio_from_bytes(raw_data, ext)
         else:
-            path = cache_document_from_bytes(raw_data, ext)
+            path = cache_document_from_bytes(raw_data, cache_name)
 
         return path, ext
 

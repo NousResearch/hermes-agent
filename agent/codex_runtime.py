@@ -444,7 +444,31 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_event(event: Any) -> None:
         # TTFB watchdog and activity touch — runs once per SSE event.
-        agent._codex_stream_last_event_ts = time.time()
+        # ``_codex_stream_last_event_ts`` is refreshed by ANY event, including
+        # content-free keepalive / ``response.in_progress`` frames — that's the
+        # signal the no-byte and stream-idle watchdogs key on.
+        now = time.time()
+        agent._codex_stream_last_event_ts = now
+        # ``_codex_stream_last_progress_ts`` tracks REAL forward progress only:
+        # text/reasoning deltas, function-call frames, output-item completions,
+        # or a terminal event. A backend that emits only periodic keepalives
+        # (observed on chatgpt.com/backend-api/codex: the socket stays "alive"
+        # with in_progress frames but never produces a delta or completes) keeps
+        # _last_event_ts fresh forever, so the idle watchdog never trips and the
+        # call burns the full blunt stale timeout. Stamping progress separately
+        # lets a progress-stall watchdog reconnect at the fast cutoff instead.
+        _etype = _event_field(event, "type", "")
+        if not isinstance(_etype, str):
+            _etype = ""
+        _is_progress = (
+            "delta" in _etype
+            or "function_call" in _etype
+            or _etype == "response.output_item.done"
+            or _etype == "error"
+            or _etype in _TERMINAL_EVENT_TYPES
+        )
+        if _is_progress:
+            agent._codex_stream_last_progress_ts = now
         agent._touch_activity("receiving stream response")
 
     def _interrupt_check() -> bool:

@@ -522,3 +522,104 @@ def test_ttfb_below_stale_coupling_disabled_via_env(tmp_path, monkeypatch):
     assert resp is sentinel
     assert "codex_ttfb_kill" not in closes
 
+
+def test_progress_stall_kills_keepalive_only_stream(tmp_path, monkeypatch):
+    """Regression for the keepalive-only hang on chatgpt.com/backend-api/codex.
+
+    The backend emits periodic content-free keepalive / in_progress frames
+    (which refresh ``_codex_stream_last_event_ts``) but never produces a real
+    delta or completes. Before the progress-stall watchdog, the no-byte TTFB
+    detector was satisfied (events ARE arriving), the stream-idle detector was
+    satisfied (the gap between keepalives stays under its threshold), and only
+    the blunt wall-clock stale timer eventually killed it — burning the full
+    stale timeout (90s × 6 retries ≈ 9 min) before fallback. The progress-stall
+    watchdog must kill such a stream at the fast-reconnect cutoff instead.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    # Real prod shape: blunt 90s stale timer, fast-reconnect cutoff 4s for a
+    # quick test. Idle threshold high so only the progress watchdog can fire.
+    monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 90.0)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_FAST_RECONNECT_SECONDS", "4")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "60")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    stop = {"flag": False}
+
+    def fake_keepalive(api_kwargs, client=None, on_first_delta=None):
+        # Emit a keepalive every 1s: refreshes _last_event_ts but never sets
+        # _last_progress_ts (no delta / function_call / output_item / terminal).
+        deadline = time.time() + 60
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            agent._codex_stream_last_event_ts = time.time()
+            time.sleep(1.0)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_keepalive)
+
+    t0 = time.time()
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+        elapsed = time.time() - t0
+        assert "no forward progress" in str(excinfo.value)
+        # Killed via the progress-stall fast-reconnect path, not the 90s stale path.
+        assert "codex_progress_stall_kill" in closes
+        assert "stale_call_kill" not in closes
+        # Must reconnect fast (~4s cutoff + 2s join), far under the 90s stale.
+        assert elapsed < 20, f"progress-stall did not fire before stale timer: {elapsed:.1f}s"
+    finally:
+        stop["flag"] = True
+
+
+def test_progress_stall_does_not_kill_streaming_progress(tmp_path, monkeypatch):
+    """A stream that keeps making real forward progress (text deltas) must NOT
+    be killed by the progress-stall watchdog even when it runs longer than the
+    fast-reconnect cutoff — progress events refresh ``_codex_stream_last_progress_ts``.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 90.0)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_FAST_RECONNECT_SECONDS", "4")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "60")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_progress(api_kwargs, client=None, on_first_delta=None):
+        # Stream real progress (deltas) for ~8s — longer than the 4s fast cutoff —
+        # then complete. Each delta stamps both event_ts and progress_ts.
+        for _ in range(8):
+            now = time.time()
+            agent._codex_stream_last_event_ts = now
+            agent._codex_stream_last_progress_ts = now
+            time.sleep(1.0)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_progress)
+
+    resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+    assert resp is sentinel
+    assert "codex_progress_stall_kill" not in closes
+    assert "stale_call_kill" not in closes
+

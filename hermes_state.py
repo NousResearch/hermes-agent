@@ -16,8 +16,14 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
 import sqlite3
 import threading
 import time
@@ -380,6 +386,10 @@ class SessionDB:
 
     Thread-safe for the common gateway pattern (multiple reader threads,
     single writer via WAL mode). Each method opens its own cursor.
+
+    Cross-process safety: a file-level advisory lock (fcntl.flock)
+    serializes all writers across Hermes processes (gateway, CLI, cron)
+    to prevent the WAL-checkpoint race that causes B-tree corruption.
     """
 
     # ── Write-contention tuning ──
@@ -402,6 +412,7 @@ class SessionDB:
         self.read_only = read_only
 
         self._lock = threading.Lock()
+        self._lock_fd = None
         self._write_count = 0
         self._fts_enabled = False
         self._fts_unavailable_warned = False
@@ -443,6 +454,7 @@ class SessionDB:
             self._conn.execute("PRAGMA foreign_keys=ON")
 
             self._init_schema()
+            self._init_cross_process_lock()
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
@@ -490,6 +502,50 @@ class SessionDB:
                 raise
             self._warn_fts5_unavailable(exc)
             return False
+
+    # ── Cross-process write lock ──
+
+    def _init_cross_process_lock(self) -> None:
+        """Open a file descriptor for cross-process write serialization.
+
+        Uses fcntl.flock() (advisory, kernel-level) so that multiple Hermes
+        processes (gateway + CLI + cron) writing to the same state.db are
+        serialized at the file level — eliminating the WAL-checkpoint race
+        that causes B-tree page corruption under high concurrency.
+
+        The lock file lives beside state.db as ``state.db.lock``.
+        On platforms without fcntl (Windows), this is a no-op and the legacy
+        thread-only locking is used.
+        """
+        if not _HAS_FCNTL:
+            self._lock_fd = None
+            return
+        try:
+            lock_path = f"{self.db_path}.lock"
+            self._lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError:
+            self._lock_fd = None  # Non-fatal — degrade gracefully
+
+    def _acquire_cross_process_lock(self) -> None:
+        """Acquire exclusive cross-process write lock. Blocks until held."""
+        if self._lock_fd is not None:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+
+    def _release_cross_process_lock(self) -> None:
+        """Release the cross-process write lock."""
+        if self._lock_fd is not None:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+
+    def _cleanup_cross_process_lock(self) -> None:
+        """Close the lock file descriptor."""
+        if self._lock_fd is not None:
+            try:
+                os.close(self._lock_fd)
+            except OSError:
+                pass
+            self._lock_fd = None
+
+    # ── Core write helper ──
 
     @staticmethod
     def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
@@ -570,14 +626,25 @@ class SessionDB:
         statements.  The caller must NOT call ``commit()`` — that's handled
         here after *fn* returns.
 
-        BEGIN IMMEDIATE acquires the WAL write lock at transaction start
-        (not at commit time), so lock contention surfaces immediately.
+        A cross-process file lock (fcntl.flock) serializes ALL writes across
+        Hermes processes (gateway, CLI, cron) to eliminate the WAL-checkpoint
+        race that causes B-tree page corruption under high concurrency.
+
+        BEGIN IMMEDIATE acquires the SQLite WAL write lock at transaction
+        start (not at commit time), so lock contention surfaces immediately.
         On ``database is locked``, we release the Python lock, sleep a
         random 20-150ms, and retry — breaking the convoy pattern that
         SQLite's built-in deterministic backoff creates.
 
         Returns whatever *fn* returns.
         """
+        self._acquire_cross_process_lock()
+        try:
+            return self._execute_write_impl(fn)
+        finally:
+            self._release_cross_process_lock()
+
+    def _execute_write_impl(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         last_err: Optional[Exception] = None
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
@@ -660,6 +727,7 @@ class SessionDB:
                     pass
                 self._conn.close()
                 self._conn = None
+        self._cleanup_cross_process_lock()
 
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:

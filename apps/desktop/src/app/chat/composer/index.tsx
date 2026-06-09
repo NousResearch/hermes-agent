@@ -77,7 +77,13 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
-import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
+import {
+  detectTrigger,
+  extractClipboardFiles,
+  extractClipboardImageBlobs,
+  textBeforeCaret,
+  type TriggerState
+} from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -483,6 +489,25 @@ export function ChatBar({
       }
 
       return
+    }
+
+    // Check for non-image file attachments (e.g. files copied from Finder).
+    // Must be called synchronously — DataTransfer items are detached after the event.
+    if (onAttachDroppedItems) {
+      const clipboardFiles = extractClipboardFiles(event.clipboardData)
+
+      if (clipboardFiles.length > 0) {
+        event.preventDefault()
+        triggerHaptic('selection')
+
+        void Promise.resolve(onAttachDroppedItems(clipboardFiles)).then(attached => {
+          if (attached) {
+            requestMainFocus()
+          }
+        })
+
+        return
+      }
     }
 
     // Trim surrounding whitespace so a copy that dragged along leading/trailing

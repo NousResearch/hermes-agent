@@ -478,8 +478,7 @@ class TestShellFileOpsWriteDenied:
     def test_move_file_failure_path(self, mock_env):
         mock_env.execute.return_value = {"output": "No such file or directory", "returncode": 1}
         ops = ShellFileOperations(mock_env)
-        # Use paths inside the cwd to avoid base_dir sandbox denial
-        result = ops.move_file("/tmp/test/nonexistent.txt", "/tmp/test/dest.txt")
+        result = ops.move_file("/tmp/nonexistent.txt", "/tmp/dest.txt")
         assert result.error is not None
         assert "Failed to move" in result.error
 

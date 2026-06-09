@@ -221,29 +221,6 @@ describe('Md wrapping', () => {
 
     expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
   })
-
-  it('renders malformed display-math openers without repeated suffix scans', () => {
-    const malformedLineCount = 256
-    const text = Array.from({ length: malformedLineCount }, (_, i) => `$$ unclosed ${i}`).join('\n')
-    const originalTest = RegExp.prototype.test
-    let dollarCloseTests = 0
-
-    RegExp.prototype.test = function patchedTest(this: RegExp, value: string) {
-      if (this.source === '^(.*?)\\$\\$\\s*$') {
-        dollarCloseTests++
-      }
-
-      return originalTest.call(this, value)
-    }
-
-    try {
-      renderPlain(React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text })))
-    } finally {
-      RegExp.prototype.test = originalTest
-    }
-
-    expect(dollarCloseTests).toBeLessThanOrEqual(malformedLineCount)
-  })
 })
 
 describe('Md link labels', () => {

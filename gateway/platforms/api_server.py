@@ -2876,7 +2876,6 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
-    _RUN_STREAM_MAX_EVENTS = 512  # Bounded per-run SSE buffer (drop-oldest policy)
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
@@ -2907,7 +2906,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if q is None:
                 return
             try:
-                loop.call_soon_threadsafe(self._enqueue_run_stream_event, run_id, event)
+                loop.call_soon_threadsafe(q.put_nowait, event)
             except Exception:
                 pass
 
@@ -2941,25 +2940,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
-    def _enqueue_run_stream_event(self, run_id: str, event: Optional[Dict[str, Any]]) -> None:
-        """Queue a run SSE event with bounded buffering (drop oldest on overflow)."""
-        q = self._run_streams.get(run_id)
-        if q is None:
-            return
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            try:
-                q.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
-        except Exception:
-            pass
-
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         auth_err = self._check_auth(request)
@@ -2972,7 +2952,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return key_err
 
         # Enforce concurrency limit
-        if len(self._active_run_tasks) >= self._MAX_CONCURRENT_RUNS:
+        if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
             return web.json_response(
                 _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
                 status=429,
@@ -3043,7 +3023,7 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = f"api_run:{run_id}"
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue(maxsize=self._RUN_STREAM_MAX_EVENTS)
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
@@ -3056,7 +3036,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(self._enqueue_run_stream_event, run_id, {
+                loop.call_soon_threadsafe(q.put_nowait, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -3166,7 +3146,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3180,7 +3160,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3201,7 +3181,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3218,7 +3198,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    self._enqueue_run_stream_event(run_id, {
+                    q.put_nowait({
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3240,7 +3220,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 # Sentinel: signal SSE stream to close
                 try:
-                    self._enqueue_run_stream_event(run_id, None)
+                    q.put_nowait(None)
                 except Exception:
                     pass
                 self._active_run_agents.pop(run_id, None)
@@ -3324,13 +3304,8 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
-            task = self._active_run_tasks.get(run_id)
-            status = self._run_statuses.get(run_id) or {}
-            # A stream can briefly exist before its background task is registered,
-            # so only clean up once the run is terminal and the task is gone/done.
-            if (task is None or task.done()) and status.get("status") in {"completed", "failed", "cancelled"}:
-                self._run_streams.pop(run_id, None)
-                self._run_streams_created.pop(run_id, None)
+            self._run_streams.pop(run_id, None)
+            self._run_streams_created.pop(run_id, None)
 
         return response
 
@@ -3471,9 +3446,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 if now - created_at > self._RUN_STREAM_TTL
             ]
             for run_id in stale:
-                task = self._active_run_tasks.get(run_id)
-                if task is not None and not task.done():
-                    continue
                 logger.debug("[api_server] sweeping orphaned run %s", run_id)
                 try:
                     from tools.approval import unregister_gateway_notify

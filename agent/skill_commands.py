@@ -25,15 +25,6 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
-_RELOAD_DESCRIPTION_MAX_CHARS = 60
-
-
-def sanitize_reload_description(value: Any) -> str:
-    """Return a prompt-safe, bounded skill description for reload notes."""
-    text = str(value or "")
-    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
-    text = " ".join(text.split())
-    return text[:_RELOAD_DESCRIPTION_MAX_CHARS]
 
 
 def _resolve_skill_commands_platform() -> Optional[str]:
@@ -352,10 +343,9 @@ def reload_skills() -> Dict[str, Any]:
               "commands":   total /slash-skill count after rescan,
             }
 
-        ``description`` is a prompt-safe reload-note preview of the
-        skill's SKILL.md description: whitespace-normalized and capped at
-        60 characters so untrusted metadata cannot inject extra note lines
-        or bloat the next model request.
+        ``description`` is the skill's full SKILL.md frontmatter
+        ``description:`` field — the same string the system prompt renders
+        as ``    - name: description`` for pre-existing skills.
     """
     # Snapshot pre-reload state (name -> description) from the current
     # slash-command cache. Using dicts lets the post-rescan diff carry
@@ -365,7 +355,7 @@ def reload_skills() -> Dict[str, Any]:
         out: Dict[str, str] = {}
         for slash_key, info in cmds.items():
             bare = slash_key.lstrip("/")
-            out[bare] = sanitize_reload_description((info or {}).get("description"))
+            out[bare] = (info or {}).get("description") or ""
         return out
 
     before = _snapshot(_skill_commands)

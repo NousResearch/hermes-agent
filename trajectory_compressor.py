@@ -472,24 +472,12 @@ class TrajectoryCompressor:
             return len(text) // 4
 
     def count_trajectory_tokens(self, trajectory: List[Dict[str, str]]) -> int:
-        """Count total tokens in a trajectory using fast batch encoding."""
-        return sum(self.count_turn_tokens(trajectory))
+        """Count total tokens in a trajectory."""
+        return sum(self.count_tokens(turn.get("value", "")) for turn in trajectory)
 
     def count_turn_tokens(self, trajectory: List[Dict[str, str]]) -> List[int]:
-        """Count tokens for each turn in a trajectory.
-
-        ⚡ Bolt Optimization: encodes all turn values in a single batch call,
-        delegating the per-string loop to the fast Rust tokenizer (~3x faster).
-        Falls back to per-turn encoding so a single failing turn doesn't discard
-        counts for the whole trajectory.
-        """
-        values = [turn.get("value", "") for turn in trajectory]
-        try:
-            token_ids = self.tokenizer([v if v else "" for v in values])["input_ids"]
-            return [len(ids) if v else 0 for ids, v in zip(token_ids, values)]
-        except Exception:
-            # Batch encoding unsupported/failed; fall back to per-turn counting.
-            return [self.count_tokens(v) for v in values]
+        """Count tokens for each turn in a trajectory."""
+        return [self.count_tokens(turn.get("value", "")) for turn in trajectory]
 
     def _find_protected_indices(self, trajectory: List[Dict[str, str]]) -> Tuple[set, int, int]:
         """

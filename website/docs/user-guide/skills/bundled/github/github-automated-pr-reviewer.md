@@ -17,7 +17,7 @@ Automated PR reviewer: scans for authorized '@jules code review' PR comments and
 | Source | Bundled (installed by default) |
 | Path | `skills/github/automated-pr-reviewer` |
 | Version | `1.0.2` |
-| Author | badMade |
+| Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Code-Review`, `Automation`, `Pull-Requests`, `Cron`, `review` |

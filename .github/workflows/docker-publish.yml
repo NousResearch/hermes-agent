@@ -73,22 +73,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
 
-      # Build once. On push/release, load into the local daemon for smoke
-      # testing; on pull_request, skip local load to avoid runner disk
-      # exhaustion when importing very large images.
+      # Build once, load into the local daemon for smoke testing.  Cached
+      # to gha with a per-arch scope; the push step below reuses every
+      # layer from this build.
       - name: Build image (amd64, smoke test)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
           file: Dockerfile
-          load: ${{ github.event_name != 'pull_request' }}
+          load: true
           platforms: linux/amd64
           tags: ${{ env.IMAGE_NAME }}:test
           cache-from: type=gha,scope=docker-amd64
           cache-to: type=gha,mode=max,scope=docker-amd64
 
       - name: Smoke test image
-        if: github.event_name != 'pull_request'
         uses: ./.github/actions/hermes-smoke-test
         with:
           image: ${{ env.IMAGE_NAME }}:test
@@ -174,22 +173,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
 
-      # Build once. On push/release, load into the local daemon for smoke
-      # testing; on pull_request, skip local load to avoid runner disk
-      # exhaustion when importing very large images.
+      # Build once, load into the local daemon for smoke testing.  Cached
+      # to gha with a per-arch scope; the push step below reuses every
+      # layer from this build.
       - name: Build image (arm64, smoke test)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
           file: Dockerfile
-          load: ${{ github.event_name != 'pull_request' }}
+          load: true
           platforms: linux/arm64
           tags: ${{ env.IMAGE_NAME }}:test
           cache-from: type=gha,scope=docker-arm64
           cache-to: type=gha,mode=max,scope=docker-arm64
 
       - name: Smoke test image
-        if: github.event_name != 'pull_request'
         uses: ./.github/actions/hermes-smoke-test
         with:
           image: ${{ env.IMAGE_NAME }}:test

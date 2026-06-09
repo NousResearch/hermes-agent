@@ -5,7 +5,6 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
-import html
 import os
 import shutil
 import signal
@@ -2799,25 +2798,15 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Escape dynamic values before embedding in XML string payloads.
-    xml_escape = lambda value: html.escape(value, quote=False)
-    label_xml = xml_escape(label)
-    python_path_xml = xml_escape(python_path)
-    working_dir_xml = xml_escape(working_dir)
-    sane_path_xml = xml_escape(sane_path)
-    venv_dir_xml = xml_escape(venv_dir)
-    hermes_home_xml = xml_escape(hermes_home)
-    log_dir_xml = xml_escape(str(log_dir))
-
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
-        f"<string>{python_path_xml}</string>",
+        f"<string>{python_path}</string>",
         "<string>-m</string>",
         "<string>hermes_cli.main</string>",
     ]
     if profile_arg:
         for part in profile_arg.split():
-            prog_args.append(f"<string>{xml_escape(part)}</string>")
+            prog_args.append(f"<string>{part}</string>")
     prog_args.extend([
         "<string>gateway</string>",
         "<string>run</string>",
@@ -2830,7 +2819,7 @@ def generate_launchd_plist() -> str:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label_xml}</string>
+    <string>{label}</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -2838,16 +2827,16 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir_xml}</string>
+    <string>{working_dir}</string>
     
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path_xml}</string>
+        <string>{sane_path}</string>
         <key>VIRTUAL_ENV</key>
-        <string>{venv_dir_xml}</string>
+        <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home_xml}</string>
+        <string>{hermes_home}</string>
     </dict>
     
     <key>RunAtLoad</key>
@@ -2860,10 +2849,10 @@ def generate_launchd_plist() -> str:
     </dict>
     
     <key>StandardOutPath</key>
-    <string>{log_dir_xml}/gateway.log</string>
+    <string>{log_dir}/gateway.log</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir_xml}/gateway.error.log</string>
+    <string>{log_dir}/gateway.error.log</string>
 </dict>
 </plist>
 """

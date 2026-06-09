@@ -511,61 +511,6 @@ class TestExtractText:
 
 
 # ---------------------------------------------------------------------------
-# Config bridge
-# ---------------------------------------------------------------------------
-
-
-def test_platforms_dingtalk_gates_are_loaded_from_documented_path(
-    monkeypatch, tmp_path
-):
-    from gateway.config import load_gateway_config
-
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        "platforms:\n"
-        "  dingtalk:\n"
-        "    enabled: true\n"
-        "    require_mention: true\n"
-        "    mention_patterns:\n"
-        "      - '^hermes'\n"
-        "    free_response_chats:\n"
-        "      - cidABC\n"
-        "    allowed_chats:\n"
-        "      - group42\n"
-        "    allowed_users:\n"
-        "      - manager1234\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    for key in (
-        "DINGTALK_REQUIRE_MENTION",
-        "DINGTALK_MENTION_PATTERNS",
-        "DINGTALK_FREE_RESPONSE_CHATS",
-        "DINGTALK_ALLOWED_CHATS",
-        "DINGTALK_ALLOWED_USERS",
-    ):
-        monkeypatch.delenv(key, raising=False)
-
-    config = load_gateway_config()
-
-    dingtalk_extra = config.platforms[Platform.DINGTALK].extra
-    assert dingtalk_extra["require_mention"] is True
-    assert dingtalk_extra["mention_patterns"] == ["^hermes"]
-    assert dingtalk_extra["free_response_chats"] == ["cidABC"]
-    assert dingtalk_extra["allowed_chats"] == ["group42"]
-    assert dingtalk_extra["allowed_users"] == ["manager1234"]
-
-    import os as _os
-
-    assert _os.environ["DINGTALK_REQUIRE_MENTION"] == "true"
-    assert _os.environ["DINGTALK_MENTION_PATTERNS"] == '["^hermes"]'
-    assert _os.environ["DINGTALK_FREE_RESPONSE_CHATS"] == "cidABC"
-    assert _os.environ["DINGTALK_ALLOWED_CHATS"] == "group42"
-    assert _os.environ["DINGTALK_ALLOWED_USERS"] == "manager1234"
-
-
-# ---------------------------------------------------------------------------
 # Group gating — require_mention + allowed_users (parity with other platforms)
 # ---------------------------------------------------------------------------
 

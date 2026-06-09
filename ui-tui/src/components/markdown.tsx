@@ -80,21 +80,6 @@ const MATH_BLOCK_OPEN_RE = /^\s*(\$\$|\\\[)(.*)$/
 const MATH_BLOCK_CLOSE_DOLLAR_RE = /^(.*?)\$\$\s*$/
 const MATH_BLOCK_CLOSE_BRACKET_RE = /^(.*?)\\\]\s*$/
 
-const nextMathCloseIndices = (lines: string[], closeRe: RegExp): number[] => {
-  const nextIndices = new Array<number>(lines.length)
-  let nextCloseIdx = -1
-
-  for (let i = lines.length - 1; i >= 0; i--) {
-    nextIndices[i] = nextCloseIdx
-
-    if (closeRe.test(lines[i]!)) {
-      nextCloseIdx = i
-    }
-  }
-
-  return nextIndices
-}
-
 export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
 export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 
@@ -420,8 +405,6 @@ function MdImpl({ compact, t, text }: MdProps) {
     }
 
     const lines = ensureEmojiPresentation(text).split('\n')
-    const nextDollarMathClose = nextMathCloseIndices(lines, MATH_BLOCK_CLOSE_DOLLAR_RE)
-    const nextBracketMathClose = nextMathCloseIndices(lines, MATH_BLOCK_CLOSE_BRACKET_RE)
     const nodes: ReactNode[] = []
 
     let prevKind: Kind = null
@@ -586,9 +569,18 @@ function MdImpl({ compact, t, text }: MdProps) {
           continue
         }
 
-        // Multi-line block: use precomputed closers so malformed openers
-        // fall back without repeatedly rescanning the remaining document.
-        const closeIdx = opener === '$$' ? nextDollarMathClose[i]! : nextBracketMathClose[i]!
+        // Multi-line block: scan ahead for a real closer before committing.
+        // If none exists in the rest of the document, render this line as a
+        // paragraph instead of consuming everything that follows.
+        let closeIdx = -1
+
+        for (let j = i + 1; j < lines.length; j++) {
+          if (closeRe.test(lines[j]!)) {
+            closeIdx = j
+
+            break
+          }
+        }
 
         if (closeIdx < 0) {
           start('paragraph')

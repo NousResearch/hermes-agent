@@ -85,9 +85,9 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
-def _is_write_denied(path: str, base_dir: str | None = None, home: str | None = None) -> bool:
+def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path, home=home, base_dir=base_dir)
+    return _shared_is_write_denied(path)
 
 
 # =============================================================================
@@ -558,30 +558,6 @@ class ShellFileOperations(FileOperations):
             numbered.append(f"{i:6d}|{line}")
         return '\n'.join(numbered)
     
-    def _get_environment_home(self) -> Optional[str]:
-        """Return the terminal backend user's home directory when available."""
-        if self._environment_home is not None:
-            return self._environment_home
-
-        result = self._exec("echo $HOME")
-        if result.exit_code == 0 and result.stdout.strip():
-            self._environment_home = result.stdout.strip()
-            return self._environment_home
-        return None
-
-    def _is_write_denied(self, path: str) -> bool:
-        """Return True if a write path is denied locally or for this backend."""
-        # Resolve effective cwd (same logic as _exec)
-        exec_cwd = getattr(self.env, 'cwd', None) or self.cwd
-        
-        if _is_write_denied(path, base_dir=exec_cwd):
-            return True
-
-        environment_home = self._get_environment_home()
-        if environment_home:
-            return _shared_is_write_denied(path, home=environment_home, base_dir=exec_cwd)
-        return False
-
     def _expand_path(self, path: str) -> str:
         """
         Expand shell-style paths like ~ and ~user to absolute paths.

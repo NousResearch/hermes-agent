@@ -246,15 +246,7 @@ jobs:
             // next workflow_run completion re-evaluate.
             // pull_request_review / labeled: poll up to 25 min.
             const acceptable = new Set(['success', 'skipped', 'neutral']);
-            // Checks whose failure should NOT block auto-merge. Use for
-            // advisory bots whose runs fail for billing/quota reasons
-            // (HTTP 402 quota_exceeded) rather than any code defect — the
-            // real CI signal comes from the workflows listed in
-            // workflow_run above.
-            const NON_BLOCKING_CHECKS = new Set([
-              'copilot',
-            ]);
-            let pendingRuns = externalRuns.filter(r => r.status !== 'completed' && !NON_BLOCKING_CHECKS.has(r.name));
+            let pendingRuns = externalRuns.filter(r => r.status !== 'completed');
             if (pendingRuns.length > 0) {
               if (context.eventName === 'workflow_run') {
                 core.info(`${pendingRuns.length} check(s) still pending — exiting; next workflow_run will re-evaluate.`);
@@ -278,11 +270,11 @@ jobs:
                 externalRuns = await fetchExternalRuns();
                 // Abort the poll early if any completed check has already failed —
                 // no point waiting out the full timeout for the remaining checks.
-                if (externalRuns.some(r => r.status === 'completed' && !acceptable.has(r.conclusion) && !NON_BLOCKING_CHECKS.has(r.name))) {
+                if (externalRuns.some(r => r.status === 'completed' && !acceptable.has(r.conclusion))) {
                   core.warning('A check has failed — aborting poll early.');
                   break;
                 }
-                pendingRuns  = externalRuns.filter(r => r.status !== 'completed' && !NON_BLOCKING_CHECKS.has(r.name));
+                pendingRuns  = externalRuns.filter(r => r.status !== 'completed');
               }
               core.info('CI polling finished.');
             }
@@ -290,7 +282,7 @@ jobs:
             // ── 5. Guard: failing checks ───────────────────────────────────────
             // Only completed runs with a non-acceptable conclusion count as
             // failing; still-pending runs (possible after an early abort) do not.
-            const failing = externalRuns.filter(r => r.status === 'completed' && !acceptable.has(r.conclusion) && !NON_BLOCKING_CHECKS.has(r.name));
+            const failing = externalRuns.filter(r => r.status === 'completed' && !acceptable.has(r.conclusion));
             if (failing.length > 0) {
               core.warning(`${failing.length} check(s) failing.`);
               await setStatus(headSha, 'failure',

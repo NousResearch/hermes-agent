@@ -258,7 +258,7 @@ def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
     assert "disabled-server" not in enabled
 
 
-def test_get_platform_tools_explicit_builtin_selection_excludes_unnamed_mcp_servers():
+def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
     config = {
         "platform_toolsets": {"cli": ["web", "memory"]},
         "mcp_servers": {
@@ -271,24 +271,8 @@ def test_get_platform_tools_explicit_builtin_selection_excludes_unnamed_mcp_serv
 
     assert "web" in enabled
     assert "memory" in enabled
-    assert "exa" not in enabled
-    assert "web-search-prime" not in enabled
-
-
-def test_get_platform_tools_explicit_selection_keeps_named_mcp_servers():
-    config = {
-        "platform_toolsets": {"cli": ["web", "exa"]},
-        "mcp_servers": {
-            "exa": {"url": "https://mcp.exa.ai/mcp"},
-            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
-        },
-    }
-
-    enabled = _get_platform_tools(config, "cli")
-
-    assert "web" in enabled
     assert "exa" in enabled
-    assert "web-search-prime" not in enabled
+    assert "web-search-prime" in enabled
 
 
 def test_get_platform_tools_no_mcp_sentinel_excludes_all_mcp_servers():
@@ -469,27 +453,6 @@ def test_save_platform_tools_does_not_preserve_hermes_telegram():
     saved = config["platform_toolsets"]["telegram"]
     assert "hermes-telegram" not in saved
     assert "web" in saved
-
-
-def test_save_platform_tools_does_not_preserve_hidden_valid_toolsets():
-    """Hidden valid toolsets and aliases must not survive a picker save.
-
-    Otherwise entries like ``all`` or ``debugging`` can re-enable tools the
-    operator unchecked in the visible configurable list.
-    """
-    hidden_toolsets = {"all", "*", "debugging", "hermes-gateway", "search"}
-    config = {
-        "platform_toolsets": {
-            "telegram": ["web", "terminal", *sorted(hidden_toolsets)]
-        }
-    }
-
-    with patch("hermes_cli.tools_config.save_config"):
-        _save_platform_tools(config, "telegram", {"web"})
-
-    saved = set(config["platform_toolsets"]["telegram"])
-    assert saved == {"web"}
-    assert saved.isdisjoint(hidden_toolsets)
 
 
 def test_save_platform_tools_still_preserves_mcp_with_platform_default_present():

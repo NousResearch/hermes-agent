@@ -13,7 +13,7 @@ import secrets
 import socket
 import struct
 from typing import Optional
-from xml.etree import ElementTree as ET
+import xml.etree.ElementTree as NativeET
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -116,12 +116,12 @@ class WXBizMsgCrypt:
         timestamp = timestamp or str(int(__import__("time").time()))
         encrypt = self._encrypt_bytes(plaintext.encode("utf-8"))
         signature = _sha1_signature(self.token, timestamp, nonce, encrypt)
-        root = ET.Element("xml")
-        ET.SubElement(root, "Encrypt").text = encrypt
-        ET.SubElement(root, "MsgSignature").text = signature
-        ET.SubElement(root, "TimeStamp").text = timestamp
-        ET.SubElement(root, "Nonce").text = nonce
-        return ET.tostring(root, encoding="unicode")
+        root = NativeET.Element("xml")
+        NativeET.SubElement(root, "Encrypt").text = encrypt
+        NativeET.SubElement(root, "MsgSignature").text = signature
+        NativeET.SubElement(root, "TimeStamp").text = timestamp
+        NativeET.SubElement(root, "Nonce").text = nonce
+        return NativeET.tostring(root, encoding="unicode")
 
     def _encrypt_bytes(self, raw: bytes) -> str:
         try:

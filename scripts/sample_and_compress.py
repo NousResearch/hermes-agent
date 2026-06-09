@@ -101,30 +101,17 @@ def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
     if not conversations:
         return entry, 0
 
-    texts = [turn.get("value", "") for turn in conversations if turn.get("value", "")]
-    if not texts:
-        return entry, 0
+    total = 0
+    for turn in conversations:
+        value = turn.get("value", "")
+        if value:
+            try:
+                total += len(_TOKENIZER.encode(value))
+            except Exception:
+                # Fallback to character estimate
+                total += len(value) // 4
 
-    if _TOKENIZER is not None:
-        try:
-            # ⚡ Bolt Optimization: HuggingFace tokenizer batch encoding delegates
-            # the per-string loop to the fast Rust implementation (~3x faster).
-            token_ids = _TOKENIZER(texts)["input_ids"]
-            return entry, sum(len(ids) for ids in token_ids)
-        except Exception:
-            # Batch encoding unsupported/failed; fall back to per-text encoding so
-            # a single failing text doesn't discard counts for the whole entry.
-            total = 0
-            for text in texts:
-                try:
-                    total += len(_TOKENIZER.encode(text))
-                except Exception:
-                    # Fallback to character estimate for this text only
-                    total += len(text) // 4
-            return entry, total
-
-    # No tokenizer available: character estimate
-    return entry, sum(len(text) // 4 for text in texts)
+    return entry, total
 
 
 def sample_from_datasets(

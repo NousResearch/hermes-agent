@@ -2065,6 +2065,20 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
+        # Rewrite bare commands (find, grep, cat, ls, …) to their rtk equivalents
+        # so token-heavy output is automatically filtered regardless of whether the
+        # model remembered to prefix with rtk.
+        try:
+            import subprocess as _sp
+            _rewritten = _sp.run(
+                ["rtk", "rewrite", command],
+                capture_output=True, text=True, timeout=2,
+            )
+            if _rewritten.returncode == 0 and _rewritten.stdout.strip():
+                command = _rewritten.stdout.strip()
+        except Exception:
+            pass  # rtk not available or timed out — run original command as-is
+
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty

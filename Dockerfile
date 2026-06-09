@@ -236,6 +236,13 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 # Code proxy under $HERMES_HOME/services/) into the tmpfs scandir on boot, so
 # they survive image rebuilds. Ordered after 02 (per-profile gateways first).
 COPY --chmod=0755 docker/cont-init.d/03-seed-data-services /etc/cont-init.d/03-seed-data-services
+# 04-registry-gate enforces the client registry against the scandir AFTER 02/03
+# have published every gateway-<profile> slot: it removes isolated (own-
+# container) clients from the shared gateway (no Telegram-409 double-run) and
+# logs DRIFT: for on-disk profiles missing from the registry. Pure no-op when
+# $HERMES_CLIENTS_REGISTRY is unset (today's seed/run-everything behavior), so
+# it is safe for existing deployments that don't configure a registry.
+COPY --chmod=0755 docker/cont-init.d/04-registry-gate /etc/cont-init.d/04-registry-gate
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

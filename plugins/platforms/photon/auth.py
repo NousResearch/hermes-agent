@@ -41,6 +41,7 @@ import logging
 import os
 import re
 import time
+from base64 import b64encode
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -68,6 +69,7 @@ DEFAULT_CLIENT_ID = "photon-cli"
 DEFAULT_SCOPE = "openid profile email"
 
 DEFAULT_DASHBOARD_HOST = "https://app.photon.codes"
+DEFAULT_SPECTRUM_HOST = "https://spectrum.photon.codes"
 
 # Default name of the project Hermes provisions for the operator.
 DEFAULT_PROJECT_NAME = "Hermes Agent"
@@ -273,8 +275,41 @@ def _dashboard_host() -> str:
     return (os.getenv("PHOTON_DASHBOARD_HOST") or DEFAULT_DASHBOARD_HOST).rstrip("/")
 
 
+def _spectrum_host() -> str:
+    return (os.getenv("PHOTON_SPECTRUM_HOST") or DEFAULT_SPECTRUM_HOST).rstrip("/")
+
+
 def _bearer(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _basic(project_id: str, project_secret: str) -> Dict[str, str]:
+    token = b64encode(f"{project_id}:{project_secret}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {token}"}
+
+
+def _response_error_detail(resp: Any) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        for key in ("error", "message", "detail"):
+            val = data.get(key)
+            if val:
+                return str(val)
+        return json.dumps(data, sort_keys=True)[:500]
+    text = getattr(resp, "text", "") or ""
+    return text[:500] if text else "no response body"
+
+
+def _raise_for_status(resp: Any, action: str) -> None:
+    status = getattr(resp, "status_code", 200)
+    if status < 400:
+        return
+    raise RuntimeError(
+        f"Photon {action} failed: HTTP {status}: {_response_error_detail(resp)}"
+    )
 
 
 def request_device_code(
@@ -584,6 +619,11 @@ def _unwrap_list(data: Any) -> List[Dict[str, Any]]:
             inner = data.get(key)
             if isinstance(inner, list):
                 return inner
+            if isinstance(inner, dict):
+                for nested_key in ("projects", "users", "lines", "items"):
+                    nested = inner.get(nested_key)
+                    if isinstance(nested, list):
+                        return nested
     return []
 
 
@@ -687,37 +727,37 @@ def regenerate_project_secret(token: str, project_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard API: spectrum users
+# Spectrum API: users
 
 def _normalize_phone(phone: str) -> str:
     """Reduce a phone string to ``+`` and digits for dedup comparison."""
     return re.sub(r"[^\d+]", "", phone or "")
 
 
-def list_users(token: str, project_id: str) -> List[Dict[str, Any]]:
-    """GET ``/api/projects/{id}/spectrum/users`` → ``SpectrumUser[]``."""
+def list_users(project_id: str, project_secret: str) -> List[Dict[str, Any]]:
+    """GET Spectrum Cloud ``/projects/{id}/users/`` → ``SpectrumUser[]``."""
     if httpx is None:
         raise RuntimeError("httpx is required for Photon")
-    url = f"{_dashboard_host()}/api/projects/{project_id}/spectrum/users"
-    resp = httpx.get(url, headers=_bearer(token), timeout=30.0)
-    resp.raise_for_status()
+    url = f"{_spectrum_host()}/projects/{project_id}/users/"
+    resp = httpx.get(url, headers=_basic(project_id, project_secret), timeout=30.0)
+    _raise_for_status(resp, "list-users")
     return _unwrap_list(resp.json())
 
 
 def find_user_by_phone(
-    token: str, project_id: str, phone_number: str,
+    project_id: str, project_secret: str, phone_number: str,
 ) -> Optional[Dict[str, Any]]:
     """Return an existing Spectrum user with the given phone number, or None."""
     target = _normalize_phone(phone_number)
-    for user in list_users(token, project_id):
+    for user in list_users(project_id, project_secret):
         if _normalize_phone(user.get("phoneNumber") or "") == target:
             return user
     return None
 
 
 def create_user(
-    token: str,
     project_id: str,
+    project_secret: str,
     *,
     phone_number: str,
     first_name: Optional[str] = None,
@@ -725,32 +765,42 @@ def create_user(
     email: Optional[str] = None,
     send_invite: bool = False,
 ) -> Dict[str, Any]:
-    """POST ``/api/projects/{id}/spectrum/users`` and return the created user."""
+    """POST Spectrum Cloud ``/projects/{id}/users/`` and return the user."""
     if httpx is None:
         raise RuntimeError("httpx is required for Photon user creation")
     if not E164_RE.match(phone_number):
         raise ValueError(
             f"phone_number must be E.164 (e.g. +15551234567); got {phone_number!r}"
         )
-    url = f"{_dashboard_host()}/api/projects/{project_id}/spectrum/users"
-    body: Dict[str, Any] = {"phoneNumber": phone_number, "sendInvite": send_invite}
+    url = f"{_spectrum_host()}/projects/{project_id}/users/"
+    body: Dict[str, Any] = {"type": "shared", "phoneNumber": phone_number}
+    if send_invite:
+        logger.debug("photon: send_invite is ignored by Spectrum shared-user creation")
     if first_name:
         body["firstName"] = first_name
     if last_name:
         body["lastName"] = last_name
     if email:
         body["email"] = email
-    resp = httpx.post(url, json=body, headers=_bearer(token), timeout=30.0)
-    resp.raise_for_status()
+    resp = httpx.post(
+        url,
+        json=body,
+        headers=_basic(project_id, project_secret),
+        timeout=30.0,
+    )
+    _raise_for_status(resp, "create-user")
     data = resp.json() or {}
     if data.get("error"):
         raise RuntimeError(f"Photon create-user failed: {data['error']}")
-    return data.get("user") or data
+    user = data.get("user") or data.get("data") or data
+    if isinstance(user, dict):
+        return user
+    raise RuntimeError("Photon create-user returned an unexpected response")
 
 
 def register_user_if_absent(
-    token: str,
     project_id: str,
+    project_secret: str,
     *,
     phone_number: str,
     first_name: Optional[str] = None,
@@ -763,11 +813,12 @@ def register_user_if_absent(
     same phone number already exists (the official CLI does no dedup, so we
     add it here to make ``setup`` safely re-runnable).
     """
-    existing = find_user_by_phone(token, project_id, phone_number)
+    existing = find_user_by_phone(project_id, project_secret, phone_number)
     if existing is not None:
         return existing, False
     user = create_user(
-        token, project_id,
+        project_id,
+        project_secret,
         phone_number=phone_number,
         first_name=first_name,
         last_name=last_name,
@@ -812,15 +863,15 @@ def load_user_numbers() -> Tuple[Optional[str], Optional[str]]:
 
 
 def refresh_user_numbers(
-    token: str, project_id: str,
+    project_id: str, project_secret: str,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Refresh cached user numbers from Photon without provisioning anything."""
     phone, cached_assigned = load_user_numbers()
     user: Optional[Dict[str, Any]] = None
     if phone:
-        user = find_user_by_phone(token, project_id, phone)
+        user = find_user_by_phone(project_id, project_secret, phone)
     else:
-        users = list_users(token, project_id)
+        users = list_users(project_id, project_secret)
         if len(users) == 1:
             user = users[0]
 
@@ -833,20 +884,29 @@ def refresh_user_numbers(
             phone = dashboard_phone
         assigned = user_assigned_line(user)
 
+    dashboard_id = load_dashboard_project_id()
     if not assigned:
-        try:
-            line = get_imessage_line(token, project_id, create_if_missing=False)
-        except Exception as e:
-            logger.debug("photon: could not refresh iMessage line for status: %s", e)
-        else:
-            if line and line.get("phoneNumber"):
-                assigned = str(line["phoneNumber"])
+        dashboard_token = load_photon_token()
+        if dashboard_token and dashboard_id:
+            try:
+                line = get_imessage_line(
+                    dashboard_token,
+                    dashboard_id,
+                    create_if_missing=False,
+                )
+            except Exception as e:
+                logger.debug(
+                    "photon: could not refresh iMessage line for status: %s", e
+                )
+            else:
+                if line and line.get("phoneNumber"):
+                    assigned = str(line["phoneNumber"])
 
     store_user_numbers(
         phone_number=phone,
         assigned_phone_number=assigned,
         user_id=str(user_id) if user_id else None,
-        dashboard_project_id=project_id,
+        dashboard_project_id=dashboard_id,
     )
     return phone, assigned
 

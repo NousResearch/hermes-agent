@@ -94,19 +94,36 @@ def _register_self_hosted_client(
     *,
     access_token: str,
     portal_base_url: str,
-    name: str,
+    name: Optional[str],
     custom_redirect_uri: Optional[str],
+    existing_client_id: Optional[str] = None,
     timeout: float = 15.0,
 ) -> dict:
     """POST to the portal's self-hosted-client endpoint and return the JSON body.
+
+    When ``existing_client_id`` is provided (the client_id this install
+    persisted on a prior run), it is sent so the portal updates that existing
+    dashboard record in place instead of minting a duplicate — this is what
+    makes re-running ``hermes dashboard register`` idempotent. The portal
+    falls back to creating a fresh client if the id no longer resolves to a row
+    in the caller's org (stale/deleted), so passing it is always safe.
+
+    ``name`` may be ``None`` on the idempotent update path (re-run without an
+    explicit ``--name``): omitting it tells the portal to keep the name it
+    already stored rather than overwriting it. It is required on the create
+    path; the caller guarantees a value there.
 
     Raises RuntimeError with a user-facing message on any non-2xx response or
     transport failure.
     """
     url = f"{portal_base_url.rstrip('/')}/api/oauth/self-hosted-client"
-    body: dict[str, str] = {"name": name}
+    body: dict[str, str] = {}
+    if name:
+        body["name"] = name
     if custom_redirect_uri:
         body["custom_redirect_uri"] = custom_redirect_uri
+    if existing_client_id:
+        body["client_id"] = existing_client_id
 
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -245,7 +262,33 @@ def cmd_dashboard_register(args) -> None:
     )
     portal_base_url = _resolve_portal_base_url(portal_override)
 
-    name = getattr(args, "name", None) or _generate_dashboard_name()
+    # Idempotency: if this install already registered a dashboard, we hold its
+    # client_id locally (HERMES_DASHBOARD_OAUTH_CLIENT_ID). Re-send it so the
+    # portal UPDATES that existing record instead of creating a duplicate. No
+    # stored client_id -> this is a first registration -> create a fresh one
+    # (the original behavior). This mirrors the portal's rule: no client id =
+    # new dashboard; client id present = the stable key of the row to modify.
+    existing_client_id = None
+    try:
+        existing_client_id = get_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID")
+    except Exception:
+        existing_client_id = None
+    if isinstance(existing_client_id, str):
+        existing_client_id = existing_client_id.strip() or None
+    else:
+        existing_client_id = None
+
+    explicit_name = getattr(args, "name", None)
+    # Auto-generate a random name ONLY for a first registration. On a re-run
+    # (we hold a client_id) without an explicit --name, keep the name the
+    # portal already stored rather than churning it to a new random value
+    # every time — so leave `name` unset and let the portal preserve it.
+    if explicit_name:
+        name = explicit_name
+    elif existing_client_id:
+        name = None
+    else:
+        name = _generate_dashboard_name()
     custom_redirect_uri = getattr(args, "redirect_uri", None)
 
     # 2. Register with the portal.
@@ -255,15 +298,24 @@ def cmd_dashboard_register(args) -> None:
             portal_base_url=portal_base_url,
             name=name,
             custom_redirect_uri=custom_redirect_uri,
+            existing_client_id=existing_client_id,
         )
     except RuntimeError as exc:
         print(f"✗ Registration failed: {exc}")
         sys.exit(1)
 
     client_id = str(result["client_id"])
-    registered_name = str(result.get("name") or name)
+    registered_name = str(result.get("name") or name or "")
 
-    print(f'✓ Registered dashboard "{registered_name}"')
+    # Distinguish create vs update for the user: the portal echoes back the
+    # same client_id we sent when it updated in place.
+    updated_existing = bool(
+        existing_client_id and client_id == existing_client_id
+    )
+    if updated_existing:
+        print(f'✓ Updated dashboard "{registered_name}"')
+    else:
+        print(f'✓ Registered dashboard "{registered_name}"')
 
     # 3. Write env vars idempotently. Always set the client_id. Only set the
     #    portal URL when it isn't already configured (env or config) AND differs

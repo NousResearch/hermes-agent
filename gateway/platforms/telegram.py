@@ -2379,6 +2379,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # are already correctly sized).  Best-effort MarkdownV2 with plain
         # fallback, mirroring send().
         continuation_ids: list[str] = []
+        delivered_chunks = [first_chunk]
         prev_id = message_id
         thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
@@ -2442,17 +2443,37 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
             if sent_msg is None:
                 # Continuation failed — the user has chunk 1 + however many
-                # continuations succeeded.  Report success with what we got
-                # so the stream consumer knows the edit landed; the
-                # remaining tail is lost on this attempt and the next
-                # streaming tick may retry.
+                # continuations succeeded, but NOT the full response.  Do not
+                # report success: the stream consumer treats a successful edit
+                # as final delivery on got_done, which would suppress fallback
+                # delivery and leave the Telegram topic clipped after the last
+                # delivered chunk.
                 logger.warning(
                     "[%s] Overflow split: stopped at %d/%d chunks delivered",
                     self.name, 1 + len(continuation_ids), len(chunks),
                 )
-                break
+                delivered_prefix = "".join(
+                    re.sub(r" \(\d+/\d+\)$", "", delivered)
+                    for delivered in delivered_chunks
+                )
+                return SendResult(
+                    success=False,
+                    message_id=prev_id,
+                    error="overflow_continuation_failed",
+                    retryable=True,
+                    raw_response={
+                        "partial_overflow": True,
+                        "delivered_chunks": 1 + len(continuation_ids),
+                        "total_chunks": len(chunks),
+                        "last_message_id": prev_id,
+                        "delivered_prefix": delivered_prefix,
+                        "continuation_message_ids": tuple(continuation_ids),
+                    },
+                    continuation_message_ids=tuple(continuation_ids),
+                )
             new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
             continuation_ids.append(new_id)
+            delivered_chunks.append(chunk)
             prev_id = new_id
 
         last_id = continuation_ids[-1] if continuation_ids else message_id

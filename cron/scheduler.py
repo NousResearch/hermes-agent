@@ -796,7 +796,7 @@ def _deliver_result(job: dict, content: str, success: bool = True, adapters=None
         if success:
             delivery_content = (
                 f"✅ Cronjob Response: {task_name}\n"
-                f"(job_id: {job_id})\n"
+                f"🪪 job_id: {job_id}\n"
                 f"-------------\n\n"
                 f"{content}\n\n"
                 f"{manage_hint}"
@@ -806,7 +806,7 @@ def _deliver_result(job: dict, content: str, success: bool = True, adapters=None
             # instead of nesting a "Cron job failed" line inside the success header.
             delivery_content = (
                 f"⚠️ Cronjob Failed: {task_name}\n"
-                f"(job_id: {job_id})\n"
+                f"🪪 job_id: {job_id}\n"
                 f"-------------\n\n"
                 f"{content}\n\n"
                 f"{manage_hint}"

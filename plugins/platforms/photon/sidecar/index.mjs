@@ -303,6 +303,26 @@ function handleInbound(req, res) {
 }
 
 async function resolveSpace(spaceId) {
+  // A bare E.164 phone number addresses a DM. Resolve the user, then the (DM)
+  // space — `imessage(app).user(phone)` -> `im.space(user)` — so callers can
+  // pass just "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of
+  // an opaque inbound space id. Real inbound space ids never match this shape,
+  // so this only kicks in for phone-addressed sends.
+  if (typeof spaceId === "string" && /^\+\d{6,}$/.test(spaceId) && imessage) {
+    try {
+      const im = imessage(app);
+      if (typeof im.user === "function" && typeof im.space === "function") {
+        const user = await im.user(spaceId);
+        return await im.space(user);
+      }
+    } catch (e) {
+      console.error(
+        "photon-sidecar: phone->DM resolution failed; falling back to " +
+          "id-based lookup: " +
+          (e && e.stack ? e.stack : String(e))
+      );
+    }
+  }
   // spectrum-ts exposes the same Space methods via `app.space(spaceId)` /
   // narrowed helpers; we fall back through a few accessor shapes to
   // tolerate small SDK API drift.

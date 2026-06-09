@@ -995,3 +995,145 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
 
+
+
+# ------------------------------------------------------------------
+# /wf-dev deterministic managed-dev-workflow control plane
+# ------------------------------------------------------------------
+
+
+def _wf_dev_group(adapter):
+    adapter._register_wf_dev_group(adapter._client.tree)
+    return adapter._client.tree.commands.get("wf-dev")
+
+
+def test_wf_dev_group_registers_all_subcommands(adapter):
+    group = _wf_dev_group(adapter)
+    assert group is not None, "/wf-dev group should be registered"
+    assert group.name == "wf-dev"
+    expected = {
+        "plan", "revise", "approve", "start", "reply",
+        "status", "list", "stop", "summary", "help",
+    }
+    assert set(group._children.keys()) == expected
+
+
+def test_wf_dev_group_not_registered_when_disabled(adapter):
+    adapter.config.extra = {"workflow_router": {"enabled": False}}
+    adapter._register_wf_dev_group(adapter._client.tree)
+    assert "wf-dev" not in adapter._client.tree.commands
+
+
+@pytest.mark.asyncio
+async def test_wf_dev_status_dispatches_structured_envelope(adapter):
+    """A /wf-dev subcommand must route a structured envelope to the gateway
+    router — never a reconstructed free-text command string."""
+    captured = {}
+
+    async def fake_run(interaction, subcommand, **params):
+        captured["subcommand"] = subcommand
+        captured["params"] = params
+
+    adapter._run_wf_dev_slash = fake_run
+    group = _wf_dev_group(adapter)
+
+    interaction = SimpleNamespace()
+    await group._children["status"].callback(interaction, task_id="dev-1")
+
+    assert captured["subcommand"] == "status"
+    assert captured["params"]["task_id"] == "dev-1"
+
+
+@pytest.mark.asyncio
+async def test_wf_dev_list_renders_embed(adapter, monkeypatch):
+    """/wf-dev list must render the structured response as a Discord Embed
+    (code-block pseudo-table), not plain prose."""
+    import gateway.managed_dev_workflow as mdw
+
+    embed_spec = {
+        "title": "Active workflows in this thread",
+        "description": "```\n#  Ref      Task ID\n1  DEV-142  dev-1\n```",
+        "fields": [{"name": "Use", "value": "/wf-dev status", "inline": False}],
+        "footer": "page 1 · scope=thread",
+    }
+    monkeypatch.setattr(
+        mdw, "handle_wf_dev_command",
+        lambda cmd, **kw: mdw.WfDevResponse(
+            ok=True, text="fallback", embed=embed_spec, subcommand="list",
+        ),
+    )
+
+    sent = {}
+
+    async def fake_followup_send(*args, **kwargs):
+        sent.update(kwargs)
+
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent_id=None),
+        channel_id=555,
+        guild_id=1,
+        user=SimpleNamespace(id=42),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=fake_followup_send),
+    )
+
+    await adapter._run_wf_dev_slash(interaction, "list")
+
+    interaction.response.defer.assert_awaited_once()
+    assert "embed" in sent, "list should send an Embed, not plain content"
+
+
+@pytest.mark.asyncio
+async def test_wf_dev_failure_is_explicit_not_agent_fallback(adapter, monkeypatch):
+    """A router exception must surface an explicit ephemeral error — the
+    /wf-dev path must never silently degrade to the normal agent chat."""
+    import gateway.managed_dev_workflow as mdw
+
+    def boom(cmd, **kw):
+        raise RuntimeError("supervisor down")
+
+    monkeypatch.setattr(mdw, "handle_wf_dev_command", boom)
+
+    sent = {}
+
+    async def fake_followup_send(*args, **kwargs):
+        sent["args"] = args
+        sent["kwargs"] = kwargs
+
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent_id=None),
+        channel_id=555,
+        guild_id=1,
+        user=SimpleNamespace(id=42),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=fake_followup_send),
+    )
+
+    await adapter._run_wf_dev_slash(interaction, "status", task_id="dev-1")
+
+    assert sent["kwargs"].get("ephemeral") is True
+    assert "실패" in sent["kwargs"].get("content", "")
+
+
+@pytest.mark.asyncio
+async def test_wf_dev_channel_scope_rejects_disallowed(adapter):
+    adapter.config.extra = {"workflow_router": {"channels": ["999"]}}
+
+    rejected = {}
+
+    async def fake_send_message(content, ephemeral=False):
+        rejected["content"] = content
+        rejected["ephemeral"] = ephemeral
+
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent_id=None),
+        channel_id=555,  # not in allowed {999}
+        response=SimpleNamespace(send_message=fake_send_message, defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    await adapter._run_wf_dev_slash(interaction, "status")
+
+    assert rejected["ephemeral"] is True
+    assert "not enabled" in rejected["content"]
+    interaction.response.defer.assert_not_awaited()

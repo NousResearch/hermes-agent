@@ -3220,6 +3220,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
 
+        # Register the deterministic /wf-dev managed-dev-workflow control plane.
+        self._register_wf_dev_group(tree)
+
         # Optional defense-in-depth: hide every slash command from non-admin
         # guild members in Discord's slash picker. Server-side authorization
         # (``_check_slash_authorization``) is the actual gate; this is purely
@@ -3507,6 +3510,233 @@ class DiscordAdapter(BasePlatformAdapter):
             raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
+
+    # ------------------------------------------------------------------
+    # /wf-dev deterministic managed-dev-workflow control plane
+    # ------------------------------------------------------------------
+    #
+    # Unlike the simple slash commands above, /wf-dev subcommands do NOT
+    # reconstruct a free-text command string. Each collects its typed
+    # parameters and ships a STRUCTURED metadata envelope to the gateway's
+    # deterministic router (gateway.managed_dev_workflow.handle_wf_dev_command),
+    # which talks to the supervisor state machine and fails closed. The Discord
+    # adapter stays thin: build the envelope, render the structured response
+    # (text or Embed), enforce the same auth gate as every other slash command.
+
+    def _wf_dev_config(self) -> dict:
+        cfg = self.config.extra.get("workflow_router")
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _wf_dev_enabled(self) -> bool:
+        """Whether the /wf-dev control plane is enabled (default: on)."""
+        cfg = self._wf_dev_config()
+        return bool(cfg.get("enabled", True))
+
+    def _wf_dev_channel_allowed(self, channel_id: str | None, parent_id: str | None = None) -> bool:
+        """Channel-scope gate. Empty/absent ``channels`` list ⇒ allow anywhere."""
+        cfg = self._wf_dev_config()
+        channels = cfg.get("channels") or []
+        if not channels:
+            return True
+        allowed = {str(c) for c in channels}
+        return str(channel_id or "") in allowed or str(parent_id or "") in allowed
+
+    def _register_wf_dev_group(self, tree) -> None:
+        """Register the native ``/wf-dev`` slash command group."""
+        if not self._wf_dev_enabled():
+            return
+        try:
+            from gateway.managed_dev_workflow import WF_DEV_GROUP
+        except Exception:
+            WF_DEV_GROUP = "wf-dev"
+
+        try:
+            group = discord.app_commands.Group(
+                name=WF_DEV_GROUP,
+                description="Managed development workflow control plane",
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to create /wf-dev group: %s", self.name, exc)
+            return
+
+        adapter = self
+
+        async def _plan(interaction, request: str, title: str = ""):
+            await adapter._run_wf_dev_slash(interaction, "plan", request=request, title=title)
+
+        async def _revise(interaction, request: str, task_id: str = ""):
+            await adapter._run_wf_dev_slash(interaction, "revise", request=request, task_id=task_id)
+
+        async def _approve(interaction, task_id: str = "", auto_start: bool = True):
+            await adapter._run_wf_dev_slash(interaction, "approve", task_id=task_id, auto_start=auto_start)
+
+        async def _start(interaction, task_id: str = ""):
+            await adapter._run_wf_dev_slash(interaction, "start", task_id=task_id)
+
+        async def _reply(interaction, message: str, task_id: str = ""):
+            await adapter._run_wf_dev_slash(interaction, "reply", message=message, task_id=task_id)
+
+        async def _status(interaction, task_id: str = ""):
+            await adapter._run_wf_dev_slash(interaction, "status", task_id=task_id)
+
+        async def _list(interaction, scope: str = "thread", status_filter: str = "active", page: int = 1):
+            await adapter._run_wf_dev_slash(
+                interaction, "list", scope=scope, status_filter=status_filter, page=page,
+            )
+
+        async def _stop(interaction, task_id: str = ""):
+            await adapter._run_wf_dev_slash(interaction, "stop", task_id=task_id)
+
+        async def _summary(interaction, task_id: str = ""):
+            await adapter._run_wf_dev_slash(interaction, "summary", task_id=task_id)
+
+        async def _help(interaction):
+            await adapter._run_wf_dev_slash(interaction, "help")
+
+        _subcommands = [
+            ("plan", "새 개발 계획 생성", _plan),
+            ("revise", "기존 계획 수정", _revise),
+            ("approve", "승인 후 실행", _approve),
+            ("start", "승인된 작업 수동 시작", _start),
+            ("reply", "blocker/질문에 답변", _reply),
+            ("status", "현재 workflow 상태 조회", _status),
+            ("list", "최근/활성 workflow 목록", _list),
+            ("stop", "작업 중단", _stop),
+            ("summary", "요약 조회", _summary),
+            ("help", "/wf-dev 도움말", _help),
+        ]
+
+        for _name, _desc, _cb in _subcommands:
+            try:
+                cmd = discord.app_commands.Command(
+                    name=_name, description=_desc, callback=_cb,
+                )
+                group.add_command(cmd)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to register /wf-dev %s: %s", self.name, _name, exc,
+                )
+
+        try:
+            tree.add_command(group)
+            logger.info("[%s] Registered /wf-dev group (%d subcommands)", self.name, len(_subcommands))
+        except Exception as exc:
+            logger.warning("[%s] Failed to add /wf-dev group to tree: %s", self.name, exc)
+
+    def _build_wf_dev_envelope(self, interaction, subcommand: str, params: dict) -> dict:
+        """Assemble the structured metadata envelope for the gateway router."""
+        is_thread = isinstance(interaction.channel, discord.Thread)
+        channel_id = str(getattr(interaction, "channel_id", "") or "")
+        thread_id = channel_id if is_thread else None
+        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "") or None
+        envelope = {
+            "subcommand": subcommand,
+            "platform": "discord",
+            "channel_id": channel_id or None,
+            "thread_id": thread_id,
+            "parent_id": parent_id,
+            "guild_id": str(getattr(interaction, "guild_id", "") or "") or None,
+            "user_id": str(getattr(getattr(interaction, "user", None), "id", "") or "") or None,
+        }
+        # Only carry non-empty typed params so the parser's defaults apply.
+        for key, value in params.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            envelope[key] = value
+        return envelope
+
+    def _build_wf_dev_embed(self, spec: dict):
+        """Render a platform-neutral Embed spec into a discord.Embed."""
+        embed = discord.Embed(
+            title=spec.get("title") or "",
+            description=spec.get("description") or "",
+        )
+        for fld in spec.get("fields") or []:
+            try:
+                embed.add_field(
+                    name=fld.get("name", "​"),
+                    value=fld.get("value", "​"),
+                    inline=bool(fld.get("inline", False)),
+                )
+            except Exception:
+                continue
+        footer = spec.get("footer")
+        if footer:
+            try:
+                embed.set_footer(text=footer)
+            except Exception:
+                pass
+        return embed
+
+    async def _run_wf_dev_slash(self, interaction, subcommand: str, **params) -> None:
+        """Auth-gate, route through the gateway router, render the response.
+
+        The deterministic logic lives entirely in the gateway module; this
+        method only adapts a Discord interaction to/from it. It NEVER falls
+        back to the generic agent path — a router error is rendered as an
+        explicit ephemeral message.
+        """
+        if not await self._check_slash_authorization(interaction, f"/wf-dev {subcommand}"):
+            return
+
+        channel_id = str(getattr(interaction, "channel_id", "") or "")
+        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "") or None
+        if not self._wf_dev_channel_allowed(channel_id, parent_id):
+            try:
+                await interaction.response.send_message(
+                    "/wf-dev is not enabled in this channel.", ephemeral=True,
+                )
+            except Exception:
+                pass
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            from gateway.managed_dev_workflow import (
+                WorkflowBindingStore,
+                default_supervisor_repo,
+                handle_wf_dev_command,
+                parse_wf_dev_command,
+            )
+
+            envelope = self._build_wf_dev_envelope(interaction, subcommand, params)
+            cmd = parse_wf_dev_command(envelope)
+
+            def _run():
+                store = WorkflowBindingStore()
+                try:
+                    return handle_wf_dev_command(
+                        cmd, repo_dir=default_supervisor_repo(), store=store,
+                    )
+                finally:
+                    store.close()
+
+            resp = await asyncio.to_thread(_run)
+        except Exception as exc:  # noqa: BLE001 - fail closed, explicit error
+            logger.warning("[%s] /wf-dev %s failed: %s", self.name, subcommand, exc)
+            try:
+                await interaction.followup.send(
+                    content=f"/wf-dev {subcommand} 실패: {exc}", ephemeral=True,
+                )
+            except Exception:
+                pass
+            return
+
+        try:
+            if resp.embed is not None:
+                await interaction.followup.send(
+                    embed=self._build_wf_dev_embed(resp.embed),
+                    ephemeral=resp.ephemeral,
+                )
+            else:
+                await interaction.followup.send(
+                    content=resp.text, ephemeral=resp.ephemeral,
+                )
+        except Exception as exc:
+            logger.warning("[%s] /wf-dev %s render failed: %s", self.name, subcommand, exc)
 
     # ------------------------------------------------------------------
     # Thread creation helpers

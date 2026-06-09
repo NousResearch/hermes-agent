@@ -4689,6 +4689,11 @@ class GatewayRunner:
         # so human-in-the-loop workflows hear back without polling.
         asyncio.create_task(self._kanban_notifier_watcher())
 
+        # Start background managed-dev-workflow notifier — delivers pending
+        # supervisor notifications (WAITING_INPUT/BLOCKED/FAILED/COMPLETED) to
+        # Discord and acks only after a confirmed send.
+        asyncio.create_task(self._managed_dev_notifier_watcher())
+
         # Start background kanban dispatcher — spawns workers for ready
         # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
         # When false, users run `hermes kanban daemon` externally or
@@ -5101,6 +5106,78 @@ class GatewayRunner:
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
+
+    async def _managed_dev_notifier_watcher(self, interval: float = 5.0) -> None:
+        """Deliver pending managed-dev-workflow supervisor notifications to Discord.
+
+        The supervisor records notifiable events (WAITING_INPUT / BLOCKED /
+        FAILED / COMPLETED) but never sends Discord itself. This watcher polls
+        for un-acked notifications, renders each into a user-facing message,
+        delivers it through the connected Discord adapter, and acks only after a
+        confirmed send so a failed delivery stays pending for retry.
+
+        Best-effort and fully isolated: any failure in a tick is logged and the
+        loop keeps running, so notification handling can never break the
+        gateway. Disabled when no Discord adapter is connected or the helper
+        module is unavailable.
+        """
+        try:
+            from gateway.managed_dev_workflow import (
+                dispatch_pending_notifications as _mdw_dispatch,
+                default_supervisor_repo as _mdw_default_repo,
+            )
+        except Exception as exc:
+            logger.warning(
+                "managed-dev notifier: helper unavailable (%s); disabled", exc
+            )
+            return
+
+        env_override = os.environ.get("HERMES_MANAGED_DEV_NOTIFY", "").strip().lower()
+        if env_override in {"0", "false", "no", "off"}:
+            logger.info("managed-dev notifier: disabled via HERMES_MANAGED_DEV_NOTIFY env")
+            return
+
+        try:
+            repo_dir = _mdw_default_repo()
+        except Exception as exc:
+            logger.warning("managed-dev notifier: cannot resolve supervisor repo (%s); disabled", exc)
+            return
+
+        # Wait a bit so adapters finish connecting before the first poll, the
+        # same pattern the other gateway watchers use.
+        await asyncio.sleep(min(interval, 5.0))
+
+        while self._running:
+            try:
+                adapter = self.adapters.get(Platform.DISCORD)
+                if adapter is None:
+                    # No Discord connected this tick — nothing to deliver.
+                    await asyncio.sleep(interval)
+                    continue
+
+                async def _send(channel_id: str, text: str) -> bool:
+                    try:
+                        result = await adapter.send(channel_id, text)
+                    except Exception as send_exc:  # noqa: BLE001
+                        logger.warning(
+                            "managed-dev notifier: Discord send to %s failed: %s",
+                            channel_id, send_exc,
+                        )
+                        return False
+                    # Adapters return a result object with `.success`; treat a
+                    # missing attribute as success only when a result came back.
+                    return bool(getattr(result, "success", result is not None))
+
+                summary = await _mdw_dispatch(repo_dir, _send)
+                if summary.get("sent") or summary.get("failed"):
+                    logger.info(
+                        "managed-dev notifier: sent=%s acked=%s failed=%s skipped=%s",
+                        summary.get("sent"), summary.get("acked"),
+                        summary.get("failed"), summary.get("skipped"),
+                    )
+            except Exception as exc:  # noqa: BLE001 - never break the gateway loop
+                logger.warning("managed-dev notifier tick failed: %s", exc)
+            await asyncio.sleep(interval)
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -8651,6 +8728,7 @@ class GatewayRunner:
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
+        _original_event_text = event.text or ""
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         logger.info(
@@ -9284,18 +9362,215 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
-            # Run the agent
-            agent_result = await self._run_agent(
-                message=message_text,
-                context_prompt=context_prompt,
-                history=history,
-                source=source,
-                session_id=session_entry.session_id,
-                session_key=session_key,
-                run_generation=run_generation,
-                event_message_id=self._reply_anchor_for_event(event),
-                channel_prompt=event.channel_prompt,
-            )
+            agent_result = None
+            _managed_workflow_action = None
+
+            # -----------------------------------------------------------------
+            # Deterministic /wf-dev control plane (fail-closed).
+            #
+            # A structured /wf-dev event carries a parsed subcommand envelope in
+            # event.metadata["wf_dev"]. It is routed straight to the supervisor
+            # state machine — never to the LLM. If handling fails it returns an
+            # EXPLICIT error response; it must NOT fall through to the generic
+            # agent path (design §4.3). The Discord adapter normally renders the
+            # rich Embed response on the interaction itself; this hook is the
+            # gateway-side guarantee that no /wf-dev event ever reaches the model.
+            # -----------------------------------------------------------------
+            if agent_result is None:
+                try:
+                    from gateway.managed_dev_workflow import (
+                        WorkflowBindingStore as _WfDevStore,
+                        default_supervisor_repo as _wf_default_repo,
+                        handle_wf_dev_command as _wf_handle,
+                        is_wf_dev_event as _is_wf_dev,
+                        parse_wf_dev_event as _wf_parse,
+                    )
+                except Exception:
+                    _is_wf_dev = None  # helper unavailable; skip the hook
+
+                if _is_wf_dev is not None and _is_wf_dev(event):
+                    _wf_store = None
+                    try:
+                        _wf_cmd = _wf_parse(event)
+                        _wf_store = _WfDevStore()
+                        _wf_resp = _wf_handle(
+                            _wf_cmd,
+                            repo_dir=_wf_default_repo(),
+                            store=_wf_store,
+                        )
+                        _wf_text = _wf_resp.text
+                    except Exception as _wf_exc:  # noqa: BLE001 - still fail closed
+                        logger.warning("wf-dev gateway hook error: %s", _wf_exc)
+                        _wf_text = f"/wf-dev 처리 실패: {_wf_exc}"
+                    finally:
+                        if _wf_store is not None:
+                            try:
+                                _wf_store.close()
+                            except Exception:
+                                pass
+                    agent_result = {
+                        "final_response": _wf_text,
+                        "messages": [
+                            {"role": "user", "content": message_text},
+                            {"role": "assistant", "content": _wf_text},
+                        ],
+                        "api_calls": 0,
+                        "tools": [],
+                        "history_offset": len(history),
+                        "session_id": session_entry.session_id,
+                        "response_previewed": False,
+                    }
+
+            if agent_result is None and source.platform == Platform.DISCORD:
+                try:
+                    from gateway.managed_dev_workflow import (
+                        approve_and_start as _mdw_approve_and_start,
+                        classify_turn as _mdw_classify_turn,
+                        collect_plan as _mdw_collect_plan,
+                        default_supervisor_repo as _mdw_default_repo,
+                        format_status_reply as _mdw_format_status_reply,
+                        forward_reply as _mdw_forward_reply,
+                        get_task_status as _mdw_get_task_status,
+                        is_managed_dev_workflow_enabled as _mdw_enabled,
+                        save_plan as _mdw_save_plan,
+                        stop_task as _mdw_stop_task,
+                    )
+
+                    if _mdw_enabled(getattr(event, "auto_skill", None)):
+                        _mdw_repo = _mdw_default_repo()
+                        _mdw_task = _mdw_get_task_status(_mdw_repo, session_entry.session_id)
+                        _mdw_status = (_mdw_task or {}).get("status")
+                        _managed_workflow_action = _mdw_classify_turn(_original_event_text, _mdw_status)
+
+                        if _managed_workflow_action in {"plan", "revise_plan"}:
+                            _collected = _mdw_collect_plan(
+                                _mdw_repo,
+                                session_entry.session_id,
+                                _original_event_text,
+                            )
+                            _saved = _mdw_save_plan(
+                                _mdw_repo,
+                                session_entry.session_id,
+                                _collected["plan_text"],
+                                discord_channel_id=source.chat_id,
+                                user_message=_original_event_text,
+                            )
+                            _base_response = _collected["plan_text"].rstrip()
+                            _response = (
+                                f"{_base_response}\n\n"
+                                f"task_id: {session_entry.session_id}\n"
+                                f"plan_version: {_saved.get('plan_version')}\n"
+                                f"plan_request: {_collected['request_file']}\n"
+                                "답장: 승인 / 수정: ... / 중단"
+                            )
+                            agent_result = {
+                                "final_response": _response,
+                                "messages": [
+                                    {"role": "user", "content": message_text},
+                                    {"role": "assistant", "content": _response},
+                                ],
+                                "api_calls": 0,
+                                "tools": [],
+                                "history_offset": len(history),
+                                "session_id": session_entry.session_id,
+                                "response_previewed": False,
+                            }
+                        elif _managed_workflow_action == "approve_start":
+                            _started = _mdw_approve_and_start(
+                                _mdw_repo,
+                                session_entry.session_id,
+                                discord_channel_id=source.chat_id,
+                            )
+                            _response = (
+                                "승인 처리했고 바로 시작했다.\n"
+                                f"task_id: {session_entry.session_id}\n"
+                                f"status: {_started['start'].get('status', 'RUNNING')}\n"
+                                f"prompt: {_started['prompt_file']}\n"
+                                f"log: {_started['start'].get('log_file', '-')}"
+                            )
+                            agent_result = {
+                                "final_response": _response,
+                                "messages": [
+                                    {"role": "user", "content": message_text},
+                                    {"role": "assistant", "content": _response},
+                                ],
+                                "api_calls": 0,
+                                "tools": [],
+                                "history_offset": len(history),
+                                "session_id": session_entry.session_id,
+                                "response_previewed": False,
+                            }
+                        elif _managed_workflow_action == "reply":
+                            _reply = _mdw_forward_reply(_mdw_repo, session_entry.session_id, _original_event_text)
+                            _response = (
+                                "답장 전달했다.\n"
+                                f"task_id: {session_entry.session_id}\n"
+                                f"status: {_reply.get('status', 'RUNNING')}"
+                            )
+                            agent_result = {
+                                "final_response": _response,
+                                "messages": [
+                                    {"role": "user", "content": message_text},
+                                    {"role": "assistant", "content": _response},
+                                ],
+                                "api_calls": 0,
+                                "tools": [],
+                                "history_offset": len(history),
+                                "session_id": session_entry.session_id,
+                                "response_previewed": False,
+                            }
+                        elif _managed_workflow_action == "stop":
+                            _stopped = _mdw_stop_task(_mdw_repo, session_entry.session_id)
+                            _response = (
+                                "중단했다.\n"
+                                f"task_id: {session_entry.session_id}\n"
+                                f"status: {_stopped.get('status', 'STOPPED')}"
+                            )
+                            agent_result = {
+                                "final_response": _response,
+                                "messages": [
+                                    {"role": "user", "content": message_text},
+                                    {"role": "assistant", "content": _response},
+                                ],
+                                "api_calls": 0,
+                                "tools": [],
+                                "history_offset": len(history),
+                                "session_id": session_entry.session_id,
+                                "response_previewed": False,
+                            }
+                        elif _managed_workflow_action == "status":
+                            _response = _mdw_format_status_reply(_mdw_task, session_entry.session_id)
+                            agent_result = {
+                                "final_response": _response,
+                                "messages": [
+                                    {"role": "user", "content": message_text},
+                                    {"role": "assistant", "content": _response},
+                                ],
+                                "api_calls": 0,
+                                "tools": [],
+                                "history_offset": len(history),
+                                "session_id": session_entry.session_id,
+                                "response_previewed": False,
+                            }
+                except Exception as _mdw_exc:
+                    logger.warning(
+                        "managed-dev-workflow handler failed; falling back to normal agent path: %s",
+                        _mdw_exc,
+                    )
+                    agent_result = None
+
+            if agent_result is None:
+                agent_result = await self._run_agent(
+                    message=message_text,
+                    context_prompt=context_prompt,
+                    history=history,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    run_generation=run_generation,
+                    event_message_id=self._reply_anchor_for_event(event),
+                    channel_prompt=event.channel_prompt,
+                )
 
             # Stop persistent typing indicator now that the agent is done
             try:

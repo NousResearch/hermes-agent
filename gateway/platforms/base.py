@@ -1441,6 +1441,12 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Structured, adapter-supplied metadata that the gateway routes on
+    # deterministically (never LLM-interpreted). Used by the Discord
+    # ``/wf-dev`` control plane to carry a parsed subcommand envelope under
+    # the ``wf_dev`` key instead of fragile free-text reconstruction.
+    metadata: Optional[Dict[str, Any]] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

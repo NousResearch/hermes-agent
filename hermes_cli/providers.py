@@ -120,6 +120,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "minimax": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
+        # MiniMax serves the Anthropic Messages API under /anthropic; the bare
+        # models.dev base (/v1) is OpenAI-only and 404s the anthropic transport.
+        # Mirror minimax-oauth. MINIMAX_BASE_URL still overrides at resolution.
+        base_url_override="https://api.minimax.io/anthropic",
     ),
     "minimax-oauth": HermesOverlay(
         transport="anthropic_messages",
@@ -129,6 +133,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "minimax-cn": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_CN_BASE_URL",
+        base_url_override="https://api.minimaxi.com/anthropic",
     ),
     "deepseek": HermesOverlay(
         transport="openai_chat",

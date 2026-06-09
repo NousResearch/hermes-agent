@@ -103,6 +103,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from agent.process_bootstrap import build_keepalive_http_client
+from agent.vertex_adapter import get_vertex_config
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -2335,6 +2336,14 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
+def _try_vertex() -> Tuple[Optional[OpenAI], Optional[str]]:
+    token, base_url = get_vertex_config()
+    if not token or not base_url:
+        return None, None
+    model = os.environ.get("VERTEX_AUXILIARY_MODEL") or "google/gemini-3-flash-preview"
+    logger.debug("Auxiliary client: Vertex AI (%s)", model)
+    return OpenAI(api_key=token, base_url=base_url), model
+
 _AUTO_PROVIDER_LABELS = {
     "_try_openrouter": "openrouter",
     "_try_nous": "nous",
@@ -4014,6 +4023,19 @@ def resolve_provider_client(
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Google Vertex AI (service account → dynamic token + project URL) ──
+    if provider == "vertex":
+        client, default = _try_vertex()
+        if client is None:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "Vertex AI credentials not found (set "
+                           "GOOGLE_APPLICATION_CREDENTIALS or run "
+                           "`gcloud auth application-default login`)")
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────

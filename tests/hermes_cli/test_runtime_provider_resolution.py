@@ -1957,6 +1957,39 @@ def test_named_custom_runtime_no_model_when_absent(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert "model" not in resolved
 
+# ── auto/custom provider override tests ──────────────────────────────────
+
+def test_custom_provider_overrides_base_url_and_api_mode(monkeypatch):
+    """Setting provider: custom should allow base_url and api_mode overrides to apply to any resolved provider."""
+    # Mock resolve_provider to return 'zai'
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
+    
+    # Mock config to use provider: custom with overrides
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://my-custom-endpoint.com/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+    
+    # Mock API key resolution for zai — return the provider's default URL so
+    # the pool_url_is_default guard allows the config override to apply.
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {"api_key": "zai-key", "base_url": "https://api.z.ai/api/paas/v4"}
+    )
+    
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    
+    assert resolved["provider"] == "zai"
+    assert resolved["base_url"] == "https://my-custom-endpoint.com/v1"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["api_key"] == "zai-key"
+
 
 # ---------------------------------------------------------------------------
 # GHSA-76xc-57q6-vm5m — Ollama URL substring leak

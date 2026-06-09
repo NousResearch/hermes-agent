@@ -2316,6 +2316,7 @@ def _model_flow_bedrock(config, current_model=""):
     else:
         print("  No change.")
 
+
 def _select_zai_endpoint(current_base: str) -> str:
     """Present a picker for Z.AI endpoint selection during setup.
 
@@ -2372,6 +2373,89 @@ def _select_zai_endpoint(current_base: str) -> str:
         return override.rstrip("/")
 
     return options[selected][1].rstrip("/")
+
+
+def _model_flow_vertex(config, current_model=""):
+    """Google Vertex AI provider flow.
+
+    Credentials come from a service account JSON file or ADC — there's no
+    "API key" to prompt for, and the base URL is computed from the project
+    embedded in the credentials, so the generic api-key flow's prompts would
+    only confuse users. Region is the only optional override.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+    from agent.vertex_adapter import get_vertex_config, DEFAULT_REGION
+
+    creds_path = (
+        get_env_value("VERTEX_CREDENTIALS_PATH")
+        or os.getenv("VERTEX_CREDENTIALS_PATH", "")
+        or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    )
+    if creds_path:
+        short = creds_path if len(creds_path) <= 40 else f"...{creds_path[-37:]}"
+        print(f"  Credentials: {short} ✓")
+    else:
+        print("  Credentials: Application Default Credentials (ADC)")
+        print("  (Set VERTEX_CREDENTIALS_PATH or GOOGLE_APPLICATION_CREDENTIALS")
+        print("   to a service account JSON file, or run")
+        print("   `gcloud auth application-default login`.)")
+    print()
+
+    # Probe to catch missing google-auth / invalid creds before prompting.
+    token, _ = get_vertex_config(credentials_path=creds_path or None)
+    if not token:
+        print("  ✗ Could not obtain a Vertex AI access token.")
+        print("    Install the optional dependency: pip install hermes-agent[vertex]")
+        print("    Then verify credentials are valid.")
+        return
+
+    current_region = (
+        get_env_value("VERTEX_REGION")
+        or os.getenv("VERTEX_REGION", "")
+        or get_env_value("VERTEX_LOCATION")
+        or os.getenv("VERTEX_LOCATION", "")
+        or DEFAULT_REGION
+    )
+    try:
+        region_input = input(f"  Region [{current_region}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    region = region_input or current_region
+    if region != current_region:
+        save_env_value("VERTEX_REGION", region)
+        print(f"  Region saved: {region}")
+        print()
+
+    model_list = _PROVIDER_MODELS.get("vertex", [])
+    if not model_list:
+        model_list = ["gemini-2.5-pro", "gemini-2.5-flash"]
+
+    selected = _prompt_model_selection(model_list, current_model)
+    if not selected:
+        print("  No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "vertex"
+    model.pop("base_url", None)
+    model.pop("api_mode", None)
+    save_config(cfg)
+    deactivate_provider()
+    print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):

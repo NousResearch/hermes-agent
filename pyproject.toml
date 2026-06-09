@@ -266,6 +266,12 @@ youtube = [
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
+# Vertex AI provider — service-account / ADC auth for the GCP Gemini endpoint.
+# Kept lean (just google-auth) so users who don't use Vertex don't pull in
+# the broader [google] workspace skill stack. Not in [all] per the
+# lazy-install policy below — google-auth is resolved at first use via
+# LAZY_DEPS["provider.vertex"] when a user actually selects vertex.
+vertex = ["google-auth>=2.0.0,<3"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every

@@ -28,6 +28,7 @@ from hermes_cli.auth import (
     resolve_qwen_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
+    resolve_vertex_runtime_credentials,
     has_usable_secret,
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
@@ -257,18 +258,23 @@ def _get_model_config() -> Dict[str, Any]:
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
     """Check whether a persisted api_mode should be honored for a given provider.
 
-    Prevents stale api_mode from a previous provider leaking into a
-    different one after a model/provider switch.  Only applies the
-    persisted mode when the config's provider matches the runtime
-    provider (or when no configured provider is recorded).
+    Prevents stale api_mode from a previous provider leaking into a different one
+    after a model/provider switch. Only honors the persisted mode when the
+    config's provider matches the runtime provider, or is set to "auto"/"custom"
+    to indicate an intentional override.
     """
-    normalized_provider = (provider or "").strip().lower()
-    normalized_configured = (configured_provider or "").strip().lower()
-    if not normalized_configured:
+    return _provider_matches_config(provider, configured_provider)
+
+
+def _provider_matches_config(provider: Optional[str], configured_provider: Optional[str]) -> bool:
+    """Determine if a runtime provider matches the one set in config.yaml."""
+    p = (provider or "").strip().lower()
+    c = (configured_provider or "").strip().lower()
+    if not c or c in ("auto", "custom"):
         return True
-    if normalized_provider == "custom":
-        return normalized_configured == "custom" or normalized_configured.startswith("custom:")
-    return normalized_configured == normalized_provider
+    if p == "custom" and c.startswith("custom:"):
+        return True
+    return p == c
 
 
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
@@ -420,17 +426,20 @@ def _resolve_runtime_from_pool_entry(
         if api_mode == "anthropic_messages":
             base_url = re.sub(r"/v1/?$", "", base_url)
     else:
+        # Honour model.base_url from config.yaml when the configured provider matches,
+        # but only when the pool entry still has the hardcoded default URL.
+        # Env-var overrides (e.g. MINIMAX_BASE_URL) take priority over config (#6039).
+        pconfig_for_url = PROVIDER_REGISTRY.get(provider)
+        pool_url_is_default = (
+            pconfig_for_url
+            and base_url.rstrip("/") == pconfig_for_url.inference_base_url.rstrip("/")
+        )
+        if pool_url_is_default and _provider_matches_config(provider, model_cfg.get("provider")):
+            base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+
+        api_mode = "chat_completions"
+
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-        # Honour model.base_url from config.yaml when the configured provider
-        # matches this provider — same pattern as the Anthropic branch above.
-        # Only override when the pool entry has no explicit base_url (i.e. it
-        # fell back to the hardcoded default).  Env var overrides win (#6039).
-        pconfig = PROVIDER_REGISTRY.get(provider)
-        pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
-        if configured_provider == provider and pool_url_is_default:
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
-                base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         if provider in {"opencode-zen", "opencode-go"}:
             # Re-derive api_mode from the effective model rather than the
@@ -1312,7 +1321,11 @@ def _resolve_explicit_runtime(
         }
 
     if provider == "openai-codex":
-        base_url = explicit_base_url or DEFAULT_CODEX_BASE_URL
+        base_url = DEFAULT_CODEX_BASE_URL
+        if _provider_matches_config("openai-codex", model_cfg.get("provider")):
+            base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+        base_url = explicit_base_url or base_url
+
         api_key = explicit_api_key
         last_refresh = None
         if not api_key:
@@ -1333,13 +1346,14 @@ def _resolve_explicit_runtime(
 
     if provider == "nous":
         state = auth_mod.get_provider_auth_state("nous") or {}
-        base_url = (
-            explicit_base_url
-            or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
-        )
+        base_url = str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
+        if _provider_matches_config("nous", model_cfg.get("provider")):
+            base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+        base_url = explicit_base_url or base_url
+
         # Only use the agent_key compatibility field for inference when it
-        # contains a NAS invoke JWT; raw OAuth access_token fallback is handled
-        # by resolve_nous_runtime_credentials().
+        # contains a NAS invoke JWT with sufficient TTL; raw OAuth access_token
+        # fallback is handled by resolve_nous_runtime_credentials().
         api_key = explicit_api_key or (
             str(state.get("agent_key") or "").strip()
             if _agent_key_is_usable(
@@ -1377,22 +1391,29 @@ def _resolve_explicit_runtime(
         )
 
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and pconfig.auth_type == "api_key":
+    if pconfig and pconfig.auth_type in ("api_key", "vertex"):
         env_url = ""
         if pconfig.base_url_env_var:
             env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
 
-        base_url = explicit_base_url
+        base_url = env_url or pconfig.inference_base_url
         if not base_url:
             if provider in {"kimi-coding", "kimi-coding-cn"}:
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
-            else:
-                base_url = env_url or pconfig.inference_base_url
+
+        # Allow base URL override from config.yaml if provider matches (or is auto/custom).
+        if _provider_matches_config(provider, model_cfg.get("provider")):
+            base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+
+        base_url = explicit_base_url or base_url
 
         api_key = explicit_api_key
         if not api_key:
-            creds = resolve_api_key_provider_credentials(provider)
+            if provider == "vertex":
+                creds = resolve_vertex_runtime_credentials()
+            else:
+                creds = resolve_api_key_provider_credentials(provider)
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
@@ -1551,6 +1572,31 @@ def resolve_runtime_provider(
     if explicit_runtime:
         return explicit_runtime
 
+    # Google Vertex AI — resolved via service account + dynamic token.
+    # This handles the normal config-driven flow (provider: vertex in config.yaml).
+    # _resolve_explicit_runtime above handles the rare case where --api-key or
+    # --base-url CLI flags are passed explicitly.
+    # Must short-circuit before credential pool / api_key fallbacks, which
+    # would otherwise treat GOOGLE_APPLICATION_CREDENTIALS (a file path)
+    # as a static API key and point at the partial inference_base_url.
+    if provider == "vertex":
+        from agent.vertex_adapter import get_vertex_config
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            raise AuthError(
+                "Vertex AI credentials not resolvable. Set "
+                "GOOGLE_APPLICATION_CREDENTIALS to a service account JSON path, "
+                "or run `gcloud auth application-default login`."
+            )
+        return {
+            "provider": "vertex",
+            "api_mode": "chat_completions",
+            "base_url": base_url,
+            "api_key": token,
+            "source": "service-account",
+            "requested_provider": requested_provider,
+        }
+
     should_use_pool = provider != "openrouter"
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1632,10 +1678,15 @@ def resolve_runtime_provider(
             creds = resolve_nous_runtime_credentials(
                 timeout_seconds=float(_getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
             )
+
+            base_url = creds.get("base_url", "").rstrip("/")
+            if _provider_matches_config("nous", model_cfg.get("provider")):
+                base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+
             return {
                 "provider": "nous",
                 "api_mode": "chat_completions",
-                "base_url": creds.get("base_url", "").rstrip("/"),
+                "base_url": base_url,
                 "api_key": creds.get("api_key", ""),
                 "source": creds.get("source", "portal"),
                 "expires_at": creds.get("expires_at"),
@@ -1652,10 +1703,15 @@ def resolve_runtime_provider(
     if provider == "openai-codex":
         try:
             creds = resolve_codex_runtime_credentials()
+
+            base_url = creds.get("base_url", "").rstrip("/")
+            if _provider_matches_config("openai-codex", model_cfg.get("provider")):
+                base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+
             return {
                 "provider": "openai-codex",
                 "api_mode": "codex_responses",
-                "base_url": creds.get("base_url", "").rstrip("/"),
+                "base_url": base_url,
                 "api_key": creds.get("api_key", ""),
                 "source": creds.get("source", "hermes-auth-store"),
                 "last_refresh": creds.get("last_refresh"),
@@ -1690,10 +1746,15 @@ def resolve_runtime_provider(
     if provider == "qwen-oauth":
         try:
             creds = resolve_qwen_runtime_credentials()
+
+            base_url = creds.get("base_url", "").rstrip("/")
+            if _provider_matches_config("qwen-oauth", model_cfg.get("provider")):
+                base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+
             return {
                 "provider": "qwen-oauth",
                 "api_mode": "chat_completions",
-                "base_url": creds.get("base_url", "").rstrip("/"),
+                "base_url": base_url,
                 "api_key": creds.get("api_key", ""),
                 "source": creds.get("source", "qwen-cli"),
                 "expires_at_ms": creds.get("expires_at_ms"),
@@ -1721,10 +1782,15 @@ def resolve_runtime_provider(
 
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)
+
+        base_url = creds.get("base_url", "").rstrip("/")
+        if _provider_matches_config("copilot-acp", model_cfg.get("provider")):
+            base_url = (model_cfg.get("base_url") or "").strip().rstrip("/") or base_url
+
         return {
             "provider": "copilot-acp",
             "api_mode": "chat_completions",
-            "base_url": creds.get("base_url", "").rstrip("/"),
+            "base_url": base_url,
             "api_key": creds.get("api_key", ""),
             "command": creds.get("command", ""),
             "args": list(creds.get("args") or []),
@@ -1734,12 +1800,12 @@ def resolve_runtime_provider(
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
-        # Allow base URL override from config.yaml model.base_url, but only
-        # when the configured provider is anthropic — otherwise a non-Anthropic
-        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        # Allow base URL override from config.yaml when provider matches anthropic
+        # (also accepted: auto/custom selecting an anthropic model). This prevents
+        # a non-Anthropic base_url (e.g. Codex endpoint) leaking into Anthropic
+        # requests when the configured provider is something else entirely.
         cfg_base_url = ""
-        if cfg_provider == "anthropic":
+        if _provider_matches_config("anthropic", model_cfg.get("provider")):
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
             if not _anthropic_base_url_override_ok(cfg_base_url):
                 cfg_base_url = ""
@@ -1875,15 +1941,20 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        # Honour model.base_url from config.yaml when the configured provider
-        # matches this provider — mirrors the Anthropic path above.  Without
-        # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
-        # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+
+        # Honour model.base_url from config.yaml when the configured provider matches.
+        base_url = creds.get("base_url", "").rstrip("/")
+        default_url = pconfig.inference_base_url.rstrip("/")
         cfg_base_url = ""
-        if cfg_provider == provider:
+        if _provider_matches_config(provider, model_cfg.get("provider")):
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-        base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
+        if provider == "lmstudio" and cfg_base_url:
+            # LM Studio users commonly persist remote hosts in config; a stale
+            # LM_BASE_URL should not silently shadow that saved endpoint.
+            base_url = cfg_base_url
+        elif base_url == default_url and cfg_base_url:
+            base_url = cfg_base_url
+
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))

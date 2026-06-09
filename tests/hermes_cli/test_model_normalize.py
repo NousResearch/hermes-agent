@@ -164,6 +164,24 @@ class TestAggregatorProviders:
         assert result == "anthropic/claude-sonnet-4.6"
 
 
+class TestVertexPublisherPrefix:
+    """Vertex AI's OpenAPI endpoint requires a google/ publisher prefix."""
+
+    def test_bare_gemini_name_gets_google_prefix(self):
+        assert normalize_model_for_provider("gemini-2.5-pro", "vertex") == "google/gemini-2.5-pro"
+
+    def test_already_prefixed_passes_through(self):
+        assert normalize_model_for_provider("google/gemini-2.5-pro", "vertex") == "google/gemini-2.5-pro"
+
+    def test_preview_model_gets_prefix(self):
+        assert normalize_model_for_provider("gemini-3.1-pro-preview", "vertex") == "google/gemini-3.1-pro-preview"
+
+    def test_aliases_resolve_to_vertex_for_normalization(self):
+        # Both aliases should produce the same prefixed result
+        assert normalize_model_for_provider("gemini-2.5-flash", "vertex-ai") == "google/gemini-2.5-flash"
+        assert normalize_model_for_provider("gemini-2.5-flash", "google-vertex") == "google/gemini-2.5-flash"
+
+
 class TestIssue6211NativeProviderPrefixNormalization:
     @pytest.mark.parametrize("model,target_provider,expected", [
         ("zai/glm-5.1", "zai", "glm-5.1"),

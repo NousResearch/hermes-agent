@@ -5009,7 +5009,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if resolved_provider not in _AGGREGATOR_PROVIDERS:
                 normalized_model = normalize_model_for_provider(current_model, resolved_provider)
                 if normalized_model and normalized_model != current_model:
-                    if not self._model_is_default:
+                    # Vertex's OpenAPI endpoint requires the google/ publisher
+                    # prefix on the wire — adding it silently is correct
+                    # behavior, not a user-actionable normalization.
+                    _silent_prefix = (
+                        resolved_provider == "vertex"
+                        and normalized_model == f"google/{current_model}"
+                    )
+                    if not self._model_is_default and not _silent_prefix:
                         self._console_print(
                             f"[yellow]⚠️  Normalized model '{current_model}' to '{normalized_model}' for {resolved_provider}.[/]"
                         )

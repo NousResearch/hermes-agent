@@ -482,7 +482,7 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_external_process_provider_credentials("copilot-acp")
 
         assert creds["provider"] == "copilot-acp"
-        assert creds["api_key"] == "copilot-acp"
+        assert creds["api_key"] == "***"
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
@@ -688,7 +688,7 @@ class TestRuntimeProviderResolution:
 
         assert result["provider"] == "copilot-acp"
         assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "copilot-acp"
+        assert result["api_key"] == "***"
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]

@@ -85,6 +85,20 @@ async def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     app.router.add_get("/health", _handle_health)
     app.router.add_get("/healthz", _handle_healthz)
 
+    # Plan 048-E: register /forge/* endpoints on this same server.
+    # Thin wrappers over the 004-A self-improvement modules; bearer-gated.
+    try:
+        from gateway.forge_server import register_forge_routes  # noqa: PLC0415
+        register_forge_routes(app)
+    except Exception as _forge_exc:  # noqa: BLE001
+        # Non-fatal: the health server must remain operational even if the
+        # forge module fails to import (e.g. missing deps in older images).
+        logger.warning(
+            "Health server: forge routes NOT registered (%s). "
+            "Set HERMES_MODE=saas and install hermes deps for full forge support.",
+            _forge_exc,
+        )
+
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

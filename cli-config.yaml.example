@@ -690,6 +690,12 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#   slack:
+#     reply_to_mode: "first"  # off | first | all
+#     extra:
+#       reply_in_thread: true         # Reply in a thread (default: true)
+#       channel_context: false        # Seed first-turn top-level channel messages with recent history (default: false)
+#       channel_context_limit: 3      # How many recent messages to include (default: 3, clamped 1-50)
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

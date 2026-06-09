@@ -2053,6 +2053,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel_id=channel_id,
                 current_ts=ts,
                 team_id=team_id,
+                limit=self._channel_context_limit(),
             )
             if nearby_context:
                 text = nearby_context + text
@@ -2789,6 +2790,51 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
 
+    def _channel_context_enabled(self) -> bool:
+        """Whether to seed every first-turn top-level channel message with a
+        bounded window of recent channel history.
+
+        Defaults to ``False`` (opt-in). When enabled, the nearby-context
+        fetch is no longer limited to messages carrying an explicit deictic
+        cue ("this", "above", a shared/forwarded message, …) — it also fires
+        for follow-up requests that reference an earlier message implicitly
+        (e.g. "do the same thing as before"), giving cross-message continuity
+        within a channel while preserving the per-message thread split (each
+        top-level request is still its own session, seeded on its first turn).
+
+        Reads ``platforms.slack.extra.channel_context`` and falls back to the
+        ``SLACK_CHANNEL_CONTEXT`` environment variable.
+        """
+        raw = self.config.extra.get("channel_context")
+        if raw is None:
+            raw = os.getenv("SLACK_CHANNEL_CONTEXT")
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _channel_context_limit(self) -> int:
+        """Number of recent channel messages to include as nearby context.
+
+        Defaults to ``3`` (the deictic-reference window). Reads
+        ``platforms.slack.extra.channel_context_limit`` and falls back to the
+        ``SLACK_CHANNEL_CONTEXT_LIMIT`` environment variable. Widening it is
+        useful with ``channel_context`` enabled so longer multi-message
+        exchanges stay in view; the value is clamped to ``[1, 50]`` to bound
+        prompt size and Slack API cost.
+        """
+        raw = self.config.extra.get("channel_context_limit")
+        if raw is None:
+            raw = os.getenv("SLACK_CHANNEL_CONTEXT_LIMIT")
+        if raw is None:
+            return 3
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return 3
+        if value < 1:
+            return 3
+        return min(value, 50)
+
     def _should_fetch_nearby_channel_context(
         self,
         *,
@@ -2811,6 +2857,13 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
         ):
             return False
+
+        # Opt-in continuity: when channel context is enabled, seed every
+        # first-turn top-level message with recent history, not only those
+        # carrying an explicit deictic cue. Leaves the default heuristic
+        # below untouched when disabled.
+        if self._channel_context_enabled():
+            return True
 
         if _SLACK_NEARBY_CONTEXT_HINT_RE.search(text or ""):
             return True

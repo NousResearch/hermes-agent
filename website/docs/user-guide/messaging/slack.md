@@ -354,6 +354,38 @@ When `true` (the default), each user in a shared channel gets their own isolated
 
 Set to `false` if you want a collaborative mode where the entire channel shares one conversation session. Be aware this means users share context growth and token costs, and one user's `/reset` clears the session for everyone.
 
+### Channel Context
+
+When a user sends a **new top-level message** (not a thread reply) that refers to something earlier in the channel, Hermes can fetch a small, bounded window of recent channel history and prepend it as context — so the agent can resolve references like "this bug report" or "the message above" without asking the user to paste it again.
+
+By default this fires only when the message carries an explicit reference cue (a deictic word such as "this", "above", or "previous", or a shared/forwarded message). Set `channel_context: true` to extend it to **general cross-message continuity**: every first-turn top-level message is then seeded with recent channel history, so a follow-up like "do the same thing as before" can see the earlier messages. The per-message thread split is preserved — each top-level request is still its own session, seeded with recent history on its first turn.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      # Seed every first-turn top-level channel message with recent history,
+      # not only messages with an explicit reference cue (default: false).
+      channel_context: true
+
+      # How many recent messages to include (default: 3, clamped to 1-50).
+      channel_context_limit: 8
+```
+
+Or via environment variables:
+
+```bash
+SLACK_CHANNEL_CONTEXT=true
+SLACK_CHANNEL_CONTEXT_LIMIT=8
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.extra.channel_context` | `false` | When `true`, every first-turn top-level channel message is seeded with recent channel history (continuity), not only deictic references. |
+| `platforms.slack.extra.channel_context_limit` | `3` | Number of recent messages to include as nearby context. Clamped to 1-50. |
+
+When `channel_context` is enabled, recent history is fetched only on the **first turn** of each top-level request (subsequent turns already carry it in session history). If Slack permissions block the fetch (missing `channels:history` / `groups:history`), the agent receives an explicit `[Slack nearby context fetch failed: ...]` marker instead of silently losing the context.
+
 ### Mention & Trigger Behavior
 
 ```yaml
@@ -463,6 +495,8 @@ platforms:
     extra:
       reply_in_thread: true
       reply_broadcast: false
+      channel_context: false
+      channel_context_limit: 3
 ```
 
 ---

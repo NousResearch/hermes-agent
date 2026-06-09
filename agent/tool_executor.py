@@ -313,6 +313,27 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        # ── Per-model tool policy gate (#42999) ──────────────────────────
+        # Defense in depth: build_api_kwargs already hides disallowed tools
+        # from the active model, but a model can still hallucinate a tool
+        # name (or call one through a stale definition). Reject it here,
+        # before any hook/checkpoint/dispatch fires, with the same shape as
+        # the tool-search scope block above.
+        _policy_block = None
+        if _ts_scope_block is None:
+            try:
+                from agent.tool_policy import policy_for_agent
+                if not policy_for_agent(agent).is_allowed(function_name):
+                    _policy_block = json.dumps({
+                        "error": (
+                            f"'{function_name}' is not available to the current model "
+                            f"({getattr(agent, 'model', '') or 'unknown'}). It is "
+                            "restricted by the model's tool policy."
+                        ),
+                    }, ensure_ascii=False)
+            except Exception:
+                _policy_block = None
+
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
@@ -339,6 +360,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type="tool_scope_block",
                 error_message=_ts_scope_block,
+                middleware_trace=list(middleware_trace),
+            )
+        elif _policy_block is not None:
+            # Disallowed by the active model's tool policy (#42999).
+            block_result = _policy_block
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="tool_policy_block",
+                error_message=_policy_block,
                 middleware_trace=list(middleware_trace),
             )
         else:

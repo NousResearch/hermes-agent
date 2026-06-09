@@ -1286,6 +1286,31 @@ model:
 
 The same key is honored on per-named-provider models (`custom_providers[*].models[*].supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
 
+**Restricting tools per model.** Some models are great at chat but unreliable
+at coding — and when an agent falls back to a weaker or local model you may
+want to stop it from doing harm without disabling toolsets for the whole
+agent. Set a per-model tool policy with `allowed_tools` (allowlist — only
+these tools are offered) or `denied_tools` (denylist — everything except
+these), in the same places as `supports_vision`:
+
+```yaml
+providers:
+  my-local:
+    models:
+      llama-3-8b:
+        denied_tools: [terminal, execute_code, write_file, patch]
+        # ...or an allowlist instead:
+        # allowed_tools: [web_search, web_extract, send_message]
+```
+
+A `model.allowed_tools` / `model.denied_tools` shortcut at the top level
+applies to the active top-level model. Resolution follows the same
+first-hit-wins precedence as `supports_vision` (top-level `model` →
+`providers.<name>.models.<model>` → legacy `custom_providers`). The policy
+is enforced both ways: restricted tools are hidden from the model's request
+and rejected at execution if the model calls one anyway. A fallback model
+picks up its own policy automatically.
+
 Switch between them mid-session with the triple syntax:
 
 ```

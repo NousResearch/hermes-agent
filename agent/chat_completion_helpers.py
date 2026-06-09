@@ -556,6 +556,17 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    # Per-model tool policy (#42999): restrict which tools the *active*
+    # model may see. Resolved against agent.model/provider, so a fallback
+    # model is scoped to its own allow/deny list without touching the
+    # primary model's tool set. No-op (returns the same list) when the
+    # active model has no policy configured.
+    try:
+        from agent.tool_policy import filter_tool_defs, policy_for_agent
+        tools_for_api = filter_tool_defs(tools_for_api, policy_for_agent(agent))
+    except Exception as _policy_err:  # never let policy resolution break a request
+        logger.debug("tool policy filtering skipped: %s", _policy_err)
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)

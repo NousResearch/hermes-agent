@@ -120,6 +120,27 @@ async function readFileDataUrlForAttach(filePath: string): Promise<string | null
   return dataUrl || null
 }
 
+// The readFileDataUrl IPC base64-loads the whole file into memory and is
+// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.cjs, which
+// rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
+// remote mode every attachment's bytes go through that read, so a big file
+// surfaces that internal message verbatim in the failure toast. Translate it
+// into a friendly "too large to upload to the remote gateway" line, parsing the
+// limit out of the message so it tracks the real cap. Non-cap errors pass
+// through unchanged.
+function friendlyRemoteAttachError(err: unknown, label: string): Error {
+  const message = err instanceof Error ? err.message : String(err)
+
+  if (!/too large/i.test(message)) {
+    return err instanceof Error ? err : new Error(message)
+  }
+
+  const limitBytes = Number(message.match(/limit (\d+) bytes/)?.[1])
+  const cap = Number.isFinite(limitBytes) && limitBytes > 0 ? ` (max ${Math.floor(limitBytes / (1024 * 1024))} MB)` : ''
+
+  return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
+}
+
 type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 /**
@@ -142,7 +163,13 @@ export async function uploadComposerAttachment(
     let result: ImageAttachResponse
 
     if (remote) {
-      const payload = await readImageForRemoteAttach(path)
+      let payload: Awaited<ReturnType<typeof readImageForRemoteAttach>>
+
+      try {
+        payload = await readImageForRemoteAttach(path)
+      } catch (err) {
+        throw friendlyRemoteAttachError(err, label)
+      }
 
       if (!payload) {
         throw new Error(`Could not read ${label}`)
@@ -176,10 +203,18 @@ export async function uploadComposerAttachment(
   }
 
   // Non-image file.
-  const dataUrl = remote ? await readFileDataUrlForAttach(path) : null
+  let dataUrl: string | null = null
 
-  if (remote && !dataUrl) {
-    throw new Error(`Could not read ${label}`)
+  if (remote) {
+    try {
+      dataUrl = await readFileDataUrlForAttach(path)
+    } catch (err) {
+      throw friendlyRemoteAttachError(err, label)
+    }
+
+    if (!dataUrl) {
+      throw new Error(`Could not read ${label}`)
+    }
   }
 
   const result = await requestGateway<FileAttachResponse>('file.attach', {

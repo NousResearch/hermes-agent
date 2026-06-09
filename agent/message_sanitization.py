@@ -203,6 +203,23 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
 
+    # Repair pass -1: strip NUL bytes and normalise fragmented Unicode
+    # escapes.  Some models emit ``\\^@e5`` where ``å`` (\\u00e5) was
+    # intended — the ``\\^@`` decodes to a NUL byte followed by literal
+    # hex text.  Because the result is still valid JSON, the normal
+    # json.loads fast-path accepts it and the corrupted string reaches
+    # the tool silently.  NUL bytes are never legitimate inside tool-call
+    # arguments, so we can safely strip them unconditionally (#42801).
+    if "\x00" in raw_stripped:
+        # First try to repair fragmented escapes: \\^@XX -> \\u00XX
+        repaired_escapes = re.sub(r'\x00([0-9a-fA-F]{2})', r'\\u00\1', raw_stripped)
+        # Then strip any remaining lone NUL bytes
+        raw_stripped = repaired_escapes.replace('\x00', '')
+        logger.warning(
+            "Stripped NUL bytes from tool_call arguments for %s",
+            tool_name,
+        )
+
     # Repair pass 0: llama.cpp backends sometimes emit literal control
     # characters (tabs, newlines) inside JSON string values. json.loads
     # with strict=False accepts these and lets us re-serialise the

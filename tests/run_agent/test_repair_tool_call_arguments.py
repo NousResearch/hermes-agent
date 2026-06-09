@@ -140,3 +140,52 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+    # -- Stage -1: NUL byte / fragmented Unicode escape repair --
+
+    def test_nul_byte_stripped_from_valid_json(self):
+        """NUL bytes inside valid JSON are stripped transparently."""
+        # "Ume\x00" -> "Ume" (lone NUL at end of string value)
+        raw = '{"query": "Ume\x00"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed["query"] == "Ume"
+
+    def test_fragmented_nul_hex_repaired_to_unicode(self):
+        """\\x00 + hex digits is repaired to \\u00XX unicode escape."""
+        # Model emits NUL + "e5" where å (\u00e5) was intended
+        raw = '{"query": "Ume\x00e5"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed["query"] == "Ume\u00e5"  # Umeå
+
+    def test_multiple_nul_bytes_repaired(self):
+        """Multiple NUL bytes in the same string are all handled."""
+        # \x00e5 = å, \x00f6 = ö
+        raw = '{"query": "Ume\x00e5 and \x00f6"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed["query"] == "Ume\u00e5 and \u00f6"  # Umeå and ö
+        assert "\x00" not in parsed["query"]
+
+    def test_nul_byte_with_non_hex_following_stripped(self):
+        """NUL byte followed by non-hex text is stripped as lone NUL."""
+        raw = '{"query": "test\x00value"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed["query"] == "testvalue"
+
+    def test_nul_byte_in_already_malformed_json(self):
+        """NUL bytes are stripped even when JSON also has other issues."""
+        # Trailing comma + NUL byte
+        raw = '{"query": "Ume\x00e5",}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed["query"] == "Ume\u00e5"
+
+    def test_no_nul_bytes_unchanged(self):
+        """Strings without NUL bytes pass through normally."""
+        raw = '{"query": "Ume\u00e5"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed["query"] == "Ume\u00e5"
+

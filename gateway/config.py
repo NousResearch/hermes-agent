@@ -493,6 +493,13 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
     ),
+    # Relay dials OUT to a connector; it is "connected" once an endpoint URL is
+    # configured (extra["relay_url"] or extra["url"]). The capability descriptor
+    # is negotiated at handshake time, so the URL is the only config-level
+    # signal in the experimental phase. EXPERIMENTAL — may change.
+    Platform.RELAY: lambda cfg: bool(
+        cfg.extra.get("relay_url") or cfg.extra.get("url")
+    ),
 }
 
 

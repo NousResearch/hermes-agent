@@ -300,6 +300,33 @@ _SANE_PATH = (
 )
 
 
+def _append_missing_sane_path_entries(existing_path: str) -> str:
+    """Return PATH with each missing POSIX sane entry appended once."""
+    if _IS_WINDOWS:
+        return existing_path
+
+    sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
+    if not existing_path:
+        return ":".join(sane_entries)
+
+    existing_entries = existing_path.split(":")
+    existing_set = {entry for entry in existing_entries if entry}
+    missing_entries = [entry for entry in sane_entries if entry not in existing_set]
+    if not missing_entries:
+        return existing_path
+    return f"{existing_path}:{':'.join(missing_entries)}"
+
+
+def _path_env_key(run_env: dict) -> str | None:
+    """Return the PATH env key to update without altering Windows casing."""
+    if not _IS_WINDOWS:
+        return "PATH"
+    for key in run_env:
+        if key.upper() == "PATH":
+            return key
+    return None
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
@@ -315,17 +342,9 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
-    existing_path = run_env.get("PATH", "")
-    # The "/usr/bin not already present → inject sane POSIX path" heuristic
-    # only makes sense on POSIX.  On Windows the PATH separator is ";"
-    # (the split(":") above turns a full Windows PATH into a single
-    # unrecognisable chunk, which then triggers prepending POSIX paths
-    # to a Windows PATH — completely wrong).  Skip the injection entirely
-    # on Windows; the native PATH already points at whatever shell
-    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
-    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
-    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    path_key = _path_env_key(run_env)
+    if path_key is not None:
+        run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
 
     _inject_context_hermes_home(run_env)
 

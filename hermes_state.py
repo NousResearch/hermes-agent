@@ -305,10 +305,12 @@ CREATE TABLE IF NOT EXISTS compression_locks (
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
--- Covering index for sidebar session list and auto-archive queries.
--- Covers archived=0 AND message_count>=1 ORDER BY started_at DESC
--- to avoid full table scans on large databases.
-CREATE INDEX IF NOT EXISTS idx_sessions_sidebar ON sessions(archived, message_count, started_at DESC);
+-- NOTE: idx_sessions_sidebar (covering index for the sidebar list and
+-- auto-archive queries) references the reconciler-added ``archived``
+-- column, so it must NOT live in SCHEMA_SQL — on legacy DBs the sessions
+-- table exists without ``archived`` and executescript fails before
+-- _reconcile_columns can add it. It is created in _init_schema after
+-- reconciliation instead.
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 -- Covering index for last_active subquery (SELECT MAX(timestamp) WHERE session_id = ...)
@@ -4780,7 +4782,10 @@ class SessionDB:
             params = []
             
             if recent_boundary is not None:
-                candidate_clauses.append("s.started_at < ?")
+                # The OFFSET keep_recent row is the first session BEYOND the
+                # recency cap, so the boundary itself must be archived too —
+                # strict < left it visible (off-by-one vs keep_recent).
+                candidate_clauses.append("s.started_at <= ?")
                 params.append(recent_boundary)
             
             if cutoff is not None and (recent_boundary is None or cutoff < recent_boundary):

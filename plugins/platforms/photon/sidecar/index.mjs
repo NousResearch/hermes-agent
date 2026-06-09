@@ -48,11 +48,11 @@ const port = parseInt(process.env.PHOTON_SIDECAR_PORT || "8789", 10);
 const bind = process.env.PHOTON_SIDECAR_BIND || "127.0.0.1";
 const sharedToken = process.env.PHOTON_SIDECAR_TOKEN;
 
-// Inbound attachments are read into memory and base64-inlined on the NDJSON
+// Inbound binary content is read into memory and base64-inlined on the NDJSON
 // event so the Python adapter can cache the real bytes (and the agent can see
-// the image). Cap the size we inline — above it we forward metadata only and
-// the adapter surfaces a text marker, so one large video can't balloon a
-// single NDJSON line. Override via PHOTON_MAX_INLINE_ATTACHMENT_BYTES.
+// images / transcribe voice). Cap the size we inline — above it we forward
+// metadata only and the adapter surfaces a text marker, so one large clip can't
+// balloon a single NDJSON line. Override via PHOTON_MAX_INLINE_ATTACHMENT_BYTES.
 const MAX_INLINE_ATTACHMENT_BYTES =
   Number(process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES) || 20 * 1024 * 1024;
 const DM_CHAT_GUID_RE = /^any;-;(\+\d{6,})$/;
@@ -164,6 +164,57 @@ async function deliver(line) {
   }
 }
 
+async function normalizeBinaryContent(content) {
+  const meta = {
+    type: content.type,
+    id: content.id ?? null,
+    name: content.name ?? null,
+    mimeType: content.mimeType ?? null,
+    size: typeof content.size === "number" ? content.size : null,
+  };
+  if (content.type === "voice" && typeof content.duration === "number") {
+    meta.duration = content.duration;
+  }
+
+  // Read the bytes eagerly and base64-inline them as `data` so the Python
+  // adapter can cache the real file (the agent then sees images and can run
+  // STT on voice notes). Spectrum content objects may not outlive this stream
+  // iteration, so a lazy/on-demand fetch isn't safe. Over-cap content (when
+  // size is known up front) is forwarded as metadata only and the adapter falls
+  // back to a text marker. A read failure must never break the inbound loop.
+  const label = `${content.type} ${meta.name ?? meta.id ?? "(unnamed)"}`;
+  if (meta.size !== null && meta.size > MAX_INLINE_ATTACHMENT_BYTES) {
+    console.error(
+      `photon-sidecar: ${label} (${meta.size} bytes) ` +
+        `exceeds inline cap ${MAX_INLINE_ATTACHMENT_BYTES}; forwarding metadata only`
+    );
+    return meta;
+  }
+  if (typeof content.read === "function") {
+    try {
+      const buf = await content.read();
+      // Guard the case where size was unknown but the bytes turn out to be
+      // over the cap.
+      if (buf && buf.length > MAX_INLINE_ATTACHMENT_BYTES) {
+        console.error(
+          `photon-sidecar: ${label} (${buf.length} bytes) ` +
+            `exceeds inline cap after read; forwarding metadata only`
+        );
+        return meta;
+      }
+      meta.data = Buffer.from(buf).toString("base64");
+      meta.encoding = "base64";
+    } catch (e) {
+      console.error(
+        `photon-sidecar: failed to read ${content.type} bytes ` +
+          "(forwarding metadata only): " +
+          (e && e.stack ? e.stack : String(e))
+      );
+    }
+  }
+  return meta;
+}
+
 async function normalizeContent(content) {
   if (!content || typeof content !== "object") {
     return { type: "unknown" };
@@ -171,51 +222,8 @@ async function normalizeContent(content) {
   if (content.type === "text") {
     return { type: "text", text: content.text || "" };
   }
-  if (content.type === "attachment") {
-    const meta = {
-      type: "attachment",
-      id: content.id ?? null,
-      name: content.name ?? null,
-      mimeType: content.mimeType ?? null,
-      size: typeof content.size === "number" ? content.size : null,
-    };
-    // Read the bytes eagerly and base64-inline them as `data` so the Python
-    // adapter can cache the real file (the agent then sees the image itself).
-    // The spectrum-ts attachment object may not outlive this stream
-    // iteration, so a lazy/on-demand fetch isn't safe. Over-cap attachments
-    // (when size is known up front) are forwarded as metadata only and the
-    // adapter falls back to a text marker. A read failure must never break
-    // the inbound loop — we just drop `data` and forward metadata.
-    if (meta.size !== null && meta.size > MAX_INLINE_ATTACHMENT_BYTES) {
-      console.error(
-        `photon-sidecar: attachment ${meta.name ?? meta.id} (${meta.size} bytes) ` +
-          `exceeds inline cap ${MAX_INLINE_ATTACHMENT_BYTES}; forwarding metadata only`
-      );
-      return meta;
-    }
-    if (typeof content.read === "function") {
-      try {
-        const buf = await content.read();
-        // Guard the case where size was unknown but the bytes turn out to be
-        // over the cap.
-        if (buf && buf.length > MAX_INLINE_ATTACHMENT_BYTES) {
-          console.error(
-            `photon-sidecar: attachment ${meta.name ?? meta.id} (${buf.length} bytes) ` +
-              `exceeds inline cap after read; forwarding metadata only`
-          );
-          return meta;
-        }
-        meta.data = Buffer.from(buf).toString("base64");
-        meta.encoding = "base64";
-      } catch (e) {
-        console.error(
-          "photon-sidecar: failed to read attachment bytes " +
-            "(forwarding metadata only): " +
-            (e && e.stack ? e.stack : String(e))
-        );
-      }
-    }
-    return meta;
+  if (content.type === "attachment" || content.type === "voice") {
+    return await normalizeBinaryContent(content);
   }
   return { type: content.type || "unknown" };
 }

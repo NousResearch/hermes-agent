@@ -169,6 +169,65 @@ class TestOpenRouterProfile:
         )
         assert eb["reasoning"] == {"enabled": False}
 
+    def test_reasoning_disable_omitted_for_mandatory_anthropic(self):
+        """Reasoning-mandatory Anthropic models (4.6+/fable) reject any disable
+        form: OpenRouter translates ``reasoning: {enabled: false}`` into
+        Anthropic's ``thinking: {type: disabled}``, which 400s. The profile must
+        omit ``reasoning`` so the model falls back to adaptive thinking instead.
+        """
+        p = get_provider_profile("openrouter")
+        for model in (
+            "anthropic/claude-fable-5",          # new named model
+            "anthropic/claude-some-future-7",    # unknown → default mandatory
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-opus-4.6",
+        ):
+            for cfg in ({"enabled": False}, {"effort": "none"}):
+                eb, _ = p.build_api_kwargs_extras(
+                    reasoning_config=cfg,
+                    supports_reasoning=True,
+                    model=model,
+                )
+                assert "reasoning" not in eb, (model, cfg, eb)
+
+    def test_reasoning_disable_kept_for_legacy_anthropic(self):
+        """Older Anthropic models still accept an explicit disable form, so the
+        profile must keep forwarding it."""
+        p = get_provider_profile("openrouter")
+        for model in (
+            "anthropic/claude-3.7-sonnet",
+            "anthropic/claude-opus-4.5",
+            "anthropic/claude-sonnet-4.5",
+        ):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": False}, (model, eb)
+
+    def test_reasoning_disable_kept_for_non_anthropic(self):
+        """Non-Anthropic models (DeepSeek, Qwen, …) disable reasoning fine; the
+        Anthropic-mandatory guard must not touch them."""
+        p = get_provider_profile("openrouter")
+        for model in ("deepseek/deepseek-chat", "qwen/qwen3-max", "openai/gpt-5.4"):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": False}, (model, eb)
+
+    def test_reasoning_enabled_unaffected_for_mandatory_anthropic(self):
+        """Enabling reasoning on a mandatory model still forwards the config."""
+        p = get_provider_profile("openrouter")
+        eb, _ = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            supports_reasoning=True,
+            model="anthropic/claude-fable-5",
+        )
+        assert eb["reasoning"] == {"enabled": True, "effort": "medium"}
+
     def test_default_reasoning(self):
         p = get_provider_profile("openrouter")
         eb, _ = p.build_api_kwargs_extras(supports_reasoning=True)

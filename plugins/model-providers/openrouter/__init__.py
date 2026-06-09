@@ -10,6 +10,39 @@ logger = logging.getLogger(__name__)
 
 _CACHE: list[str] | None = None
 
+# Anthropic model families that still accept an explicit "disable thinking"
+# request (the manual ``thinking: {type: "disabled"}`` form OpenRouter emits
+# for ``reasoning: {enabled: false}``). Everything Claude 4.6 and newer —
+# including future date-stamped / named models (fable, mythos-class, …) —
+# mandates reasoning and returns HTTP 400 on any disable form. We therefore
+# default *unknown* Anthropic models to "cannot disable" (the modern contract)
+# and keep only this explicit legacy allowlist of models that can. Mirrors the
+# default-to-newest philosophy in agent/anthropic_adapter._get_anthropic_max_output.
+_ANTHROPIC_REASONING_OPTIONAL_SUBSTRINGS = (
+    "claude-3",          # 3, 3.5, 3.7
+    "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
+    "claude-sonnet-4-0", "claude-sonnet-4.0",
+    "claude-opus-4-2025", "claude-sonnet-4-2025",  # date-stamped 4.0 IDs
+    "claude-opus-4-5", "claude-opus-4.5",
+    "claude-sonnet-4-5", "claude-sonnet-4.5",
+    "claude-haiku-4-5", "claude-haiku-4.5",
+)
+
+
+def _anthropic_reasoning_is_mandatory(model: str | None) -> bool:
+    """Return True for Anthropic models that reject any disable-thinking form.
+
+    Claude 4.6+ (adaptive thinking) and newer named models have no "off"
+    switch — sending ``reasoning: {enabled: false}`` makes OpenRouter emit
+    ``thinking: {type: "disabled"}``, which these models 400 on. Unknown /
+    new Anthropic model names default to mandatory so the next un-numbered
+    release doesn't reintroduce the 400.
+    """
+    m = (model or "").lower()
+    if not m.startswith(("anthropic/", "claude")) and "claude" not in m:
+        return False
+    return not any(sub in m for sub in _ANTHROPIC_REASONING_OPTIONAL_SUBSTRINGS)
+
 
 class OpenRouterProfile(ProviderProfile):
     """OpenRouter aggregator — provider preferences, reasoning config passthrough."""
@@ -85,7 +118,18 @@ class OpenRouterProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         if supports_reasoning:
             if reasoning_config is not None:
-                extra_body["reasoning"] = dict(reasoning_config)
+                cfg = dict(reasoning_config)
+                # Reasoning-mandatory Anthropic models (Claude 4.6+ / fable /
+                # future named models) have no "off" switch. Forwarding
+                # ``{enabled: false}`` makes OpenRouter emit Anthropic's manual
+                # ``thinking: {type: "disabled"}``, which those models reject
+                # with a non-retryable HTTP 400. Omit reasoning entirely so the
+                # model falls back to its default (adaptive) thinking instead.
+                disabling = cfg.get("enabled") is False or cfg.get("effort") == "none"
+                if disabling and _anthropic_reasoning_is_mandatory(model):
+                    pass  # leave reasoning unset → adaptive default
+                else:
+                    extra_body["reasoning"] = cfg
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 

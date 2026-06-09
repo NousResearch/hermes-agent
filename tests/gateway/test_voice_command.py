@@ -919,18 +919,41 @@ class TestVoiceChannelCommands:
         await runner._handle_voice_channel_input(111, 42, "Hello")
 
     @pytest.mark.asyncio
-    async def test_input_creates_event_and_dispatches(self, runner):
-        """Voice input creates synthetic event and calls handle_message."""
+    async def test_input_posts_transcript_without_agent_by_default(self, runner, monkeypatch):
+        """Voice input posts transcript text without calling the agent by default."""
         from gateway.config import Platform
+        monkeypatch.delenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", raising=False)
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._reset_voice_timeout = MagicMock()
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        mock_channel.send.assert_called_once()
+        mock_adapter.handle_message.assert_not_called()
+        mock_adapter._reset_voice_timeout.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_input_opt_in_agent_dispatch(self, runner, monkeypatch):
+        """Voice transcript snippets can still dispatch to the agent when opted in."""
+        from gateway.config import Platform
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", "true")
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._reset_voice_timeout = MagicMock()
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+
         mock_adapter.handle_message.assert_called_once()
         event = mock_adapter.handle_message.call_args[0][0]
         assert event.text == "Hello from VC"
@@ -939,9 +962,37 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
-    async def test_input_reuses_bound_source_metadata(self, runner):
+    async def test_input_config_opt_in_agent_dispatch(self, runner, monkeypatch):
+        """Config can opt Discord voice transcript snippets into agent turns."""
+        from gateway.config import Platform, PlatformConfig
+        monkeypatch.delenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", raising=False)
+        runner.config = SimpleNamespace(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    extra={"voice_transcript_agent_turns": True},
+                )
+            }
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._reset_voice_timeout = MagicMock()
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Config opt in")
+
+        mock_adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_input_reuses_bound_source_metadata(self, runner, monkeypatch):
         """Voice input should share the linked text channel session metadata."""
         from gateway.config import Platform
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS", "true")
 
         bound_source = SessionSource(
             chat_id="123",
@@ -958,6 +1009,7 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._reset_voice_timeout = MagicMock()
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
@@ -980,6 +1032,7 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._reset_voice_timeout = MagicMock()
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
         await runner._handle_voice_channel_input(111, 42, "Test transcript")
@@ -999,13 +1052,14 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._reset_voice_timeout = MagicMock()
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
 
-        mock_adapter.handle_message.assert_called_once()
+        mock_adapter.handle_message.assert_not_called()
         mock_channel.send.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1019,13 +1073,14 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._reset_voice_timeout = MagicMock()
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
         await runner._handle_voice_channel_input(111, 42, "This is a test of the voice system")
         await runner._handle_voice_channel_input(111, 42, "This is a test for the voice system")
 
-        mock_adapter.handle_message.assert_called_once()
+        mock_adapter.handle_message.assert_not_called()
         mock_channel.send.assert_called_once()
 
     # -- _get_guild_id --
@@ -1343,6 +1398,23 @@ class TestVoiceReceiverThreadSafety:
         t1.join()
         t2.join()
         assert len(errors) == 0, f"Race detected: {errors[:3]}"
+
+    def test_completed_utterance_buffer_is_cleared(self):
+        """A completed utterance is returned once and then dropped."""
+        receiver = self._make_receiver()
+        receiver.map_ssrc(100, 42)
+        with receiver._lock:
+            receiver._buffers[100].extend(b"\x00" * 192000)
+            receiver._last_packet_time[100] = time.monotonic() - (
+                receiver.SILENCE_THRESHOLD + 0.1
+            )
+
+        completed = receiver.check_silence()
+
+        assert completed == [(42, b"\x00" * 192000)]
+        assert receiver._buffers[100] == bytearray()
+        assert 100 not in receiver._last_packet_time
+        assert receiver.check_silence() == []
 
 
 # =====================================================================

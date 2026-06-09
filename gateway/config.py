@@ -979,6 +979,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if plat == Platform.DISCORD and "voice_transcript_agent_turns" in platform_cfg:
+                    bridged["voice_transcript_agent_turns"] = platform_cfg["voice_transcript_agent_turns"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

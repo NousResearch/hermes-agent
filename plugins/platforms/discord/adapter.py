@@ -181,6 +181,7 @@ class VoiceReceiver:
 
     SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
+    MAX_UTTERANCE_DURATION = 30.0  # bound hot-path audio buffers during long monologues
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
@@ -478,7 +479,11 @@ class VoiceReceiver:
                 # 48kHz, 16-bit, stereo = 192000 bytes/sec
                 buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
 
-                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
+                utterance_complete = (
+                    silence_duration >= self.SILENCE_THRESHOLD
+                    or buf_duration >= self.MAX_UTTERANCE_DURATION
+                )
+                if utterance_complete and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
                         # SSRC not mapped (SPEAKING event missing after bot rejoin).
@@ -577,6 +582,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
+    VOICE_ACTIVITY_TIMEOUT_REFRESH = 30.0
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -596,6 +602,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_activity_timeout_resets: Dict[int, float] = {}  # guild_id -> monotonic timestamp
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -2155,6 +2162,9 @@ class DiscordAdapter(BasePlatformAdapter):
             task = self._voice_timeout_tasks.pop(guild_id, None)
             if task:
                 task.cancel()
+            resets = getattr(self, "_voice_activity_timeout_resets", None)
+            if resets is not None:
+                resets.pop(guild_id, None)
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
@@ -2253,9 +2263,24 @@ class DiscordAdapter(BasePlatformAdapter):
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+        resets = getattr(self, "_voice_activity_timeout_resets", None)
+        if resets is None:
+            resets = {}
+            self._voice_activity_timeout_resets = resets
+        resets[guild_id] = time.monotonic()
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
             self._voice_timeout_handler(guild_id)
         )
+
+    def _note_voice_activity(self, guild_id: int) -> None:
+        """Refresh the inactivity timer for inbound audio without timer churn."""
+        resets = getattr(self, "_voice_activity_timeout_resets", None)
+        if resets is None:
+            resets = {}
+            self._voice_activity_timeout_resets = resets
+        now = time.monotonic()
+        if now - resets.get(guild_id, 0.0) >= self.VOICE_ACTIVITY_TIMEOUT_REFRESH:
+            self._reset_voice_timeout(guild_id)
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
         """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
@@ -2383,6 +2408,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         pass
 
                 completed = receiver.check_silence()
+                if receiver._last_packet_time:
+                    self._note_voice_activity(guild_id)
                 # Voice inputs always originate from a specific guild
                 # (guild_id is in scope). Pass it so role checks are
                 # guild-scoped and not cross-guild.
@@ -2394,6 +2421,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=False,
                     ):
                         continue
+                    self._note_voice_activity(guild_id)
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
             pass

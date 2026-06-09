@@ -9399,6 +9399,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         recent_store[key] = recent[-5:]
         return False
 
+    def _discord_voice_transcript_agent_turns_enabled(self) -> bool:
+        """Whether Discord voice transcript snippets should invoke the agent."""
+        env_value = os.getenv("HERMES_DISCORD_VOICE_TRANSCRIPT_AGENT_TURNS")
+        if env_value is not None:
+            return is_truthy_value(env_value, default=False)
+
+        config = getattr(self, "config", None)
+        platform_cfg = getattr(config, "platforms", {}).get(Platform.DISCORD) if config else None
+        extra = getattr(platform_cfg, "extra", {}) if platform_cfg else {}
+        return is_truthy_value(extra.get("voice_transcript_agent_turns"), default=False)
+
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str
     ):
@@ -9445,6 +9456,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
 
+        reset_timeout = getattr(adapter, "_reset_voice_timeout", None)
+        if callable(reset_timeout):
+            reset_timeout(guild_id)
+
         # Show transcript in text channel (after auth, with mention sanitization)
         try:
             channel = adapter._client.get_channel(text_ch_id)
@@ -9453,6 +9468,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
         except Exception:
             pass
+
+        # LLMs/agents orchestrate reasoning-heavy work; the deterministic
+        # gateway runtime executes repeatable transcript posting by default.
+        if not self._discord_voice_transcript_agent_turns_enabled():
+            return
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract

@@ -5226,12 +5226,28 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
+                # Still failing and the user hasn't pinned a mirror: GitHub's
+                # Electron release host is likely blocked/throttled (the repeating
+                # "retrying" download log). Retry once via a public mirror;
+                # @electron/get still SHASUM-verifies the download, and we never
+                # override a user-set ELECTRON_MIRROR. Without this, a blocked
+                # network hard-fails the rebuild with no self-heal.
+                print("  ⚠ Desktop build still failing; the Electron download from "
+                      "GitHub looks blocked. Retrying once via a public mirror "
+                      "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
+                mirror_env = dict(env)
+                mirror_env["ELECTRON_MIRROR"] = "https://npmmirror.com/mirrors/electron/"
+                _stop_desktop_processes_locking_build(desktop_dir)
+                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
                     print("  running Hermes desktop window and retry.")
+                print("  If the log shows Electron download retries, rebuild via a mirror:")
+                print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:

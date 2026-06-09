@@ -984,7 +984,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        # FIX (jptlabs 2026-06): _resolve_runtime_agent_kwargs() already returns
+        # the auth-resolved model (coherent with its provider/api_key). Passing
+        # model=model AND **runtime_kwargs below raised "AIAgent() got multiple
+        # values for keyword argument 'model'", breaking every api_server HTTP
+        # path (/v1/chat/completions, /api/sessions/*/chat). Use the runtime's
+        # model; fall back to the gateway-config model only if absent.
+        runtime_kwargs.setdefault("model", _resolve_gateway_model())
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -996,7 +1002,6 @@ class APIServerAdapter(BasePlatformAdapter):
         fallback_model = GatewayRunner._load_fallback_model()
 
         agent = AIAgent(
-            model=model,
             **runtime_kwargs,
             max_iterations=max_iterations,
             quiet_mode=True,

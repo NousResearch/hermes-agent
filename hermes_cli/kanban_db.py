@@ -4490,6 +4490,19 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        # When the root task was created with the default scratch workspace
+        # (no explicit path), fall back to the board's default_workdir so
+        # children land in the project directory rather than a throwaway
+        # kanban scratch dir. The root itself is also upgraded so its
+        # orchestration run shares the same directory.
+        _board_ws_upgraded = False
+        if root_ws_kind == "scratch" and not root_ws_path:
+            _board_meta = read_board_metadata()
+            _board_default = _board_meta.get("default_workdir")
+            if _board_default:
+                root_ws_kind = "dir"
+                root_ws_path = str(_board_default)
+                _board_ws_upgraded = True
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -4562,11 +4575,18 @@ def decompose_triage_task(
             )
 
         # Flip the root: triage -> todo, set assignee to the orchestrator.
+        # Also persist the resolved board workspace so the orchestration
+        # run lands in the project directory (not a kanban scratch dir).
         sets = ["status = 'todo'"]
         params: list[Any] = []
         if root_assignee is not None:
             sets.append("assignee = ?")
             params.append(root_assignee)
+        if _board_ws_upgraded:
+            sets.append("workspace_kind = ?")
+            sets.append("workspace_path = ?")
+            params.append(root_ws_kind)
+            params.append(root_ws_path)
         params.append(task_id)
         conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",

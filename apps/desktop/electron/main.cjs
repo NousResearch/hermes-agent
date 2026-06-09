@@ -4364,31 +4364,20 @@ async function teardownPrimaryBackendAndWait() {
   const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
   resetHermesConnection()
 
-  await waitForBackendExit(dying)
-}
-
-async function waitForBackendExit(child, timeoutMs = 5000) {
-  if (!child) {
-    return
-  }
-  if (child.exitCode !== null || child.signalCode !== null) {
+  if (!dying) {
     return
   }
 
   await new Promise(resolve => {
     const timer = setTimeout(() => {
       try {
-        if (IS_WINDOWS && Number.isInteger(child.pid)) {
-          forceKillProcessTree(child.pid)
-        } else {
-          child.kill('SIGKILL')
-        }
+        dying.kill('SIGKILL')
       } catch {
         // Already gone.
       }
       resolve()
-    }, timeoutMs)
-    child.once('exit', () => {
+    }, 5000)
+    dying.once('exit', () => {
       clearTimeout(timer)
       resolve()
     })
@@ -4577,68 +4566,10 @@ function stopPoolBackend(profile) {
   }
 }
 
-async function teardownPoolBackendAndWait(profile) {
-  const entry = backendPool.get(profile)
-  if (!entry) return
-  backendPool.delete(profile)
-
-  if (entry.process && !entry.process.killed) {
-    try {
-      entry.process.kill('SIGTERM')
-    } catch {
-      // Already gone.
-    }
-  }
-
-  await waitForBackendExit(entry.process)
-}
-
 function stopAllPoolBackends() {
   for (const profile of [...backendPool.keys()]) {
     stopPoolBackend(profile)
   }
-}
-
-function profileNameFromDeleteRequest(request) {
-  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
-    return null
-  }
-
-  const match = String(request.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
-  if (!match) {
-    return null
-  }
-
-  let raw = ''
-  try {
-    raw = decodeURIComponent(match[1])
-  } catch {
-    return null
-  }
-
-  const name = raw.trim()
-  if (!name) {
-    return null
-  }
-  if (name.toLowerCase() === 'default') {
-    return 'default'
-  }
-  return name.toLowerCase()
-}
-
-async function prepareProfileDeleteRequest(request) {
-  const profile = profileNameFromDeleteRequest(request)
-  if (!profile || profile === 'default' || !PROFILE_NAME_RE.test(profile)) {
-    return
-  }
-
-  if (profile === primaryProfileKey()) {
-    writeActiveDesktopProfile('default')
-    await teardownPrimaryBackendAndWait()
-    return
-  }
-
-  await teardownPoolBackendAndWait(profile)
 }
 
 async function startHermes() {
@@ -5215,8 +5146,6 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   if (rerouted !== undefined) {
     return rerouted
   }
-
-  await prepareProfileDeleteRequest(request)
 
   const connection = await ensureBackend(request?.profile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)

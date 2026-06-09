@@ -2,21 +2,19 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
 import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
-import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
-import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
+import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
+export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
   isPinned: boolean
   isSelected: boolean
@@ -28,6 +26,8 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Presence record for this session (from another device) — indicates live/active state. */
+  presence?: SessionPresenceRecord
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -57,6 +57,7 @@ export function SidebarSessionRow({
   onDelete,
   onPin,
   onResume,
+  presence,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -70,11 +71,6 @@ export function SidebarSessionRow({
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
-  // A handed-off session's live source is local, but it originated on a
-  // messaging platform — surface that origin as a small badge so e.g. a
-  // Telegram thread continued here still reads as Telegram.
-  const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
-  const handoffLabel = handoffSource ? sessionSourceLabel(handoffSource) ?? handoffSource : null
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
@@ -92,7 +88,7 @@ export function SidebarSessionRow({
     >
       <div
         className={cn(
-          'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+          'group relative grid min-h-[2.375rem] cursor-pointer grid-cols-[minmax(0,1fr)_auto_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
@@ -121,7 +117,7 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-1 pl-2 pr-2 text-left"
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -181,31 +177,23 @@ export function SidebarSessionRow({
             <span
               className={cn(
                 'grid w-3.5 shrink-0 place-items-center',
-                needsInput ? 'overflow-visible' : 'overflow-hidden'
+                needsInput ? 'overflow-visible' : 'overflow-hidden',
+                'self-center'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
-          )}
-          {handoffSource && handoffLabel ? (
-            <Tip label={r.handoffOrigin(handoffLabel)}>
-              <PlatformAvatar
-                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                platformId={handoffSource}
-                platformName={handoffLabel}
-              />
-            </Tip>
-          ) : null}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
+            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
           </span>
-        </button>
-        <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
-            <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-              {age}
-            </span>
           )}
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
+          </div>
+        </button>
+        <div className="flex items-center justify-end px-1.5">
+          <span className="pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+            {age}
+          </span>
+        </div>
+        <div className="grid w-[1.375rem] place-items-center">
           <SessionActionsMenu
             onArchive={onArchive}
             onDelete={onDelete}

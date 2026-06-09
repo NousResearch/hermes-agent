@@ -1698,7 +1698,9 @@ export const zh: Translations = {
     loadingFiles: '正在加载文件',
     terminalFocus: '聚焦终端视图',
     terminalSplit: '返回分栏视图',
-    addToChat: '添加到对话'
+    addToChat: '添加到对话',
+    openInFileManager: '在文件管理器中打开',
+    openInFileManagerTooltip: '在系统文件管理器中打开文件夹'
   },
 
   preview: {

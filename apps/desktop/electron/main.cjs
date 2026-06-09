@@ -5265,6 +5265,14 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
   }
 })
 
+ipcMain.handle('hermes:openFolder', (_event, folderPath) => {
+  if (!folderPath || typeof folderPath !== 'string') {
+    return
+  }
+
+  void shell.openPath(folderPath.trim())
+})
+
 // User-configurable default project directory. The renderer reads this on
 // settings mount and seeds the value into the picker; writing back persists
 // it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next

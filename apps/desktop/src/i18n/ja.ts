@@ -1660,7 +1660,9 @@ export const ja = defineLocale({
     loadingFiles: 'ファイルを読み込み中',
     terminalFocus: 'ターミナルビューにフォーカス',
     terminalSplit: '分割ビューに戻る',
-    addToChat: 'チャットに追加'
+    addToChat: 'チャットに追加',
+    openInFileManager: 'ファイルマネージャーで開く',
+    openInFileManagerTooltip: 'システムファイルマネージャーでフォルダを開く'
   },
 
   preview: {

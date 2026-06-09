@@ -1,10 +1,11 @@
 import { useCallback, useRef, useState } from 'react'
 import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-arborist'
 
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
-import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 
 import type { TreeNode } from './use-project-tree'
@@ -111,6 +112,7 @@ export function ProjectTree({
               {...props}
               onAttachFile={onActivateFile}
               onAttachFolder={onActivateFolder}
+              onOpenFolder={node => window.hermesDesktop?.openFolder?.(node.data.id)}
               onPreviewFile={onPreviewFile}
             />
           )}
@@ -133,13 +135,18 @@ function ProjectTreeRow({
   node,
   onAttachFile,
   onAttachFolder,
+  onOpenFolder,
   onPreviewFile,
   style
 }: NodeRendererProps<TreeNode> & {
   onAttachFile: (path: string) => void
   onAttachFolder: (path: string) => void
+  onOpenFolder?: (node: NodeApi<TreeNode>) => void
   onPreviewFile?: (path: string) => void
 }) {
+  const { t } = useI18n()
+  const r = t.rightSidebar
+
   if (!node.data) {
     return <div style={style} />
   }
@@ -147,9 +154,98 @@ function ProjectTreeRow({
   const isFolder = node.data.isDirectory
   const isPlaceholder = node.data.id.endsWith('::__loading__')
 
+  const rowContent = (
+    <>
+      {isFolder && !isPlaceholder && (
+        <span aria-hidden className="flex w-3 items-center justify-center">
+          <Codicon
+            className="text-(--ui-text-tertiary)"
+            name={node.isOpen ? 'chevron-down' : 'chevron-right'}
+            size="0.75rem"
+          />
+        </span>
+      )}
+      {!isFolder && <span aria-hidden className="w-3 shrink-0" />}
+      <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
+        {isPlaceholder ? (
+          <Codicon name="loading" size="0.75rem" spinning />
+        ) : isFolder ? (
+          <Codicon name={node.isOpen ? 'folder-opened' : 'folder'} size="0.875rem" />
+        ) : (
+          <Codicon name="file" size="0.875rem" />
+        )}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{node.data.name}</span>
+    </>
+  )
+
+  // Only folders get a context menu; files use the regular interaction
+  if (isFolder && !isPlaceholder) {
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div
+            aria-expanded={node.isOpen}
+            aria-selected={node.isSelected}
+            className={cn(
+              'group/row flex h-full cursor-pointer select-none items-center gap-1 border border-transparent px-3 text-xs font-normal leading-(--file-tree-row-height) text-(--ui-text-secondary) transition-colors hover:bg-(--ui-row-hover-background) hover:text-foreground',
+              node.isSelected && 'bg-(--ui-row-active-background) text-foreground',
+              isPlaceholder && 'pointer-events-none italic text-muted-foreground/70'
+            )}
+            draggable={!isPlaceholder}
+            onClick={event => {
+              event.stopPropagation()
+
+              if (isPlaceholder) {
+                return
+              }
+
+              if (event.shiftKey) {
+                onAttachFolder(node.data.id)
+
+                return
+              }
+
+              if (isFolder) {
+                node.toggle()
+              } else {
+                node.select()
+              }
+            }}
+            onDragStart={event => {
+              if (isPlaceholder) {
+                event.preventDefault()
+
+                return
+              }
+
+              const payload = JSON.stringify([{ isDirectory: isFolder, path: node.data.id }])
+
+              event.dataTransfer.effectAllowed = 'copy'
+              event.dataTransfer.setData('application/x-hermes-paths', payload)
+              event.dataTransfer.setData('text/plain', node.data.id)
+            }}
+            ref={dragHandle}
+            style={style}
+          >
+            {rowContent}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem
+            onClick={() => onOpenFolder?.(node)}
+          >
+            <Codicon name="folder-opened" size="0.875rem" />
+            {r.openInFileManager}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    )
+  }
+
+  // File rows (no context menu)
   return (
     <div
-      aria-expanded={isFolder ? node.isOpen : undefined}
       aria-selected={node.isSelected}
       className={cn(
         'group/row flex h-full cursor-pointer select-none items-center gap-1 border border-transparent px-3 text-xs font-normal leading-(--file-tree-row-height) text-(--ui-text-secondary) transition-colors hover:bg-(--ui-row-hover-background) hover:text-foreground',
@@ -199,26 +295,7 @@ function ProjectTreeRow({
       ref={dragHandle}
       style={style}
     >
-      {isFolder && !isPlaceholder && (
-        <span aria-hidden className="flex w-3 items-center justify-center">
-          <Codicon
-            className="text-(--ui-text-tertiary)"
-            name={node.isOpen ? 'chevron-down' : 'chevron-right'}
-            size="0.75rem"
-          />
-        </span>
-      )}
-      {!isFolder && <span aria-hidden className="w-3 shrink-0" />}
-      <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
-        {isPlaceholder ? (
-          <Codicon name="loading" size="0.75rem" spinning />
-        ) : isFolder ? (
-          <Codicon name={node.isOpen ? 'folder-opened' : 'folder'} size="0.875rem" />
-        ) : (
-          <Codicon name="file" size="0.875rem" />
-        )}
-      </span>
-      <span className="min-w-0 flex-1 truncate">{node.data.name}</span>
+      {rowContent}
     </div>
   )
 }

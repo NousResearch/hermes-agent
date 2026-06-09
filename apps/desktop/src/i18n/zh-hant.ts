@@ -1621,7 +1621,9 @@ export const zhHant = defineLocale({
     loadingFiles: '正在載入檔案',
     terminalFocus: '聚焦終端機檢視',
     terminalSplit: '返回分割檢視',
-    addToChat: '新增至聊天'
+    addToChat: '新增至聊天',
+    openInFileManager: '在檔案管理器中開啟',
+    openInFileManagerTooltip: '在系統檔案管理器中開啟資料夾'
   },
 
   preview: {

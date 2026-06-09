@@ -69,19 +69,44 @@ def _require_boto3():
     return boto3
 
 
-def _cached_client(cache: Dict[str, Any], service: str, region: str):
-    """Get or create a per-region boto3 client using the default credential chain."""
-    if region not in cache:
-        cache[region] = _require_boto3().client(service, region_name=region)
-    return cache[region]
+def resolve_bedrock_profile(config: Optional[Dict[str, Any]] = None) -> str:
+    """``bedrock.profile`` from config.yaml, or an empty string (default credential chain). *config* skips disk."""
+    if config is None:
+        with suppress(Exception):
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+    profile = ((config or {}).get("bedrock") or {}).get("profile", "")
+    return profile.strip() if isinstance(profile, str) else ""
 
 
-def _get_bedrock_runtime_client(region: str):
-    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region)
+def _client_cache_key(region: str, profile: str) -> str:
+    """Cache key for a boto3 client. Degenerates to the bare region when no profile is set, so the
+    common (no-profile) path keeps the historical per-region key."""
+    return region if not profile else f"{region}::{profile}"
 
 
-def _get_bedrock_control_client(region: str):
-    return _cached_client(_bedrock_control_client_cache, "bedrock", region)
+def _cached_client(cache: Dict[str, Any], service: str, region: str, profile: Optional[str] = None):
+    """Get or create a per-(region, profile) boto3 client.
+
+    Uses the named AWS profile from config.yaml (``bedrock.profile``) when set, so SSO / cross-account
+    profiles work without AWS_PROFILE; otherwise the default credential chain (env → profile → role)."""
+    profile = resolve_bedrock_profile() if profile is None else (profile or "").strip()
+    key = _client_cache_key(region, profile)
+    if key not in cache:
+        boto3 = _require_boto3()
+        if profile:
+            cache[key] = boto3.Session(profile_name=profile).client(service, region_name=region)
+        else:
+            cache[key] = boto3.client(service, region_name=region)
+    return cache[key]
+
+
+def _get_bedrock_runtime_client(region: str, profile: Optional[str] = None):
+    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region, profile)
+
+
+def _get_bedrock_control_client(region: str, profile: Optional[str] = None):
+    return _cached_client(_bedrock_control_client_cache, "bedrock", region, profile)
 
 
 def reset_client_cache():
@@ -90,9 +115,10 @@ def reset_client_cache():
     _bedrock_control_client_cache.clear()
 
 
-def invalidate_runtime_client(region: str) -> bool:
-    """Evict one region's cached ``bedrock-runtime`` client (stale HTTP pool); True if evicted."""
-    return _bedrock_runtime_client_cache.pop(region, None) is not None
+def invalidate_runtime_client(region: str, profile: Optional[str] = None) -> bool:
+    """Evict one (region, profile)'s cached ``bedrock-runtime`` client (stale HTTP pool); True if evicted."""
+    profile = resolve_bedrock_profile() if profile is None else (profile or "").strip()
+    return _bedrock_runtime_client_cache.pop(_client_cache_key(region, profile), None) is not None
 
 
 # --- Bedrock Mantle / OpenAI Responses support ---
@@ -283,7 +309,9 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
         return explicit
     with suppress(Exception):
         import botocore.session
-        return botocore.session.get_session().get_config_variable("region") or "us-east-1"
+        profile = resolve_bedrock_profile()
+        session = botocore.session.Session(profile=profile) if profile else botocore.session.get_session()
+        return session.get_config_variable("region") or "us-east-1"
     return "us-east-1"
 
 
@@ -820,7 +848,8 @@ def call_converse(
 ) -> SimpleNamespace:
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
     placement; evicts the cached client on stale-connection errors."""
-    client = _get_bedrock_runtime_client(region)
+    profile = resolve_bedrock_profile()
+    client = _get_bedrock_runtime_client(region, profile)
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config)
     try:
         response = client.converse(**kwargs)
@@ -833,7 +862,7 @@ def call_converse(
                 "bedrock: stale-connection error on converse(region=%s, model=%s): "
                 "%s — evicting cached client so the next call reconnects.", region, model, type(exc).__name__,
             )
-            invalidate_runtime_client(region)
+            invalidate_runtime_client(region, profile)
         raise
     return normalize_converse_response(response)
 
@@ -897,12 +926,13 @@ def _list_inference_profiles(client, filter_set: set, models: List[Dict[str, Any
 def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Foundation models + inference profiles (cached 1h per region/filter), ``global.`` profiles first then
     by name; [] when the client cannot be built."""
-    cache_key = f"{region}:{','.join(sorted(provider_filter or []))}"
+    profile = resolve_bedrock_profile()
+    cache_key = f"{region}:{profile}:{','.join(sorted(provider_filter or []))}"
     cached = _discovery_cache.get(cache_key)
     if cached and (time.time() - cached["timestamp"]) < _DISCOVERY_CACHE_TTL_SECONDS:
         return cached["models"]
     try:
-        client = _get_bedrock_control_client(region)
+        client = _get_bedrock_control_client(region, profile)
     except Exception as e:
         logger.warning("Failed to create Bedrock client for model discovery: %s", e)
         return []
@@ -1039,7 +1069,8 @@ def call_converse_stream(
     Consumes the full stream and returns the assembled response. For true
     streaming with delta callbacks, use ``iter_converse_stream()`` instead.
     """
-    client = _get_bedrock_runtime_client(region)
+    profile = resolve_bedrock_profile()
+    client = _get_bedrock_runtime_client(region, profile)
     kwargs = build_converse_kwargs(
         model=model,
         messages=messages,
@@ -1075,7 +1106,7 @@ def call_converse_stream(
                 "model=%s): %s — evicting cached client so the next call reconnects.",
                 region, model, type(exc).__name__,
             )
-            invalidate_runtime_client(region)
+            invalidate_runtime_client(region, profile)
         raise
     return normalize_converse_stream_events(response)
 

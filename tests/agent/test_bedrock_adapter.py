@@ -1421,3 +1421,87 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+
+
+class TestBedrockConfiguredProfile:
+    """config.yaml ``bedrock.profile`` drives boto3 auth: profile → ``Session(profile_name=...)``,
+    empty → default credential chain; clients are cached per (region, profile)."""
+
+    def test_resolves_profile_from_config(self):
+        from agent.bedrock_adapter import resolve_bedrock_profile
+        with patch("hermes_cli.config.load_config_readonly", return_value={"bedrock": {"profile": " prod "}}):
+            assert resolve_bedrock_profile() == "prod"
+
+    def test_profile_resolution_falls_back_to_empty_string(self):
+        from agent.bedrock_adapter import resolve_bedrock_profile
+        with patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("no config")):
+            assert resolve_bedrock_profile() == ""
+
+    def test_explicit_config_arg_skips_disk(self):
+        from agent.bedrock_adapter import resolve_bedrock_profile
+        assert resolve_bedrock_profile({"bedrock": {"profile": "dev"}}) == "dev"
+        assert resolve_bedrock_profile({}) == ""
+
+    def test_region_resolution_uses_botocore_profile_session(self):
+        import agent.bedrock_adapter as br
+        profile_session = MagicMock()
+        profile_session.get_config_variable.return_value = "eu-central-1"
+        botocore_mod = ModuleType("botocore")
+        session_mod = ModuleType("botocore.session")
+        session_mod.Session = MagicMock(return_value=profile_session)
+        session_mod.get_session = MagicMock()
+        botocore_mod.session = session_mod
+        with patch.dict("sys.modules", {"botocore": botocore_mod, "botocore.session": session_mod}), \
+                patch.object(br, "resolve_bedrock_profile", return_value="prod"):
+            assert br.resolve_bedrock_region(env={}) == "eu-central-1"
+        session_mod.Session.assert_called_once_with(profile="prod")
+        session_mod.get_session.assert_not_called()
+
+    def test_runtime_client_uses_configured_profile(self):
+        import agent.bedrock_adapter as br
+        br.reset_client_cache()
+        profile_client = object()
+        profile_session = MagicMock()
+        profile_session.client.return_value = profile_client
+        boto3 = MagicMock()
+        boto3.Session.return_value = profile_session
+        with patch.object(br, "_require_boto3", return_value=boto3), \
+                patch.object(br, "resolve_bedrock_profile", return_value="prod"):
+            assert br._get_bedrock_runtime_client("us-east-1") is profile_client
+        boto3.Session.assert_called_once_with(profile_name="prod")
+        boto3.client.assert_not_called()
+        profile_session.client.assert_called_once_with("bedrock-runtime", region_name="us-east-1")
+
+    def test_client_without_profile_uses_default_boto3_chain(self):
+        import agent.bedrock_adapter as br
+        br.reset_client_cache()
+        default_client = object()
+        boto3 = MagicMock()
+        boto3.client.return_value = default_client
+        with patch.object(br, "_require_boto3", return_value=boto3), \
+                patch.object(br, "resolve_bedrock_profile", return_value=""):
+            assert br._get_bedrock_control_client("us-east-1") is default_client
+        boto3.Session.assert_not_called()
+        boto3.client.assert_called_once_with("bedrock", region_name="us-east-1")
+
+    def test_client_cache_and_invalidation_are_profile_scoped(self):
+        import agent.bedrock_adapter as br
+        br.reset_client_cache()
+        clients = {"alpha": object(), "beta": object()}
+
+        def session_factory(profile_name):
+            session = MagicMock()
+            session.client.return_value = clients[profile_name]
+            return session
+
+        boto3 = MagicMock()
+        boto3.Session.side_effect = session_factory
+        with patch.object(br, "_require_boto3", return_value=boto3):
+            a = br._get_bedrock_runtime_client("us-east-1", "alpha")
+            b = br._get_bedrock_runtime_client("us-east-1", "beta")
+            assert a is clients["alpha"] and b is clients["beta"]
+            # Evicting one profile leaves the other cached.
+            assert br.invalidate_runtime_client("us-east-1", "alpha") is True
+            assert br.invalidate_runtime_client("us-east-1", "alpha") is False
+            assert br._get_bedrock_runtime_client("us-east-1", "beta") is clients["beta"]
+        assert boto3.Session.call_count == 2  # alpha rebuilt only after eviction would add more

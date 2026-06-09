@@ -183,7 +183,11 @@ export function SidebarSessionRow({
             {title}
           </span>
         </button>
-        <div className="relative z-2 grid w-[1.375rem] place-items-center">
+        <div
+          className="relative z-2 grid w-[1.375rem] place-items-center"
+          onContextMenu={e => e.stopPropagation()}
+          onPointerDown={e => e.stopPropagation()}
+        >
           {!isWorking && (
             <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
               {age}

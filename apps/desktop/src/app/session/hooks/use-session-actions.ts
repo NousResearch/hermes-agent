@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { isRemoteGateway } from '@/lib/media'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearComposerAttachments, clearComposerDraft } from '@/store/composer'
 import { clearQueuedPrompts } from '@/store/composer-queue'
@@ -457,7 +458,10 @@ export function useSessionActions({
         setActiveSessionId(cachedRuntimeId)
         activeSessionIdRef.current = cachedRuntimeId
         syncSessionStateToView(cachedRuntimeId, cachedState)
-        setCurrentCwd(cachedState.cwd)
+        // Don't restore a remote CWD that doesn't exist on this machine.
+        if (!isRemoteGateway()) {
+          setCurrentCwd(cachedState.cwd)
+        }
         setCurrentBranch(cachedState.branch)
         setSessionStartedAt(Date.now())
         clearComposerDraft()

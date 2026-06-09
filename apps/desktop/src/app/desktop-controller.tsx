@@ -12,9 +12,9 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
+import { type CronJob, getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
-import { setCronFocusJobId, setCronJobs } from '../store/cron'
+import { $cronJobs, setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -128,6 +128,24 @@ function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
   if (a.length !== b.length) {return false}
 
   return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+}
+
+// getCronJobs() returns a fresh array on every 30s poll, so an unconditional
+// setCronJobs() would re-render every $cronJobs subscriber (the Cron overlay)
+// on byte-identical data. A deep value compare lets the poll skip the swap
+// unless a job actually changed — covering both scheduler advances
+// (next_run_at / state) and agent `update_job` edits (prompt / schedule /
+// deliver / …), whose only UI delivery path is this poll. Cron jobs are plain
+// serialisable data returned in a stable shape, so a JSON comparison is a
+// reliable, future-proof equality check (no per-field enumeration to drift).
+function sameCronJobs(a: CronJob[], b: CronJob[]): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b)
+  } catch {
+    // Fail open: if the jobs aren't serialisable for some reason, fall back to
+    // swapping (the prior always-swap behavior) rather than dropping the update.
+    return false
+  }
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:
@@ -288,7 +306,8 @@ export function DesktopController() {
     try {
       const jobs = await getCronJobs()
 
-      setCronJobs(jobs)
+      // Skip the swap (and the re-render it triggers) when nothing changed.
+      if (!sameCronJobs($cronJobs.get(), jobs)) {setCronJobs(jobs)}
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }

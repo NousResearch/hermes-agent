@@ -2,6 +2,7 @@ export interface ActiveTool {
   context?: string
   id: string
   name: string
+  verboseArgs?: string
   startedAt?: number
 }
 
@@ -148,6 +149,7 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  profile_name?: string
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

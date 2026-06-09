@@ -294,6 +294,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOW_MENTION_USERS` | No | `true` | When `true` (default), the bot can ping individual users by ID. |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | No | `true` | When `true` (default), replying to a message pings the original author. |
 | `DISCORD_PROXY` | No | — | Proxy URL for Discord connections (HTTP, WebSocket, REST). Overrides `HTTPS_PROXY`/`ALL_PROXY`. Supports `http://`, `https://`, and `socks5://` schemes. |
+| `DISCORD_ALLOW_ANY_ATTACHMENT` | No | `false` | When `true`, the bot accepts attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached to disk and surfaced to the agent as a local path with `application/octet-stream` MIME so it can inspect them with `terminal` / `read_file` / `ffprobe` / etc. |
+| `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
 
@@ -613,6 +615,43 @@ The Discord adapter supports native file uploads for every common media type via
 
 Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
 
+## Receiving Arbitrary File Types
+
+By default the bot caches uploads that match a built-in allowlist — images, audio, video, PDF, text/markdown/csv/log, JSON/XML/YAML/TOML, zip, docx/xlsx/pptx. Anything else (a `.wav`, a `.bin`, a custom-extension dump) gets logged as `Unsupported document type` and dropped before the agent sees it.
+
+To accept arbitrary file types, enable `discord.allow_any_attachment`:
+
+```yaml
+discord:
+  allow_any_attachment: true
+  # Optional — raise/disable the per-file size cap. Default is 32 MiB.
+  # The whole file is held in memory while being cached, so unlimited
+  # uploads carry a real memory cost.
+  max_attachment_bytes: 33554432   # bytes; 0 = unlimited
+```
+
+When the flag is on, any uploaded file is downloaded, cached under `~/.hermes/cache/documents/`, and surfaced to the agent as a `DOCUMENT`-typed message event with `application/octet-stream` MIME. The agent receives a context note pointing at the local path (auto-translated for Docker/Modal sandboxed terminals via `to_agent_visible_cache_path`) and can inspect the file with `terminal` (`ffprobe`, `unzip`, `file`, `strings`, etc.) or `read_file`. The file body is **not** inlined into the prompt — only the path — so binary uploads don't blow up the context window.
+
+Known-text formats already in the allowlist (`.txt`, `.md`, `.log`) continue to have their contents auto-injected up to 100 KiB; that behavior is unchanged when the flag is on.
+
+Equivalent env vars: `DISCORD_ALLOW_ANY_ATTACHMENT=true` and `DISCORD_MAX_ATTACHMENT_BYTES=33554432` (or `0` for no cap).
+
+:::warning Memory cost of unlimited
+Disabling the size cap (`max_attachment_bytes: 0`) means a user can drop a multi-GB file on the bot and the gateway will dutifully buffer it through memory while caching to disk. Only set this in trusted single-user installs. For shared bots, keep the default 32 MiB or raise it conservatively.
+:::
+
+## Interactive Prompts (clarify)
+
+When the agent calls the `clarify` tool — to ask which approach you prefer, get post-task feedback, or check before a non-trivial decision — Discord renders the question with **one button per choice**:
+
+> Which framework should I use for the dashboard?
+>
+> [1. Next.js] [2. Remix] [3. Astro] [Other (type answer)]
+
+Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
+
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
@@ -641,8 +680,39 @@ Hermes Agent supports Discord voice messages:
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
 For the full setup and operational guide, see:
-- [Voice Mode](/docs/user-guide/features/voice-mode)
-- [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes)
+- [Voice Mode](/user-guide/features/voice-mode)
+- [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)
+
+### Voice Channel Audio Effects (ambient + verbal acks)
+
+When the bot is in a voice channel, you can give it a more conversational feel: a short verbal acknowledgement ("let me look into that") before it starts working, and a subtle ambient "thinking" bed that plays underneath while tools run — the speech ducks the ambient down and swells it back when finished, similar to Grok voice mode.
+
+discord.py plays only one audio stream per connection, so Hermes installs a software mixer on the outgoing stream that sums an ambient loop, acknowledgements, and TTS replies into that single stream — they overlap instead of cutting each other off.
+
+This is **off by default**. Enable it in `config.yaml`:
+
+```yaml
+discord:
+  voice_fx:
+    enabled: true          # master switch
+    ambient_enabled: true  # idle "thinking" bed while tools run
+    ambient_path: ""       # custom loop file (any audio format); "" = built-in synthesised pad
+    ambient_gain: 0.18     # idle bed loudness (0.0–1.0)
+    duck_gain: 0.06        # ambient loudness while the bot is speaking
+    speech_gain: 1.0       # TTS / acknowledgement loudness
+    ack_enabled: true      # speak a short phrase before the first tool call of a turn
+    ack_phrases:           # picked at random; set to [] to disable the spoken ack
+      - "Let me look into that."
+      - "One moment."
+      - "Checking on that now."
+```
+
+Notes:
+- The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
+- `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
+- All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.
+- When `voice_fx.enabled` is `false`, voice playback uses the original one-shot path and nothing changes.
+
 
 ## Forum Channels
 

@@ -25,7 +25,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from agent.lsp.workspace import nearest_root, normalize_path
+from agent.lsp.workspace import nearest_root
 
 logger = logging.getLogger("agent.lsp.servers")
 
@@ -237,7 +237,7 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
             return None
     # If we got the cli ``pyright``, the langserver is its sibling.
     base = os.path.basename(bin_path)
-    if base in ("pyright", "pyright.exe"):
+    if base in {"pyright", "pyright.exe"}:
         sibling = os.path.join(os.path.dirname(bin_path), "pyright-langserver")
         if os.path.exists(sibling):
             bin_path = sibling

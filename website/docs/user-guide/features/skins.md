@@ -259,7 +259,7 @@ npm start
 6. Click **Save** to write the skin YAML to `~/.hermes/skins/`.
 7. Click **Activate** to set it as the current skin (updates `display.skin` in `config.yaml`).
 
-Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](/docs/user-guide/profiles) too.
+Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too.
 
 ## Operational notes
 

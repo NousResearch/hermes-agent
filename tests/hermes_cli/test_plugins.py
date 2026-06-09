@@ -1,7 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
 import logging
-import os
 import sys
 import types
 from pathlib import Path
@@ -13,17 +12,13 @@ import yaml
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
-    LoadedPlugin,
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
     resolve_plugin_command_result,
-    discover_plugins,
-    invoke_hook,
 )
 
 
@@ -328,6 +323,8 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "api_request_error" in VALID_HOOKS
+        assert "subagent_start" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
         assert "transform_llm_output" in VALID_HOOKS
@@ -373,6 +370,26 @@ class TestPluginHooks:
 
         # Should not raise
         mgr.invoke_hook("pre_tool_call", tool_name="test", args={}, task_id="t1")
+
+    def test_invoke_hook_adds_observer_schema_version(self, tmp_path, monkeypatch):
+        """invoke_hook() supplies the observer schema version for all hooks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "schema_plugin",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: kw.get("telemetry_schema_version"))'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="test", args={}) == [
+            "hermes.observer.v1"
+        ]
 
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
         """A hook callback that raises does NOT crash the caller."""
@@ -440,6 +457,8 @@ class TestPluginHooks:
         mgr = PluginManager()
         mgr.discover_and_load()
 
+        assert mgr.has_hook("pre_api_request") is True
+        assert mgr.has_hook("post_api_request") is False
         results = mgr.invoke_hook(
             "pre_api_request",
             session_id="s1",
@@ -492,7 +511,6 @@ class TestPluginHooks:
             mgr.discover_and_load()
 
         assert any("on_banana" in record.message for record in caplog.records)
-
 
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
@@ -1309,7 +1327,6 @@ class TestPluginCommandResultResolution:
         monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
         monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
 
-        import pytest
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())
 

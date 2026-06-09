@@ -320,7 +320,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(1, "once", "Norbert")
+            await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
         assert 1 not in adapter._approval_state
@@ -335,7 +335,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(2, "deny", "Alice")
+            await adapter._resolve_approval(2, "deny", "Alice", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_called_once_with("some-session", "deny")
 
@@ -349,7 +349,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(3, "session", "Bob")
+            await adapter._resolve_approval(3, "session", "Bob", open_id="ou_user1", chat_id="oc_99")
 
         mock_resolve.assert_called_once_with("sess-3", "session")
 
@@ -363,7 +363,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(4, "always", "Carol")
+            await adapter._resolve_approval(4, "always", "Carol", open_id="ou_user1", chat_id="oc_55")
 
         mock_resolve.assert_called_once_with("sess-4", "always")
 
@@ -372,9 +372,40 @@ class TestResolveApproval:
         adapter = _make_adapter()
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
-            await adapter._resolve_approval(99, "once", "Nobody")
+            await adapter._resolve_approval(99, "once", "Nobody", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_click_does_not_resolve(self):
+        adapter = _make_adapter()
+        adapter._admins = {"ou_admin"}
+        adapter._approval_state[5] = {
+            "session_key": "sess-5",
+            "message_id": "msg_005",
+            "chat_id": "oc_12345",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._resolve_approval(5, "once", "Mallory", open_id="ou_intruder", chat_id="oc_12345")
+
+        mock_resolve.assert_not_called()
+        assert 5 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_chat_mismatch_does_not_resolve(self):
+        adapter = _make_adapter()
+        adapter._approval_state[6] = {
+            "session_key": "sess-6",
+            "message_id": "msg_006",
+            "chat_id": "oc_expected",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._resolve_approval(6, "session", "Norbert", open_id="ou_user1", chat_id="oc_wrong")
+
+        mock_resolve.assert_not_called()
+        assert 6 in adapter._approval_state
 
 # ===========================================================================
 # _handle_card_action_event — non-approval card actions
@@ -448,6 +479,12 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[1] = {
+            "session_key": "sess-1",
+            "message_id": "msg-1",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 1},
             open_id="ou_bob",
@@ -469,6 +506,12 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._approval_state[2] = {
+            "session_key": "sess-2",
+            "message_id": "msg-2",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "deny", "approval_id": 2},
         )
@@ -510,6 +553,12 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_unknown"}
+        adapter._approval_state[3] = {
+            "session_key": "sess-3",
+            "message_id": "msg-3",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_session", "approval_id": 3},
             open_id="ou_unknown",
@@ -525,6 +574,12 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_expired"}
+        adapter._approval_state[4] = {
+            "session_key": "sess-4",
+            "message_id": "msg-4",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 4},
             open_id="ou_expired",
@@ -537,6 +592,51 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert "Old Name" not in card["elements"][0]["content"]
         assert "ou_expired" in card["elements"][0]["content"]
+
+    def test_rejects_approval_click_from_unauthorized_user(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._approval_state[5] = {
+            "session_key": "sess-5",
+            "message_id": "msg-5",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 5},
+            open_id="ou_attacker",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_rejects_approval_click_when_callback_chat_mismatches(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[6] = {
+            "session_key": "sess-6",
+            "message_id": "msg-6",
+            "chat_id": "oc_expected",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 6},
+            chat_id="oc_mismatch",
+            open_id="ou_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
 
     def test_returns_card_for_update_prompt_yes(self, _patch_callback_card_types):
         adapter = _make_adapter()

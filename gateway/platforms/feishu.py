@@ -934,6 +934,20 @@ def _normalize_share_chat_message(payload: Dict[str, Any]) -> FeishuNormalizedMe
 
 def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -> FeishuNormalizedMessage:
     card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+
+    # CardKit 2.0: real content lives in user_dsl (JSON string),
+    # not in elements (v1 fallback, often empty placeholder text).
+    # Parse user_dsl and inject its elements so the standard extractor picks them up.
+    _user_dsl_raw = card_payload.get("user_dsl")
+    if isinstance(_user_dsl_raw, str) and _user_dsl_raw.strip():
+        try:
+            _user_dsl = json.loads(_user_dsl_raw)
+            _body = _user_dsl.get("body") or _user_dsl
+            if isinstance(_body, dict) and _body.get("elements"):
+                card_payload["elements"] = _body["elements"]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
     title = _first_non_empty_text(
         _find_header_title(card_payload),
         payload.get("title"),

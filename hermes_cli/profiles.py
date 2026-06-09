@@ -1010,6 +1010,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print(f"✓ Removed {wrapper_path}")
 
     # 4. Remove profile directory
+    remove_error: Exception | None = None
     try:
         def _make_writable(func, path, exc):
             """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
@@ -1056,6 +1057,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
+        remove_error = e
 
     # 5. Clear active_profile if it pointed to this profile
     try:
@@ -1065,6 +1067,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print("✓ Active profile reset to default")
     except Exception:
         pass
+
+    if remove_error is not None:
+        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
 
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir

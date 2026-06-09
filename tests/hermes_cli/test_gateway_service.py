@@ -591,6 +591,13 @@ class TestLaunchdServiceRecovery:
                 "<string>/Users/alice/.hermes</string></plist>"
             ),
         )
+        # Pin the launchd domain helpers so install targets a deterministic
+        # domain regardless of the host session type (#48).
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
 
         calls = []
 
@@ -605,7 +612,6 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_install()
 
         label = gateway_cli.get_launchd_label()
-        domain = gateway_cli._launchd_domain()
         assert "--replace" in plist_path.read_text(encoding="utf-8")
         # The calls list includes launchctl print probes from _launchd_domain()
         # before the bootout/bootstrap calls. Filter to only bootout/bootstrap.
@@ -725,7 +731,11 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
 
         calls = []
-        domain = gateway_cli._launchd_domain()
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
         target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
@@ -753,7 +763,11 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
 
         calls = []
-        domain = gateway_cli._launchd_domain()
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
         target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
@@ -776,7 +790,12 @@ class TestLaunchdServiceRecovery:
 
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
         calls = []
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
+        target = f"{domain}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
@@ -803,6 +822,12 @@ class TestLaunchdServiceRecovery:
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []
 
+        # Pin the domain helper so computing the restart target doesn't shell
+        # out to launchctl — the assertion below is that no *launchctl* command
+        # runs once the self-restart path is taken.
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: f"gui/{os.getuid()}"
+        )
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -826,7 +851,10 @@ class TestLaunchdServiceRecovery:
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""
         label = gateway_cli.get_launchd_label()
-        domain = gateway_cli._launchd_domain()
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
         target = f"{domain}/{label}"
 
         calls = []
@@ -845,7 +873,10 @@ class TestLaunchdServiceRecovery:
     def test_launchd_stop_tolerates_already_unloaded(self, monkeypatch, capsys):
         """launchd_stop silently handles exit codes 3/113 (job not loaded)."""
         label = gateway_cli.get_launchd_label()
-        domain = gateway_cli._launchd_domain()
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
         target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
@@ -898,22 +929,66 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
-    def test_launchd_domain_uses_user_domain(self, monkeypatch):
-        # The user/<uid> domain (not gui/<uid>) is the one reachable from
-        # non-Aqua/background sessions on macOS 26+ (issue #23387).
-        # When gui/<uid> fails to probe and user/<uid> succeeds,
-        # _launchd_domain() must return user/<uid>.
-        gateway_cli._resolved_launchd_domain = None
-        monkeypatch.setattr(os, "getuid", lambda: 501)
-        label = gateway_cli.get_launchd_label()
+    def test_launchd_domain_uses_gui_for_aqua_session(self, monkeypatch):
+        # An Aqua (GUI login) session manages LaunchAgents in gui/<uid>.
+        monkeypatch.setattr(gateway_cli, "_launchctl_session_managername", lambda: "Aqua")
+        assert gateway_cli._launchd_domain() == f"gui/{os.getuid()}"
 
-        def fake_run(cmd, check=False, **kwargs):
-            if "print" in cmd and "gui/" in " ".join(cmd):
-                raise subprocess.CalledProcessError(1, cmd, stderr="Domain error")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+    def test_launchd_domain_uses_user_for_background_session(self, monkeypatch):
+        # A headless/SSH (Background) session manages LaunchAgents in user/<uid>.
+        monkeypatch.setattr(
+            gateway_cli, "_launchctl_session_managername", lambda: "Background"
+        )
+        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
 
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-        assert gateway_cli._launchd_domain() == "user/501"
+    def test_launchd_domain_uses_user_when_managername_unavailable(self, monkeypatch):
+        # When launchctl can't report the session type, default to user/<uid>.
+        monkeypatch.setattr(gateway_cli, "_launchctl_session_managername", lambda: None)
+        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+
+    def test_launchctl_session_managername_returns_none_on_nonzero(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+        )
+        assert gateway_cli._launchctl_session_managername() is None
+
+    def test_launchctl_session_managername_parses_stdout(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="Aqua\n", stderr=""),
+        )
+        assert gateway_cli._launchctl_session_managername() == "Aqua"
+
+    def test_launchd_domain_for_existing_job_prefers_loaded_domain(self, monkeypatch):
+        # The job is loaded in gui/<uid>; restart/stop must target gui, not the
+        # session default — this is the macOS 26.5 exit-5 regression.
+        uid = os.getuid()
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_job_present_in_domain",
+            lambda domain, label: domain == f"gui/{uid}",
+        )
+        # Even if the session-type default would say user/<uid>:
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: f"user/{uid}")
+        assert (
+            gateway_cli._launchd_domain_for_existing_job("ai.hermes.gateway")
+            == f"gui/{uid}"
+        )
+
+    def test_launchd_domain_for_existing_job_falls_back_to_default(self, monkeypatch):
+        # No existing job anywhere → use the session-type default.
+        uid = os.getuid()
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_job_present_in_domain", lambda domain, label: False
+        )
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: f"user/{uid}")
+        assert (
+            gateway_cli._launchd_domain_for_existing_job("ai.hermes.gateway")
+            == f"user/{uid}"
+        )
 
     def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
         # Codes that persist after a fresh bootstrap → launchd truly unavailable.
@@ -930,7 +1005,11 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
 
         calls = []
-        domain = gateway_cli._launchd_domain()
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
         target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
@@ -958,7 +1037,16 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         label = gateway_cli.get_launchd_label()
-        target = f"{gateway_cli._launchd_domain()}/{label}"
+        # Pin both domain helpers so the kickstart target is deterministic and
+        # does not depend on the `launchctl print` probe (which is unavailable
+        # on CI and would otherwise resolve to a domain that diverges from the
+        # locally computed `target`).
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
+        target = f"{domain}/{label}"
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
@@ -1025,7 +1113,14 @@ class TestLaunchdServiceRecovery:
 
     def test_launchd_restart_falls_back_to_detached_on_error_5(self, monkeypatch, capsys):
         """kickstart -k error 5 (domain unmanageable) should relaunch detached."""
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        # Pin both domain helpers so the kickstart target is deterministic and
+        # does not depend on the `launchctl print` probe (unavailable on CI).
+        domain = f"gui/{os.getuid()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_domain_for_existing_job", lambda label: domain
+        )
+        target = f"{domain}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
@@ -1076,114 +1171,6 @@ class TestLaunchdServiceRecovery:
         assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "nohup hermes gateway run" in out
-
-
-class TestLaunchdDomainDetection:
-    """Regression tests for _launchd_domain() probing (#40831).
-
-    The function must detect which launchd domain actually contains (or can
-    manage) the service, rather than hardcoding ``user/<uid>`` or ``gui/<uid>``.
-    """
-
-    def _reset_domain_cache(self):
-        """Clear any cached domain result between tests."""
-        gateway_cli._resolved_launchd_domain = None
-
-    def test_prefers_gui_domain_when_service_loaded_there(self, monkeypatch):
-        """In an Aqua session where the service is loaded under gui/<uid>,
-        _launchd_domain() must return ``gui/<uid>`` — not ``user/<uid>``."""
-        self._reset_domain_cache()
-        monkeypatch.setattr(os, "getuid", lambda: 501)
-        label = gateway_cli.get_launchd_label()
-
-        run_calls = []
-
-        def fake_run(cmd, check=False, **kwargs):
-            run_calls.append(cmd)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
-        # Should have probed gui first
-        assert run_calls[0] == ["launchctl", "print", f"gui/501/{label}"]
-
-    def test_falls_back_to_user_domain_when_gui_fails(self, monkeypatch):
-        """In a Background/SSH session where gui/<uid> fails but user/<uid>
-        works, _launchd_domain() must return ``user/<uid>``."""
-        self._reset_domain_cache()
-        monkeypatch.setattr(os, "getuid", lambda: 501)
-        label = gateway_cli.get_launchd_label()
-
-        run_calls = []
-
-        def fake_run(cmd, check=False, **kwargs):
-            run_calls.append(cmd)
-            if "print" in cmd and "gui/" in " ".join(cmd):
-                raise subprocess.CalledProcessError(1, cmd, stderr="Domain error")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
-        # Should have tried gui first, then user
-        assert len(run_calls) >= 2
-
-    def test_uses_managername_heuristic_when_both_probe_fail(self, monkeypatch):
-        """When neither domain contains a loaded service, use
-        ``launchctl managername`` as a tiebreaker: Aqua -> gui, else -> user."""
-        self._reset_domain_cache()
-        monkeypatch.setattr(os, "getuid", lambda: 501)
-        label = gateway_cli.get_launchd_label()
-
-        def fake_run(cmd, check=False, **kwargs):
-            if "print" in cmd:
-                raise subprocess.CalledProcessError(1, cmd, stderr="not found")
-            if "managername" in cmd:
-                return SimpleNamespace(returncode=0, stdout="Aqua\n", stderr="")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
-
-    def test_managername_background_selects_user_domain(self, monkeypatch):
-        """When managername is Background (non-Aqua), use user/<uid>."""
-        self._reset_domain_cache()
-        monkeypatch.setattr(os, "getuid", lambda: 501)
-
-        def fake_run(cmd, check=False, **kwargs):
-            if "print" in cmd:
-                raise subprocess.CalledProcessError(1, cmd, stderr="not found")
-            if "managername" in cmd:
-                return SimpleNamespace(returncode=0, stdout="Background\n", stderr="")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
-
-    def test_caches_result_across_calls(self, monkeypatch):
-        """Domain detection should run once and cache the result."""
-        self._reset_domain_cache()
-        monkeypatch.setattr(os, "getuid", lambda: 501)
-
-        run_count = [0]
-
-        def fake_run(cmd, check=False, **kwargs):
-            run_count[0] += 1
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-
-        d1 = gateway_cli._launchd_domain()
-        d2 = gateway_cli._launchd_domain()
-        assert d1 == d2
-        assert run_count[0] == 1  # Only probed once
 
 
 class TestGatewayServiceDetection:

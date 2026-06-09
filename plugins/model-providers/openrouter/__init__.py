@@ -117,19 +117,25 @@ class OpenRouterProfile(ProviderProfile):
         """
         extra_body: dict[str, Any] = {}
         if supports_reasoning:
-            if reasoning_config is not None:
-                cfg = dict(reasoning_config)
-                # Reasoning-mandatory Anthropic models (Claude 4.6+ / fable /
-                # future named models) have no "off" switch. Forwarding
-                # ``{enabled: false}`` makes OpenRouter emit Anthropic's manual
-                # ``thinking: {type: "disabled"}``, which those models reject
-                # with a non-retryable HTTP 400. Omit reasoning entirely so the
-                # model falls back to its default (adaptive) thinking instead.
-                disabling = cfg.get("enabled") is False or cfg.get("effort") == "none"
-                if disabling and _anthropic_reasoning_is_mandatory(model):
-                    pass  # leave reasoning unset → adaptive default
-                else:
-                    extra_body["reasoning"] = cfg
+            # Reasoning-mandatory Anthropic models (Claude 4.6+ / fable /
+            # future named models) use *adaptive* thinking: the model decides
+            # how much to think, and OpenRouter ignores ``reasoning.effort`` for
+            # them entirely. Sending any ``reasoning`` field is therefore both
+            # pointless and actively harmful:
+            #   - ``{enabled: false}`` → OpenRouter emits Anthropic's manual
+            #     ``thinking: {type: "disabled"}``, which these models 400 on.
+            #   - any enabled form, on a tool-continuation turn whose prior
+            #     assistant tool_call carries no thinking block (chat_completions
+            #     never replays signed thinking blocks), ALSO makes OpenRouter
+            #     emit ``thinking: {type: "disabled"}`` → the same 400 on every
+            #     turn after the first tool call.
+            # The only reliable behavior is to omit ``reasoning`` and let the
+            # model default to adaptive. See hermes-agent#42991 (disable case)
+            # and the tool-replay follow-up.
+            if _anthropic_reasoning_is_mandatory(model):
+                pass  # omit reasoning entirely → adaptive default
+            elif reasoning_config is not None:
+                extra_body["reasoning"] = dict(reasoning_config)
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 

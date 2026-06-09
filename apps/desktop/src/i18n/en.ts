@@ -1059,6 +1059,16 @@ export const en: Translations = {
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
     groupTitleUngrouped: 'Group by workspace',
+    sortModeTooltip: {
+      manual: 'Sort: manual order (click to switch)',
+      recency: 'Sort: recent activity (click to switch)',
+      created: 'Sort: creation time (click to switch)'
+    },
+    sortModeAria: {
+      manual: 'Sort by manual order',
+      recency: 'Sort by recent activity',
+      created: 'Sort by creation time'
+    },
     allPinned: 'Everything here is pinned. Unpin a chat to show it in recents.',
     shiftClickHint: 'Shift-click a chat to pin',
     noWorkspace: 'No workspace',

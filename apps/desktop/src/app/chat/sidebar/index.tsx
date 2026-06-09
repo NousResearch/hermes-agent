@@ -53,6 +53,7 @@ import {
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
   $sidebarSessionOrderIds,
+  $sidebarSortMode,
   $sidebarWorkspaceOrderIds,
   pinSession,
   reorderPinnedSession,
@@ -62,6 +63,7 @@ import {
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
   setSidebarSessionOrderIds,
+  setSidebarSortMode,
   setSidebarWorkspaceOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
@@ -337,6 +339,7 @@ export function ChatSidebar({
   const contentVisible = sidebarOpen || overlayMounted
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
+  const sortMode = useStore($sidebarSortMode)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
@@ -524,10 +527,17 @@ export function ChatSidebar({
     }
   }, [agentOrderIds, unpinnedAgentSessions])
 
-  const agentSessions = useMemo(
-    () => orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds),
-    [unpinnedAgentSessions, agentOrderIds]
-  )
+  const agentSessions = useMemo(() => {
+    if (sortMode === 'recency') {
+      return [...unpinnedAgentSessions].sort((a, b) => sessionTime(b) - sessionTime(a))
+    }
+
+    if (sortMode === 'created') {
+      return [...unpinnedAgentSessions].sort((a, b) => (b.started_at || 0) - (a.started_at || 0))
+    }
+
+    return orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds)
+  }, [unpinnedAgentSessions, agentOrderIds, sortMode])
 
   const { localSessions: localAgentSessions, sourceGroups } = useMemo(
     () => sourceSessionGroupsFor(agentSessions),
@@ -901,26 +911,47 @@ export function ChatSidebar({
               // Grouping operates on unpinned recents; if everything is pinned
               // the toggle does nothing, and it's irrelevant in the ALL-profiles
               // view (always grouped by profile), so hide the button (not the slot).
-              <div className="grid size-6 shrink-0 place-items-center">
+              <div className="flex shrink-0 items-center gap-0.5">
                 {!showAllProfiles && localAgentSessions.length > 0 ? (
-                  <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
-                    <Button
-                      aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
-                      className={cn(
-                        'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                        agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                      )}
-                      onClick={event => {
-                        event.stopPropagation()
-                        setSidebarRecentsOpen(true)
-                        setSidebarAgentsGrouped(!agentsGrouped)
-                      }}
-                      size="icon-xs"
-                      variant="ghost"
-                    >
-                      <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-                    </Button>
-                  </Tip>
+                  <>
+                    <Tip label={s.sortModeTooltip[sortMode]}>
+                      <Button
+                        aria-label={s.sortModeAria[sortMode]}
+                        className={cn(
+                          'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                          sortMode !== 'manual' && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                        )}
+                        onClick={event => {
+                          event.stopPropagation()
+                          const modes: Array<'manual' | 'recency' | 'created'> = ['manual', 'recency', 'created']
+                          const next = modes[(modes.indexOf(sortMode) + 1) % modes.length]
+                          setSidebarSortMode(next)
+                        }}
+                        size="icon-xs"
+                        variant="ghost"
+                      >
+                        <Codicon name={sortMode === 'manual' ? 'list-ordered' : sortMode === 'recency' ? 'history' : 'calendar'} size="0.75rem" />
+                      </Button>
+                    </Tip>
+                    <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                      <Button
+                        aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+                        className={cn(
+                          'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                          agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                        )}
+                        onClick={event => {
+                          event.stopPropagation()
+                          setSidebarRecentsOpen(true)
+                          setSidebarAgentsGrouped(!agentsGrouped)
+                        }}
+                        size="icon-xs"
+                        variant="ghost"
+                      >
+                        <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                      </Button>
+                    </Tip>
+                  </>
                 ) : null}
               </div>
             }
@@ -937,7 +968,7 @@ export function ChatSidebar({
             pinned={false}
             rootClassName="min-h-0 flex-1 p-0"
             sessions={displayAgentSessions}
-            sortable={!showAllProfiles && agentSessions.length > 1}
+            sortable={sortMode === 'manual' && !showAllProfiles && agentSessions.length > 1}
             workingSessionIdSet={workingSessionIdSet}
           />
         )}

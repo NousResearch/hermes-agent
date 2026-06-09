@@ -1168,6 +1168,16 @@ export const zhHant = defineLocale({
     groupAriaUngrouped: '依工作區分組工作階段',
     groupTitleGrouped: '取消分組',
     groupTitleUngrouped: '依工作區分組',
+    sortModeTooltip: {
+      manual: '排序：手動順序（點擊切換）',
+      recency: '排序：最近活動（點擊切換）',
+      created: '排序：建立時間（點擊切換）'
+    },
+    sortModeAria: {
+      manual: '按手動順序排序',
+      recency: '按最近活動排序',
+      created: '按建立時間排序'
+    },
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',
     shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
     noWorkspace: '無工作區',

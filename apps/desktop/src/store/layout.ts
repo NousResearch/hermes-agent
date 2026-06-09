@@ -4,8 +4,10 @@ import {
   arraysEqual,
   insertUniqueId,
   persistBoolean,
+  persistString,
   persistStringArray,
   storedBoolean,
+  storedString,
   storedStringArray
 } from '@/lib/storage'
 
@@ -26,6 +28,9 @@ const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
+const SIDEBAR_SORT_MODE_STORAGE_KEY = 'hermes.desktop.sidebarSortMode'
+
+export type SidebarSortMode = 'manual' | 'recency' | 'created'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
@@ -69,6 +74,9 @@ export const $sidebarRecentsOpen = atom(true)
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
 export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
 export const $sidebarAgentsGrouped = atom(storedBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false))
+export const $sidebarSortMode = atom<SidebarSortMode>(
+  (storedString(SIDEBAR_SORT_MODE_STORAGE_KEY) as SidebarSortMode) || 'manual'
+)
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = atom(storedBoolean(PANES_FLIPPED_STORAGE_KEY, false))
@@ -80,6 +88,7 @@ $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY,
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
+$sidebarSortMode.subscribe(mode => persistString(SIDEBAR_SORT_MODE_STORAGE_KEY, mode))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
 export function setSidebarWidth(width: number) {
@@ -141,6 +150,10 @@ export function setSidebarCronOpen(open: boolean) {
 
 export function setSidebarAgentsGrouped(grouped: boolean) {
   $sidebarAgentsGrouped.set(grouped)
+}
+
+export function setSidebarSortMode(mode: SidebarSortMode) {
+  $sidebarSortMode.set(mode)
 }
 
 export function setSidebarSessionOrderIds(ids: string[]) {

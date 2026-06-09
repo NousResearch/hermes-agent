@@ -825,6 +825,9 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "local_http":
+            return "local_http"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > xai > elevenlabs -
@@ -1615,6 +1618,125 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: local_http (HTTP STT service)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_local_http(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using a local STT service via HTTP API.
+
+    Calls an external STT service over HTTP (default: http://localhost:8001)
+    with a POST /transcribe endpoint. The service runs independently, so
+    Hermes doesn't need to load the model itself.
+
+    Config (config.yaml)::
+
+        stt:
+          provider: local_http
+          local_http:
+            service_url: http://localhost:8001
+            language: zh-CN
+            timeout: 60
+    """
+    stt_config = _load_stt_config()
+    http_config = stt_config.get("local_http", {})
+
+    service_url = str(
+        http_config.get("service_url")
+        or os.getenv("STT_SERVICE_URL")
+        or "http://localhost:8001"
+    ).strip().rstrip("/")
+
+    language = str(
+        http_config.get("language")
+        or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
+        or DEFAULT_LOCAL_STT_LANGUAGE
+    ).strip()
+
+    timeout = int(
+        http_config.get("timeout")
+        or os.getenv("STT_TIMEOUT")
+        or 60
+    )
+
+    model = model_name or http_config.get("model") or DEFAULT_LOCAL_MODEL
+
+    try:
+        import requests
+
+        with open(file_path, "rb") as audio_file:
+            response = requests.post(
+                f"{service_url}/transcribe",
+                files={"file": (Path(file_path).name, audio_file)},
+                data={"language": language, "model": model},
+                timeout=timeout,
+            )
+
+        if response.status_code != 200:
+            detail = ""
+            try:
+                err_body = response.json()
+                detail = err_body.get("error", "") or response.text[:300]
+            except Exception:
+                detail = response.text[:300]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"STT service error (HTTP {response.status_code}): {detail}",
+            }
+
+        result = response.json()
+
+        if not result.get("success", False):
+            error_msg = result.get("error", "Unknown STT service error")
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"STT service failed: {error_msg}",
+            }
+
+        transcript_text = result.get("text", "").strip()
+
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "STT service returned empty transcript",
+            }
+
+        duration_ms = result.get("duration_ms", 0)
+        duration_s = duration_ms / 1000.0 if duration_ms else 0
+
+        logger.info(
+            "Transcribed %s via local_http STT (lang=%s, %.1fs audio, %d chars)",
+            Path(file_path).name, language, duration_s, len(transcript_text),
+        )
+
+        return {"success": True, "transcript": transcript_text, "provider": "local_http"}
+
+    except ImportError:
+        return {
+            "success": False, "transcript": "",
+            "error": "The 'requests' library is required for local_http STT. Install it with: pip install requests",
+        }
+    except requests.exceptions.ConnectionError as e:
+        return {
+            "success": False, "transcript": "",
+            "error": f"Cannot connect to local_http STT service at {service_url}/transcribe. Is the service running? ({e})",
+        }
+    except requests.exceptions.Timeout as e:
+        return {
+            "success": False, "transcript": "",
+            "error": f"local_http STT service at {service_url}/transcribe timed out after {timeout}s.",
+        }
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("local_http STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"local_http STT transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1692,6 +1814,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
         return _transcribe_elevenlabs(file_path, model_name)
 
+    if provider == "local_http":
+        http_cfg = stt_config.get("local_http", {})
+        model_name = model or http_cfg.get("model") or DEFAULT_LOCAL_MODEL
+        return _transcribe_local_http(file_path, model_name)
+
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in
     # elif chain — built-in names short-circuit upstream so a user's
@@ -1744,7 +1871,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
             "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "or OPENAI_API_KEY for the OpenAI Whisper API. "
+            "You can also configure stt.provider: local_http to use a local HTTP STT service."
         ),
     }
 

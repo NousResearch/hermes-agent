@@ -681,11 +681,19 @@ def create_project(
     resp = httpx.post(url, json=body, headers=_bearer(token), timeout=30.0)
     resp.raise_for_status()
     data = resp.json() or {}
+    if not isinstance(data, dict):
+        raise RuntimeError("Photon create-project returned an unexpected response")
     if data.get("error"):
         raise RuntimeError(f"Photon create-project failed: {data['error']}")
-    if not data.get("id"):
+    if data.get("succeed") is False:
+        raise RuntimeError(
+            f"Photon create-project failed: {data.get('message') or data}"
+        )
+    project_candidate = data.get("data")
+    project: Dict[str, Any] = project_candidate if isinstance(project_candidate, dict) else data
+    if not project.get("id"):
         raise RuntimeError("Photon create-project did not return a project id")
-    return data
+    return project
 
 
 def regenerate_project_secret(token: str, project_id: str) -> str:

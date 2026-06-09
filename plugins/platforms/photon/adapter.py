@@ -60,6 +60,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.platforms.helpers import strip_markdown
 
 from .auth import load_project_credentials
 
@@ -640,7 +641,7 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, content)
+        return await self._sidecar_send(chat_id, self.format_message(content))
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -758,6 +759,74 @@ class PhotonAdapter(BasePlatformAdapter):
         DM/group type, but here we only have the id, so infer conservatively.
         """
         return {"name": chat_id, "type": "dm", "id": chat_id}
+
+    def format_message(self, content: str) -> str:
+        return strip_markdown(content)
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> SendResult:
+        """Photon/iMessage is plain text, so never show the generic Markdown banner."""
+        text = self.format_message(content)
+        result = await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result.success:
+            return result
+
+        error_str = result.error or ""
+        is_network = result.retryable or self._is_retryable_error(error_str)
+        if not is_network and self._is_timeout_error(error_str):
+            return result
+
+        if is_network:
+            for attempt in range(1, max_retries + 1):
+                delay = base_delay * (2 ** (attempt - 1))
+                logger.warning(
+                    "[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
+                    attempt, max_retries, delay, error_str,
+                )
+                await asyncio.sleep(delay)
+                result = await self.send(
+                    chat_id=chat_id,
+                    content=text,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return result
+                error_str = result.error or ""
+                if not (result.retryable or self._is_retryable_error(error_str)):
+                    break
+            else:
+                logger.error(
+                    "[photon] Failed to deliver response after %d retries: %s",
+                    max_retries, error_str,
+                )
+                return result
+
+        logger.warning(
+            "[photon] Send failed: %s - retrying plain-text message",
+            error_str,
+        )
+        fallback_result = await self.send(
+            chat_id=chat_id,
+            content=text[: self.MAX_MESSAGE_LENGTH],
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if not fallback_result.success:
+            logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
+        return fallback_result
 
     async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
         if len(text) > self.MAX_MESSAGE_LENGTH:

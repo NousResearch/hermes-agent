@@ -69,9 +69,9 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice;
+let Spectrum, imessage, attachment, voice, spectrumText;
 try {
-  ({ Spectrum, attachment, voice } = await import("spectrum-ts"));
+  ({ Spectrum, attachment, voice, text: spectrumText } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
@@ -424,8 +424,8 @@ const server = http.createServer(async (req, res) => {
       }
       const space = await resolveSpace(spaceId);
       const result = replyTo
-        ? await space.send(text, { replyTo })
-        : await space.send(text);
+        ? await space.send(spectrumText(text), { replyTo })
+        : await space.send(spectrumText(text));
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/send-attachment") {
@@ -456,7 +456,7 @@ const server = http.createServer(async (req, res) => {
       // after the media so the attachment renders first.
       if (caption && typeof caption === "string") {
         try {
-          await space.send(caption);
+          await space.send(spectrumText(caption));
         } catch (e) {
           console.error(
             "photon-sidecar: attachment sent but caption failed: " +

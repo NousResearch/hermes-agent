@@ -774,9 +774,14 @@ class TestResetBundledSkill:
         manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
-            # Sanity check: without reset, sync would flag it user_modified
+            # With the fix for #42682, sync should re-baseline when user_hash
+            # matches bundled_hash (even with a stale origin_hash in manifest).
             pre = sync_skills(quiet=True)
-            assert "google-workspace" in pre["user_modified"]
+            assert "google-workspace" not in pre["user_modified"]
+            # The manifest should now hold the current bundled hash
+            manifest_after = _read_manifest()
+            expected = _dir_hash(bundled / "productivity" / "google-workspace")
+            assert manifest_after["google-workspace"] == expected
 
             # Reset (no --restore) should clear the manifest entry and re-baseline
             result = reset_bundled_skill("google-workspace", restore=False)

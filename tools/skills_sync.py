@@ -558,6 +558,19 @@ def sync_skills(quiet: bool = False) -> dict:
                 continue
 
             if user_hash != origin_hash:
+                # Check if user copy matches the current bundled version
+                # before assuming user modification.  When Curator archives
+                # a skill and later re-adds it (possibly with updates), the
+                # origin_hash in the manifest may be stale.  If the user's
+                # on-disk copy already matches the current bundled version,
+                # the user did NOT modify the skill — just re-baseline the
+                # manifest so future syncs work correctly (issue #42682).
+                if user_hash == bundled_hash:
+                    manifest[skill_name] = bundled_hash
+                    skipped += 1  # user copy == bundled; re-baselined
+                    if not quiet:
+                        print(f"  ~ {skill_name} (re-baselined, user copy matches bundled)")
+                    continue
                 # User modified this skill — don't overwrite their changes
                 user_modified.append(skill_name)
                 if not quiet:

@@ -354,50 +354,26 @@ async function resolveSpace(spaceId) {
   if (phoneTarget && imessage) {
     try {
       const im = imessage(app);
-      if (typeof im.user === "function" && typeof im.space === "function") {
-        const user = await im.user(phoneTarget);
-        const space = await im.space(user);
-        rememberKnownSpace(spaceId, space);
-        rememberKnownSpace(phoneTarget, space);
-        rememberKnownSpace(space?.id, space);
-        return space;
-      }
+      const user = await im.user(phoneTarget);
+      const space = await im.space(user);
+      rememberKnownSpace(spaceId, space);
+      rememberKnownSpace(phoneTarget, space);
+      rememberKnownSpace(space?.id, space);
+      return space;
     } catch (e) {
       console.error(
-        "photon-sidecar: phone->DM resolution failed; falling back to " +
-          "id-based lookup: " +
+        "photon-sidecar: phone->DM resolution failed: " +
           (e && e.stack ? e.stack : String(e))
       );
     }
   }
-  // spectrum-ts exposes the same Space methods via `app.space(spaceId)` /
-  // narrowed helpers; we fall back through a few accessor shapes to
-  // tolerate small SDK API drift.
-  if (typeof app.space === "function") {
-    const space = await app.space(spaceId);
-    rememberKnownSpace(spaceId, space);
-    rememberKnownSpace(space?.id, space);
-    return space;
-  }
-  if (app.spaces && typeof app.spaces.get === "function") {
-    const space = await app.spaces.get(spaceId);
-    rememberKnownSpace(spaceId, space);
-    rememberKnownSpace(space?.id, space);
-    return space;
-  }
-  if (imessage) {
-    const im = imessage(app);
-    if (typeof im.space === "function") {
-      try {
-        const space = await im.space({ id: spaceId });
-        rememberKnownSpace(spaceId, space);
-        rememberKnownSpace(space?.id, space);
-        return space;
-      } catch {
-        /* fall through */
-      }
-    }
-  }
+  // No cache hit and not a phone/DM target. spectrum-ts exposes no API to
+  // rehydrate an arbitrary opaque space id: a Space is only obtained from the
+  // inbound `[space, message]` stream (cached above in `knownSpaces`) or
+  // reconstructed for a DM from its phone number. So a group space whose cache
+  // entry was lost — e.g. after a sidecar restart with no fresh inbound message
+  // in that group — cannot be resolved here; a new inbound message in the group
+  // re-warms the cache. DMs are unaffected (reconstructed from the phone).
   throw new Error(`unable to resolve space id ${spaceId}`);
 }
 
@@ -430,7 +406,7 @@ const server = http.createServer(async (req, res) => {
       }
       const space = await resolveSpace(spaceId);
       const result = await space.send(spectrumText(text));
-      return ok(res, { messageId: result?.id || result?.messageId || null });
+      return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
       const { spaceId, path, name, mimeType, caption, kind } =
@@ -465,7 +441,7 @@ const server = http.createServer(async (req, res) => {
           );
         }
       }
-      return ok(res, { messageId: result?.id || result?.messageId || null });
+      return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/typing") {
       const { spaceId, state = "start" } = body || {};

@@ -133,11 +133,22 @@ def is_connected(cfg: PlatformConfig) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed PlatformConfig.extra from env so env-only setups appear in status."""
+    """Seed PlatformConfig.extra from env so env-only setups appear in status.
+
+    The special ``home_channel`` key is handled by the core plugin hook and
+    becomes a proper ``HomeChannel`` on ``PlatformConfig``.
+    """
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    return {"project_id": project_id, "project_secret": project_secret}
+    seed = {"project_id": project_id, "project_secret": project_secret}
+    home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("PHOTON_HOME_CHANNEL_NAME", "Home"),
+        }
+    return seed
 
 
 # ---------------------------------------------------------------------------

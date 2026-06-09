@@ -39,6 +39,40 @@ class TestParseEnvVar:
             config = _tt_mod._get_env_config()
             assert config["docker_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
 
+    def test_get_env_config_ignores_invalid_docker_json_for_local_backend(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "local",
+            "TERMINAL_DOCKER_VOLUMES": "None",
+            "TERMINAL_DOCKER_ENV": "None",
+            "TERMINAL_DOCKER_EXTRA_ARGS": "None",
+            "TERMINAL_DOCKER_FORWARD_ENV": "None",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["env_type"] == "local"
+            assert config["docker_volumes"] == []
+            assert config["docker_env"] == {}
+            assert config["docker_extra_args"] == []
+            assert config["docker_forward_env"] == []
+
+    def test_get_env_config_still_validates_docker_json_for_docker_backend(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "docker",
+            "TERMINAL_DOCKER_VOLUMES": "None",
+        }, clear=False):
+            with pytest.raises(ValueError, match="TERMINAL_DOCKER_VOLUMES"):
+                _tt_mod._get_env_config()
+
+    def test_get_env_config_ignores_invalid_docker_json_for_ssh_backend(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "ssh",
+            "TERMINAL_DOCKER_VOLUMES": "None",
+            "TERMINAL_DOCKER_ENV": "None",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["env_type"] == "ssh"
+            assert config["docker_volumes"] == []
+            assert config["docker_env"] == {}
+
     def test_create_environment_passes_docker_forward_env(self):
         fake_env = object()
         with patch.object(_tt_mod, "_DockerEnvironment", return_value=fake_env) as mock_docker:

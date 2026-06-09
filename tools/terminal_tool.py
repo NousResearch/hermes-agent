@@ -1046,6 +1046,22 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
+def _parse_env_var_for_backends(
+    name: str,
+    default: str,
+    *,
+    env_type: str,
+    backends: set[str],
+    fallback: Any,
+    converter=int,
+    type_label: str = "integer",
+):
+    """Parse env vars only for the backends that actually consume them."""
+    if env_type not in backends:
+        return fallback
+    return _parse_env_var(name, default, converter, type_label)
+
+
 def _safe_getcwd() -> str:
     """Return the current working directory, tolerating a deleted CWD.
 
@@ -1065,6 +1081,7 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
+    docker_only_backends = {"docker"}
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
 
@@ -1110,7 +1127,15 @@ def _get_env_config() -> Dict[str, Any]:
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
-        "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
+        "docker_forward_env": _parse_env_var_for_backends(
+            "TERMINAL_DOCKER_FORWARD_ENV",
+            "[]",
+            env_type=env_type,
+            backends=docker_only_backends,
+            fallback=[],
+            converter=json.loads,
+            type_label="valid JSON",
+        ),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
@@ -1138,10 +1163,34 @@ def _get_env_config() -> Dict[str, Any]:
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
-        "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
-        "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
+        "docker_volumes": _parse_env_var_for_backends(
+            "TERMINAL_DOCKER_VOLUMES",
+            "[]",
+            env_type=env_type,
+            backends=docker_only_backends,
+            fallback=[],
+            converter=json.loads,
+            type_label="valid JSON",
+        ),
+        "docker_env": _parse_env_var_for_backends(
+            "TERMINAL_DOCKER_ENV",
+            "{}",
+            env_type=env_type,
+            backends=docker_only_backends,
+            fallback={},
+            converter=json.loads,
+            type_label="valid JSON",
+        ),
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
+        "docker_extra_args": _parse_env_var_for_backends(
+            "TERMINAL_DOCKER_EXTRA_ARGS",
+            "[]",
+            env_type=env_type,
+            backends=docker_only_backends,
+            fallback=[],
+            converter=json.loads,
+            type_label="valid JSON",
+        ),
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle
         # makes that real by probing for a labeled container at startup and

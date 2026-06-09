@@ -2489,6 +2489,38 @@ class TestFallbackChainDefaultHeaders:
         assert model == "relay-model"
         assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
 
+    def test_custom_endpoint_falls_back_to_runtime_main_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            lambda: ("https://relay.example.com/v1", "relay-key", "chat_completions"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "relay-model")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        aux_mod._resolution_default_headers = None
+        aux_mod.set_runtime_main(
+            "custom",
+            "relay-model",
+            default_headers={"X-Relay-Key": "relay-secret"},
+        )
+        try:
+            client, model = aux_mod._try_custom_endpoint()
+        finally:
+            aux_mod.clear_runtime_main()
+
+        assert isinstance(client, FakeOpenAI)
+        assert model == "relay-model"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
     def test_openrouter_merges_resolution_default_headers(self, monkeypatch):
         import agent.auxiliary_client as aux_mod
 
@@ -2512,6 +2544,103 @@ class TestFallbackChainDefaultHeaders:
             client, model = aux_mod._try_openrouter()
         finally:
             aux_mod._resolution_default_headers = None
+
+        assert isinstance(client, FakeOpenAI)
+        assert model
+        assert captured["default_headers"]["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+        assert captured["default_headers"]["X-Relay-Key"] == "relay-secret"
+
+    def test_xai_oauth_client_uses_runtime_main_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        class FakeCodex:
+            def __init__(self, client, model):
+                self.client = client
+                self.model = model
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr("agent.auxiliary_client.CodexAuxiliaryClient", FakeCodex)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_xai_oauth_for_aux",
+            lambda: ("xai-token", "https://api.x.ai/v1"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        aux_mod.set_runtime_main(
+            "custom",
+            "grok-vision",
+            default_headers={"X-Relay-Key": "relay-secret"},
+        )
+        try:
+            client, model = aux_mod._build_xai_oauth_aux_client("grok-vision")
+        finally:
+            aux_mod.clear_runtime_main()
+
+        assert isinstance(client, FakeCodex)
+        assert model == "grok-vision"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+    def test_refresh_nous_client_preserves_runtime_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_nous_runtime_api",
+            lambda force_refresh=False: ("fresh-key", "https://inference-api.nousresearch.com/v1"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        client, model = aux_mod._refresh_nous_auxiliary_client(
+            cache_provider="nous",
+            model="google/gemini-3-flash-preview",
+            async_mode=False,
+            main_runtime={"default_headers": {"X-Relay-Key": "relay-secret"}},
+        )
+
+        assert isinstance(client, FakeOpenAI)
+        assert model == "google/gemini-3-flash-preview"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+    def test_openrouter_falls_back_to_runtime_main_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+        monkeypatch.setattr(
+            "agent.auxiliary_client.build_or_headers",
+            lambda: {"HTTP-Referer": "https://hermes-agent.nousresearch.com"},
+        )
+
+        aux_mod._resolution_default_headers = None
+        aux_mod.set_runtime_main(
+            "custom",
+            "relay-model",
+            default_headers={"X-Relay-Key": "relay-secret"},
+        )
+        try:
+            client, model = aux_mod._try_openrouter()
+        finally:
+            aux_mod.clear_runtime_main()
 
         assert isinstance(client, FakeOpenAI)
         assert model

@@ -464,7 +464,10 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
 
 def _headers_with_config(base_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     headers = merge_default_headers(base_headers, get_model_custom_headers())
-    headers = merge_default_headers(headers, _resolution_default_headers)
+    runtime_headers = _resolution_default_headers
+    if runtime_headers is None and isinstance(_RUNTIME_MAIN_DEFAULT_HEADERS, dict):
+        runtime_headers = _RUNTIME_MAIN_DEFAULT_HEADERS
+    headers = merge_default_headers(headers, runtime_headers)
     return _apply_user_default_headers(headers) or headers
 
 
@@ -2063,7 +2066,12 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
         return None, None
     api_key, base_url = resolved
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    real_client = OpenAI(api_key=api_key, base_url=base_url)
+    _headers = _headers_with_config()
+    real_client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        **({"default_headers": _headers} if _headers else {}),
+    )
     return CodexAuxiliaryClient(real_client, model), model
 
 
@@ -4532,7 +4540,15 @@ def _refresh_nous_auxiliary_client(
         return None, model
 
     fresh_key, fresh_base_url = runtime
-    sync_client = OpenAI(api_key=fresh_key, base_url=fresh_base_url)
+    runtime_headers = None
+    if isinstance(main_runtime, dict):
+        runtime_headers = main_runtime.get("default_headers")
+    headers = _headers_with_config(runtime_headers if isinstance(runtime_headers, dict) else None)
+    sync_client = OpenAI(
+        api_key=fresh_key,
+        base_url=fresh_base_url,
+        **({"default_headers": headers} if headers else {}),
+    )
     final_model = model
 
     current_loop = None

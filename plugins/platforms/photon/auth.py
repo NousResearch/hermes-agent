@@ -751,6 +751,21 @@ def register_user_if_absent(
     return user, True
 
 
+def user_assigned_line(user: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return the iMessage number a Spectrum user is assigned to text on.
+
+    This is the user's ``assignedPhoneNumber`` (the dashboard's "TEXTS ON"
+    column) — i.e. the number to text to reach the agent, as opposed to the
+    user's own ``phoneNumber``. On shared-number plans there is no dedicated
+    entry in ``/lines``, so this per-user field is the source of truth.
+    Returns ``None`` when unset (e.g. a freshly created, not-yet-assigned user).
+    """
+    if not user:
+        return None
+    val = user.get("assignedPhoneNumber")
+    return str(val) if val else None
+
+
 # ---------------------------------------------------------------------------
 # Dashboard API: iMessage lines (the assigned number inventory)
 

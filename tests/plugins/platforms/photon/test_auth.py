@@ -329,7 +329,11 @@ def test_register_user_if_absent_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     posted = {"n": 0}
 
     def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body=[{"id": "u1", "phoneNumber": "+1 (555) 123-4567"}])
+        return _FakeResponse(json_body=[{
+            "id": "u1",
+            "phoneNumber": "+1 (555) 123-4567",
+            "assignedPhoneNumber": "+16282679185",
+        }])
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
         posted["n"] += 1
@@ -344,6 +348,20 @@ def test_register_user_if_absent_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created is False
     assert user["id"] == "u1"
     assert posted["n"] == 0
+    # The reused user carries the assigned iMessage line ("TEXTS ON").
+    assert photon_auth.user_assigned_line(user) == "+16282679185"
+
+
+def test_user_assigned_line() -> None:
+    assert (
+        photon_auth.user_assigned_line({"assignedPhoneNumber": "+16282679185"})
+        == "+16282679185"
+    )
+    # Own number present but no assignment yet (e.g. freshly created user).
+    assert photon_auth.user_assigned_line({"phoneNumber": "+15551234567"}) is None
+    assert photon_auth.user_assigned_line({"assignedPhoneNumber": ""}) is None
+    assert photon_auth.user_assigned_line({}) is None
+    assert photon_auth.user_assigned_line(None) is None
 
 
 def test_register_user_if_absent_creates(monkeypatch: pytest.MonkeyPatch) -> None:

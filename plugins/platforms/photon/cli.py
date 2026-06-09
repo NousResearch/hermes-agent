@@ -182,6 +182,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             Colors.CYAN,
         )
     )
+    agent_number = None
     if not phone:
         print("      Skipped user registration (no phone given). Re-run with --phone later.")
     else:
@@ -190,7 +191,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         first_name = args.first_name
         email = args.email
         try:
-            _user, created = photon_auth.register_user_if_absent(
+            user, created = photon_auth.register_user_if_absent(
                 token, dashboard_id,
                 phone_number=phone,
                 first_name=first_name,
@@ -204,18 +205,26 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(f"      user registration failed: {e}", file=sys.stderr)
             return 1
         print("  ✓ phone registered" if created else "  ✓ phone already registered")
+        # The number to text the agent is the user's assigned iMessage line
+        # (the dashboard's "TEXTS ON" column). On shared-number plans there is
+        # no dedicated entry in /lines, so this per-user field is the source of
+        # truth — and we already have it from the (reused) user object.
+        agent_number = photon_auth.user_assigned_line(user)
 
-    # 5. Surface the assigned iMessage line (the number to text the agent).
-    try:
-        line = photon_auth.get_imessage_line(token, dashboard_id)
-    except Exception as e:
-        line = None
-        print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
-    if line and line.get("phoneNumber"):
-        status = line.get("status") or "active"
+    # 5. Surface the agent's iMessage number (the number to text the agent).
+    if not agent_number:
+        # No per-user assignment — fall back to a dedicated line if the project
+        # has one provisioned in its line inventory.
+        try:
+            line = photon_auth.get_imessage_line(token, dashboard_id)
+            if line:
+                agent_number = line.get("phoneNumber")
+        except Exception as e:
+            print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
+    if agent_number:
         print()
         print("┌─ Your agent's iMessage number ───────────────────────────────")
-        print(f"│  📱 {line['phoneNumber']}   ({status})")
+        print(f"│  📱 {agent_number}")
         print("│  Text this number from your phone to talk to your agent.")
         print("└──────────────────────────────────────────────────────────────")
     else:

@@ -681,7 +681,9 @@ class TestLaunchdServiceRecovery:
 
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
         calls = []
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{gateway_cli.get_launchd_label()}"
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: domain)
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)

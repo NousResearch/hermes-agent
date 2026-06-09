@@ -818,11 +818,12 @@ export function ChatSidebar({
             <SearchField
               aria-label={s.searchAria}
               // Match the nav rows: full width + fixed (no field-sizing growth),
-              // px-2 + gap-2 + a size-4 icon so the magnifier and placeholder
-              // line up with the nav icon/label columns. text-[0.8125rem] matches
+              // px-2 + gap-2 + a codicon search glyph (size-4) so the icon shares
+              // the same family/size as the nav codicons and the placeholder
+              // lines up with the nav icon/label columns. text-[0.8125rem] matches
               // the nav item label size (the shared field defaults to text-sm).
               containerClassName="flex w-full gap-2 px-2"
-              iconClassName="size-4"
+              icon={<Codicon className="pointer-events-none size-4 shrink-0 text-muted-foreground/70" name="search" />}
               inputClassName="w-full min-w-0 flex-1 text-[0.8125rem] [field-sizing:normal]"
               inputRef={searchInputRef}
               onChange={setSearchQuery}

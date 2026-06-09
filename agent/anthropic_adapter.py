@@ -1164,9 +1164,12 @@ def run_oauth_setup_token() -> Optional[str]:
             "Install it with: npm install -g @anthropic-ai/claude-code"
         )
 
-    # Run interactively — stdin/stdout/stderr inherited so user can interact
+    # Run interactively — stdin/stdout/stderr inherited so the user can
+    # complete the OAuth login prompt. Must keep inherited stdin; the TUI-EOF
+    # concern does not apply to an interactive login the user explicitly
+    # invokes.  noqa: subprocess-stdin
     try:
-        subprocess.run([claude_path, "setup-token"], stdin=subprocess.DEVNULL)
+        subprocess.run([claude_path, "setup-token"])
     except (KeyboardInterrupt, EOFError):
         return None
 

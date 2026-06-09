@@ -44,6 +44,13 @@ KNOWN_SAFE = {
     "plugins/security-guidance/patterns.py",  # subprocess mentions are in reminder strings, not calls
 }
 
+# Inline marker that exempts a single subprocess call from this check.
+# Put it in a comment on (or within) the call when the process MUST inherit
+# stdin — e.g. an interactive login the user explicitly invokes. Travels with
+# the line, so it survives edits that shift line numbers (unlike a pinned
+# file:line entry).
+EXEMPT_MARKER = "noqa: subprocess-stdin"
+
 # Directories to skip entirely.
 SKIP_DIRS = {
     "tests/",
@@ -103,6 +110,14 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
 
                         # Has input= → creates a pipe, safe.
                         if "input=" in call_text:
+                            break
+
+                        # Inline exemption marker on the call itself or within
+                        # the few comment lines immediately above it → the call
+                        # intentionally inherits stdin.
+                        window_start = max(0, i - 4)
+                        preceding = "\n".join(lines[window_start:i])
+                        if EXEMPT_MARKER in call_text or EXEMPT_MARKER in preceding:
                             break
 
                         violations.append({

@@ -886,17 +886,19 @@ class SlackAdapter(BasePlatformAdapter):
                 await self.stop_typing(chat_id)
 
             # Track the sent message ts so we can auto-respond to thread
-            # replies without requiring @mention.
+            # replies without requiring @mention. Keyed by (bot_uid, ts) so
+            # multiple Slack apps sharing the same channel don't cross-trigger.
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
-                self._bot_message_ts.add(sent_ts)
+                _send_bot_uid = self._channel_bot_user.get(chat_id) or self._bot_user_id or ""
+                self._bot_message_ts.add((_send_bot_uid, sent_ts))
                 # Also register the thread root so replies-to-my-replies work
                 if thread_ts:
-                    self._bot_message_ts.add(thread_ts)
+                    self._bot_message_ts.add((_send_bot_uid, thread_ts))
                 if len(self._bot_message_ts) > self._BOT_TS_MAX:
                     excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-                    for old_ts in list(self._bot_message_ts)[:excess]:
-                        self._bot_message_ts.discard(old_ts)
+                    for old_entry in list(self._bot_message_ts)[:excess]:
+                        self._bot_message_ts.discard(old_entry)
 
             return SendResult(
                 success=True,
@@ -1223,11 +1225,12 @@ class SlackAdapter(BasePlatformAdapter):
         """Treat successful file uploads as bot participation in a thread."""
         if not thread_ts:
             return
-        self._bot_message_ts.add(thread_ts)
+        _send_bot_uid = self._channel_bot_user.get(chat_id) or self._bot_user_id or ""
+        self._bot_message_ts.add((_send_bot_uid, thread_ts))
         if len(self._bot_message_ts) > self._BOT_TS_MAX:
             excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-            for old_ts in list(self._bot_message_ts)[:excess]:
-                self._bot_message_ts.discard(old_ts)
+            for old_entry in list(self._bot_message_ts)[:excess]:
+                self._bot_message_ts.discard(old_entry)
 
     def _is_retryable_upload_error(self, exc: Exception) -> bool:
         """Best-effort detection for transient Slack upload failures."""
@@ -2075,11 +2078,11 @@ class SlackAdapter(BasePlatformAdapter):
                 return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
                 reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
+                    is_thread_reply and (bot_uid, event_thread_ts) in self._bot_message_ts
                 )
                 in_mentioned_thread = (
                     event_thread_ts is not None
-                    and event_thread_ts in self._mentioned_threads
+                    and (bot_uid, event_thread_ts) in self._mentioned_threads
                 )
                 has_session = (
                     is_thread_reply
@@ -2107,7 +2110,7 @@ class SlackAdapter(BasePlatformAdapter):
             # re-mentioned every turn, so remembering the thread would
             # defeat the feature (and re-enable agent-to-agent ack loops).
             if event_thread_ts and not self._slack_strict_mention():
-                self._mentioned_threads.add(event_thread_ts)
+                self._mentioned_threads.add((bot_uid, event_thread_ts))
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
                     for t in to_remove:

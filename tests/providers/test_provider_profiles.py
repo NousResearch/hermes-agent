@@ -218,15 +218,27 @@ class TestOpenRouterProfile:
             )
             assert eb["reasoning"] == {"enabled": False}, (model, eb)
 
-    def test_reasoning_enabled_unaffected_for_mandatory_anthropic(self):
-        """Enabling reasoning on a mandatory model still forwards the config."""
+    def test_reasoning_omitted_for_mandatory_anthropic_even_when_enabled(self):
+        """Reasoning-mandatory Anthropic models (4.6+/fable) use adaptive
+        thinking — OpenRouter ignores reasoning.effort for them, and sending any
+        reasoning field makes OpenRouter emit thinking.type.disabled on
+        tool-continuation turns (whose assistant tool_calls carry no thinking
+        block), 400ing every turn after the first tool call. The profile must
+        omit reasoning entirely so the model defaults to adaptive.
+        """
         p = get_provider_profile("openrouter")
-        eb, _ = p.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "medium"},
-            supports_reasoning=True,
-            model="anthropic/claude-fable-5",
-        )
-        assert eb["reasoning"] == {"enabled": True, "effort": "medium"}
+        for cfg in (
+            {"enabled": True, "effort": "medium"},
+            {"enabled": True, "effort": "xhigh"},
+            {"effort": "high"},
+            {"enabled": True},
+        ):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config=cfg,
+                supports_reasoning=True,
+                model="anthropic/claude-fable-5",
+            )
+            assert "reasoning" not in eb, (cfg, eb)
 
     def test_default_reasoning(self):
         p = get_provider_profile("openrouter")

@@ -42,18 +42,26 @@ logger = logging.getLogger(__name__)
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 
 
-def _scan_context_content(content: str, filename: str) -> str:
+def _scan_context_content(content: str, filename: str, scope: str = "context") -> str:
     """Scan context file content for injection. Returns sanitized content.
 
-    Uses the "context" scope from the shared threat-pattern library, which
-    covers classic injection + promptware/C2 patterns + role-play hijack.
-    Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
-    applied here — those are too aggressive for a context file in a
-    cloned repo (security research, infra docs).  Content matching is
-    BLOCKED at this layer because the file would otherwise enter the
-    system prompt verbatim and the user has no chance to intervene.
+    Uses the "context" scope from the shared threat-pattern library by
+    default, which covers classic injection + promptware/C2 patterns +
+    role-play hijack.  Strict-scope patterns (SSH backdoor, persistence,
+    exfil-URL) are NOT applied here — those are too aggressive for a
+    context file in a cloned repo (security research, infra docs).
+
+    Pass ``scope="all"`` for *user-authored* files (e.g. SOUL.md) where
+    C2 framework name patterns would produce false positives on ordinary
+    literary or fantasy vocabulary (e.g. "Sliver" in a Mistborn-themed
+    persona).  The "all" scope still checks classic prompt-injection and
+    exfiltration patterns, just not the C2 framework name list.
+
+    Content matching is BLOCKED at this layer because the file would
+    otherwise enter the system prompt verbatim and the user has no chance
+    to intervene.
     """
-    findings = _scan_for_threats(content, scope="context")
+    findings = _scan_for_threats(content, scope=scope)
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -1418,7 +1426,7 @@ def load_soul_md() -> Optional[str]:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:
             return None
-        content = _scan_context_content(content, "SOUL.md")
+        content = _scan_context_content(content, "SOUL.md", scope="all")
         content = _truncate_content(content, "SOUL.md")
         return content
     except Exception as e:

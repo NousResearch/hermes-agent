@@ -108,6 +108,9 @@ dependencies = [
   "uvicorn[standard]>=0.24.0,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  # Honcho memory provider client. Kept in the base install for this deployment
+  # because Honcho is the active memory backend, not just an optional plugin.
+  "honcho-ai==2.0.1",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
   # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
   # shrink paths no-op, so an oversized image bakes into immutable history and

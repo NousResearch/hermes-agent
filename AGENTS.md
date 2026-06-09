@@ -198,6 +198,25 @@ When 3+ open PRs try to integrate the same *category* of thing (memory
 backends, providers, notifiers), don't merge them one at a time — design an
 ABC + orchestrator, wrap the existing built-in as the first provider, and turn
 the competing PRs into plugins against that interface.
+## Tiered Startup Rules (Memory-Safe Context Loading)
+
+**Critical for casual chats / Telegram / gateway sessions:** Do not trigger full AGENTS.md reads on every interaction. Use these tiers:
+
+- **Tier 0 — Casual / non-technical chat**: 
+  - NEVER auto-load AGENTS.md, full project tree, or long context files.
+  - Respond using only built-in knowledge.
+  - Only escalate to higher tiers if the user explicitly says "dev mode", "look at AGENTS.md", "fix a bug", "implement feature", or similar.
+  - This prevents 50k+ char context bloat on simple "hi" messages.
+
+- **Tier 1 — Light dev query**:
+  - Read only the top 100 lines of AGENTS.md (intro + structure summary).
+  - Use targeted `read_file` with limits for specific sections.
+
+- **Tier 2+ — Full dev / coding task**:
+  - Load full AGENTS.md + relevant source files as needed.
+  - Prefer `search_files` and offset/limit reads over blanket loads.
+
+Always prefer lazy loading. The `skip_context_files` flag in AIAgent exists for this reason.
 
 ## Development Environment
 

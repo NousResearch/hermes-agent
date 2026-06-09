@@ -168,3 +168,20 @@ def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
     assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")
+
+
+def test_validate_workdir_allows_cjk_unicode_paths():
+    """CJK and other non-ASCII Unicode letters should be accepted as valid paths."""
+    assert terminal_tool._validate_workdir("~/项目") is None
+    assert terminal_tool._validate_workdir("~/文档/报告") is None
+    assert terminal_tool._validate_workdir("~/書類") is None
+    assert terminal_tool._validate_workdir("~/문서") is None
+    assert terminal_tool._validate_workdir("~/développement") is None
+
+
+def test_validate_workdir_still_blocks_shell_metacharacters():
+    """Shell metacharacters must remain blocked even after Unicode support."""
+    assert terminal_tool._validate_workdir("~/项目;rm -rf /") is not None
+    assert terminal_tool._validate_workdir("~/文档`whoami`") is not None
+    assert terminal_tool._validate_workdir("~/研究|cat") is not None
+    assert terminal_tool._validate_workdir("~/data$HOME") is not None

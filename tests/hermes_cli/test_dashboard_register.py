@@ -76,7 +76,7 @@ def _fake_http_ok(payload: dict):
 
 class TestHappyPath:
     def _run(self, *, args, account_token="tok_abc", portal="https://portal.nousresearch.com",
-             response=None, captured=None):
+             response=None, captured=None, existing_client_id=None):
         response = response or {
             "client_id": "agent:selfhost-1",
             "id": "selfhost-1",
@@ -98,12 +98,21 @@ class TestHappyPath:
         def fake_save(key, value):
             saved[key] = value
 
+        # get_env_value is consulted twice: once for the stored client_id
+        # (idempotency key) and once for HERMES_DASHBOARD_PORTAL_URL. Route by
+        # key so a test can seed a prior client_id while keeping the portal
+        # unset (the default-portal-not-persisted path).
+        def fake_get_env(key):
+            if key == "HERMES_DASHBOARD_OAUTH_CLIENT_ID":
+                return existing_client_id
+            return None
+
         with patch(
             "hermes_cli.auth.resolve_nous_access_token", return_value=account_token
         ), patch("hermes_cli.config.is_managed", return_value=False), patch.object(
             dr, "_resolve_portal_base_url", return_value=portal
         ), patch(
-            "hermes_cli.config.get_env_value", return_value=None
+            "hermes_cli.config.get_env_value", side_effect=fake_get_env
         ), patch(
             "hermes_cli.config.save_env_value", side_effect=fake_save
         ), patch.object(
@@ -155,6 +164,118 @@ class TestHappyPath:
             saved["HERMES_DASHBOARD_PORTAL_URL"]
             == "https://nous-account-service-git-feat-x.vercel.app"
         )
+
+
+class TestIdempotentRerun(TestHappyPath):
+    """Re-running with a stored client_id updates instead of creating.
+
+    Inherits ``_run`` from TestHappyPath; the only new lever is
+    ``existing_client_id`` (the HERMES_DASHBOARD_OAUTH_CLIENT_ID a prior run
+    persisted), which the CLI re-sends so the portal updates that row.
+    """
+
+    def test_stored_client_id_is_sent_as_idempotency_key(self, capsys):
+        captured: dict = {}
+        # Portal echoes back the SAME id -> it updated in place.
+        self._run(
+            args=_ns(),
+            existing_client_id="agent:selfhost-1",
+            response={
+                "client_id": "agent:selfhost-1",
+                "id": "selfhost-1",
+                "name": "dreamy_tesla",
+                "kind": "SELF_HOSTED",
+                "custom_redirect_uri": None,
+                "created_at": "2026-06-04T12:00:00.000Z",
+            },
+            captured=captured,
+        )
+        assert captured["body"]["client_id"] == "agent:selfhost-1"
+
+    def test_rerun_without_name_omits_name_to_preserve_stored(self, capsys):
+        # No --name on a re-run: don't churn the portal-stored name. The CLI
+        # leaves `name` out of the body so the portal keeps what it has.
+        captured: dict = {}
+        self._run(
+            args=_ns(),
+            existing_client_id="agent:selfhost-1",
+            captured=captured,
+        )
+        assert "name" not in captured["body"]
+        assert captured["body"]["client_id"] == "agent:selfhost-1"
+
+    def test_rerun_with_explicit_name_still_sends_name(self, capsys):
+        captured: dict = {}
+        self._run(
+            args=_ns(name="renamed_box"),
+            existing_client_id="agent:selfhost-1",
+            captured=captured,
+        )
+        assert captured["body"]["name"] == "renamed_box"
+        assert captured["body"]["client_id"] == "agent:selfhost-1"
+
+    def test_rerun_prints_updated_when_same_id_returned(self, capsys):
+        self._run(
+            args=_ns(),
+            existing_client_id="agent:selfhost-1",
+            response={
+                "client_id": "agent:selfhost-1",
+                "id": "selfhost-1",
+                "name": "dreamy_tesla",
+                "kind": "SELF_HOSTED",
+                "custom_redirect_uri": None,
+                "created_at": "2026-06-04T12:00:00.000Z",
+            },
+        )
+        out = capsys.readouterr().out
+        assert "Updated dashboard" in out
+        assert "Registered dashboard" not in out
+
+    def test_rerun_persists_returned_client_id(self, capsys):
+        saved = self._run(
+            args=_ns(),
+            existing_client_id="agent:selfhost-1",
+        )
+        # Same id round-trips into .env -> idempotent, one record.
+        assert saved["HERMES_DASHBOARD_OAUTH_CLIENT_ID"] == "agent:selfhost-1"
+
+    def test_stale_id_falls_through_to_create_prints_registered(self, capsys):
+        # Stored id no longer resolves server-side -> portal created a fresh
+        # row and returns a DIFFERENT id. The CLI treats that as a create and
+        # persists the new id (re-run stays safe, never worse than first run).
+        captured: dict = {}
+        saved = self._run(
+            args=_ns(name="seed_name"),
+            existing_client_id="agent:selfhost-stale",
+            response={
+                "client_id": "agent:selfhost-new",
+                "id": "selfhost-new",
+                "name": "seed_name",
+                "kind": "SELF_HOSTED",
+                "custom_redirect_uri": None,
+                "created_at": "2026-06-04T12:00:00.000Z",
+            },
+            captured=captured,
+        )
+        # The stale id is still SENT (portal decides create-vs-update).
+        assert captured["body"]["client_id"] == "agent:selfhost-stale"
+        # Returned id differs from what we sent -> message is "Registered".
+        out = capsys.readouterr().out
+        assert "Registered dashboard" in out
+        assert "Updated dashboard" not in out
+        assert saved["HERMES_DASHBOARD_OAUTH_CLIENT_ID"] == "agent:selfhost-new"
+
+    def test_blank_stored_client_id_treated_as_first_run(self, capsys):
+        # A blank/whitespace stored value is not a usable key: treat as a
+        # first registration (auto-generate a name, don't send client_id).
+        captured: dict = {}
+        self._run(
+            args=_ns(),
+            existing_client_id="   ",
+            captured=captured,
+        )
+        assert "client_id" not in captured["body"]
+        assert captured["body"].get("name")  # auto-generated
 
 
 class TestPortalResolution:

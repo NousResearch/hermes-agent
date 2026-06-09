@@ -868,6 +868,36 @@ class TestFetchNewMessages(unittest.TestCase):
 
         self.assertEqual(results, [])
 
+    def test_fetch_uses_body_peek(self):
+        """_fetch_new_messages must use BODY.PEEK[] to avoid marking messages as read."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        fetch_args = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                fetch_args.append(args)
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        # Verify BODY.PEEK[] was used, not RFC822
+        self.assertEqual(len(fetch_args), 1)
+        self.assertEqual(fetch_args[0], (b"1", "(BODY.PEEK[])"))
+
     def test_fetch_extracts_sender_name(self):
         """Sender name should be extracted from 'Name <addr>' format."""
         adapter = self._make_adapter()

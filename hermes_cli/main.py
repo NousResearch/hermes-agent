@@ -5806,6 +5806,16 @@ def _update_via_zip(args):
     except Exception:
         pass
 
+    # Seed the model-catalog disk cache from the freshly-unpacked checkout
+    # (same rationale as the git-pull path in _cmd_update_impl). Non-fatal.
+    try:
+        from hermes_cli.model_catalog import seed_cache_from_checkout
+
+        if seed_cache_from_checkout(PROJECT_ROOT):
+            print("  ✓ Model catalog cache refreshed from checkout")
+    except Exception as e:
+        logger.debug("Model catalog seed during zip update failed: %s", e)
+
     print()
     print("✓ Update complete!")
     try:
@@ -8364,6 +8374,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Code updated!")
+
+        # Seed the model-catalog disk cache from the freshly-pulled checkout.
+        # The repo ships the canonical catalog at
+        # website/static/api/model-catalog.json, and `git pull` just made it
+        # current — so copy it straight over ~/.hermes/cache/model_catalog.json
+        # instead of waiting on a network fetch (which can be bot-gated or hit a
+        # Portal hiccup). Keeps the model picker's curated/free lists in sync
+        # with the version the user just installed. Non-fatal on failure: the
+        # normal network refresh still applies on the next picker open.
+        try:
+            from hermes_cli.model_catalog import seed_cache_from_checkout
+
+            if seed_cache_from_checkout(PROJECT_ROOT):
+                print("  ✓ Model catalog cache refreshed from checkout")
+        except Exception as e:
+            logger.debug("Model catalog seed during update failed: %s", e)
 
         # After git pull, source files on disk are newer than cached Python
         # modules in this process.  Reload hermes_constants so that any lazy

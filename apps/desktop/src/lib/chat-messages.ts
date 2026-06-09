@@ -61,6 +61,9 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
+  // status.update (gateway lifecycle statuses: compression progress,
+  // background-process notices)
+  kind?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

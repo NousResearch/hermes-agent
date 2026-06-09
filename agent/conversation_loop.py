@@ -117,7 +117,9 @@ def _ra():
     return run_agent
 
 
-def _emit_preflight_token_usage(agent: Any, request_tokens: int) -> None:
+def _emit_preflight_token_usage(
+    agent: Any, request_tokens: int, messages_len: int | None = None
+) -> None:
     """Send the current request-size estimate through the live usage channel."""
     if request_tokens <= 0:
         return
@@ -129,6 +131,10 @@ def _emit_preflight_token_usage(agent: Any, request_tokens: int) -> None:
         previous = getattr(compressor, "last_prompt_tokens", 0) or 0
         if request_tokens > previous:
             compressor.last_prompt_tokens = request_tokens
+            if messages_len is not None:
+                # Record which conversation prefix the seeded estimate covers
+                # so live_context_tokens prices only the tail appended later.
+                compressor.last_prompt_messages_len = messages_len
     except Exception:
         logger.debug("could not update preflight context estimate", exc_info=True)
 
@@ -678,6 +684,7 @@ def run_conversation(
             # would re-introduce the very desync we're avoiding.
             if _preflight_tokens > (_compressor.last_prompt_tokens or 0):
                 _compressor.last_prompt_tokens = _preflight_tokens
+                _compressor.last_prompt_messages_len = len(messages)
 
         if _preflight_deferred:
             logger.info(
@@ -700,6 +707,7 @@ def run_conversation(
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
+            _pre_compress_preflight_tokens = _preflight_tokens
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
             for _pass in range(3):
@@ -739,6 +747,11 @@ def run_conversation(
                 _preflight_tokens = _post_preflight_tokens
                 if not _compressor.should_compress(_preflight_tokens):
                     break  # Under threshold or anti-thrash guard stopped it
+            if _preflight_tokens < _pre_compress_preflight_tokens:
+                agent._emit_status(
+                    f"📦 Compression complete: ~{_pre_compress_preflight_tokens:,} "
+                    f"→ ~{_preflight_tokens:,} tokens."
+                )
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
@@ -1143,7 +1156,9 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
-        _emit_preflight_token_usage(agent, approx_request_tokens)
+        _emit_preflight_token_usage(
+            agent, approx_request_tokens, messages_len=len(messages)
+        )
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
@@ -1995,7 +2010,9 @@ def run_conversation(
                         "cache_write_tokens": canonical_usage.cache_write_tokens,
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
-                    agent.context_compressor.update_from_response(usage_dict)
+                    agent.context_compressor.update_from_response(
+                        usage_dict, messages_len=len(messages)
+                    )
 
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
@@ -3278,7 +3295,9 @@ def run_conversation(
                                 f"🗜️ Compressed request estimate "
                                 f"~{pre_compress_request_tokens:,} → ~{post_compress_request_tokens:,} tokens, retrying..."
                             )
-                        _emit_preflight_token_usage(agent, post_compress_request_tokens)
+                        _emit_preflight_token_usage(
+                            agent, post_compress_request_tokens, messages_len=len(messages)
+                        )
                         time.sleep(2)  # Brief pause between compression retries
                         restart_with_compressed_messages = True
                         break

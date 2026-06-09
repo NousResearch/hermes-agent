@@ -32,6 +32,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSessionActivityStatus,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -726,6 +727,20 @@ export function useMessageStream({
         if (!explicitSid || isActiveEvent) {
           setCurrentUsage(current => mergeTokenUsagePayload(current, event.payload as TokenUsagePayload | undefined))
         }
+      } else if (event.type === 'status.update') {
+        // Gateway lifecycle statuses (auto-compression progress, background
+        // process notices). Statusbar is an active-session surface; the next
+        // stream activity (deltas / tool events) clears it.
+        if (!explicitSid || isActiveEvent) {
+          const kind = typeof payload?.kind === 'string' ? payload.kind : ''
+          const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+
+          if (kind === 'ready') {
+            setSessionActivityStatus(null)
+          } else if (text && ['lifecycle', 'compressing', 'process', 'status'].includes(kind)) {
+            setSessionActivityStatus({ kind, text })
+          }
+        }
       } else if (event.type === 'message.start') {
         if (!sessionId) {
           return
@@ -753,6 +768,10 @@ export function useMessageStream({
       } else if (event.type === 'message.delta') {
         if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+        }
+
+        if (isActiveEvent) {
+          setSessionActivityStatus(null)
         }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
@@ -789,6 +808,7 @@ export function useMessageStream({
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
+          setSessionActivityStatus(null)
         }
 
         if (payload?.usage) {
@@ -804,6 +824,10 @@ export function useMessageStream({
         // Update context usage in real-time during tool execution.
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        }
+
+        if (isActiveEvent) {
+          setSessionActivityStatus(null)
         }
       } else if (event.type === 'tool.complete') {
         if (sessionId) {

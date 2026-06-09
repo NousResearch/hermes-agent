@@ -722,6 +722,7 @@ class TestUsageFromSanitizedResponse:
 
         def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
             captured["usage_details"] = usage_details
+            captured["cost_details"] = cost_details
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
         return captured
@@ -777,3 +778,70 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+    def test_sanitized_usage_summary_for_subscription_route_omits_costs(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        captured = self._setup(mod, monkeypatch)
+
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_mode="codex_responses",
+            model="gpt-5.4",
+            response={"model": "gpt-5.4"},
+            usage={
+                "input_tokens": 108,
+                "output_tokens": 35,
+                "cache_read_tokens": 9728,
+                "reasoning_tokens": 28,
+            },
+            assistant_content_chars=2,
+        )
+
+        assert captured["usage_details"] == {
+            "input": 108,
+            "output": 7,
+            "input_cached_tokens": 9728,
+            "output_reasoning_tokens": 28,
+        }
+        assert captured["cost_details"] == {}
+
+    def test_subscription_included_routes_omit_costs_and_emit_langfuse_keys(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        class _InputDetails:
+            cached_tokens = 9728
+            cache_creation_tokens = 0
+
+        class _OutputDetails:
+            reasoning_tokens = 28
+
+        class _Usage:
+            input_tokens = 9836
+            output_tokens = 35
+            input_tokens_details = _InputDetails()
+            output_tokens_details = _OutputDetails()
+
+        class _Resp:
+            usage = _Usage()
+
+        usage_details, cost_details = mod._usage_and_cost(
+            _Resp(),
+            provider="openai-codex",
+            api_mode="codex_responses",
+            model="gpt-5.4",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+
+        assert usage_details == {
+            "input": 108,
+            "output": 7,
+            "input_cached_tokens": 9728,
+            "output_reasoning_tokens": 28,
+        }
+        assert cost_details == {}

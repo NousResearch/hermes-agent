@@ -485,16 +485,41 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
         return usage_details, cost_details
 
     try:
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        from agent.usage_pricing import (
+            estimate_usage_cost,
+            get_pricing_entry,
+            normalize_usage,
+            resolve_billing_route,
+        )
+        from decimal import Decimal
 
         canonical = normalize_usage(raw_usage, provider=provider, api_mode=api_mode)
+        route = resolve_billing_route(model, provider=provider, base_url=base_url)
+
         # Langfuse usage_details keys follow a naming convention:
         #   - Dashboard sums all keys containing "input" as input total
         #   - Dashboard sums all keys containing "output" as output total
         #   - If no "total" key, Langfuse derives it from all usage types
-        # Use Anthropic-style key names so cache tokens roll into the
-        # dashboard input total automatically.
-        # Ref: https://langfuse.com/docs/model-usage-and-cost
+        #
+        # For subscription-backed routes like openai-codex we want Langfuse to
+        # compute an API-equivalent estimate from its own model definitions
+        # instead of Hermes emitting explicit zero-cost buckets. That requires
+        # Langfuse-compatible usage keys and avoiding cost_details entirely.
+        if route.billing_mode == "subscription_included":
+            output_non_reasoning = max(0, canonical.output_tokens - canonical.reasoning_tokens)
+            usage_details = {
+                "input": canonical.input_tokens,
+                "output": output_non_reasoning,
+            }
+            if canonical.cache_read_tokens:
+                usage_details["input_cached_tokens"] = canonical.cache_read_tokens
+            if canonical.cache_write_tokens:
+                usage_details["input_cache_creation"] = canonical.cache_write_tokens
+            if canonical.reasoning_tokens:
+                usage_details["output_reasoning_tokens"] = canonical.reasoning_tokens
+            return usage_details, {}
+
+        # Non-subscription routes keep Hermes-side estimated/actual cost export.
         usage_details = {
             "input": canonical.input_tokens,
             "output": canonical.output_tokens,
@@ -515,23 +540,18 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
         if cost.amount_usd is not None:
             # Langfuse cost_details keys must match usage_details keys.
             # Provide per-type breakdown so dashboard can show cost by type.
-            try:
-                from agent.usage_pricing import get_pricing_entry
-                from decimal import Decimal
-                _ONE_M = Decimal("1000000")
-                entry = get_pricing_entry(model, provider=provider, base_url=base_url)
-                if entry:
-                    if entry.input_cost_per_million is not None and canonical.input_tokens:
-                        cost_details["input"] = float(Decimal(canonical.input_tokens) * entry.input_cost_per_million / _ONE_M)
-                    if entry.output_cost_per_million is not None and canonical.output_tokens:
-                        cost_details["output"] = float(Decimal(canonical.output_tokens) * entry.output_cost_per_million / _ONE_M)
-                    if entry.cache_read_cost_per_million is not None and canonical.cache_read_tokens:
-                        cost_details["cache_read_input_tokens"] = float(Decimal(canonical.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_M)
-                    if entry.cache_write_cost_per_million is not None and canonical.cache_write_tokens:
-                        cost_details["cache_creation_input_tokens"] = float(Decimal(canonical.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_M)
-                else:
-                    cost_details["total"] = float(cost.amount_usd)
-            except Exception:
+            _ONE_M = Decimal("1000000")
+            entry = get_pricing_entry(model, provider=provider, base_url=base_url)
+            if entry:
+                if entry.input_cost_per_million is not None and canonical.input_tokens:
+                    cost_details["input"] = float(Decimal(canonical.input_tokens) * entry.input_cost_per_million / _ONE_M)
+                if entry.output_cost_per_million is not None and canonical.output_tokens:
+                    cost_details["output"] = float(Decimal(canonical.output_tokens) * entry.output_cost_per_million / _ONE_M)
+                if entry.cache_read_cost_per_million is not None and canonical.cache_read_tokens:
+                    cost_details["cache_read_input_tokens"] = float(Decimal(canonical.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_M)
+                if entry.cache_write_cost_per_million is not None and canonical.cache_write_tokens:
+                    cost_details["cache_creation_input_tokens"] = float(Decimal(canonical.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_M)
+            else:
                 cost_details["total"] = float(cost.amount_usd)
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"usage normalization failed: {exc}")
@@ -856,53 +876,78 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         )
     elif isinstance(usage, dict) and usage:
         # post_api_request passes a pre-built CanonicalUsage summary dict.
-        # Use Langfuse-convention key names: "input", "output", and
-        # "cache_read_input_tokens" / "cache_creation_input_tokens" so the
-        # dashboard sums cache tokens into the input total automatically.
         _input = usage.get("input_tokens", 0)
         _output = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
         _cache_read = usage.get("cache_read_tokens", 0)
         _cache_write = usage.get("cache_write_tokens", 0)
         _reasoning = usage.get("reasoning_tokens", 0)
-        usage_details = {
-            "input": _input,
-            "output": _output,
-        }
-        if _cache_read:
-            usage_details["cache_read_input_tokens"] = _cache_read
-        if _cache_write:
-            usage_details["cache_creation_input_tokens"] = _cache_write
-        if _reasoning:
-            usage_details["reasoning_tokens"] = _reasoning
         cost_details = {}
-        # Estimate per-type cost from the summary if possible
         try:
-            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry
+            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry, resolve_billing_route
             from decimal import Decimal
-            _ONE_M = Decimal("1000000")
-            _cu = CanonicalUsage(
-                input_tokens=_input,
-                output_tokens=_output,
-                cache_read_tokens=_cache_read,
-                cache_write_tokens=_cache_write,
-                reasoning_tokens=_reasoning,
-            )
-            entry = get_pricing_entry(model, provider=provider, base_url=base_url)
-            if entry:
-                if entry.input_cost_per_million is not None and _input:
-                    cost_details["input"] = float(Decimal(_input) * entry.input_cost_per_million / _ONE_M)
-                if entry.output_cost_per_million is not None and _output:
-                    cost_details["output"] = float(Decimal(_output) * entry.output_cost_per_million / _ONE_M)
-                if entry.cache_read_cost_per_million is not None and _cache_read:
-                    cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
-                if entry.cache_write_cost_per_million is not None and _cache_write:
-                    cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
+
+            route = resolve_billing_route(model, provider=provider, base_url=base_url)
+            if route.billing_mode == "subscription_included":
+                output_non_reasoning = max(0, _output - _reasoning)
+                usage_details = {
+                    "input": _input,
+                    "output": output_non_reasoning,
+                }
+                if _cache_read:
+                    usage_details["input_cached_tokens"] = _cache_read
+                if _cache_write:
+                    usage_details["input_cache_creation"] = _cache_write
+                if _reasoning:
+                    usage_details["output_reasoning_tokens"] = _reasoning
             else:
-                _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
-                if _cost.amount_usd is not None:
-                    cost_details["total"] = float(_cost.amount_usd)
+                # Use Langfuse-convention key names: "input", "output", and
+                # "cache_read_input_tokens" / "cache_creation_input_tokens" so the
+                # dashboard sums cache tokens into the input total automatically.
+                usage_details = {
+                    "input": _input,
+                    "output": _output,
+                }
+                if _cache_read:
+                    usage_details["cache_read_input_tokens"] = _cache_read
+                if _cache_write:
+                    usage_details["cache_creation_input_tokens"] = _cache_write
+                if _reasoning:
+                    usage_details["reasoning_tokens"] = _reasoning
+
+                # Estimate per-type cost from the summary if possible
+                _ONE_M = Decimal("1000000")
+                _cu = CanonicalUsage(
+                    input_tokens=_input,
+                    output_tokens=_output,
+                    cache_read_tokens=_cache_read,
+                    cache_write_tokens=_cache_write,
+                    reasoning_tokens=_reasoning,
+                )
+                entry = get_pricing_entry(model, provider=provider, base_url=base_url)
+                if entry:
+                    if entry.input_cost_per_million is not None and _input:
+                        cost_details["input"] = float(Decimal(_input) * entry.input_cost_per_million / _ONE_M)
+                    if entry.output_cost_per_million is not None and _output:
+                        cost_details["output"] = float(Decimal(_output) * entry.output_cost_per_million / _ONE_M)
+                    if entry.cache_read_cost_per_million is not None and _cache_read:
+                        cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
+                    if entry.cache_write_cost_per_million is not None and _cache_write:
+                        cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
+                else:
+                    _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
+                    if _cost.amount_usd is not None:
+                        cost_details["total"] = float(_cost.amount_usd)
         except Exception:
-            pass
+            usage_details = {
+                "input": _input,
+                "output": _output,
+            }
+            if _cache_read:
+                usage_details["cache_read_input_tokens"] = _cache_read
+            if _cache_write:
+                usage_details["cache_creation_input_tokens"] = _cache_write
+            if _reasoning:
+                usage_details["reasoning_tokens"] = _reasoning
     else:
         usage_details, cost_details = {}, {}
 

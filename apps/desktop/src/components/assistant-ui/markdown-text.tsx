@@ -176,7 +176,24 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
-function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+// Only these URL schemes are safe to place in an href. Anything else that
+// carries a scheme (javascript:, data:, vbscript:, file:, blob:, ...) is
+// dropped to inert text so a crafted link in attacker-influenced agent/message
+// content cannot execute on click. Relative URLs and #fragments have no scheme
+// and are allowed. (Defense in depth: the markdown sanitizer also strips these
+// upstream; this mirrors the web dashboard renderer's allow-list.)
+const SAFE_LINK_SCHEMES = new Set(['http', 'https', 'mailto', 'tel'])
+
+function hasUnsafeLinkScheme(href: string | undefined): boolean {
+  if (!href) {return false}
+  const match = /^([a-z][a-z0-9+.-]*):/i.exec(href.trim())
+
+  if (!match) {return false} // no scheme → relative path or #fragment, safe
+
+  return !SAFE_LINK_SCHEMES.has(match[1].toLowerCase())
+}
+
+export function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -192,6 +209,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const target = href ? normalizeExternalUrl(href) : href
 
   if (!target || !/^https?:\/\//i.test(target)) {
+    if (hasUnsafeLinkScheme(href)) {
+      // Dangerous scheme (javascript:, data:, ...) — show the label as inert
+      // text rather than a clickable link that could execute on click.
+      return <span className={cn('wrap-anywhere', className)}>{children}</span>
+    }
+
     return (
       <a
         className={cn(

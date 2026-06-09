@@ -95,6 +95,7 @@ def _make_adapter(telegram_adapter_cls):
     # auth, the empty-allowlist adapter rejects all messages including
     # channel posts.  These tests focus on routing, not auth gating.
     a._is_callback_user_authorized = lambda user_id, **_kw: True
+    a._is_user_auth_early = lambda msg: True
     return a
 
 
@@ -106,9 +107,11 @@ def _make_channel_message(text="channel id test @hermes_bot"):
         full_name=None,
         is_forum=False,
     )
+    sender_chat = SimpleNamespace(id=-1003950368353, title="wzrd")
     return SimpleNamespace(
         chat=chat,
         from_user=None,
+        sender_chat=sender_chat,
         text=text,
         caption=None,
         entities=[],

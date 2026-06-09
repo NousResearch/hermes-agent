@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from "react";
 import {
   ArrowUp,
   Download,
@@ -69,15 +75,21 @@ function displayPath(path: string | null | undefined): string {
   return path?.trim() || "Files";
 }
 
+function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
+  return Array.from(event.dataTransfer.types).includes("Files");
+}
+
 export default function FilesPage() {
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef(0);
   const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
   const [pathInput, setPathInput] = useState("");
   const [listing, setListing] = useState<ManagedFilesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [draggingFiles, setDraggingFiles] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -86,6 +98,7 @@ export default function FilesPage() {
 
   const activePath = listing?.path ?? currentPath ?? "";
   const canChangePath = listing?.can_change_path ?? false;
+  const canUpload = Boolean(activePath) && !uploading;
   const headerPath = displayPath(listing?.locked_root ?? listing?.path ?? currentPath);
 
   const load = useCallback(
@@ -191,6 +204,36 @@ export default function FilesPage() {
     }
   };
 
+  const handleDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    if (!canUpload || !transferHasFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDraggingFiles(true);
+  };
+
+  const handleDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!canUpload || !transferHasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    if (!canUpload || !transferHasFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setDraggingFiles(false);
+    }
+  };
+
+  const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!canUpload) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDraggingFiles(false);
+    void uploadFiles(event.dataTransfer.files);
+  };
+
   const downloadFile = async (entry: ManagedFileEntry) => {
     if (entry.is_directory) return;
     try {
@@ -287,6 +330,39 @@ export default function FilesPage() {
           </Button>
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={() => canUpload && fileInputRef.current?.click()}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        disabled={!canUpload}
+        aria-label="Upload files"
+        className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
+          draggingFiles
+            ? "border-primary bg-primary/10 text-foreground"
+            : "border-border bg-background/20 text-text-secondary hover:border-text-tertiary hover:bg-background/35"
+        } disabled:cursor-not-allowed disabled:opacity-60`}
+      >
+        <span className="flex min-w-0 items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center border border-border bg-background/45 text-text-tertiary">
+            {uploading ? <Spinner /> : <Upload className="h-4 w-4" />}
+          </span>
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
+              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+            </span>
+            <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
+              {activePath || "Loading"}
+            </span>
+          </span>
+        </span>
+        <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
+          Choose files
+        </span>
+      </button>
 
       <Card className="min-w-0 max-w-full overflow-hidden">
         <CardContent className="overflow-x-auto p-0">

@@ -284,7 +284,7 @@ class TestPaginationBounds:
                 return MagicMock(exit_code=0, stdout="line1\nline2\n")
             if command.startswith("sed -n"):
                 return MagicMock(exit_code=0, stdout="line1\n")
-            if command.startswith("wc -l"):
+            if command.startswith("awk"):
                 return MagicMock(exit_code=0, stdout="2")
             return MagicMock(exit_code=0, stdout="")
 

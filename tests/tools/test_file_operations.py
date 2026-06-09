@@ -300,6 +300,44 @@ def file_ops(mock_env):
     return ShellFileOperations(mock_env)
 
 
+class _RealShellEnv:
+    """A terminal env whose ``execute`` runs the command in a real shell,
+    so read_file's shell pipeline (wc -c / head -c / sed / line count) is
+    exercised end-to-end against an actual file on disk."""
+
+    def __init__(self, cwd):
+        self.cwd = str(cwd)
+
+    def execute(self, command, **kwargs):
+        import subprocess
+        proc = subprocess.run(
+            command, shell=True, cwd=self.cwd,
+            capture_output=True, text=True,
+        )
+        return {"output": proc.stdout, "returncode": proc.returncode}
+
+
+def test_read_file_counts_final_line_without_trailing_newline(tmp_path):
+    """A file whose last line has no trailing newline must report the correct
+    total_lines so the truncation hint is right. `wc -l` counts newline
+    characters and undercounts such files by one; for a 501-line file read
+    in 500-line pages that made `truncated` False and silently dropped the
+    last (unterminated) line from the model's view."""
+    target = tmp_path / "noeol.txt"
+    # 501 logical lines, NO trailing newline on the last one.
+    target.write_text("\n".join(f"line{i}" for i in range(1, 502)))
+
+    ops = ShellFileOperations(_RealShellEnv(tmp_path))
+    result = ops.read_file(str(target), offset=1, limit=500)
+
+    assert result.error is None
+    assert result.total_lines == 501
+    # The 501st line is past the first page, so the read must be truncated
+    # and a continuation hint emitted.
+    assert result.truncated is True
+    assert result.hint is not None
+
+
 class TestShellFileOpsHelpers:
     def test_normalize_read_pagination_clamps_invalid_values(self):
         assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
@@ -394,7 +432,7 @@ class TestShellFileOpsHelpers:
                 return {"output": "print('ok')\n", "returncode": 0}
             if command.startswith("sed -n"):
                 return {"output": leaked, "returncode": 0}
-            if command.startswith("wc -l"):
+            if command.startswith("awk"):
                 return {"output": "1\n", "returncode": 0}
             return {"output": "", "returncode": 0}
 

@@ -238,6 +238,8 @@ export interface Translations {
       cantReach: string
       tapCheck: string
       updateReady: (count: number) => string
+      rebuildNeeded: string
+      rebuildNow: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -713,6 +715,10 @@ export interface Translations {
     monthlyOnDayAt: (dayOfMonth: string, time: string) => string
     topOfHour: string
     everyHourAt: (minute: string) => string
+    refresh: string
+    refreshing: string
+    active: (enabled: number, total: number) => string
+    createFirst: string
     newCron: string
     emptyDescNew: string
     emptyDescSearch: string
@@ -945,6 +951,8 @@ export interface Translations {
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
+    rebuildTitle: string
+    rebuildBody: string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
@@ -1124,6 +1132,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      rebuildNeeded: string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

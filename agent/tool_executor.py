@@ -438,12 +438,29 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
+    # Inject context usage into tool events so frontend can update
+    # the context bar in real-time during tool execution.
+    usage = {
+        "model": getattr(agent, "model", ""),
+        "input": getattr(agent, "session_input_tokens", 0) or 0,
+        "output": getattr(agent, "session_output_tokens", 0) or 0,
+        "total": getattr(agent, "session_total_tokens", 0) or 0,
+        "calls": getattr(agent, "session_api_calls", 0) or 0,
+    }
+    comp = getattr(agent, "context_compressor", None)
+    if comp:
+        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        ctx_max = getattr(comp, "context_length", 0) or 0
+        if ctx_max:
+            usage["context_used"] = ctx_used
+            usage["context_max"] = ctx_max
+            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
     for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
             continue
         if agent.tool_start_callback:
             try:
-                agent.tool_start_callback(tc.id, name, args)
+                agent.tool_start_callback(tc.id, name, args, usage=usage)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -714,9 +731,26 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._current_tool = None
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
 
+        # Inject context usage into tool.complete events for real-time updates.
+        _comp = getattr(agent, "context_compressor", None)
+        _usage = {
+            "model": getattr(agent, "model", ""),
+            "input": getattr(agent, "session_input_tokens", 0) or 0,
+            "output": getattr(agent, "session_output_tokens", 0) or 0,
+            "total": getattr(agent, "session_total_tokens", 0) or 0,
+            "calls": getattr(agent, "session_api_calls", 0) or 0,
+        }
+        if _comp:
+            _ctx_used = getattr(_comp, "last_prompt_tokens", 0) or _usage["total"] or 0
+            _ctx_max = getattr(_comp, "context_length", 0) or 0
+            if _ctx_max:
+                _usage["context_used"] = _ctx_used
+                _usage["context_max"] = _ctx_max
+                _usage["context_percent"] = max(0, min(100, round(_ctx_used / _ctx_max * 100)))
+
         if not blocked and agent.tool_complete_callback:
             try:
-                agent.tool_complete_callback(tc.id, name, args, function_result)
+                agent.tool_complete_callback(tc.id, name, args, function_result, usage=_usage)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
@@ -897,8 +931,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
         if not _execution_blocked and agent.tool_start_callback:
+            # Inject context usage for real-time context bar updates.
+            _t_usage = {
+                "model": getattr(agent, "model", ""),
+                "input": getattr(agent, "session_input_tokens", 0) or 0,
+                "output": getattr(agent, "session_output_tokens", 0) or 0,
+                "total": getattr(agent, "session_total_tokens", 0) or 0,
+                "calls": getattr(agent, "session_api_calls", 0) or 0,
+            }
+            _t_comp = getattr(agent, "context_compressor", None)
+            if _t_comp:
+                _t_ctx_used = getattr(_t_comp, "last_prompt_tokens", 0) or _t_usage["total"] or 0
+                _t_ctx_max = getattr(_t_comp, "context_length", 0) or 0
+                if _t_ctx_max:
+                    _t_usage["context_used"] = _t_ctx_used
+                    _t_usage["context_max"] = _t_ctx_max
+                    _t_usage["context_percent"] = max(0, min(100, round(_t_ctx_used / _t_ctx_max * 100)))
             try:
-                agent.tool_start_callback(tool_call.id, function_name, function_args)
+                agent.tool_start_callback(tool_call.id, function_name, function_args, usage=_t_usage)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -1334,8 +1384,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
 
         if not _execution_blocked and agent.tool_complete_callback:
+            # Inject context usage for real-time context bar updates.
+            _sc_usage = {
+                "model": getattr(agent, "model", ""),
+                "input": getattr(agent, "session_input_tokens", 0) or 0,
+                "output": getattr(agent, "session_output_tokens", 0) or 0,
+                "total": getattr(agent, "session_total_tokens", 0) or 0,
+                "calls": getattr(agent, "session_api_calls", 0) or 0,
+            }
+            _sc_comp = getattr(agent, "context_compressor", None)
+            if _sc_comp:
+                _sc_ctx_used = getattr(_sc_comp, "last_prompt_tokens", 0) or _sc_usage["total"] or 0
+                _sc_ctx_max = getattr(_sc_comp, "context_length", 0) or 0
+                if _sc_ctx_max:
+                    _sc_usage["context_used"] = _sc_ctx_used
+                    _sc_usage["context_max"] = _sc_ctx_max
+                    _sc_usage["context_percent"] = max(0, min(100, round(_sc_ctx_used / _sc_ctx_max * 100)))
             try:
-                agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
+                agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result, usage=_sc_usage)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 

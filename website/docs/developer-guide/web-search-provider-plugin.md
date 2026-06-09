@@ -43,7 +43,7 @@ plugins/web/my-backend/
 
 ## The WebSearchProvider ABC
 
-Subclass `agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` you implement. (Deep crawling is not a separate method — it's a mode of `extract()`.)
+Subclass `agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` / `crawl()` you implement.
 
 ```python
 # plugins/web/my-backend/provider.py
@@ -226,7 +226,7 @@ The `web_search` and `web_extract` tools live in `tools/web_tools.py`. At call t
 1. Read the relevant config key (`web.search_backend` for `web_search`, `web.extract_backend` for `web_extract`)
 2. Ask the registry for the provider with that `name`
 3. Check `is_available()` and the matching `supports_*()` flag
-4. Dispatch to `search()` / `extract()` (deep crawl runs as a mode inside `extract()`), awaiting if the method is a coroutine
+4. Dispatch to `search()` / `extract()` / `crawl()`, awaiting if the method is a coroutine
 5. JSON-serialize the response envelope and hand it back to the LLM
 
 Errors surface as the tool result; the LLM decides how to explain them. If no provider is registered (or every available one fails the capability gate), the tool returns a helpful error pointing at `hermes tools`.

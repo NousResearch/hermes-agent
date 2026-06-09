@@ -55,23 +55,15 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 })
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
-export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
-export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
 export const $sidebarPinsOpen = atom(true)
-// Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
-// true the whole time it's a floating overlay (not just while shown) so the
-// consumer mounts contents off-screen, ready to slide. ChatSidebar mounts its
-// rows on `sidebarOpen || this`.
-export const $sidebarOverlayMounted = atom(false)
 export const $sidebarRecentsOpen = atom(true)
-// Cron-job sessions live in their own section below recents, collapsed by
-// default (it only renders at all when cron sessions exist) so the
-// scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
-export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
 export const $sidebarAgentsGrouped = atom(storedBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false))
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = atom(storedBoolean(PANES_FLIPPED_STORAGE_KEY, false))
+export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
+export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
+export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
@@ -127,32 +119,12 @@ export function setSidebarPinsOpen(open: boolean) {
   $sidebarPinsOpen.set(open)
 }
 
-export function setSidebarOverlayMounted(mounted: boolean) {
-  $sidebarOverlayMounted.set(mounted)
-}
-
 export function setSidebarRecentsOpen(open: boolean) {
   $sidebarRecentsOpen.set(open)
 }
 
-export function setSidebarCronOpen(open: boolean) {
-  $sidebarCronOpen.set(open)
-}
-
 export function setSidebarAgentsGrouped(grouped: boolean) {
   $sidebarAgentsGrouped.set(grouped)
-}
-
-export function setSidebarSessionOrderIds(ids: string[]) {
-  if (!arraysEqual($sidebarSessionOrderIds.get(), ids)) {
-    $sidebarSessionOrderIds.set(ids)
-  }
-}
-
-export function setSidebarWorkspaceOrderIds(ids: string[]) {
-  if (!arraysEqual($sidebarWorkspaceOrderIds.get(), ids)) {
-    $sidebarWorkspaceOrderIds.set(ids)
-  }
 }
 
 export function setSidebarResizing(resizing: boolean) {

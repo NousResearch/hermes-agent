@@ -92,8 +92,8 @@ try {
 # Configuration
 # ============================================================================
 
-$RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
-$RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
+$RepoUrlSsh = if ($env:HERMES_INSTALL_REPO_URL_SSH) { $env:HERMES_INSTALL_REPO_URL_SSH } else { "git@github.com:NousResearch/hermes-agent.git" }
+$RepoUrlHttps = if ($env:HERMES_INSTALL_REPO_URL_HTTPS) { $env:HERMES_INSTALL_REPO_URL_HTTPS } else { "https://github.com/NousResearch/hermes-agent.git" }
 $PythonVersion = "3.11"
 $NodeVersion = "22"
 

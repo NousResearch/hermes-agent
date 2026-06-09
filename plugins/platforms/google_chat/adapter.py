@@ -540,14 +540,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # they don't sit in the chat forever as "Hermes is thinking…".
         self._orphan_typing_messages: Dict[str, List[str]] = {}
         # FlowControl knobs (env-configurable).
-        try:
-            self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
-        except (ValueError, TypeError):
-            self._max_messages = 1
-        try:
-            self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
-        except (ValueError, TypeError):
-            self._max_bytes = 16 * 1024 * 1024
+        self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
+        self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
 
     # ------------------------------------------------------------------
     # Configuration loading and validation

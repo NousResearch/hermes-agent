@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Palette, Check, Type } from "lucide-react";
+import { Palette, Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
-import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from "@/themes";
-import type { DashboardTheme, FontChoice, ThemeListEntry } from "@/themes";
+import { BUILTIN_THEMES, useTheme } from "@/themes";
+import type { DashboardTheme, ThemeListEntry } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
  * the sidebar (same idea as a responsive Drawer).
  */
 export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitcherProps) {
-  const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme();
+  const { themeName, availableThemes, setTheme } = useTheme();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -104,11 +104,6 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               setTheme={setTheme}
               themeName={themeName}
             />
-            <FontSection
-              fontChoices={fontChoices}
-              fontId={fontId}
-              setFont={setFont}
-            />
           </div>
         </BottomSheet>
       )}
@@ -146,11 +141,6 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               close={close}
               setTheme={setTheme}
               themeName={themeName}
-            />
-            <FontSection
-              fontChoices={fontChoices}
-              fontId={fontId}
-              setFont={setFont}
             />
           </div>
         );
@@ -217,105 +207,6 @@ function ThemeSwitcherOptions({
   );
 }
 
-const FONT_CATEGORY_LABEL_KEY: Record<FontChoice["category"], "fontSans" | "fontSerif" | "fontMono"> = {
-  sans: "fontSans",
-  serif: "fontSerif",
-  mono: "fontMono",
-};
-
-/** Font-override section rendered below the theme list. Lets the user pick
- *  any catalog font independently of the active theme, or "Theme default"
- *  to clear the override. Each row previews itself in its own font. */
-function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
-  const { t } = useI18n();
-  const order: FontChoice["category"][] = ["sans", "serif", "mono"];
-  return (
-    <>
-      <div className="mt-1 border-t border-current/20 px-3 pb-1 pt-2">
-        <span className="inline-flex items-center gap-1.5">
-          <Type className="h-3 w-3 text-text-tertiary" />
-          <Typography
-            mondwest
-            className="text-display text-xs tracking-[0.12em] text-text-tertiary"
-          >
-            {t.theme?.fontTitle ?? "Font"}
-          </Typography>
-        </span>
-      </div>
-
-      {/* Theme-default (clears the override). */}
-      <ListItem
-        active={fontId === THEME_DEFAULT_FONT_ID}
-        aria-selected={fontId === THEME_DEFAULT_FONT_ID}
-        className="gap-3"
-        onClick={() => setFont(THEME_DEFAULT_FONT_ID)}
-        role="option"
-      >
-        <span aria-hidden className="h-4 w-9 shrink-0" />
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <Typography className="truncate text-xs tracking-normal">
-            {t.theme?.fontDefault ?? "Theme default"}
-          </Typography>
-          <Typography className="truncate text-xs tracking-normal text-text-tertiary">
-            {t.theme?.fontDefaultHint ?? "Use the active theme's font"}
-          </Typography>
-        </div>
-        <Check
-          className={cn(
-            "h-3 w-3 shrink-0 text-midground",
-            fontId === THEME_DEFAULT_FONT_ID ? "opacity-100" : "opacity-0",
-          )}
-        />
-      </ListItem>
-
-      {order.map((cat) => {
-        const fonts = fontChoices.filter((f) => f.category === cat);
-        if (fonts.length === 0) return null;
-        const catLabel = t.theme?.[FONT_CATEGORY_LABEL_KEY[cat]] ?? cat;
-        return (
-          <div key={cat}>
-            <div className="px-3 pb-0.5 pt-1.5">
-              <Typography className="text-[0.65rem] uppercase tracking-[0.1em] text-text-tertiary">
-                {catLabel}
-              </Typography>
-            </div>
-            {fonts.map((f) => {
-              const isActive = f.id === fontId;
-              return (
-                <ListItem
-                  active={isActive}
-                  aria-selected={isActive}
-                  className="gap-3"
-                  key={f.id}
-                  onClick={() => setFont(f.id)}
-                  role="option"
-                >
-                  <span aria-hidden className="h-4 w-9 shrink-0" />
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    {/* Preview the font in its own stack. */}
-                    <span
-                      className="truncate text-sm"
-                      style={{ fontFamily: f.stack }}
-                    >
-                      {f.label}
-                    </span>
-                  </div>
-                  <Check
-                    className={cn(
-                      "h-3 w-3 shrink-0 text-midground",
-                      isActive ? "opacity-100" : "opacity-0",
-                    )}
-                  />
-                </ListItem>
-              );
-            })}
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
 function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
   // Inverted themes (Nous Blue / future lens themes) author their palette
   // pre-inversion — `#FFAC02` reads as `#0053FD` blue once the foreground-
@@ -354,12 +245,6 @@ interface ThemeSwitcherOptionsProps {
   close: () => void;
   setTheme: (name: string) => void;
   themeName: string;
-}
-
-interface FontSectionProps {
-  fontChoices: FontChoice[];
-  fontId: string;
-  setFont: (id: string) => void;
 }
 
 interface ThemeSwitcherProps {

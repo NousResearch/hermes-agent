@@ -10,10 +10,11 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
+import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
+export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
   isPinned: boolean
   isSelected: boolean
@@ -25,6 +26,12 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Presence record for this session (from another device) — indicates live/active state. */
+  presence?: SessionPresenceRecord
+  /** If true, show the device source badge next to the title. */
+  showSourceBadge?: boolean
+  /** If true, show the device name (device_name) on line 2 instead of source. */
+  showDeviceBadge?: boolean
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -54,9 +61,12 @@ export function SidebarSessionRow({
   onDelete,
   onPin,
   onResume,
+  presence,
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  showSourceBadge = false,
+  showDeviceBadge = false,
   className,
   style,
   ref,
@@ -72,6 +82,8 @@ export function SidebarSessionRow({
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
 
+  // Device source badge — no longer needed since sessions are grouped by device
+
   return (
     <SessionContextMenu
       onArchive={onArchive}
@@ -84,7 +96,7 @@ export function SidebarSessionRow({
     >
       <div
         className={cn(
-          'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+          'group relative grid min-h-[2.375rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-start rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
@@ -113,7 +125,7 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className="z-0 flex min-w-0 items-start gap-1.5 bg-transparent py-1 pl-2 pr-1 text-left group-hover:pr-12"
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -173,15 +185,16 @@ export function SidebarSessionRow({
             <span
               className={cn(
                 'grid w-3.5 shrink-0 place-items-center',
-                needsInput ? 'overflow-visible' : 'overflow-hidden'
+                needsInput ? 'overflow-visible' : 'overflow-hidden',
+                'self-center'
               )}
             >
               <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
+          </div>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
           <span className="pointer-events-none absolute right-5 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)">
@@ -251,5 +264,63 @@ function SidebarRowDot({
       )}
       role={isWorking ? 'status' : undefined}
     />
+  )
+}
+/**
+ * Line 2 metadata row: source/client type.
+ * Renders below the session title with subtle tertiary styling.
+ *
+ * Since sessions are grouped by device, this only shows the source
+ * (Terminal, Cron, Hermes Desktop, etc.) — not the device name.
+ * Always renders — never returns null.
+ */
+function SessionSourceLine({
+  profile,
+  source,
+}: {
+  profile: string | null
+  source: string | null
+}) {
+  const parts: string[] = []
+
+  const srcMap: Record<string, string> = {
+    tui: 'Terminal',
+    api_server: 'API',
+    cron: 'Cron',
+    desktop: 'Hermes Desktop',
+    telegram: 'Telegram',
+    discord: 'Discord',
+    slack: 'Slack',
+    bluesky: 'Bluesky',
+    whatsapp: 'WhatsApp',
+    webchat: 'Web Chat',
+    signal: 'Signal',
+    matrix: 'Matrix',
+    email: 'Email',
+    sms: 'SMS',
+    webhook: 'Webhook',
+    unknown: '',
+  }
+
+  // Sessions are grouped by device — device name is the group header,
+  // so line 2 should only show the source/client, not the device name again.
+  if (source && source !== 'unknown' && srcMap[source]) {
+    parts.push(srcMap[source])
+  }
+
+  // Profile as fallback for multi-profile mode
+  if (parts.length === 0 && profile && profile !== 'default') {
+    parts.push(profile)
+  }
+
+  // Ultimate fallback
+  if (parts.length === 0) {
+    parts.push('Hermes')
+  }
+
+  return (
+    <span className="block truncate pt-[3px] text-[0.625rem] leading-3 text-(--ui-text-tertiary)">
+      {parts.join(' · ')}
+    </span>
   )
 }

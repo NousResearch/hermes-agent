@@ -172,33 +172,4 @@ describe('preprocessMarkdown', () => {
       '<https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t405191/>'
     )
   })
-
-  it('does not swallow trailing emphasis asterisks into an autolinked url', () => {
-    const input = '**PR opened: https://github.com/NousResearch/hermes-agent/pull/12345**'
-
-    const output = preprocessMarkdown(input)
-
-    // The URL is autolinked WITHOUT the trailing `**` glued into the href,
-    // and the bold emphasis run stays intact so it renders as bold + a link.
-    expect(output).toContain('<https://github.com/NousResearch/hermes-agent/pull/12345>')
-    expect(output).not.toContain('pull/12345**>')
-    expect(output).not.toContain('12345*')
-  })
-
-  it('stops an autolinked url at mid-string bold markers', () => {
-    const input = 'See https://github.com/foo/bar**bold** for details.'
-
-    const output = preprocessMarkdown(input)
-
-    expect(output).toContain('<https://github.com/foo/bar>')
-    expect(output).toContain('**bold**')
-  })
-
-  it('keeps underscores and tildes inside autolinked url paths', () => {
-    const input = 'Docs at https://example.com/a_b/c~d/page'
-
-    const output = preprocessMarkdown(input)
-
-    expect(output).toContain('<https://example.com/a_b/c~d/page>')
-  })
 })

@@ -8,26 +8,18 @@ const selectToolsetProvider = vi.fn()
 const setEnvVar = vi.fn()
 const deleteEnvVar = vi.fn()
 const revealEnvVar = vi.fn()
-const runToolsetPostSetup = vi.fn()
-const getActionStatus = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   selectToolsetProvider: (name: string, provider: string) => selectToolsetProvider(name, provider),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   deleteEnvVar: (key: string) => deleteEnvVar(key),
-  revealEnvVar: (key: string) => revealEnvVar(key),
-  runToolsetPostSetup: (name: string, key: string) => runToolsetPostSetup(name, key),
-  getActionStatus: (name: string, lines?: number) => getActionStatus(name, lines)
+  revealEnvVar: (key: string) => revealEnvVar(key)
 }))
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()
-}))
-
-vi.mock('@/store/activity', () => ({
-  upsertDesktopActionTask: vi.fn()
 }))
 
 function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
@@ -159,131 +151,5 @@ describe('ToolsetConfigPanel', () => {
     expect(await screen.findByText('ELEVENLABS_API_KEY')).toBeTruthy()
     // No provider selection was triggered — this is purely reflecting state.
     expect(selectToolsetProvider).not.toHaveBeenCalled()
-  })
-
-  it('runs a provider post-setup install hook and tails its log', async () => {
-    // A browser-style toolset whose active provider declares a post_setup hook.
-    getToolsetConfig.mockResolvedValue(
-      config({
-        name: 'browser',
-        active_provider: 'Camofox',
-        providers: [
-          {
-            name: 'Camofox',
-            badge: 'local',
-            tag: 'Stealth local browser',
-            env_vars: [],
-            post_setup: 'camofox',
-            requires_nous_auth: false,
-            is_active: true
-          }
-        ]
-      })
-    )
-    runToolsetPostSetup.mockResolvedValue({ ok: true, pid: 4321, name: 'tools-post-setup', key: 'camofox' })
-    // First poll: still running; second poll: finished cleanly.
-    getActionStatus
-      .mockResolvedValueOnce({
-        exit_code: null,
-        lines: ['Installing Camofox browser server...'],
-        name: 'tools-post-setup',
-        pid: 4321,
-        running: true
-      })
-      .mockResolvedValue({
-        exit_code: 0,
-        lines: ['Installing Camofox browser server...', "Post-setup 'camofox' complete"],
-        name: 'tools-post-setup',
-        pid: 4321,
-        running: false
-      })
-
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
-
-    await waitFor(() => expect(runToolsetPostSetup).toHaveBeenCalledWith('browser', 'camofox'))
-    // The install log is tailed inline. The first poll fires after a 1200ms
-    // delay (mirrors command-center's poll cadence), so allow >1200ms here.
-    await waitFor(() => expect(getActionStatus).toHaveBeenCalledWith('tools-post-setup', 300), {
-      timeout: 4000
-    })
-  })
-
-  it('does not poll when the spawn endpoint reports ok:false', async () => {
-    getToolsetConfig.mockResolvedValue(
-      config({
-        name: 'browser',
-        active_provider: 'Camofox',
-        providers: [
-          {
-            name: 'Camofox',
-            badge: 'local',
-            tag: 'Stealth local browser',
-            env_vars: [],
-            post_setup: 'camofox',
-            requires_nous_auth: false,
-            is_active: true
-          }
-        ]
-      })
-    )
-    // Spawn failed server-side — must NOT proceed to poll a non-existent action.
-    runToolsetPostSetup.mockResolvedValue({ ok: false, pid: 0, name: 'tools-post-setup' })
-
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
-
-    await waitFor(() => expect(runToolsetPostSetup).toHaveBeenCalledWith('browser', 'camofox'))
-    // Give the would-be first poll delay (1200ms) time to NOT fire.
-    await new Promise(resolve => setTimeout(resolve, 1500))
-    expect(getActionStatus).not.toHaveBeenCalled()
-  })
-
-  it('surfaces a non-zero exit code from the setup process', async () => {
-    getToolsetConfig.mockResolvedValue(
-      config({
-        name: 'browser',
-        active_provider: 'Camofox',
-        providers: [
-          {
-            name: 'Camofox',
-            badge: 'local',
-            tag: 'Stealth local browser',
-            env_vars: [],
-            post_setup: 'camofox',
-            requires_nous_auth: false,
-            is_active: true
-          }
-        ]
-      })
-    )
-    runToolsetPostSetup.mockResolvedValue({ ok: true, pid: 4321, name: 'tools-post-setup', key: 'camofox' })
-    // Action finished but failed (non-zero exit).
-    getActionStatus.mockResolvedValue({
-      exit_code: 1,
-      lines: ['Installing...', 'npm ERR! install failed'],
-      name: 'tools-post-setup',
-      pid: 4321,
-      running: false
-    })
-
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
-
-    // The failing install log is still tailed and shown; exit_code:1 routes to
-    // the error notify branch (asserted via the poll completing on a non-zero
-    // status without throwing).
-    await waitFor(() => expect(getActionStatus).toHaveBeenCalledWith('tools-post-setup', 300), {
-      timeout: 4000
-    })
-    await waitFor(() => expect(screen.getByText(/npm ERR! install failed/)).toBeTruthy(), {
-      timeout: 4000
-    })
   })
 })

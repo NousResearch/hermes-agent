@@ -102,55 +102,11 @@ _log = logging.getLogger(__name__)
 # when the same module is used across TestClient instances or uvicorn reloads.
 # ---------------------------------------------------------------------------
 
-def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
-    """Tick the cron scheduler from inside the desktop dashboard backend.
-
-    The scheduler tick loop normally lives in ``hermes gateway run`` — but the
-    desktop app spawns a ``hermes dashboard`` backend, not a gateway, so a cron
-    a user creates in the app would never fire. We run a minimal ticker here
-    (no live adapters; delivery falls back to the per-platform send path).
-
-    Cross-process safe: ``cron.scheduler.tick`` takes the ``cron/.tick.lock``
-    file lock, so this never double-fires alongside a real gateway on the same
-    HERMES_HOME — whichever process grabs the lock first wins the tick.
-    """
-    from cron.scheduler import tick as cron_tick
-
-    _log.info("Desktop cron ticker started (interval=%ds)", interval)
-    # Tick once up front (catches jobs due at launch), then on the interval.
-    while not stop_event.is_set():
-        try:
-            cron_tick(verbose=False, sync=False)
-        except Exception as e:
-            _log.debug("Desktop cron tick error: %s", e)
-        stop_event.wait(interval)
-
-
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
-
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
-        cron_stop = threading.Event()
-        cron_thread = threading.Thread(
-            target=_start_desktop_cron_ticker,
-            args=(cron_stop,),
-            daemon=True,
-            name="desktop-cron-ticker",
-        )
-        cron_thread.start()
-
-    try:
-        yield
-    finally:
-        if cron_stop is not None:
-            cron_stop.set()
+    yield
 
 
 def _get_event_state(app: "FastAPI"):
@@ -509,11 +465,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "code_execution": "agent",
     "prompt_caching": "agent",
     "goals": "agent",
+    # Desktop YOLO is an approval-bypass preference, so keep it with the
+    # existing security/approval controls instead of creating a one-field tab.
+    "desktop": "security",
     "updates": "general",
-    # `onboarding.profile_build` is the only schema-surfaced onboarding field
-    # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
-    # it into the agent tab rather than spawning a one-field orphan category.
-    "onboarding": "agent",
     # Only `telegram.reactions` currently lives under telegram — fold it in
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
@@ -696,41 +651,23 @@ def _apply_main_model_assignment(
 ) -> dict:
     """Apply a main-slot model assignment to a ``model`` config dict in place.
 
-    Sets ``provider``/``default``, then reconciles ``base_url``:
-
-    - An explicitly supplied ``base_url`` is always persisted (covers
-      ``custom``/local endpoints and any provider whose key is bound to a
-      non-default host).
-    - Otherwise, a stale ``base_url`` is cleared ONLY when switching to a
-      *different* provider — that URL belonged to the old provider. When the
-      provider is unchanged and no new URL is supplied, the existing
-      ``base_url`` is preserved. This keeps a user's custom endpoint (e.g. a
-      Xiaomi MiMo Token Plan host, ``https://token-plan-*.xiaomimimo.com/v1``)
-      alive when they merely re-pick a model under the same provider — picking
-      a model previously wiped it, forcing the registry default and breaking
-      Token Plan keys.
-
-    The runtime resolver reads ``model.base_url`` from config (it ignores
-    ``OPENAI_BASE_URL``) and only honors it when the configured provider matches
-    and the pool entry is on the registry default, so preserving it here is what
-    lets the override actually route. The hardcoded ``context_length`` override
-    is always dropped since the new model may have a different context window.
+    Sets ``provider``/``default``, then reconciles ``base_url``: custom/local
+    providers persist the supplied endpoint URL (the runtime resolver reads
+    ``model.base_url`` from config and ignores ``OPENAI_BASE_URL``), while every
+    other provider clears any stale URL so the resolver picks that provider's
+    own default endpoint. The hardcoded ``context_length`` override is always
+    dropped since the new model may have a different context window.
 
     Returns the same dict (coerced to a fresh dict if the input wasn't one) so
-    callers can assign it straight back onto the model config.
+    callers can assign it straight back onto ``cfg["model"]``.
     """
     if not isinstance(model_cfg, dict):
         model_cfg = {}
-    prev_provider = str(model_cfg.get("provider") or "").strip().lower()
-    new_provider = provider.strip().lower()
     model_cfg["provider"] = provider
     model_cfg["default"] = model
-    if base_url.strip():
+    if provider.strip().lower() == "custom" and base_url.strip():
         model_cfg["base_url"] = base_url.strip()
-    elif model_cfg.get("base_url") and new_provider != prev_provider:
-        # Switching providers: the old URL belonged to the old provider, drop
-        # it so the new provider's default endpoint is used. Same-provider
-        # re-assignment keeps the user's configured base_url intact.
+    elif model_cfg.get("base_url"):
         model_cfg["base_url"] = ""
     model_cfg.pop("context_length", None)
     return model_cfg
@@ -794,74 +731,6 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
-
-
-# Image MIME types this endpoint will serve. Extension-allowlisted so an
-# authenticated caller can't pull non-image files through it.
-_MEDIA_CONTENT_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".bmp": "image/bmp",
-    ".ico": "image/x-icon",
-}
-_MEDIA_MAX_BYTES = 25 * 1024 * 1024
-
-
-def _media_serve_roots() -> list[Path]:
-    """Directories ``GET /api/media`` is allowed to read from.
-
-    Confined to where the agent and attach pipeline actually write media on the
-    gateway host — its images dir and cache subtree. This stops an authenticated
-    client from reading image-extension files anywhere on disk (e.g. a renamed
-    key or a screenshot outside the cache) merely because the suffix passes the
-    allowlist.
-    """
-    home = get_hermes_home()
-    roots = [home / "images", home / "screenshots", home / "cache"]
-    out: list[Path] = []
-    for root in roots:
-        try:
-            out.append(root.resolve())
-        except (OSError, RuntimeError):
-            continue
-    return out
-
-
-@app.get("/api/media")
-async def get_media(path: str):
-    """Return a gateway-local image file as a base64 data URL.
-
-    Lets remote clients (the desktop app over the network, or the web dashboard
-    in a browser) display images the agent wrote to *this* machine's filesystem
-    — they can't read the gateway's local disk directly.
-
-    Auth-gated by the session token like every other /api route. Restricted to
-    an image-extension allowlist, a size cap, AND the gateway's own media roots
-    (resolved, symlink-safe) so it can't be used to read arbitrary files.
-    """
-    try:
-        target = Path(path).expanduser().resolve()
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=400, detail="Invalid path")
-
-    if target.suffix.lower() not in _MEDIA_CONTENT_TYPES:
-        raise HTTPException(status_code=415, detail="Unsupported media type")
-
-    roots = _media_serve_roots()
-    if not any(target == root or root in target.parents for root in roots):
-        raise HTTPException(status_code=403, detail="Path outside media roots")
-
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-    if target.stat().st_size > _MEDIA_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File too large")
-
-    encoded = base64.b64encode(target.read_bytes()).decode("ascii")
-    return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
 
 
 @app.get("/api/status")
@@ -1749,13 +1618,6 @@ async def get_action_status(name: str, lines: int = 200):
         exit_code = proc.poll()
         running = exit_code is None
         pid = proc.pid
-        if exit_code is not None:
-            try:
-                proc.wait(timeout=1)
-            except Exception:
-                pass
-            _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
-            _ACTION_PROCS.pop(name, None)
 
     return {
         "name": name,
@@ -1773,8 +1635,6 @@ async def get_sessions(
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "created",
-    source: str = None,
-    exclude_sources: str = None,
 ):
     """List sessions.
 
@@ -1805,14 +1665,7 @@ async def get_sessions(
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
             include_archived = archived == "include"
-            # Optional source scoping: ``source`` includes a single class,
-            # ``exclude_sources`` (comma-separated) drops classes. The desktop
-            # uses these to split recents (exclude=cron) from the cron-jobs
-            # section (source=cron) into two independent lists.
-            exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
             sessions = db.list_sessions_rich(
-                source=source or None,
-                exclude_sources=exclude_list or None,
                 limit=limit,
                 offset=offset,
                 min_message_count=min_message_count,
@@ -1820,9 +1673,7 @@ async def get_sessions(
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
             )
-            total = db.session_count(
-                source=source or None,
-                exclude_sources=exclude_list or None,
+            total = db.surfaced_session_count(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
@@ -1852,8 +1703,6 @@ async def get_profiles_sessions(
     archived: str = "exclude",
     order: str = "recent",
     profile: str = "all",
-    source: str = None,
-    exclude_sources: str = None,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -1889,36 +1738,25 @@ async def get_profiles_sessions(
     min_message_count = max(0, min_messages)
     archived_only = archived == "only"
     include_archived = archived == "include"
-    # Source scoping (see /api/sessions): recents pass exclude_sources=cron,
-    # the cron-jobs section passes source=cron — two independent lists so
-    # newest cron sessions can't starve the recents page.
-    source_filter = source or None
-    exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
-    per_profile = min(max(limit + offset, limit), 500)
+    per_profile = min(max(limit + offset, limit), 100)
 
     merged: List[Dict[str, Any]] = []
     total = 0
     profile_totals: Dict[str, int] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
-    for name, home in targets:
+
+    def _query_profile(name: str, home: str) -> tuple:
+        """Query a single profile DB, returning (sessions, count, error)."""
         db_path = Path(home) / "state.db"
         if not db_path.exists():
-            continue
+            return ([], 0, None)
+        db = None
         try:
-            # Read-only: this loop runs on every sidebar refresh, so it must
-            # never DDL/write-lock another profile's live DB (see SessionDB
-            # read_only docstring).
             db = SessionDB(db_path=db_path, read_only=True)
-        except Exception as exc:
-            errors.append({"profile": name, "error": str(exc)})
-            continue
-        try:
             rows = db.list_sessions_rich(
-                source=source_filter,
-                exclude_sources=exclude_list or None,
                 limit=per_profile,
                 offset=0,
                 min_message_count=min_message_count,
@@ -1927,15 +1765,12 @@ async def get_profiles_sessions(
                 order_by_last_active=order == "recent",
             )
             profile_total = db.session_count(
-                source=source_filter,
-                exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,
             )
-            total += profile_total
-            profile_totals[name] = profile_total
+            tagged = []
             for s in rows:
                 s["profile"] = name
                 s["is_default_profile"] = name == "default"
@@ -1944,11 +1779,27 @@ async def get_profiles_sessions(
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
                 s["archived"] = bool(s.get("archived"))
-                merged.append(s)
+                tagged.append(s)
+            return (tagged, profile_total, None)
         except Exception as exc:
-            errors.append({"profile": name, "error": str(exc)})
+            return ([], 0, {"profile": name, "error": str(exc)})
         finally:
-            db.close()
+            if db:
+                db.close()
+
+    # Query all profiles in parallel using threads (SQLite reads are thread-safe
+    # with shared cache disabled — each SessionDB opens its own connection).
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(targets), 8)) as pool:
+        futures = {pool.submit(_query_profile, name, str(home)): name
+                   for name, home in targets}
+        for future in concurrent.futures.as_completed(futures):
+            rows, profile_total, err = future.result()
+            if err:
+                errors.append(err)
+            profile_totals[futures[future]] = profile_total
+            total += profile_total
+            merged.extend(rows)
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
@@ -3450,7 +3301,6 @@ def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
-_TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
 _TELEGRAM_USER_ID_RE = re.compile(r"^\d+$")
 
 
@@ -3523,32 +3373,27 @@ def _telegram_onboarding_request_sync(
     body: dict[str, Any] | None = None,
     bearer_token: str | None = None,
 ) -> dict[str, Any]:
-    import httpx
-
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": _TELEGRAM_ONBOARDING_USER_AGENT,
-    }
-    request_kwargs: dict[str, Any] = {}
+    data = None
+    headers = {"Accept": "application/json"}
     if body is not None:
+        data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
-        request_kwargs["json"] = body
     if bearer_token:
         headers["Authorization"] = f"Bearer {bearer_token}"
 
-    url = f"{_telegram_onboarding_base_url()}{path}"
+    request = urllib.request.Request(
+        f"{_telegram_onboarding_base_url()}{path}",
+        data=data,
+        headers=headers,
+        method=method,
+    )
     try:
-        with httpx.Client(timeout=httpx.Timeout(10.0)) as client:
-            response = client.request(
-                method,
-                url,
-                headers=headers,
-                **request_kwargs,
-            )
-            response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        payload = exc.read()
         try:
-            parsed = exc.response.json()
+            parsed = json.loads(payload.decode("utf-8"))
         except Exception:
             parsed = {}
         error = str(parsed.get("error") or parsed.get("status") or "")
@@ -3556,15 +3401,10 @@ def _telegram_onboarding_request_sync(
             error,
             "Telegram setup service returned an error.",
         )
-        status_code = 404 if exc.response.status_code == 404 else 502
+        status_code = 404 if exc.code == 404 else 502
         if error in {"expired", "claimed"}:
             status_code = 410
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Telegram setup service is unavailable. Try again shortly.",
-        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -3572,7 +3412,7 @@ def _telegram_onboarding_request_sync(
         ) from exc
 
     try:
-        parsed = response.json()
+        parsed = json.loads(payload.decode("utf-8"))
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -5339,12 +5179,126 @@ def _session_latest_descendant(session_id: str):
 # templated ``/api/sessions/{session_id}`` family that follows. FastAPI/
 # Starlette match routes in registration order, and the ``{session_id}``
 # pattern is unconstrained — it would otherwise swallow e.g.
-# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``, or
-# ``GET /api/sessions/stats`` as "operate on the session with id
-# 'empty'" / "'bulk-delete'" / "'stats'", which would 404 (or worse,
-# succeed and delete the wrong row). Same story as the older
-# ``/api/sessions/search`` endpoint up at line ~1191. If you split or
-# reorder this block, move every route in it together.
+# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``,
+# ``POST /api/sessions/bulk-archive``, or ``GET /api/sessions/stats`` as
+# "operate on the session with id 'empty'" / "'bulk-delete'" /
+# "'bulk-archive'" / "'stats'", which would 404 (or worse, succeed and
+# update the wrong row). Same story as the older ``/api/sessions/search``
+# endpoint up at line ~1191. If you split or reorder this block, move every
+# route in it together.
+class AutoArchiveSessions(BaseModel):
+    preserve_ids: Optional[List[str]] = None
+    keep_recent: Optional[int] = None
+    older_than_days: Optional[int] = None
+    min_interval_hours: Optional[float] = None
+
+
+@app.post("/api/sessions/auto-archive")
+async def auto_archive_sessions_endpoint(body: AutoArchiveSessions):
+    """Soft-archive old sessions so desktop restarts stay uncluttered.
+
+    Desktop owns pinned-session state in localStorage, so it sends the ids to
+    preserve on each startup/refresh. The backend persists the archive flag in
+    state.db; archived sessions disappear from normal `/api/sessions` results
+    but remain recoverable from the Archived Sessions settings panel.
+    """
+    preserve_ids = [
+        str(sid).strip()
+        for sid in (body.preserve_ids or [])
+        if str(sid).strip()
+    ]
+    if len(preserve_ids) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="preserve_ids must contain at most 5000 entries",
+        )
+
+    cfg = (load_config().get("sessions") or {})
+    if not cfg.get("auto_archive", True):
+        return {"ok": True, "skipped": True, "archived": 0, "reason": "disabled"}
+
+    keep_recent = (
+        body.keep_recent
+        if body.keep_recent is not None
+        else cfg.get("auto_archive_keep_recent", 100)
+    )
+    older_than_days = (
+        body.older_than_days
+        if body.older_than_days is not None
+        else cfg.get("auto_archive_after_days", 14)
+    )
+    min_interval_hours = (
+        body.min_interval_hours
+        if body.min_interval_hours is not None
+        else cfg.get("auto_archive_min_interval_hours", 6)
+    )
+    min_message_count = int(cfg.get("auto_archive_min_messages", 1))
+    active_grace_seconds = int(cfg.get("auto_archive_active_grace_seconds", 300))
+
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        result = db.maybe_auto_archive_old_sessions(
+            keep_recent=max(0, int(keep_recent or 0)),
+            older_than_days=max(0, int(older_than_days or 0)),
+            min_interval_hours=max(0.0, float(min_interval_hours or 0)),
+            min_message_count=max(0, min_message_count),
+            preserve_ids=preserve_ids,
+            active_grace_seconds=max(0, active_grace_seconds),
+        )
+        return {"ok": True, **result}
+    finally:
+        db.close()
+
+
+class BulkArchiveSessions(BaseModel):
+    preserve_ids: Optional[List[str]] = None
+    min_messages: Optional[int] = 1
+    active_grace_seconds: Optional[int] = None
+
+
+@app.post("/api/sessions/bulk-archive")
+async def bulk_archive_sessions_endpoint(body: BulkArchiveSessions):
+    """Soft-archive all normal sessions except caller-preserved rows.
+
+    This is the manual counterpart to the old-session auto-maintenance policy:
+    the desktop can pass pinned IDs, the selected chat, and running session IDs
+    in ``preserve_ids`` and then hide everything else from the regular sidebar
+    without deleting the underlying transcript.
+    """
+    preserve_ids = [
+        str(sid).strip()
+        for sid in (body.preserve_ids or [])
+        if str(sid).strip()
+    ]
+    if len(preserve_ids) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="preserve_ids must contain at most 5000 entries",
+        )
+
+    cfg = (load_config().get("sessions") or {})
+    active_grace_seconds = (
+        body.active_grace_seconds
+        if body.active_grace_seconds is not None
+        else cfg.get("auto_archive_active_grace_seconds", 300)
+    )
+
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        archived = db.archive_surfaced_sessions(
+            preserve_ids=preserve_ids,
+            min_message_count=max(0, int(body.min_messages if body.min_messages is not None else 1)),
+            active_grace_seconds=max(0, int(active_grace_seconds or 0)),
+        )
+        return {"ok": True, "archived": archived}
+    finally:
+        db.close()
+
+
 class BulkDeleteSessions(BaseModel):
     ids: List[str]
 
@@ -5815,52 +5769,6 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
-
-
-@app.get("/api/cron/jobs/{job_id}/runs")
-async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
-    """Run sessions produced by a cron job, newest first.
-
-    Cron runs are stored as ordinary sessions whose id is
-    ``cron_{job_id}_{timestamp}`` (see cron/scheduler.run_job). A job's history
-    is therefore every session whose id carries that prefix; ``source='cron'``
-    narrows it and the id prefix binds it to this job. Powers the run-history
-    list under each job in the desktop cron detail. Same row shape as
-    ``/api/sessions`` so the frontend can reuse SessionInfo.
-
-    Backed by ``SessionDB.list_cron_job_runs`` — a bounded ``[prefix, hi)``
-    id-range scan, not the compression-chain CTE used for the recents list,
-    so the cost scales with the requested window and not the (unbounded) total
-    cron history.
-    """
-    selected = profile or _find_cron_job_profile(job_id)
-    # job_id may be a human name; resolve to the canonical id used in run-session ids.
-    canonical = job_id
-    if selected:
-        job = _call_cron_for_profile(selected, "get_job", job_id)
-        if job and job.get("id"):
-            canonical = str(job["id"])
-
-    try:
-        limit_n = max(1, min(int(limit), 100))
-    except (TypeError, ValueError):
-        limit_n = 20
-
-    db = _open_session_db_for_profile(selected)
-    try:
-        runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
-        now = time.time()
-        for s in runs:
-            s["is_active"] = (
-                s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
-            )
-            s["archived"] = bool(s.get("archived"))
-            if selected:
-                s["profile"] = selected
-        return {"runs": runs, "limit": limit_n}
-    finally:
-        db.close()
 
 
 @app.post("/api/cron/jobs")
@@ -9385,52 +9293,6 @@ async def set_dashboard_theme(body: ThemeSetBody):
     config["dashboard"]["theme"] = body.name
     save_config(config)
     return {"ok": True, "theme": body.name}
-
-
-# Curated font-override ids. Kept in sync with FONT_CHOICES in
-# web/src/themes/fonts.ts — the frontend owns the stacks + webfont URLs;
-# the backend only needs the id allow-list so it can reject anything not
-# in the vetted catalog (the font's webfont URL is injected as a <link>,
-# so we never accept an arbitrary user-supplied id/URL here).
-_FONT_DEFAULT_ID = "theme"
-_FONT_CHOICES = frozenset({
-    "system-sans", "system-serif", "system-mono",
-    "inter", "ibm-plex-sans", "work-sans", "atkinson-hyperlegible", "dm-sans",
-    "spectral", "fraunces", "source-serif",
-    "jetbrains-mono", "ibm-plex-mono", "space-mono",
-})
-
-
-@app.get("/api/dashboard/font")
-async def get_dashboard_font():
-    """Return the active font override (``"theme"`` = use the theme's font)."""
-    config = load_config()
-    font = cfg_get(config, "dashboard", "font", default=_FONT_DEFAULT_ID)
-    if font not in _FONT_CHOICES:
-        font = _FONT_DEFAULT_ID
-    return {"font": font}
-
-
-class FontSetBody(BaseModel):
-    font: str
-
-
-@app.put("/api/dashboard/font")
-async def set_dashboard_font(body: FontSetBody):
-    """Set the dashboard font override (persists to config.yaml).
-
-    Accepts any id in the curated catalog, or ``"theme"`` to clear the
-    override and fall back to the active theme's own font. Unknown ids are
-    coerced to ``"theme"`` rather than 400'd so a stale client can't wedge
-    the picker.
-    """
-    font = body.font if body.font in _FONT_CHOICES else _FONT_DEFAULT_ID
-    config = load_config()
-    if "dashboard" not in config:
-        config["dashboard"] = {}
-    config["dashboard"]["font"] = font
-    save_config(config)
-    return {"ok": True, "font": font}
 
 
 # ---------------------------------------------------------------------------

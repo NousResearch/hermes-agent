@@ -4,7 +4,6 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { useI18n } from '@/i18n'
 import {
   Activity,
   AlertCircle,
@@ -17,11 +16,12 @@ import {
   Zap,
   ZapFilled
 } from '@/lib/icons'
+import { useI18n } from '@/i18n'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import { contextBarLabel, contextCapacityClassName, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
@@ -52,7 +52,7 @@ import {
 import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
-import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
+import type { StatusbarItem } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -112,43 +112,26 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  const contextCapacityClass = useMemo(
+    () => contextCapacityClassName(currentUsage.context_percent),
+    [currentUsage.context_percent]
+  )
 
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
   // path applies it once the backend session exists.
-  //
-  // Shift+click flips the GLOBAL approvals.mode instead — a persistent,
-  // all-sessions/CLI/TUI/cron bypass that survives restarts.
-  const toggleYolo = useCallback(
-    async (modifiers?: StatusbarSelectModifiers) => {
-      const next = !$yoloActive.get()
+  const toggleYolo = useCallback(async () => {
+    const next = !$yoloActive.get()
+    const sid = $activeSessionId.get()
 
-      setYoloActive(next)
+    setYoloActive(next)
 
-      if (modifiers?.shiftKey) {
-        try {
-          await setGlobalYolo(requestGateway, next)
-        } catch {
-          setYoloActive(!next)
-        }
-
-        return
-      }
-
-      const sid = $activeSessionId.get()
-
-      if (!sid) {
-        return
-      }
-
-      try {
-        await setSessionYolo(requestGateway, sid, next)
-      } catch {
-        setYoloActive(!next)
-      }
-    },
-    [requestGateway]
-  )
+    try {
+      await setDesktopYoloMode(requestGateway, sid, next)
+    } catch {
+      setYoloActive(!next)
+    }
+  }, [requestGateway])
 
   const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
 
@@ -209,20 +192,23 @@ export function useStatusbarItems({
     const appVersion = desktopVersion?.appVersion
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
+    const rebuildNeeded = updateStatus?.rebuildNeeded === true
     const applying = updateApply.applying || updateApply.stage === 'restart'
     const remote = connection?.mode === 'remote'
 
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+    const rebuildHint = !applying && rebuildNeeded ? ' (+rebuild)' : ''
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
+      : `${base}${behindHint}${rebuildHint}`
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      !applying && rebuildNeeded && copy.rebuildNeeded,
       appVersion && copy.desktopVersion(appVersion),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
@@ -231,7 +217,7 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      className: !applying && (behind > 0 || rebuildNeeded) ? 'text-primary hover:text-primary' : undefined,
       detail: appVersion && sha && !applying && !remote ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
@@ -383,7 +369,7 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar || undefined,
+        detail: contextBar ? <span className={contextCapacityClass}>{contextBar}</span> : undefined,
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
@@ -407,7 +393,7 @@ export function useStatusbarItems({
           <Zap className="size-3.5 shrink-0 opacity-70" />
         ),
         id: 'yolo',
-        onSelect: modifiers => void toggleYolo(modifiers),
+        onSelect: () => void toggleYolo(),
         title: yoloActive ? copy.yoloOn : copy.yoloOff,
         variant: 'action'
       },

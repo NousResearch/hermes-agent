@@ -107,10 +107,7 @@ class IRCAdapter(BasePlatformAdapter):
 
         # Connection settings (env vars override config.yaml)
         self.server = os.getenv("IRC_SERVER") or extra.get("server", "")
-        try:
-            self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
-        except (ValueError, TypeError):
-            self.port = 6697
+        self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
         self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
         self.channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
         self.use_tls = (

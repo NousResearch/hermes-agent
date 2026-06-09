@@ -522,15 +522,7 @@ export function useMainApp(gw: GatewayClient) {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
           if (!stopped && result?.sessions) {
-            const liveSessionCount = result.sessions.length
-
-            // Only patch when the count actually changed. patchUiState always
-            // produces a new state object, which notifies every $uiState
-            // subscriber; patching unconditionally on each 1.5s poll re-renders
-            // the whole TUI and causes idle flicker.
-            if (getUiState().liveSessionCount !== liveSessionCount) {
-              patchUiState({ liveSessionCount })
-            }
+            patchUiState({ liveSessionCount: result.sessions.length })
           }
         })
         .catch(() => {})

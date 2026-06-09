@@ -219,35 +219,6 @@ def _supports_vision_override(
         coerced = _coerce_capability_bool(per_model.get("supports_vision"))
         if coerced is not None:
             return coerced
-
-    # 2b. Legacy list-style custom_providers. Entries are dicts with a
-    # "name" key and a nested "models" dict. Match by provider name (which
-    # may appear as the raw name or "custom:<name>" at runtime).
-    custom_providers = cfg.get("custom_providers")
-    if isinstance(custom_providers, list):
-        # Build candidate names: the provider value and the config provider
-        # value, both raw and with "custom:" prefix stripped/added.
-        candidate_names: set = set()
-        for p in filter(None, (provider, config_provider)):
-            candidate_names.add(p)
-            if p.startswith("custom:"):
-                candidate_names.add(p[len("custom:"):])
-            else:
-                candidate_names.add(f"custom:{p}")
-        for entry_raw in custom_providers:
-            if not isinstance(entry_raw, dict):
-                continue
-            entry_name = str(entry_raw.get("name") or "").strip()
-            if entry_name not in candidate_names:
-                continue
-            models_raw = entry_raw.get("models")
-            models_cfg = models_raw if isinstance(models_raw, dict) else {}
-            per_model_raw = models_cfg.get(model)
-            per_model = per_model_raw if isinstance(per_model_raw, dict) else {}
-            coerced = _coerce_capability_bool(per_model.get("supports_vision"))
-            if coerced is not None:
-                return coerced
-
     return None
 
 

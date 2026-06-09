@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -250,6 +250,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_write_tokens INTEGER DEFAULT 0,
     reasoning_tokens INTEGER DEFAULT 0,
     cwd TEXT,
+    device_name TEXT,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -302,11 +303,14 @@ CREATE TABLE IF NOT EXISTS compression_locks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
-CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+-- Covering index for last_active subquery (SELECT MAX(timestamp) WHERE session_id = ...)
+CREATE INDEX IF NOT EXISTS idx_messages_session_ts_max ON messages(session_id, timestamp DESC);
+-- Covering index for preview subquery (SELECT content WHERE session_id, role='user' ORDER BY timestamp, id LIMIT 1)
+CREATE INDEX IF NOT EXISTS idx_messages_session_role_ts_id ON messages(session_id, role, timestamp, id);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -789,6 +793,15 @@ class SessionDB:
         # column (idx_messages_session_active) — same ordering constraint.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
+        # Covering index for the sidebar session list and auto-archive queries.
+        # The most common filter is archived=0 AND message_count>=1 with
+        # ORDER BY started_at (or last_active). This index avoids a full
+        # table scan on the sessions table for those queries.
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_sidebar "
+            "ON sessions(archived, message_count, started_at DESC)"
+        )
+
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
         if not fts5_available:
@@ -900,6 +913,34 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 15:
+                # v15: Backfill device_name for sessions that were created
+                # before the device_name column was added. Re-resolve using
+                # the current device identity so existing sessions appear
+                # under their correct device group instead of "Unknown".
+                try:
+                    from hermes_constants import get_device_name
+                    dn = get_device_name()
+                    cursor.execute(
+                        "UPDATE sessions SET device_name = ? WHERE device_name IS NULL",
+                        (dn,),
+                    )
+                    updated = cursor.rowcount
+                    if updated:
+                        logger.info("backfilled device_name=%r for %d sessions", dn, updated)
+                except Exception:
+                    logger.debug("device_name backfill skipped", exc_info=True)
+            if current_version < 16:
+                # v16: Composite index for sidebar session list queries.
+                # Covers archived=0 AND message_count>=1 ORDER BY started_at
+                # to avoid full table scans on large databases.
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_sessions_sidebar "
+                        "ON sessions(archived, message_count, started_at DESC)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -948,13 +989,14 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        device_name: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, cwd, started_at, device_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -965,12 +1007,16 @@ class SessionDB:
                     parent_session_id,
                     cwd,
                     time.time(),
+                    device_name,
                 ),
             )
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
+        if "device_name" not in kwargs:
+            from hermes_constants import get_device_name
+            kwargs["device_name"] = get_device_name()
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
     def end_session(self, session_id: str, end_reason: str) -> None:
@@ -1493,6 +1539,93 @@ class SessionDB:
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
+    def archive_sessions(self, session_ids: List[str]) -> int:
+        """Soft-archive the listed sessions in one or more bounded updates.
+
+        Unknown IDs are skipped. Returns the number of rows that actually
+        moved from active to archived, plus any hidden descendants swept after
+        archiving their surfaced parent conversations.
+        """
+        unique_ids = list({sid for sid in session_ids if isinstance(sid, str) and sid})
+        if not unique_ids:
+            return 0
+
+        def _do(conn):
+            updated = 0
+            for start in range(0, len(unique_ids), 500):
+                chunk = unique_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
+
+        archived = self._execute_write(_do)
+        return archived + self.archive_hidden_descendants_of_archived_sessions()
+
+    def archive_surfaced_sessions(
+        self,
+        *,
+        preserve_ids: Optional[List[str]] = None,
+        min_message_count: int = 1,
+        active_grace_seconds: int = 300,
+    ) -> int:
+        """Soft-archive every surfaced, unarchived conversation not preserved.
+
+        This backs an explicit desktop "archive all" action. The caller passes
+        client-owned preserved IDs such as pins, the selected chat, and running
+        sessions. Compression continuations are archived by lineage root so one
+        logical conversation moves together.
+        """
+        preserved = {
+            str(sid).strip()
+            for sid in (preserve_ids or [])
+            if str(sid).strip()
+        }
+        min_message_count = max(0, int(min_message_count or 0))
+        active_grace_seconds = max(0, int(active_grace_seconds or 0))
+        now = time.time()
+        archive_ids: List[str] = []
+        seen_targets = set()
+
+        sessions = self.list_sessions_rich(
+            limit=100000,
+            offset=0,
+            min_message_count=min_message_count,
+            include_archived=False,
+            archived_only=False,
+            order_by_last_active=True,
+        )
+        for session in sessions:
+            sid = str(session.get("id") or "").strip()
+            if not sid:
+                continue
+            root_id = str(session.get("_lineage_root_id") or sid).strip()
+            target_id = root_id or sid
+            if target_id in seen_targets:
+                continue
+            seen_targets.add(target_id)
+            if sid in preserved or target_id in preserved:
+                continue
+
+            started_at = float(session.get("started_at") or 0)
+            last_active = float(session.get("last_active") or started_at)
+            ended_at = session.get("ended_at")
+            recently_active = (
+                ended_at is None
+                and active_grace_seconds > 0
+                and now - last_active < active_grace_seconds
+            )
+            if recently_active:
+                continue
+
+            archive_ids.append(target_id)
+
+        return self.archive_sessions(archive_ids)
+
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:
@@ -1602,6 +1735,18 @@ class SessionDB:
             current = row["id"]
         return current
 
+    @staticmethod
+    def _surfaced_session_clause(alias: str = "s") -> str:
+        """SQL predicate for rows shown by list_sessions_rich by default."""
+        return (
+            f"({alias}.parent_session_id IS NULL"
+            f" OR json_extract({alias}.model_config, '$._branched_from') IS NOT NULL"
+            " OR EXISTS (SELECT 1 FROM sessions p"
+            f"            WHERE p.id = {alias}.parent_session_id"
+            "            AND p.end_reason = 'branched'"
+            f"            AND {alias}.started_at >= p.ended_at))"
+        )
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -1661,14 +1806,7 @@ class SessionDB:
             #   2. The legacy heuristic (parent ended with 'branched' before the
             #      child started), covering branch sessions created before the
             #      marker existed.
-            where_clauses.append(
-                "(s.parent_session_id IS NULL"
-                " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
-                " OR EXISTS (SELECT 1 FROM sessions p"
-                "            WHERE p.id = s.parent_session_id"
-                "            AND p.end_reason = 'branched'"
-                "            AND s.started_at >= p.ended_at))"
-            )
+            where_clauses.append(self._surfaced_session_clause())
 
         if source:
             where_clauses.append("s.source = ?")
@@ -1741,15 +1879,21 @@ class SessionDB:
                     WHERE parent.end_reason = 'compression'
                       AND child.started_at >= parent.ended_at
                 ),
+                chain_sessions AS (
+                    SELECT DISTINCT cur_id FROM chain
+                ),
+                msg_max AS (
+                    SELECT session_id, MAX(timestamp) AS max_ts FROM messages GROUP BY session_id
+                ),
                 chain_max AS (
                     SELECT
-                        root_id,
-                        MAX(COALESCE(
-                            (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
-                            (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
-                        )) AS effective_last_active
-                    FROM chain
-                    GROUP BY root_id
+                        c.root_id,
+                        MAX(COALESCE(mm.max_ts, cs.started_at)) AS effective_last_active
+                    FROM chain c
+                    JOIN chain_sessions cs2 ON cs2.cur_id = c.cur_id
+                    LEFT JOIN sessions cs ON cs.id = c.cur_id
+                    LEFT JOIN msg_max mm ON mm.session_id = c.cur_id
+                    GROUP BY c.root_id
                 )
                 SELECT s.*,
                     COALESCE(
@@ -1760,7 +1904,7 @@ class SessionDB:
                         ''
                     ) AS _preview_raw,
                     COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        (SELECT mm2.max_ts FROM msg_max mm2 WHERE mm2.session_id = s.id),
                         s.started_at
                     ) AS last_active,
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
@@ -1775,6 +1919,9 @@ class SessionDB:
             params = params + params + id_params + [limit, offset]
         else:
             query = f"""
+                WITH msg_max AS (
+                    SELECT session_id, MAX(timestamp) AS max_ts FROM messages GROUP BY session_id
+                )
                 SELECT s.*,
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
@@ -1784,7 +1931,7 @@ class SessionDB:
                         ''
                     ) AS _preview_raw,
                     COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        (SELECT mm2.max_ts FROM msg_max mm2 WHERE mm2.session_id = s.id),
                         s.started_at
                     ) AS last_active
                 FROM sessions s
@@ -1845,72 +1992,6 @@ class SessionDB:
             sessions = projected
 
         return sessions
-
-    def list_cron_job_runs(
-        self,
-        job_id: str,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> List[Dict[str, Any]]:
-        """List the run sessions produced by a single cron job, newest first.
-
-        Cron runs are flat, independent sessions whose id is
-        ``cron_{job_id}_{timestamp}`` (see ``cron/scheduler.run_job``). They are
-        never compression roots and never branch, so this deliberately skips the
-        ``list_sessions_rich`` recursive compression-chain CTE / leading-wildcard
-        ``id_query`` path — that path seeds from *every* ``source='cron'`` row in
-        the DB and only filters to one job's runs after the scan, so it scales
-        with the whole cron pile (a heavy history makes the desktop run-history
-        endpoint time out before it eventually populates).
-
-        Instead this binds to one job with a ``[prefix, prefix_hi)`` range over
-        the id (an index range scan, not a ``%...%`` substring), filters
-        ``source='cron'``, and orders by ``started_at DESC``. Work scales with
-        the requested window, not the total cron history.
-
-        Returns the same enriched row shape as ``list_sessions_rich`` (adds
-        ``preview`` + ``last_active``) so callers can reuse it.
-        """
-        prefix = f"cron_{job_id}_"
-        # Half-open upper bound for an index range scan: increment the final
-        # byte of the prefix so the range covers exactly the ids that start
-        # with ``prefix`` and nothing else. ``prefix`` always ends in '_', but
-        # compute it generically rather than hardcoding the successor char.
-        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
-
-        query = """
-            SELECT s.*,
-                COALESCE(
-                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
-                     FROM messages m
-                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
-                    ''
-                ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
-            FROM sessions s
-            WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
-            ORDER BY s.started_at DESC, s.id DESC
-            LIMIT ? OFFSET ?
-        """
-        with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
-            rows = cursor.fetchall()
-
-        runs: List[Dict[str, Any]] = []
-        for row in rows:
-            s = dict(row)
-            raw = s.pop("_preview_raw", "").strip()
-            if raw:
-                text = raw[:60]
-                s["preview"] = text + ("..." if len(raw) > 60 else "")
-            else:
-                s["preview"] = ""
-            runs.append(s)
-        return runs
 
     def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
@@ -3265,7 +3346,6 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         exclude_children: bool = False,
-        exclude_sources: List[str] = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -3275,33 +3355,17 @@ class SessionDB:
         is paired with a ``list_sessions_rich`` page (e.g. sidebar "load more"
         totals) so the total matches the number of listable rows — otherwise the
         raw row count is inflated by children and "load more" never settles.
-
-        Pass ``exclude_sources`` to drop whole source classes from the count
-        (e.g. ``["cron"]`` so the recents "load more" total matches a
-        cron-excluded ``list_sessions_rich`` page and doesn't keep "load more"
-        stuck on for buried scheduler sessions).
         """
         where_clauses = []
         params = []
 
         if exclude_children:
             # Mirror list_sessions_rich's child-exclusion clause exactly so the
-            # count lines up with the rows: roots (no parent) plus branch
-            # children (parent ended with end_reason='branched').
-            where_clauses.append(
-                "(s.parent_session_id IS NULL"
-                " OR EXISTS (SELECT 1 FROM sessions p"
-                "            WHERE p.id = s.parent_session_id"
-                "            AND p.end_reason = 'branched'"
-                "            AND s.started_at >= p.ended_at))"
-            )
+            # count lines up with the rows: roots plus visible branch children.
+            where_clauses.append(self._surfaced_session_clause())
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
-        if exclude_sources:
-            placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
-            params.extend(exclude_sources)
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
@@ -3314,6 +3378,46 @@ class SessionDB:
 
         with self._lock:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
+            return cursor.fetchone()[0]
+
+    def surfaced_session_count(
+        self,
+        source: str = None,
+        min_message_count: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
+        exclude_children: bool = True,
+    ) -> int:
+        """Count the root/branch conversations surfaced by list_sessions_rich."""
+        if not exclude_children:
+            return self.session_count(
+                source=source,
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+            )
+
+        where_clauses = [self._surfaced_session_clause()]
+        params = []
+
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if min_message_count > 0:
+            where_clauses.append("s.message_count >= ?")
+            params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}"
+
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT COUNT(*) FROM sessions s {where_sql}",
+                params,
+            )
             return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
@@ -4261,6 +4365,250 @@ class SessionDB:
         except Exception as exc:
             # Maintenance must never block startup. Log and return error marker.
             logger.warning("state.db auto-maintenance failed: %s", exc)
+            result["error"] = str(exc)
+
+        return result
+
+    def _surfaced_session_filter_sql(self) -> Tuple[str, List[str]]:
+        """Return the surfaced-session WHERE clause and its params (always empty).
+        
+        Shared by archive_old_sessions and list_sessions_rich to ensure they
+        agree on which sessions are "surfaced" (root + branch, no hidden children).
+        """
+        clause = (
+            "(s.parent_session_id IS NULL"
+            " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
+            " OR EXISTS (SELECT 1 FROM sessions p"
+            "            WHERE p.id = s.parent_session_id"
+            "            AND p.end_reason = 'branched'"
+            "            AND s.started_at >= p.ended_at))"
+        )
+        return clause, []
+
+    def archive_old_sessions(
+        self,
+        *,
+        keep_recent: int = 100,
+        older_than_days: int = 14,
+        min_message_count: int = 1,
+        preserve_ids: Optional[List[str]] = None,
+        active_grace_seconds: int = 300,
+    ) -> int:
+        """Soft-archive old surfaced sessions while keeping recent work visible.
+
+        This is intentionally a soft hide (``sessions.archived = 1``), not a
+        delete.  It is designed for desktop/sidebar maintenance where a heavy
+        user can have thousands of old chats, but still needs Settings ->
+        Archived Chats to restore them.
+
+        Optimized: instead of fetching all sessions through list_sessions_rich
+        (which runs expensive recursive CTEs), we use targeted SQL that only
+        identifies candidate IDs eligible for archiving. This avoids materializing
+        the entire session list on every boot.
+        """
+        keep_recent = max(0, int(keep_recent or 0))
+        older_than_days = max(0, int(older_than_days or 0))
+        min_message_count = max(0, int(min_message_count or 0))
+        active_grace_seconds = max(0, int(active_grace_seconds or 0))
+        if keep_recent <= 0 and older_than_days <= 0:
+            return 0
+
+        preserved = {
+            str(sid).strip()
+            for sid in (preserve_ids or [])
+            if str(sid).strip()
+        }
+        now = time.time()
+        cutoff = now - older_than_days * 86400 if older_than_days > 0 else None
+        active_grace_cutoff = now - active_grace_seconds if active_grace_seconds > 0 else 0
+
+        def _find_archive_ids(conn):
+            """Find session IDs eligible for archiving using targeted SQL.
+            
+            Strategy:
+            1. First, find the keep_recent threshold timestamp using a lightweight
+               COUNT query on surfaced sessions (no CTE, no message joins).
+            2. Then, find all surfaced sessions whose last_active is before
+               both the keep_recent threshold AND the age cutoff.
+            3. Exclude preserved IDs and recently-active sessions.
+            """
+            # Build the surfaced session clause
+            surfaced_clause, _ = self._surfaced_session_filter_sql()
+            
+            # Base WHERE for surfaced, non-archived sessions with enough messages
+            base_where = (
+                f"s.archived = 0"
+                f" AND s.message_count >= {min_message_count}"
+                f" AND {surfaced_clause}"
+            )
+            
+            # Find the keep_recent boundary — the started_at timestamp of the
+            # keep_recent-th most recent surfaced session. Sessions older than
+            # this are beyond the recency cap. We use a lightweight query that
+            # only reads sessions table (no message joins or CTEs).
+            recent_boundary = None
+            if keep_recent > 0:
+                cursor = conn.execute(
+                    f"SELECT started_at FROM sessions s "
+                    f"WHERE {base_where} "
+                    f"ORDER BY s.started_at DESC "
+                    f"LIMIT 1 OFFSET {keep_recent}",
+                )
+                row = cursor.fetchone()
+                if row:
+                    recent_boundary = row["started_at"]
+            
+            # Now find candidates: sessions that are either past the age cutoff
+            # or beyond the recency cap (or both). Exclude preserved and active sessions.
+            candidate_clauses = [base_where]
+            params = []
+            
+            if recent_boundary is not None:
+                candidate_clauses.append("s.started_at < ?")
+                params.append(recent_boundary)
+            
+            if cutoff is not None and (recent_boundary is None or cutoff < recent_boundary):
+                # Only add age cutoff if it's stricter than the recency boundary
+                candidate_clauses.append("s.started_at < ?")
+                params.append(cutoff)
+            
+            # Exclude recently active sessions
+            if active_grace_seconds > 0:
+                candidate_clauses.append(
+                    "(s.ended_at IS NOT NULL OR s.started_at < ?)"
+                )
+                params.append(active_grace_cutoff)
+            
+            # Exclude preserved IDs
+            if preserved:
+                placeholders = ",".join("?" for _ in preserved)
+                candidate_clauses.append(f"s.id NOT IN ({placeholders})")
+                params.extend(preserved)
+            
+            candidate_where = " AND ".join(candidate_clauses)
+            
+            cursor = conn.execute(
+                f"SELECT s.id FROM sessions s WHERE {candidate_where}",
+                params,
+            )
+            return [row["id"] for row in cursor.fetchall()]
+        
+        archive_ids = []
+        with self._lock:
+            archive_ids = _find_archive_ids(self._conn)
+        
+        if not archive_ids:
+            return self.archive_hidden_descendants_of_archived_sessions()
+        
+        def _do(conn):
+            updated = 0
+            for start in range(0, len(archive_ids), 500):
+                chunk = archive_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
+        
+        archived = self._execute_write(_do)
+        return archived + self.archive_hidden_descendants_of_archived_sessions()
+
+    def archive_hidden_descendants_of_archived_sessions(self) -> int:
+        """Archive hidden child rows that belong to archived conversations.
+
+        ``session_count()`` counts raw rows, while ``list_sessions_rich`` hides
+        subagent children and compression continuations. Without this sync, a
+        root conversation can be archived while hidden children still inflate
+        the desktop "Sessions X/Y" total. Branch sessions stay visible and are
+        not swept as descendants; they are archived only when they independently
+        match the normal old-session policy.
+        """
+
+        def _do(conn):
+            rows = conn.execute(
+                """
+                WITH RECURSIVE archive_tree(id) AS (
+                    SELECT id FROM sessions WHERE archived = 1
+                    UNION ALL
+                    SELECT child.id
+                    FROM sessions child
+                    JOIN archive_tree parent_tree ON child.parent_session_id = parent_tree.id
+                    LEFT JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE child.archived = 0
+                      AND json_extract(child.model_config, '$._branched_from') IS NULL
+                      AND NOT (
+                          COALESCE(parent.end_reason, '') = 'branched'
+                          AND child.started_at >= parent.ended_at
+                      )
+                )
+                SELECT s.id
+                FROM sessions s
+                JOIN archive_tree tree ON tree.id = s.id
+                WHERE s.archived = 0
+                """
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            updated = 0
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
+
+        return self._execute_write(_do)
+
+    def maybe_auto_archive_old_sessions(
+        self,
+        *,
+        keep_recent: int = 100,
+        older_than_days: int = 14,
+        min_interval_hours: float = 6,
+        min_message_count: int = 1,
+        preserve_ids: Optional[List[str]] = None,
+        active_grace_seconds: int = 300,
+    ) -> Dict[str, Any]:
+        """Idempotent auto-maintenance wrapper around old-session archiving."""
+        result: Dict[str, Any] = {"skipped": False, "archived": 0}
+        try:
+            last_raw = self.get_meta("last_auto_archive")
+            now = time.time()
+            interval_seconds = max(0.0, float(min_interval_hours or 0)) * 3600
+            if last_raw and interval_seconds > 0:
+                try:
+                    last_ts = float(last_raw)
+                    if now - last_ts < interval_seconds:
+                        result["skipped"] = True
+                        return result
+                except (TypeError, ValueError):
+                    pass
+
+            archived = self.archive_old_sessions(
+                keep_recent=keep_recent,
+                older_than_days=older_than_days,
+                min_message_count=min_message_count,
+                preserve_ids=preserve_ids,
+                active_grace_seconds=active_grace_seconds,
+            )
+            result["archived"] = archived
+            self.set_meta("last_auto_archive", str(now))
+            if archived > 0:
+                logger.info(
+                    "state.db auto-maintenance: archived %d old session(s) "
+                    "(keep_recent=%d, older_than_days=%d)",
+                    archived,
+                    keep_recent,
+                    older_than_days,
+                )
+        except Exception as exc:
+            logger.warning("state.db auto-archive failed: %s", exc)
             result["error"] = str(exc)
 
         return result

@@ -1,6 +1,40 @@
-import { setYoloActive } from '@/store/session'
+import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import {
+  $desktopYoloDefault,
+  $yoloActive,
+  DEFAULT_DESKTOP_YOLO_ACTIVE,
+  setDesktopYoloDefaultActive,
+  setYoloActive
+} from '@/store/session'
 
 export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function desktopYoloDefaultFromConfig(config: { desktop?: unknown }): boolean {
+  const desktop = isRecord(config.desktop) ? config.desktop : {}
+
+  return typeof desktop.yolo_default === 'boolean' ? desktop.yolo_default : DEFAULT_DESKTOP_YOLO_ACTIVE
+}
+
+export async function setDesktopYoloDefault(enabled: boolean): Promise<boolean> {
+  const config = await getHermesConfigRecord()
+  const desktop = isRecord(config.desktop) ? { ...config.desktop } : {}
+
+  await saveHermesConfig({
+    ...config,
+    desktop: {
+      ...desktop,
+      yolo_default: enabled
+    }
+  })
+
+  setDesktopYoloDefaultActive(enabled)
+
+  return enabled
+}
 
 /**
  * Toggle per-session YOLO (approval bypass) via gateway `config.set` — the same
@@ -25,26 +59,45 @@ export async function setSessionYolo(
   return active
 }
 
-/**
- * Toggle GLOBAL YOLO (approval bypass) via gateway `config.set` with
- * `scope: 'global'`. This flips the persistent `approvals.mode` in config.yaml
- * between `off` (bypass on) and `manual` (bypass off), affecting every session,
- * the CLI, the TUI, and cron — and it survives restarts. Triggered by
- * Shift+clicking the status-bar zap.
- */
-export async function setGlobalYolo(
+export async function setDesktopYoloMode(
   requestGateway: GatewayRequester,
+  sessionId: string | null,
   enabled: boolean
 ): Promise<boolean> {
-  const result = await requestGateway<{ value?: string }>('config.set', {
-    key: 'yolo',
-    scope: 'global',
-    value: enabled ? '1' : '0'
-  })
+  const previousDefault = $desktopYoloDefault.get()
+  const previousActive = $yoloActive.get()
 
-  const active = result?.value === '1'
+  setDesktopYoloDefaultActive(enabled)
+  setYoloActive(enabled)
 
-  setYoloActive(active)
+  try {
+    await setDesktopYoloDefault(enabled)
 
-  return active
+    if (sessionId) {
+      await setSessionYolo(requestGateway, sessionId, enabled)
+    }
+
+    setYoloActive(enabled)
+
+    return enabled
+  } catch (err) {
+    setDesktopYoloDefaultActive(previousDefault)
+    setYoloActive(previousActive)
+
+    try {
+      await setDesktopYoloDefault(previousDefault)
+    } catch {
+      // Keep the original failure as the actionable error.
+    }
+
+    if (sessionId) {
+      try {
+        await setSessionYolo(requestGateway, sessionId, previousActive)
+      } catch {
+        // Best-effort rollback only.
+      }
+    }
+
+    throw err
+  }
 }

@@ -151,7 +151,10 @@ export const Thread: FC<{
   )
 
   const emptyPlaceholder = intro ? (
-    <div className="flex min-h-0 w-full flex-col items-center justify-center pt-[var(--composer-measured-height)]">
+    <div
+      className="flex min-h-0 w-full flex-col items-center justify-center"
+      style={{ paddingBottom: 'var(--composer-measured-height)' }}
+    >
       <Intro {...intro} />
     </div>
   ) : undefined
@@ -468,7 +471,9 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     s =>
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
-      s.message.parts.slice(Math.max(0, startIndex)).some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
+      s.message.parts
+        .slice(Math.max(0, startIndex))
+        .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 
   // A reasoning group with no actual text is pure noise — drop the whole

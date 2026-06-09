@@ -173,6 +173,73 @@ def _coerce_capability_bool(raw: Any) -> Optional[bool]:
     return None
 
 
+def _model_slug_matches(entry: Dict[str, Any], model: str) -> bool:
+    """Return True when a configured model entry describes *model*."""
+    if not isinstance(entry, dict):
+        return False
+    wanted = str(model or "").strip().lower()
+    if not wanted:
+        return False
+    candidates = [entry.get("id"), entry.get("name"), entry.get("model")]
+    aliases = entry.get("aliases")
+    if isinstance(aliases, (list, tuple, set)):
+        candidates.extend(aliases)
+    return any(str(candidate or "").strip().lower() == wanted for candidate in candidates)
+
+
+def _entry_declares_image_input(entry: Dict[str, Any]) -> Optional[bool]:
+    """Read image capability from per-model input metadata."""
+    if not isinstance(entry, dict):
+        return None
+    raw_input = entry.get("input")
+    if raw_input is None:
+        modalities = entry.get("modalities")
+        if isinstance(modalities, dict):
+            raw_input = modalities.get("input")
+    if raw_input is None:
+        return None
+    if isinstance(raw_input, str):
+        values = {raw_input.strip().lower()}
+    elif isinstance(raw_input, (list, tuple, set)):
+        values = {str(value).strip().lower() for value in raw_input}
+    else:
+        return None
+    if "image" in values or "vision" in values:
+        return True
+    if values:
+        return False
+    return None
+
+
+def _scan_configured_models_for_vision(models: Any, model: str) -> Optional[bool]:
+    """Resolve image support from provider ``models`` config."""
+    if isinstance(models, dict):
+        per_model = models.get(model)
+        if isinstance(per_model, dict):
+            explicit = _coerce_capability_bool(per_model.get("supports_vision"))
+            if explicit is not None:
+                return explicit
+            return _entry_declares_image_input({"id": model, **per_model})
+        if per_model is not None:
+            return _entry_declares_image_input({"id": model, "input": per_model})
+        for key, value in models.items():
+            entry = {"id": key, **value} if isinstance(value, dict) else {"id": key, "input": value}
+            if _model_slug_matches(entry, model):
+                explicit = _coerce_capability_bool(entry.get("supports_vision"))
+                if explicit is not None:
+                    return explicit
+                return _entry_declares_image_input(entry)
+    elif isinstance(models, (list, tuple)):
+        for item in models:
+            if isinstance(item, dict) and _model_slug_matches(item, model):
+                explicit = _coerce_capability_bool(item.get("supports_vision"))
+                if explicit is not None:
+                    return explicit
+                return _entry_declares_image_input(item)
+            if isinstance(item, str) and item.strip().lower() == str(model or "").strip().lower():
+                return None
+    return None
+
 def _supports_vision_override(
     cfg: Optional[Dict[str, Any]],
     provider: str,
@@ -212,13 +279,9 @@ def _supports_vision_override(
     for p in dict.fromkeys(filter(None, (provider, config_provider))):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
-        models_raw = entry.get("models")
-        models_cfg: Dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
-        per_model_raw = models_cfg.get(model)
-        per_model: Dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
-        coerced = _coerce_capability_bool(per_model.get("supports_vision"))
-        if coerced is not None:
-            return coerced
+        configured = _scan_configured_models_for_vision(entry.get("models"), model)
+        if configured is not None:
+            return configured
     return None
 
 

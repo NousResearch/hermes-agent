@@ -535,7 +535,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
-                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                base_url = entry.get("base_url") or entry.get("url") or entry.get("api") or ""
                 if base_url:
                     result = {
                         "name": entry.get("name", ep_name),
@@ -564,7 +564,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 display_norm = _normalize_custom_provider_name(display_name)
                 if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
                     # Found match by display name
-                    base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                    base_url = entry.get("base_url") or entry.get("url") or entry.get("api") or ""
                     if base_url:
                         result = {
                             "name": display_name,

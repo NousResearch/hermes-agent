@@ -218,6 +218,32 @@ class TestSupportsVisionOverride:
         cfg = {"model": {"default": "my-llava"}}
         assert _supports_vision_override(cfg, "custom", "my-llava") is None
 
+    def test_provider_list_model_input_image_enables_vision(self):
+        cfg = {
+            "model": {"provider": "blueroy"},
+            "providers": {
+                "blueroy": {
+                    "models": [
+                        {"id": "gpt-5.5", "input": ["text", "image"]},
+                    ],
+                },
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is True
+
+    def test_provider_list_model_input_text_disables_vision(self):
+        cfg = {
+            "model": {"provider": "blueroy"},
+            "providers": {
+                "blueroy": {
+                    "models": [
+                        {"id": "gpt-5.5", "input": ["text"]},
+                    ],
+                },
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "gpt-5.5") is False
+
     def test_malformed_sections_are_ignored(self):
         # User accidentally wrote a string where a section was expected —
         # don't blow up, just fall through.

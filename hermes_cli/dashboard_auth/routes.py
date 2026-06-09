@@ -15,7 +15,11 @@ The routes:
 """
 from __future__ import annotations
 
+import base64
 import logging
+import hashlib
+import hmac
+import secrets
 import threading
 import time
 from collections import defaultdict, deque
@@ -406,6 +410,11 @@ _PW_RATE_WINDOW_SEC = 60.0
 _pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)
 _pw_attempts_lock = threading.Lock()
 
+_ANDROID_MOBILE_REDIRECT_URI = "com.nousresearch.hermes.android://oauth/callback"
+_MOBILE_HANDOFF_TTL_SEC = 90
+_mobile_handoffs: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_mobile_handoffs_lock = threading.Lock()
+
 
 def _password_rate_limited(ip: str) -> bool:
     """True if ``ip`` has exceeded the password-login attempt budget.
@@ -440,6 +449,165 @@ class _PasswordLoginBody(BaseModel):
     username: str
     password: str
     next: str = ""
+
+
+class _MobileHandoffConsumeBody(BaseModel):
+    code: str
+    verifier: str
+
+
+def _mobile_handoff_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _valid_mobile_handoff_challenge(code_challenge: str) -> bool:
+    allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    return (
+        43 <= len(code_challenge) <= 128
+        and all(ch in allowed for ch in code_challenge)
+    )
+
+
+def _mobile_handoff_base_url(request: Request) -> str:
+    from hermes_cli.dashboard_auth.prefix import (
+        prefix_from_request,
+        resolve_public_url,
+    )
+
+    public_url = resolve_public_url()
+    if public_url:
+        return public_url
+
+    return f"{str(request.base_url).rstrip('/')}{prefix_from_request(request)}"
+
+
+def _prune_mobile_handoffs(now: float | None = None) -> None:
+    current = time.monotonic() if now is None else now
+    expired = [
+        code for code, (expires_at, _payload) in _mobile_handoffs.items()
+        if expires_at < current
+    ]
+
+    for code in expired:
+        _mobile_handoffs.pop(code, None)
+
+
+def _reset_mobile_handoffs() -> None:
+    """Test-only: clear pending browser-to-Android session handoffs."""
+    with _mobile_handoffs_lock:
+        _mobile_handoffs.clear()
+
+
+@router.get("/mobile-handoff/start", name="auth_mobile_handoff_start")
+async def auth_mobile_handoff_start(
+    request: Request,
+    redirect_uri: str,
+    code_challenge: str = "",
+):
+    """Mint a one-time browser-to-Android session handoff code.
+
+    Android opens this endpoint in the system browser. If the browser is not
+    signed in yet, the auth gate redirects through the normal dashboard login
+    flow and returns here via the validated ``next=`` path. Once signed in,
+    the route redirects to the app's deep link with an opaque code. The app
+    exchanges that code for Set-Cookie headers through
+    ``/api/auth/mobile-handoff/consume``; token values are never placed in the
+    redirect URL or JSON body.
+    """
+    if redirect_uri != _ANDROID_MOBILE_REDIRECT_URI:
+        raise HTTPException(status_code=400, detail="Unsupported mobile redirect URI")
+    if not _valid_mobile_handoff_challenge(code_challenge):
+        raise HTTPException(status_code=400, detail="Invalid mobile code challenge")
+
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    _at, rt = read_session_cookies(request)
+    refresh_token = sess.refresh_token or rt or ""
+    code = secrets.token_urlsafe(32)
+
+    with _mobile_handoffs_lock:
+        _prune_mobile_handoffs()
+        _mobile_handoffs[code] = (
+            time.monotonic() + _MOBILE_HANDOFF_TTL_SEC,
+            {
+                "access_token": sess.access_token,
+                "expires_at": int(sess.expires_at),
+                "provider": sess.provider,
+                "refresh_token": refresh_token,
+                "user_id": sess.user_id,
+                "code_challenge": code_challenge,
+            },
+        )
+
+    from urllib.parse import urlencode
+
+    target_params = {
+        'base_url': _mobile_handoff_base_url(request),
+        'code': code,
+        'expires_in': str(_MOBILE_HANDOFF_TTL_SEC),
+    }
+    target = f"{redirect_uri}?{urlencode(target_params)}"
+    return RedirectResponse(
+        url=target,
+        status_code=302,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@router.post(
+    "/api/auth/mobile-handoff/consume",
+    name="auth_mobile_handoff_consume",
+)
+async def auth_mobile_handoff_consume(
+    request: Request,
+    body: _MobileHandoffConsumeBody,
+):
+    code = body.code.strip()
+    verifier = body.verifier.strip()
+
+    if not code or not verifier:
+        raise HTTPException(status_code=400, detail="Missing handoff code")
+
+    with _mobile_handoffs_lock:
+        _prune_mobile_handoffs()
+        entry = _mobile_handoffs.get(code)
+        verifier_ok = bool(
+            entry is not None
+            and hmac.compare_digest(
+                str(entry[1]["code_challenge"]),
+                _mobile_handoff_code_challenge(verifier),
+            )
+        )
+        # Keep the code alive on mismatch. A different Android app can claim
+        # the same custom scheme and see the code; burning it on a wrong
+        # verifier would let that app deny the legitimate client login.
+        if verifier_ok:
+            _mobile_handoffs.pop(code, None)
+
+    if entry is None or not verifier_ok:
+        raise HTTPException(status_code=400, detail="Invalid or expired handoff code")
+
+    _expires_at, payload = entry
+    expires_in = max(60, int(payload["expires_at"]) - int(time.time()))
+    resp = JSONResponse({"ok": True, "expires_in": expires_in})
+    set_session_cookies(
+        resp,
+        access_token=str(payload["access_token"]),
+        refresh_token=str(payload["refresh_token"]),
+        access_token_expires_in=expires_in,
+        use_https=detect_https(request),
+        prefix=_prefix(request),
+    )
+    audit_log(
+        AuditEvent.LOGIN_SUCCESS,
+        provider=str(payload["provider"]),
+        user_id=str(payload["user_id"]),
+        ip=_client_ip(request),
+    )
+    return resp
 
 
 @router.post("/auth/password-login", name="auth_password_login")

@@ -1155,6 +1155,14 @@ export interface Translations {
       runtimeSessionElapsed: string
       yoloOn: string
       yoloOff: string
+      approvalMenuLabel: string
+      approvalMenuTitle: string
+      approvalAsk: string
+      approvalAskDescription: string
+      approvalSmart: string
+      approvalSmartDescription: string
+      approvalFull: string
+      approvalFullDescription: string
       modelNone: string
       noModel: string
       switchModel: string

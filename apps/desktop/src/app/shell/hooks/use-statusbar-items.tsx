@@ -4,6 +4,12 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import {
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator
+} from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import {
   Activity,
@@ -27,7 +33,6 @@ import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $activeSessionId,
   $busy,
-  $connection,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -82,14 +87,12 @@ export function useStatusbarItems({
   modelMenuContent,
   openAgents,
   openCommandCenterSection,
-  freshDraftReady,
   requestGateway,
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
   const { t } = useI18n()
   const copy = t.shell.statusbar
-  const activeSessionId = useStore($activeSessionId)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentFastMode = useStore($currentFastMode)
@@ -108,8 +111,6 @@ export function useStatusbarItems({
   const backendUpdateStatus = useStore($backendUpdateStatus)
   const backendUpdateApply = useStore($backendUpdateApply)
   const desktopVersion = useStore($desktopVersion)
-  const connection = useStore($connection)
-
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
 
@@ -117,19 +118,18 @@ export function useStatusbarItems({
   // new-chat draft (no runtime session yet) we arm locally; the session-create
   // path applies it once the backend session exists.
   //
-  // Shift+click flips the GLOBAL approvals.mode instead — a persistent,
+  // Passing shiftKey flips the GLOBAL approvals.mode instead — a persistent,
   // all-sessions/CLI/TUI/cron bypass that survives restarts.
-  const toggleYolo = useCallback(
-    async (modifiers?: StatusbarSelectModifiers) => {
-      const next = !$yoloActive.get()
-
+  const setApprovalBypass = useCallback(
+    async (next: boolean, modifiers?: StatusbarSelectModifiers) => {
+      const previous = $yoloActive.get()
       setYoloActive(next)
 
       if (modifiers?.shiftKey) {
         try {
           await setGlobalYolo(requestGateway, next)
         } catch {
-          setYoloActive(!next)
+          setYoloActive(previous)
         }
 
         return
@@ -144,13 +144,35 @@ export function useStatusbarItems({
       try {
         await setSessionYolo(requestGateway, sid, next)
       } catch {
-        setYoloActive(!next)
+        setYoloActive(previous)
       }
     },
     [requestGateway]
   )
 
-  const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
+  const showApprovalMenu = gatewayState === 'open'
+
+  const approvalMenuContent = useMemo(
+    () => (
+      <div className="w-80 py-1">
+        <DropdownMenuLabel className="px-2.5 py-1 text-xs font-medium text-foreground">
+          {copy.approvalMenuTitle}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator className="mx-0" />
+        <DropdownMenuRadioGroup
+          value={yoloActive ? 'full' : 'smart'}
+          onValueChange={value => {
+            void setApprovalBypass(value === 'full')
+          }}
+        >
+          <ApprovalModeItem description={copy.approvalAskDescription} label={copy.approvalAsk} value="ask" />
+          <ApprovalModeItem description={copy.approvalSmartDescription} label={copy.approvalSmart} value="smart" />
+          <ApprovalModeItem description={copy.approvalFullDescription} label={copy.approvalFull} value="full" />
+        </DropdownMenuRadioGroup>
+      </div>
+    ),
+    [copy, setApprovalBypass, yoloActive]
+  )
 
   const gatewayMenuContent = useMemo(
     () => (
@@ -165,7 +187,7 @@ export function useStatusbarItems({
     [gatewayLogLines, gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
   )
 
-  const { bgFailed, bgRunning, subagentsRunning } = useMemo(() => {
+  const { bgFailed, bgRunning } = useMemo(() => {
     const actions = Object.values(desktopActionTasks)
     const running = actions.filter(t => t.status.running).length
     const failed = actions.filter(t => !t.status.running && (t.status.exit_code ?? 0) !== 0).length
@@ -179,8 +201,7 @@ export function useStatusbarItems({
 
     return {
       bgFailed: failed + previewFailed,
-      bgRunning: workingSessionIds.length + running + previewRunning,
-      subagentsRunning
+      bgRunning: workingSessionIds.length + running + previewRunning + subagentsRunning
     }
   }, [desktopActionTasks, previewServerRestartStatus, subagentsBySession, workingSessionIds])
 
@@ -210,10 +231,9 @@ export function useStatusbarItems({
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const remote = connection?.mode === 'remote'
 
-    const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
-    const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
+    const version = appVersion ?? sha ?? copy.unknown
+    const base = copy.clientLabel(version)
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
 
     const label = applying
@@ -232,7 +252,7 @@ export function useStatusbarItems({
 
     return {
       className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying && !remote ? sha : undefined,
+      detail: appVersion && sha && !applying ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
@@ -243,7 +263,6 @@ export function useStatusbarItems({
     }
   }, [
     desktopVersion?.appVersion,
-    connection?.mode,
     copy,
     updateApply.applying,
     updateApply.message,
@@ -254,10 +273,6 @@ export function useStatusbarItems({
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
-    if (connection?.mode !== 'remote') {
-      return null
-    }
-
     const backendVersion = statusSnapshot?.version
     const behind = backendUpdateStatus?.behind ?? 0
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
@@ -288,7 +303,6 @@ export function useStatusbarItems({
       variant: 'action'
     }
   }, [
-    connection?.mode,
     statusSnapshot?.version,
     backendUpdateStatus?.behind,
     backendUpdateApply.applying,
@@ -324,17 +338,15 @@ export function useStatusbarItems({
           bgFailed > 0 && 'text-destructive hover:text-destructive'
         ),
         detail:
-          subagentsRunning > 0
-            ? copy.subagents(subagentsRunning)
-            : bgFailed > 0
-              ? copy.failed(bgFailed)
-              : bgRunning > 0
-                ? copy.running(bgRunning)
-                : undefined,
+          bgFailed > 0
+            ? copy.failed(bgFailed)
+            : bgRunning > 0
+              ? copy.running(bgRunning)
+              : undefined,
         icon:
           bgFailed > 0 ? (
             <AlertCircle className="size-3" />
-          ) : bgRunning > 0 || subagentsRunning > 0 ? (
+          ) : bgRunning > 0 ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
             <Sparkles className="size-3" />
@@ -366,7 +378,6 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
-      subagentsRunning,
       toggleCommandCenter
     ]
   )
@@ -399,19 +410,6 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
-        hidden: !showYoloToggle,
-        icon: yoloActive ? (
-          <ZapFilled className="size-3.5 shrink-0" />
-        ) : (
-          <Zap className="size-3.5 shrink-0 opacity-70" />
-        ),
-        id: 'yolo',
-        onSelect: modifiers => void toggleYolo(modifiers),
-        title: yoloActive ? copy.yoloOn : copy.yoloOff,
-        variant: 'action'
-      },
-      {
         id: 'model-summary',
         label: (
           <span className="inline-flex min-w-0 items-center gap-0.5">
@@ -442,6 +440,22 @@ export function useStatusbarItems({
               variant: 'action' as const
             })
       },
+      {
+        className: cn(yoloActive && 'bg-(--chrome-action-hover)'),
+        hidden: !showApprovalMenu,
+        icon: yoloActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
+        id: 'yolo',
+        label: copy.approvalMenuLabel,
+        menuAlign: 'end',
+        menuClassName: 'w-80',
+        menuContent: approvalMenuContent,
+        title: yoloActive ? copy.yoloOn : copy.yoloOff,
+        variant: 'menu'
+      },
       clientVersionItem,
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
@@ -456,12 +470,12 @@ export function useStatusbarItems({
       currentReasoningEffort,
       modelMenuContent,
       sessionStartedAt,
-      showYoloToggle,
-      toggleYolo,
+      showApprovalMenu,
       turnStartedAt,
       clientVersionItem,
       backendVersionItem,
-      yoloActive
+      yoloActive,
+      approvalMenuContent
     ]
   )
 
@@ -476,4 +490,15 @@ export function useStatusbarItems({
   )
 
   return { leftStatusbarItems, statusbarItems }
+}
+
+function ApprovalModeItem({ description, label, value }: { description: string; label: string; value: string }) {
+  return (
+    <DropdownMenuRadioItem className="items-start gap-2 rounded-none px-2.5 py-1.5" value={value}>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="truncate text-xs text-foreground">{label}</span>
+        <span className="text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{description}</span>
+      </span>
+    </DropdownMenuRadioItem>
+  )
 }

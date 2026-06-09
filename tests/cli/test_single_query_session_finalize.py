@@ -144,3 +144,73 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         "summary",
         ("finalize", "single-query-session"),
     ]
+
+
+def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
+    calls = []
+
+    import cli as cli_mod
+
+    def run_conversation(*, user_message, conversation_history):
+        calls.append(("run", user_message, conversation_history))
+        return {
+            "final_response": "",
+            "error": "provider failed",
+            "failed": True,
+        }
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.provider = "test-provider"
+            self.model = "test-model"
+            self.session_id = "quiet-session"
+            self.conversation_history = []
+            self._active_agent_route_signature = "same-route"
+            self.agent = SimpleNamespace(
+                session_id="quiet-session",
+                platform="cli",
+                quiet_mode=False,
+                suppress_status_output=False,
+                stream_delta_callback=object(),
+                tool_gen_callback=object(),
+                run_conversation=run_conversation,
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _ensure_runtime_credentials(self):
+            calls.append("credentials")
+            return True
+
+        def _resolve_turn_agent_config(self, effective_query):
+            calls.append(("resolve", effective_query))
+            return {
+                "signature": "same-route",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **kwargs):
+            calls.append(("init", kwargs))
+            return True
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc_info.value.code == 1
+    assert ("claim", "cli", True) in calls
+    assert ("run", "hello", []) in calls
+    assert calls[-1] == ("finalize", "quiet-session")

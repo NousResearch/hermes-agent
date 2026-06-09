@@ -4440,23 +4440,68 @@ def test_health_guard_ignores_transient_single_probe_failure(tmp_path, monkeypat
 
 
 def test_health_guard_quarantines_persistent_corruption(tmp_path, monkeypatch):
-    """Corruption that reproduces on *every* probe is still quarantined and
-    fails closed — the confirmation loop must not mask real damage."""
+    """Corruption that reproduces on *every* probe — and that the read-only
+    arbiter confirms — is still quarantined and fails closed. The
+    confirmation loop and the arbiter must not mask real damage."""
     db_path = tmp_path / "kanban.db"
     resolved = str(db_path.resolve())
-    kb.init_db(db_path=db_path)
+    # Genuinely malformed file: valid header, damaged pages — the shape the
+    # guard targets. The read-only arbiter sees the same damage and confirms.
+    _write_corrupt_db(db_path)
     kb._INITIALIZED_PATHS.discard(resolved)
     kb._LAST_HEALTH_OK.pop(resolved, None)
     monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        kb, "_run_integrity_probe",
-        lambda _p: "integrity_check returned 'malformed'",
-    )
 
-    with pytest.raises(kb.KanbanDbCorruptError):
+    with pytest.raises(kb.KanbanDbCorruptError) as exc_info:
         kb._guard_existing_db_is_healthy(db_path)
+    assert "read-only verification" in str(exc_info.value)
     assert resolved not in kb._LAST_HEALTH_OK
     assert list(tmp_path.glob("*.corrupt.*.bak"))  # quarantine happened
+
+
+def test_health_guard_spurious_malformed_overruled_by_readonly_arbiter(
+    tmp_path, monkeypatch,
+):
+    """A persistent r/w probe failure on a *healthy* file must not quarantine.
+
+    Regression for the second spurious-quarantine shape: under checkpoint
+    contention the r/w probe can fail with a hard SQLITE_CORRUPT ("database
+    disk image is malformed") on open/first-read that clears on the next
+    read. That string is identical to real damage, so it cannot be
+    pattern-matched as transient — instead the read-only arbiter (which
+    stays out of WAL recovery and has never false-positived) gets the last
+    word: it reads the healthy file, says ok, and the guard surfaces a raw
+    ``OperationalError`` with no quarantine copy.
+    """
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb.init_db(db_path=db_path)  # healthy on disk
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
+    # The r/w probe persistently reports the hard-corrupt open failure.
+    monkeypatch.setattr(
+        kb, "_run_integrity_probe",
+        lambda _p: "sqlite refused to open file: database disk image is malformed",
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="read-only integrity_check passed"):
+        kb._guard_existing_db_is_healthy(db_path)
+    assert resolved not in kb._LAST_HEALTH_OK
+    assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
+
+
+def test_readonly_integrity_verdict(tmp_path):
+    """Arbiter semantics: healthy → None (no quarantine), damaged → reason
+    string (positive evidence, quarantine proceeds)."""
+    healthy = tmp_path / "healthy.db"
+    kb.init_db(db_path=healthy)
+    assert kb._readonly_integrity_verdict(healthy.resolve()) is None
+
+    damaged = tmp_path / "damaged.db"
+    _write_corrupt_db(damaged)
+    verdict = kb._readonly_integrity_verdict(damaged.resolve())
+    assert verdict is not None
 
 
 # Real-world shape of an integrity_check racing a concurrent WAL checkpoint:

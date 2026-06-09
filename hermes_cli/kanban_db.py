@@ -1734,9 +1734,57 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
             f"SHORT_READ racing a checkpoint — transient I/O, not corruption): "
             f"{reason}"
         )
-    # Confirmed damaged across every probe: quarantine and fail closed.
+    # Last word goes to a READ-ONLY probe. The read/write probe participates
+    # in WAL recovery/checkpointing, so under concurrent writers the same
+    # race can also surface as a hard SQLITE_CORRUPT ("database disk image
+    # is malformed") on open/first-read that clears on the very next read —
+    # a string indistinguishable from real damage, so it cannot be
+    # pattern-matched as transient. A read-only connection takes a snapshot
+    # view and stays out of recovery entirely; empirically it has never
+    # false-positived on a healthy board that the r/w probe was busy
+    # quarantining. Only damage the ro probe *confirms* is quarantined.
+    ro_reason = _readonly_integrity_verdict(resolved)
+    if ro_reason is None:
+        raise sqlite3.OperationalError(
+            f"kanban integrity probe failed {_HEALTH_CONFIRM_ATTEMPTS}x on "
+            f"{resolved} but a read-only integrity_check passed — transient "
+            f"probe/checkpoint race, not corruption: {reason}"
+        )
+    # Confirmed damaged by the read-only arbiter too: quarantine, fail closed.
     backup = _backup_corrupt_db(resolved)
-    raise KanbanDbCorruptError(resolved, backup, reason)
+    raise KanbanDbCorruptError(
+        resolved, backup, f"{reason} (read-only verification: {ro_reason})"
+    )
+
+
+def _readonly_integrity_verdict(resolved: Path) -> Optional[str]:
+    """Arbiter probe for the about-to-quarantine path: ``PRAGMA
+    integrity_check`` over a read-only (``mode=ro``) connection.
+
+    Returns ``None`` when the DB is healthy **or** the verdict is
+    undecidable (lock/busy/cannot-open-readonly) — quarantine requires
+    positive evidence of damage, and an undecided probe just means the next
+    connect re-probes (the "ok" stamp was already evicted). Returns a short
+    reason string only when the read-only view itself reports damage, which
+    real corruption always does and the probe⇄checkpoint race never does.
+    """
+    try:
+        probe = sqlite3.connect(
+            f"{resolved.as_uri()}?mode=ro",
+            uri=True,
+            timeout=_resolve_busy_timeout_ms() / 1000.0,
+        )
+        try:
+            row = probe.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            probe.close()
+    except sqlite3.OperationalError:
+        return None  # undecided — never quarantine without evidence
+    except sqlite3.DatabaseError as exc:
+        return f"read-only open failed: {exc}"
+    if not row or (row[0] or "").lower() != "ok":
+        return f"integrity_check returned {row[0] if row else '<no row>'!r}"
+    return None
 
 
 def _integrity_failure_is_transient_io(reason: str) -> bool:

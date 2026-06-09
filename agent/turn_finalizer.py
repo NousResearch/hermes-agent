@@ -390,15 +390,28 @@ def finalize_turn(
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
+    # When a /goal is active, skip background review so it never races
+    # with the goal continuation prompt that will be submitted next.
+    # The goal loop needs the full session budget; the review can wait
+    # until the goal is done or paused.  (issue #42391)
+    _skip_bg_review_for_goal = False
     if final_response and not interrupted and (_should_review_memory or _should_review_skills):
         try:
-            agent._spawn_background_review(
-                messages_snapshot=list(messages),
-                review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
+            from hermes_cli.goals import load_goal as _load_goal_for_skip
+            _active_goal = _load_goal_for_skip(agent.session_id or "")
+            if _active_goal and _active_goal.status == "active":
+                _skip_bg_review_for_goal = True
         except Exception:
-            pass  # Background review is best-effort
+            pass
+        if not _skip_bg_review_for_goal:
+            try:
+                agent._spawn_background_review(
+                    messages_snapshot=list(messages),
+                    review_memory=_should_review_memory,
+                    review_skills=_should_review_skills,
+                )
+            except Exception:
+                pass  # Background review is best-effort
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

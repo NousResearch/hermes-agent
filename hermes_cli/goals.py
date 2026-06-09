@@ -236,8 +236,15 @@ def _get_session_db() -> Optional[Any]:
     return db
 
 
-def load_goal(session_id: str) -> Optional[GoalState]:
-    """Load the goal for a session, or None if none exists."""
+def load_goal(session_id: str, *, _visited: Optional[set] = None) -> Optional[GoalState]:
+    """Load the goal for a session, or None if none exists.
+
+    When the session has no direct goal, walks the ``parent_session_id``
+    chain (via SessionDB) to find the nearest active or paused goal.
+    This prevents goals set on a parent session from being silently lost
+    when the conversation rotates into a child session during compression
+    or resume.  (issue #42391)
+    """
     if not session_id:
         return None
     db = _get_session_db()
@@ -248,13 +255,33 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     except Exception as exc:
         logger.debug("GoalManager: get_meta failed: %s", exc)
         return None
-    if not raw:
+    if raw:
+        try:
+            return GoalState.from_json(raw)
+        except Exception as exc:
+            logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
+            return None
+
+    # No goal on this session — walk the parent chain.
+    if _visited is None:
+        _visited = set()
+    if session_id in _visited:
         return None
+    _visited.add(session_id)
     try:
-        return GoalState.from_json(raw)
-    except Exception as exc:
-        logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
+        entry = db.get_session(session_id)
+    except Exception:
+        entry = None
+    if entry is None:
         return None
+    parent_id = entry.get("parent_session_id") or ""
+    if not parent_id:
+        return None
+    logger.debug(
+        "GoalManager: no goal for %s, walking to parent %s",
+        session_id, parent_id,
+    )
+    return load_goal(parent_id, _visited=_visited)
 
 
 def save_goal(session_id: str, state: GoalState) -> None:

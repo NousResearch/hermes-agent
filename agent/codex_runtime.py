@@ -146,20 +146,31 @@ def run_codex_app_server_turn(
 
     # Background review fork — same cadence + signature as the default
     # path (line ~15449). Only fires when a trigger actually tripped AND
-    # we have a real final response.
+    # we have a real final response.  Skip when a /goal is active so the
+    # goal continuation prompt gets the session next, not the review.
+    # (issue #42391)
     if (
         turn.final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):
+        _goal_active = False
         try:
-            agent._spawn_background_review(
-                messages_snapshot=list(messages),
-                review_memory=should_review_memory,
-                review_skills=should_review_skills,
-            )
+            from hermes_cli.goals import load_goal as _load_goal_bg
+            _g = _load_goal_bg(agent.session_id or "")
+            if _g and _g.status == "active":
+                _goal_active = True
         except Exception:
-            logger.debug("background review spawn raised", exc_info=True)
+            pass
+        if not _goal_active:
+            try:
+                agent._spawn_background_review(
+                    messages_snapshot=list(messages),
+                    review_memory=should_review_memory,
+                    review_skills=should_review_skills,
+                )
+            except Exception:
+                logger.debug("background review spawn raised", exc_info=True)
 
     return {
         "final_response": turn.final_text,

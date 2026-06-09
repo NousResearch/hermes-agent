@@ -167,8 +167,13 @@ class ProcessRegistry:
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
+        # Event-driven delivery callback: set by the TUI/CLI to receive
+        # process completion events directly, without polling the queue.
+        # Signature: (event_dict) -> None
+        self._completion_callback: Any = None
+
         # Track sessions whose completion was already consumed by the agent
-        # via wait/poll/log.  Drain loops skip notifications for these.
+        # via wait/log.  Drain loops skip notifications for these.
         self._completion_consumed: set = set()
 
         # Global watch-match circuit breaker — across all sessions.
@@ -179,6 +184,15 @@ class ProcessRegistry:
         self._global_watch_window_hits: int = 0
         self._global_watch_tripped_until: float = 0.0
         self._global_watch_suppressed_during_trip: int = 0
+
+    def _emit_event(self, event: dict) -> None:
+        """Put event on completion_queue AND fire callback if registered."""
+        self.completion_queue.put(event)
+        if self._completion_callback is not None:
+            try:
+                self._completion_callback(event)
+            except Exception:
+                pass
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -269,7 +283,7 @@ class ProcessRegistry:
             if should_disable:
                 # Emit exactly one "watch disabled, falling back to notify_on_complete"
                 # summary event so the agent/user sees why things went quiet.
-                self.completion_queue.put({
+                self._emit_event({
                     "session_id": session.id,
                     "session_key": session.session_key,
                     "command": session.command,
@@ -300,7 +314,7 @@ class ProcessRegistry:
         if not self._global_watch_admit(now):
             return
 
-        self.completion_queue.put({
+        self._emit_event({
             "session_id": session.id,
             "session_key": session.session_key,
             "command": session.command,
@@ -382,9 +396,9 @@ class ProcessRegistry:
 
         # Queue summary events outside the lock.
         if release_msg is not None:
-            self.completion_queue.put(release_msg)
+            self._emit_event(release_msg)
         if trip_now is not None:
-            self.completion_queue.put({
+            self._emit_event({
                 "session_id": "",
                 "session_key": "",
                 "command": "",
@@ -878,7 +892,7 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            self._emit_event({
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
@@ -890,14 +904,18 @@ class ProcessRegistry:
     # ----- Query Methods -----
 
     def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/poll/log."""
+        """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
+
+    def mark_completion_consumed(self, session_id: str) -> None:
+        """Explicitly mark a session as consumed (e.g., after TUI notification delivery)."""
+        self._completion_consumed.add(session_id)
 
     def drain_notifications(self) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
-        Skips completion events that were already consumed via wait/poll/log.
+        Skips completion events that were already consumed via wait/log.
         """
         results = []
         while not self.completion_queue.empty():
@@ -1016,7 +1034,6 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
-            self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"

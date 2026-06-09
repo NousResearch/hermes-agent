@@ -10,10 +10,16 @@ Covers:
 
 import json
 import os
+import queue
 import time
 import pytest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from tools.process_registry import (
+    ProcessRegistry,
+    ProcessSession,
+)
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
@@ -316,8 +322,8 @@ class TestCompletionConsumed:
         # Now the completion is marked as consumed
         assert registry.is_completion_consumed("proc_wait")
 
-    def test_poll_marks_completion_consumed(self, registry):
-        """poll() returning exited status marks session as consumed."""
+    def test_poll_does_not_mark_completion_consumed(self, registry):
+        """poll() does NOT mark completion as consumed — it's a read-only query."""
         s = _make_session(sid="proc_poll", notify_on_complete=True, output="done")
         s.exited = True
         s.exit_code = 0
@@ -325,7 +331,7 @@ class TestCompletionConsumed:
 
         result = registry.poll("proc_poll")
         assert result["status"] == "exited"
-        assert registry.is_completion_consumed("proc_poll")
+        assert not registry.is_completion_consumed("proc_poll")
 
     def test_log_marks_completion_consumed(self, registry):
         """read_log() on exited session marks as consumed."""

@@ -1482,7 +1482,10 @@ class TestApprovalTimeoutIsNotConsent:
                       "HERMES_YOLO_MODE",
                       "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
         }
+        from tools import approval as _apr
+        self._saved_yolo_frozen = _apr._YOLO_MODE_FROZEN
         os.environ.pop("HERMES_YOLO_MODE", None)
+        _apr._YOLO_MODE_FROZEN = False
         os.environ.pop("HERMES_INTERACTIVE", None)
         # HERMES_CRON_SESSION takes priority over HERMES_GATEWAY_SESSION in
         # _is_gateway_approval_context(); a leaked value from a parent cron
@@ -1490,11 +1493,22 @@ class TestApprovalTimeoutIsNotConsent:
         os.environ.pop("HERMES_CRON_SESSION", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+        # Reset approval_session_key ContextVar — can leak from other tests
+        # (e.g. test_approval_plugin_hooks.isolated_session) when their
+        # finally-block reset is swallowed by except Exception: pass.
+        from tools.approval import set_current_session_key, reset_current_session_key
+        self._session_key_token = set_current_session_key(self.SESSION_KEY)
 
     def teardown_method(self):
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
+        from tools.approval import reset_current_session_key
+        try:
+            reset_current_session_key(self._session_key_token)
+        except Exception:
+            pass
+        mod._YOLO_MODE_FROZEN = self._saved_yolo_frozen
         for k, v in self._saved_env.items():
             if v is None:
                 os.environ.pop(k, None)

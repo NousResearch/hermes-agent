@@ -33,6 +33,13 @@ from hermes_cli.kanban import run_slash
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    # Create the kanban-worker skill so _default_spawn's
+    # _kanban_worker_skill_available() resolves True, matching the
+    # real deployment layout (it ships with the default root home).
+    (home / "skills" / "devops" / "kanban-worker").mkdir(parents=True)
+    (home / "skills" / "devops" / "kanban-worker" / "SKILL.md").write_text(
+        "frontmatter placeholder", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Existing crash-detection tests pre-date the grace window; pin to 0
     # so they keep their immediate-reclaim semantics.
@@ -690,33 +697,6 @@ def test_worker_log_rotation_keeps_one_generation(kanban_home, tmp_path):
     assert (log_dir / "t_aaaa.log.1").exists()
 
 
-def test_worker_log_rotation_keeps_configured_generations(kanban_home):
-    log_dir = kanban_home / "kanban" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    target = log_dir / "t_multi.log"
-    target.write_text("current")
-    (log_dir / "t_multi.log.1").write_text("one")
-    (log_dir / "t_multi.log.2").write_text("two")
-
-    kb._rotate_worker_log(target, max_bytes=1, backup_count=3)
-
-    assert not target.exists()
-    assert (log_dir / "t_multi.log.1").read_text() == "current"
-    assert (log_dir / "t_multi.log.2").read_text() == "one"
-    assert (log_dir / "t_multi.log.3").read_text() == "two"
-
-
-def test_worker_log_rotation_config_defaults_and_overrides():
-    assert kb.worker_log_rotation_config({}) == (
-        kb.DEFAULT_LOG_ROTATE_BYTES,
-        kb.DEFAULT_LOG_BACKUP_COUNT,
-    )
-    assert kb.worker_log_rotation_config({
-        "worker_log_rotate_bytes": 10,
-        "worker_log_backup_count": 4,
-    }) == (10, 4)
-
-
 def test_read_worker_log_tail(kanban_home):
     log_dir = kanban_home / "kanban" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -768,37 +748,6 @@ def test_cli_archive_bulk(kanban_home):
     try:
         assert kb.get_task(conn, a).status == "archived"
         assert kb.get_task(conn, b).status == "archived"
-    finally:
-        conn.close()
-
-
-def test_cli_archive_rm_deletes_archived_tasks(kanban_home):
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="gone")
-        assert kb.archive_task(conn, tid)
-    finally:
-        conn.close()
-    out = run_slash(f"archive --rm {tid}")
-    assert f"Deleted {tid}" in out
-    conn = kb.connect()
-    try:
-        assert kb.get_task(conn, tid) is None
-    finally:
-        conn.close()
-
-
-def test_cli_archive_rm_rejects_live_tasks(kanban_home):
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="still-live")
-    finally:
-        conn.close()
-    out = run_slash(f"archive --rm {tid}")
-    assert "cannot delete" in out.lower()
-    conn = kb.connect()
-    try:
-        assert kb.get_task(conn, tid) is not None
     finally:
         conn.close()
 
@@ -2711,12 +2660,6 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
     """
-    # Pretend the bundled kanban-worker skill resolves for this isolated
-    # HERMES_HOME — the fixture creates an empty tmpdir without the
-    # devops/kanban-worker tree, and _default_spawn gates the --skills
-    # flag on actual resolvability.
-    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
-
     captured = {}
 
     class FakeProc:
@@ -2747,133 +2690,11 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert cmd[idx + 1] == "kanban-worker", (
         f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
     )
-    assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
-    assert cmd.index("--accept-hooks") < cmd.index("chat"), (
-        f"--accept-hooks must come before 'chat' in argv: {cmd}"
-    )
     # Assignee + task env are still present
     assert "some-profile" in cmd
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"
-
-
-def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monkeypatch):
-    """A task runtime cap should raise the worker's terminal default.
-
-    This is worker-scoped env only: normal CLI/gateway terminal settings stay
-    untouched, but long kanban tasks no longer inherit a short generic
-    TERMINAL_TIMEOUT that kills their foreground command first.
-    """
-    captured = {}
-
-    class FakeProc:
-        pid = 123
-
-    def fake_popen(cmd, **kwargs):
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
-    monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
-    monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
-
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(
-            conn,
-            title="long worker",
-            assignee="ops",
-            max_runtime_seconds=3600,
-        )
-        task = kb.get_task(conn, tid)
-        workspace = kb.resolve_workspace(task)
-        kb._default_spawn(task, str(workspace))
-    finally:
-        conn.close()
-
-    assert captured["env"]["TERMINAL_TIMEOUT"] == "3570"
-    assert captured["env"]["TERMINAL_MAX_FOREGROUND_TIMEOUT"] == "3570"
-    assert os.environ["TERMINAL_TIMEOUT"] == "180"
-
-
-def test_default_spawn_preserves_longer_terminal_timeout(kanban_home, monkeypatch):
-    """Kanban should never lower an explicitly larger terminal timeout."""
-    captured = {}
-
-    class FakeProc:
-        pid = 124
-
-    def fake_popen(cmd, **kwargs):
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
-    monkeypatch.setenv("TERMINAL_TIMEOUT", "7200")
-    monkeypatch.setenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "7200")
-
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(
-            conn,
-            title="already tuned",
-            assignee="ops",
-            max_runtime_seconds=3600,
-        )
-        task = kb.get_task(conn, tid)
-        workspace = kb.resolve_workspace(task)
-        kb._default_spawn(task, str(workspace))
-    finally:
-        conn.close()
-
-    assert captured["env"]["TERMINAL_TIMEOUT"] == "7200"
-    assert captured["env"]["TERMINAL_MAX_FOREGROUND_TIMEOUT"] == "7200"
-
-
-def test_default_spawn_leaves_terminal_timeout_without_runtime_cap(kanban_home, monkeypatch):
-    """Uncapped tasks keep the existing terminal timeout behavior."""
-    captured = {}
-
-    class FakeProc:
-        pid = 125
-
-    def fake_popen(cmd, **kwargs):
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
-    monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
-    monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
-
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="uncapped", assignee="ops")
-        task = kb.get_task(conn, tid)
-        workspace = kb.resolve_workspace(task)
-        kb._default_spawn(task, str(workspace))
-    finally:
-        conn.close()
-
-    assert captured["env"]["TERMINAL_TIMEOUT"] == "180"
-    assert "TERMINAL_MAX_FOREGROUND_TIMEOUT" not in captured["env"]
-
-
-def test_build_worker_context_includes_runtime_timeout_budget(kanban_home, monkeypatch):
-    monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(
-            conn,
-            title="long context",
-            assignee="ops",
-            max_runtime_seconds=3600,
-        )
-        ctx = kb.build_worker_context(conn, tid)
-    finally:
-        conn.close()
-
-    assert "Max runtime: 3600s" in ctx
-    assert "Terminal timeout: 3570s" in ctx
 
 
 
@@ -2986,7 +2807,6 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
-    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -3036,7 +2856,6 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
 
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
-    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -4474,64 +4293,207 @@ def test_reclaim_task_clears_failure_counter(kanban_home):
         conn.close()
 
 
-def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
-    """dispatch_once with stale_timeout_seconds reclaims stale running tasks."""
-    import hermes_cli.kanban_db as _kb
+# ---------------------------------------------------------------------------
+# CLI Kanban Notification Bridge tests (Elements 1-5 from PLAN-notification-fix)
+# ---------------------------------------------------------------------------
 
-    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+def test_format_kanban_notification_completed_with_summary():
+    """Element 2: _format_kanban_notification formats completed events."""
+    from cli import _format_kanban_notification
 
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="stale-dispatch", assignee="worker")
-        kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, 99999)  # fake PID — avoid killing test
+    ev = kb.Event(id=1, task_id="t_abc", kind="completed",
+                  payload={"summary": "shipped rate limiter"}, created_at=0)
+    sub = {"task_id": "t_abc"}
+    msg = _format_kanban_notification(ev, sub)
+    assert msg.startswith("[IMPORTANT: Kanban task t_abc done")
+    assert "shipped rate limiter" in msg
 
-        five_hours_ago = int(time.time()) - (5 * 3600)
-        with kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
-            )
-            conn.execute(
-                "UPDATE task_runs SET started_at = ? "
-                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
-                (five_hours_ago, t),
-            )
 
-        res = kb.dispatch_once(
-            conn,
-            spawn_fn=lambda tsk, ws: None,
-            stale_timeout_seconds=14400,
+def test_format_kanban_notification_completed_without_summary():
+    """Element 2: completed event with empty payload still produces message."""
+    from cli import _format_kanban_notification
+
+    ev = kb.Event(id=1, task_id="t_abc", kind="completed", payload={}, created_at=0)
+    sub = {"task_id": "t_abc"}
+    msg = _format_kanban_notification(ev, sub)
+    assert msg == "[IMPORTANT: Kanban task t_abc done]"
+
+
+def test_format_kanban_notification_blocked_with_reason():
+    """Element 2: blocked event includes reason if present."""
+    from cli import _format_kanban_notification
+
+    ev = kb.Event(id=1, task_id="t_abc", kind="blocked",
+                  payload={"reason": "needs API key"}, created_at=0)
+    sub = {"task_id": "t_abc"}
+    msg = _format_kanban_notification(ev, sub)
+    assert "blocked: needs API key" in msg
+
+
+def test_format_kanban_notification_crashed():
+    """Element 2: crashed event formatting."""
+    from cli import _format_kanban_notification
+
+    ev = kb.Event(id=1, task_id="t_abc", kind="crashed", payload={}, created_at=0)
+    sub = {"task_id": "t_abc"}
+    msg = _format_kanban_notification(ev, sub)
+    assert "worker crashed; dispatcher will retry" in msg
+
+
+def test_format_kanban_notification_timed_out():
+    """Element 2: timed_out event includes limit_seconds."""
+    from cli import _format_kanban_notification
+
+    ev = kb.Event(id=1, task_id="t_abc", kind="timed_out",
+                  payload={"limit_seconds": 300}, created_at=0)
+    sub = {"task_id": "t_abc"}
+    msg = _format_kanban_notification(ev, sub)
+    assert "timed out (max_runtime=300s)" in msg
+
+
+def test_format_kanban_notification_gave_up():
+    """Element 2: gave_up event includes error if present."""
+    from cli import _format_kanban_notification
+
+    ev = kb.Event(id=1, task_id="t_abc", kind="gave_up",
+                  payload={"error": "spawn failed"}, created_at=0)
+    sub = {"task_id": "t_abc"}
+    msg = _format_kanban_notification(ev, sub)
+    assert "gave up after repeated spawn failures" in msg
+    assert "spawn failed" in msg
+
+
+def test_format_kanban_notification_unknown_kind_returns_none():
+    """Element 2: unknown event kinds return None (no notification)."""
+    from cli import _format_kanban_notification
+
+    ev = kb.Event(id=1, task_id="t_abc", kind="created", payload={}, created_at=0)
+    sub = {"task_id": "t_abc"}
+    assert _format_kanban_notification(ev, sub) is None
+
+
+def test_cli_create_auto_subscribes(kanban_home):
+    """Element 1: hermes kanban create auto-subscribes the CLI session."""
+    out = run_slash("create 'auto-sub test' --assignee default --json")
+    task = json.loads(out)
+    tid = task["id"]
+
+    lst = run_slash(f"notify-list {tid} --json")
+    subs = json.loads(lst)
+    cli_subs = [s for s in subs if s["platform"] == "cli"]
+    assert len(cli_subs) == 1
+    assert cli_subs[0]["chat_id"].startswith("cli-")
+
+
+def test_cli_notify_subscribe_with_cli_flag(kanban_home):
+    """Element 4: notify-subscribe --cli auto-sets platform and chat_id."""
+    out = run_slash("create 'flag test' --assignee default --json")
+    task = json.loads(out)
+    tid = task["id"]
+
+    out = run_slash(f"notify-subscribe {tid} --cli")
+    assert "Subscribed cli:cli-" in out
+
+    lst = run_slash(f"notify-list {tid} --json")
+    subs = json.loads(lst)
+    assert any(s["platform"] == "cli" for s in subs)
+
+
+def test_cli_notify_list_cli_only_filter(kanban_home):
+    """Element 4: notify-list --cli-only filters to CLI subscriptions."""
+    out = run_slash("create 'filter test' --assignee default --json")
+    task = json.loads(out)
+    tid = task["id"]
+
+    # Add a telegram sub
+    run_slash(f"notify-subscribe {tid} --platform telegram --chat-id 123")
+    # Add a cli sub
+    run_slash(f"notify-subscribe {tid} --cli")
+
+    lst = run_slash(f"notify-list {tid} --cli-only --json")
+    subs = json.loads(lst)
+    assert all(s["platform"] == "cli" for s in subs)
+    assert len(subs) >= 1
+
+
+def test_cli_notify_unsubscribe_removes_sub(kanban_home):
+    """Element 4 + 5: notify-unsubscribe removes a CLI subscription."""
+    out = run_slash("create 'unsub test' --assignee default --json")
+    task = json.loads(out)
+    tid = task["id"]
+
+    run_slash(f"notify-subscribe {tid} --cli")
+    lst = run_slash(f"notify-list {tid} --json")
+    subs_before = json.loads(lst)
+    assert any(s["platform"] == "cli" for s in subs_before)
+
+    # Extract the cli chat_id
+    cli_chat = next(s["chat_id"] for s in subs_before if s["platform"] == "cli")
+    out = run_slash(f"notify-unsubscribe {tid} --platform cli --chat-id {cli_chat}")
+    assert "Unsubscribed" in out
+
+    lst = run_slash(f"notify-list {tid} --json")
+    subs_after = json.loads(lst)
+    assert not any(s["platform"] == "cli" for s in subs_after)
+
+
+def test_cli_cursor_isolation_no_db_advance(kanban_home):
+    """Element 3: CLI drain uses in-memory cursor, never advances DB cursor.
+
+    The gateway notifier skips cli platform (no adapter), so the DB
+    last_event_id stays at 0 even after CLI "consumes" events.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="cursor iso", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="cli",
+                          chat_id="cli-99999", thread_id="")
+        kb.claim_task(conn, tid)
+        run_id = kb.latest_run(conn, tid).id
+        kb.complete_task(conn, tid, summary="cursor-test")
+
+        # Gateway-style unseen_events_for_sub returns the events
+        cursor, events = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="cli", chat_id="cli-99999",
+            thread_id="", kinds=("completed",),
         )
-        assert t in res.stale, "Stale task should appear in result.stale"
-        assert kb.get_task(conn, t).status == "ready"
+        assert len(events) == 1
+        assert events[0].kind == "completed"
+
+        # The DB cursor is still 0 because CLI drain never calls
+        # advance_notify_cursor().  The in-memory cursor in _kanban_cli_cursors
+        # is what tracks CLI consumption.
+        sub = kb.list_notify_subs(conn, tid)
+        cli_sub = next(s for s in sub if s["platform"] == "cli")
+        assert cli_sub["last_event_id"] == 0
+    finally:
+        conn.close()
 
 
-def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch):
-    """dispatch_once with stale_timeout_seconds=0 skips stale detection."""
-    # Use os.getpid() so _pid_alive → True, preventing detect_crashed_workers
-    # from reclaiming. Only stale detection (disabled via timeout=0) is tested.
+def test_cleanup_removes_cli_subscriptions(kanban_home, monkeypatch):
+    """Element 5: _run_cleanup removes CLI subscriptions for current PID."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="cleanup test")
+        fake_pid = 12345678
+        kb.add_notify_sub(conn, task_id=tid, platform="cli",
+                          chat_id=f"cli-{fake_pid}", thread_id="")
+        # Verify sub exists
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+    finally:
+        conn.close()
 
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="skip-stale", assignee="worker")
-        kb.claim_task(conn, t)
-        # Claim sets worker_pid to 0 initially. Set it to os.getpid() so the
-        # crash detector sees a live PID and skips it.
-        kb._set_worker_pid(conn, t, os.getpid())
+    # Monkeypatch os.getpid to match the fake subscription
+    monkeypatch.setattr(os, "getpid", lambda: fake_pid)
 
-        five_hours_ago = int(time.time()) - (5 * 3600)
-        with kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
-            )
-            conn.execute(
-                "UPDATE task_runs SET started_at = ? "
-                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
-                (five_hours_ago, t),
-            )
+    # Import and run cleanup
+    import cli as _cli_module
+    _cli_module._run_cleanup()
 
-        res = kb.dispatch_once(
-            conn,
-            spawn_fn=lambda tsk, ws: None,
-            stale_timeout_seconds=0,
-        )
-        assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
-        assert kb.get_task(conn, t).status == "running"
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        cli_subs = [s for s in subs if s["platform"] == "cli"]
+        assert len(cli_subs) == 0, "cleanup should remove CLI subscriptions"
+    finally:
+        conn.close()

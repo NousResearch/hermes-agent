@@ -96,6 +96,38 @@ def isolated_clients(registry: Registry, env: str | None = None) -> tuple[Client
     )
 
 
+def isolated_profile_names(registry: Registry, env: str | None = None) -> tuple[str, ...]:
+    """Profile names for clients marked ``isolation: container``.
+
+    This is the *exclusion set* the shared gateway must honor: a client that
+    gets its own container (this list) must NOT also be seeded/started by the
+    shared prod gateway, or it runs twice (Telegram 409). The boot hook
+    (``docker/cont-init.d/04-registry-gate``) reads the artifact produced from
+    this list (``<data_root>/isolated.list``) so the compose file and the boot
+    reconcile can't disagree about who is isolated.
+
+    Returns profile names (the on-disk directory under ``profiles/<name>/`` and
+    the s6 ``gateway-<name>`` slot key), de-duplicated and in file order.
+    """
+    seen: set[str] = set()
+    names: list[str] = []
+    for c in isolated_clients(registry, env):
+        if c.profile not in seen:
+            seen.add(c.profile)
+            names.append(c.profile)
+    return tuple(names)
+
+
+def render_isolated_list(registry: Registry, env: str | None = None) -> str:
+    """Render the ``isolated.list`` artifact: one profile name per line.
+
+    A trailing newline is always emitted (empty file == no isolated clients),
+    so the boot hook can read it line-by-line without special-casing EOF.
+    """
+    names = isolated_profile_names(registry, env)
+    return "".join(f"{name}\n" for name in names)
+
+
 def generate_compose(
     registry: Registry,
     *,
@@ -158,6 +190,25 @@ def main(argv=None) -> int:
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
         print(f"wrote {len(compose['services'])} service(s) to {args.output}", file=sys.stderr)
+        # Also emit the exclusion artifact next to the compose file's data root
+        # so the boot hook (04-registry-gate) and this compose file can't
+        # disagree about which profiles are isolated (and must be kept OUT of
+        # the shared gateway). Writing it here keeps a single source of truth:
+        # whoever regenerates the compose regenerates the exclusion list.
+        isolated_list_path = Path(args.data_root) / "isolated.list"
+        try:
+            isolated_list_path.write_text(
+                render_isolated_list(registry, env=args.env), encoding="utf-8"
+            )
+            print(
+                f"wrote {len(isolated_profile_names(registry, env=args.env))} "
+                f"isolated profile(s) to {isolated_list_path}",
+                file=sys.stderr,
+            )
+        except OSError as exc:
+            # Non-fatal: the compose file is still valid. The boot hook treats a
+            # missing isolated.list as "nothing isolated" (today's behavior).
+            print(f"warning: could not write {isolated_list_path}: {exc}", file=sys.stderr)
     else:
         sys.stdout.write(text)
     return 0

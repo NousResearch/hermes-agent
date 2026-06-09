@@ -37,6 +37,42 @@ jobs:
           # --progress=plain keeps a steady output stream during the build,
           # which also helps keep the SSH channel active.
           docker build --progress=plain -t hermes-agent:local .
+
+          # ---- One-time, reversible proxy migration (Phase 3) ----------
+          # The :11435 Claude proxy is now BAKED INTO THE IMAGE (the static
+          # s6-rc service docker/s6-rc.d/claude-proxy execs
+          # /opt/hermes/deploy/claude-proxy/claude_proxy.py). The old copy lived
+          # on the data volume under $HERMES_HOME/services/claude-proxy and was
+          # seeded into the scandir by 03-seed-data-services. If BOTH survive,
+          # the image service and a volume re-seed would both bind :11435 and
+          # collide -- so we retire the volume copy by renaming it to
+          # claude-proxy.legacy BEFORE the new container boots. (03 also skips
+          # 'claude-proxy' defensively, but renaming makes the image copy
+          # unambiguously authoritative and leaves a trivial rollback: rename
+          # .legacy back and redeploy the pre-bake image.)
+          #
+          # Idempotent: if the volume copy is already gone (re-deploy) we do
+          # nothing; we never clobber an existing .legacy. Resolve the host
+          # volume path from the running container's mount so we don't hardcode
+          # ~/.hermes vs /opt/hermes/data.
+          VOL_SRC=$(docker inspect -f \
+            '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}' \
+            hermes 2>/dev/null || true)
+          [ -n "$VOL_SRC" ] || VOL_SRC="$HOME/.hermes"
+          LEGACY_SRC="$VOL_SRC/services/claude-proxy"
+          LEGACY_DST="$VOL_SRC/services/claude-proxy.legacy"
+          if [ -d "$LEGACY_SRC" ]; then
+            if [ -e "$LEGACY_DST" ]; then
+              echo "proxy-migration: $LEGACY_DST already exists -- removing now-redundant volume copy $LEGACY_SRC"
+              rm -rf "$LEGACY_SRC"
+            else
+              echo "proxy-migration: retiring volume proxy -> $LEGACY_DST (image copy is now authoritative)"
+              mv "$LEGACY_SRC" "$LEGACY_DST"
+            fi
+          else
+            echo "proxy-migration: no volume claude-proxy to retire (already image-baked)"
+          fi
+
           docker compose -f /opt/hermes/docker-compose.yml up -d
 
           # ---- Post-deploy health gate ---------------------------------
@@ -115,6 +151,66 @@ jobs:
             echo "--- /run/service (what actually got seeded) ---"
             docker exec hermes sh -c 'ls -1 /run/service 2>&1' 2>&1 || true
             exit 1
+          fi
+
+          # ---- Registry match gate (Phase 2) ---------------------------
+          # The "never run a bot twice" invariant, asserted post-health: the set
+          # of per-profile gateways the SHARED container is actually running must
+          # equal the registry's shared (non-isolated) prod set. A STRAY (a
+          # running gateway absent from that set -- e.g. an isolated client that
+          # should run in its own container, or a profile that escaped the
+          # registry) or a MISSING shared bot fails the deploy with diagnostics,
+          # so a Telegram-409 double-run or a silently-dark bot can't ship green.
+          #
+          # No-op when no registry is configured on the host: with
+          # $HERMES_CLIENTS_REGISTRY unset (or its file absent) inside the
+          # gateway container, the registry isn't the source of truth yet and we
+          # skip the assertion entirely -- matching the boot gate's no-op
+          # semantics so this is safe to merge before any registry is deployed.
+          REG_IN=$(docker exec hermes sh -c 'echo "${HERMES_CLIENTS_REGISTRY:-}"' 2>/dev/null | tr -d '\r')
+          if [ -z "$REG_IN" ] || ! docker exec hermes sh -c "test -f \"$REG_IN\"" 2>/dev/null; then
+            echo "registry-gate(deploy): no registry configured in-container -- skipping match assertion"
+          else
+            echo "registry-gate(deploy): asserting running gateways match registry shared-prod set ($REG_IN)"
+            # Expected = prod profiles that are NOT isolated (the shared set),
+            # excluding the implicit root 'default' slot. Derived through the
+            # same code the boot gate + generator use. Passed as a one-line
+            # `python -c` so it nests cleanly inside the single-quoted sh -c and
+            # keeps the YAML block-scalar valid (no column-1 heredoc body).
+            PYSCRIPT='import os; from hermes_cli.clients import load_registry; from hermes_cli.compose_gen import isolated_profile_names; reg=load_registry(os.environ["HERMES_CLIENTS_REGISTRY"]); iso=set(isolated_profile_names(reg,"prod")); print(" ".join(sorted({c.profile for c in reg.for_env("prod") if c.profile not in iso and c.profile!="default"})))'
+            expected=$(docker exec hermes /opt/hermes/.venv/bin/python -c "$PYSCRIPT" 2>/dev/null | tr -d '\r')
+            # Running = gateway-<profile> slots reporting "up" (drop the root
+            # default slot, which is always registered and not a registry bot).
+            running=$(docker exec hermes sh -c '
+              for s in /run/service/gateway-*; do
+                [ -e "$s" ] || continue
+                name=${s#/run/service/gateway-}
+                [ "$name" = default ] && continue
+                if /command/s6-svstat "$s" 2>/dev/null | grep -q "^up "; then
+                  echo "$name"
+                fi
+              done' 2>/dev/null | sort -u | tr "\n" " " | sed "s/ *$//")
+            exp_n=$(echo "$expected" | tr " " "\n" | sed "/^$/d" | sort -u | tr "\n" " " | sed "s/ *$//")
+            run_n=$(echo "$running"  | tr " " "\n" | sed "/^$/d" | sort -u | tr "\n" " " | sed "s/ *$//")
+            echo "registry-gate(deploy): expected shared-prod = [$exp_n]"
+            echo "registry-gate(deploy): running gateways      = [$run_n]"
+            if [ "$exp_n" != "$run_n" ]; then
+              echo "registry-gate(deploy): FAILED -- running gateways do not match the registry shared-prod set."
+              echo "--- strays (running but NOT in registry shared-prod; e.g. isolated client run twice, or unregistered) ---"
+              for r in $run_n; do
+                echo "$exp_n" | tr " " "\n" | grep -qx "$r" || echo "  STRAY: $r"
+              done
+              echo "--- missing (in registry shared-prod but NOT running) ---"
+              for e in $exp_n; do
+                echo "$run_n" | tr " " "\n" | grep -qx "$e" || echo "  MISSING: $e"
+              done
+              echo "--- all gateway-* slots + status ---"
+              docker exec hermes sh -c 'for s in /run/service/gateway-*; do [ -e "$s" ] && printf "%s: " "${s#/run/service/}" && /command/s6-svstat "$s" 2>&1; done' 2>&1 || true
+              echo "--- registry DRIFT: lines from this boot ---"
+              docker logs hermes 2>&1 | grep -E "DRIFT:|registry-gate:" || echo "(no registry-gate boot markers)"
+              exit 1
+            fi
+            echo "registry-gate(deploy): OK -- running gateways match the registry shared-prod set"
           fi
 
           echo "Deploy complete"

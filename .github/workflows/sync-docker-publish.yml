@@ -56,6 +56,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "${IMAGE_NAME:-}" ]; then
+            echo "::error::IMAGE_NAME está vacío. Revisa el secret DOCKERHUB_USERNAME."
+            exit 1
+          fi
+
+          if ! [[ "${IMAGE_NAME}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::IMAGE_NAME no parece un nombre de imagen Docker Hub válido: ${IMAGE_NAME}"
+            echo "::error::Debe tener formato namespace/repository y estar en minúsculas."
+            exit 1
+          fi
+
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
           SHA_SHORT="$(git rev-parse --short HEAD)"
 
@@ -70,7 +81,7 @@ jobs:
           esac
 
           if [ ! -f "Dockerfile" ]; then
-            echo "No existe Dockerfile en la raíz de la rama ${BRANCH_NAME}. No se puede construir la imagen."
+            echo "::error::No existe Dockerfile en la raíz de la rama ${BRANCH_NAME}. No se puede construir la imagen."
             exit 1
           fi
 
@@ -91,15 +102,14 @@ jobs:
       # Publica tags:
       # - Crea imágenes de tags nuevos v*
       # - Omite tags cuyo commit no tenga Dockerfile en la raíz
+      # - Omite tags Git que no sean válidos como tags Docker
       # - Actualiza imágenes de tags v* si el tag Git cambió de commit
       # - Ignora tags que ya estén correctamente publicados
       # - Actualiza latest al último tag v* publicable según sort -V
       #
-      # Se ejecuta en:
-      # - push de tag v*
-      # - push a main/develop
-      # - schedule
-      # - workflow_dispatch
+      # Comportamiento ante errores:
+      # - Si falla un tag, registra el error y continúa con los demás
+      # - Si hubo uno o más fallos reales, el step falla al final
       # ---------------------------------------------------------
       - name: Publish missing or updated version tags
         if: |
@@ -110,29 +120,229 @@ jobs:
           github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
-          git fetch --tags --force
+          # -----------------------------------------------------
+          # Logging
+          # -----------------------------------------------------
+          log_info() {
+            echo "::notice::$*"
+          }
 
-          echo "Evento: ${GITHUB_EVENT_NAME}"
-          echo "Ref: ${GITHUB_REF}"
-          echo "Ref name: ${GITHUB_REF_NAME}"
-          echo "SHA: ${GITHUB_SHA}"
+          log_warn() {
+            echo "::warning::$*"
+          }
 
-          image_exists() {
+          log_error() {
+            echo "::error::$*"
+          }
+
+          section() {
+            echo ""
+            echo "------------------------------------------------------------"
+            echo "$*"
+            echo "------------------------------------------------------------"
+          }
+
+          # -----------------------------------------------------
+          # Estado acumulado
+          # -----------------------------------------------------
+          PROCESSED_TAGS=()
+          BUILT_TAGS=()
+          UPDATED_TAGS=()
+          SKIPPED_TAGS=()
+          FAILED_TAGS=()
+          FAILED_REASONS=()
+
+          add_failure() {
+            local tag="$1"
+            local reason="$2"
+
+            FAILED_TAGS+=("${tag}")
+            FAILED_REASONS+=("${tag}: ${reason}")
+            log_error "Tag ${tag}: ${reason}"
+          }
+
+          add_skip() {
+            local tag="$1"
+            local reason="$2"
+
+            SKIPPED_TAGS+=("${tag}")
+            log_warn "Tag ${tag}: ${reason}"
+          }
+
+          # -----------------------------------------------------
+          # Validaciones iniciales
+          # -----------------------------------------------------
+          validate_environment() {
+            if [ -z "${IMAGE_NAME:-}" ]; then
+              log_error "IMAGE_NAME está vacío. Revisa el secret DOCKERHUB_USERNAME."
+              exit 1
+            fi
+
+            if ! [[ "${IMAGE_NAME}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+              log_error "IMAGE_NAME no parece un nombre de imagen Docker Hub válido: ${IMAGE_NAME}"
+              log_error "Debe tener formato namespace/repository y estar en minúsculas."
+              exit 1
+            fi
+
+            for cmd in git docker awk grep mktemp sort; do
+              if ! command -v "${cmd}" >/dev/null 2>&1; then
+                log_error "Comando requerido no disponible: ${cmd}"
+                exit 1
+              fi
+            done
+
+            if ! docker info >/dev/null 2>&1; then
+              log_error "Docker no está disponible o el daemon no responde."
+              exit 1
+            fi
+
+            if ! docker buildx version >/dev/null 2>&1; then
+              log_error "Docker Buildx no está disponible."
+              exit 1
+            fi
+
+            echo "Repositorio Docker destino: ${IMAGE_NAME}"
+            echo "Evento: ${GITHUB_EVENT_NAME}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "Ref name: ${GITHUB_REF_NAME}"
+            echo "SHA: ${GITHUB_SHA}"
+          }
+
+          # -----------------------------------------------------
+          # Retry genérico para operaciones remotas
+          # -----------------------------------------------------
+          retry() {
+            local attempts="$1"
+            local delay="$2"
+            shift 2
+
+            local attempt=1
+            local rc=0
+
+            while true; do
+              "$@"
+              rc=$?
+
+              if [ "${rc}" -eq 0 ]; then
+                return 0
+              fi
+
+              if [ "${attempt}" -ge "${attempts}" ]; then
+                return "${rc}"
+              fi
+
+              log_warn "Comando fallido con código ${rc}. Reintento ${attempt}/${attempts} en ${delay}s: $*"
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          # -----------------------------------------------------
+          # Validación de tag Docker
+          #
+          # Docker tag:
+          # - máximo 128 caracteres
+          # - empieza por [A-Za-z0-9_]
+          # - luego admite [A-Za-z0-9_.-]
+          # -----------------------------------------------------
+          is_valid_docker_tag() {
+            local tag="$1"
+
+            [[ "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]
+          }
+
+          # -----------------------------------------------------
+          # Consulta robusta de imagen remota
+          #
+          # return 0 -> existe
+          # return 1 -> no existe
+          # return 2 -> error consultando registry/auth/red/rate limit/etc.
+          # -----------------------------------------------------
+          inspect_image() {
             local ref="$1"
-            docker buildx imagetools inspect "${ref}" >/dev/null 2>&1
+            local out
+            local err
+            local rc
+
+            out="$(mktemp)"
+            err="$(mktemp)"
+
+            docker buildx imagetools inspect "${ref}" >"${out}" 2>"${err}"
+            rc=$?
+
+            if [ "${rc}" -eq 0 ]; then
+              cat "${out}"
+              rm -f "${out}" "${err}"
+              return 0
+            fi
+
+            if grep -Eiq '(not found|manifest unknown|no such manifest|name unknown|404)' "${err}"; then
+              rm -f "${out}" "${err}"
+              return 1
+            fi
+
+            echo "Error consultando imagen remota: ${ref}" >&2
+            echo "Código Docker: ${rc}" >&2
+            echo "Salida de error:" >&2
+            cat "${err}" >&2
+
+            rm -f "${out}" "${err}"
+            return 2
+          }
+
+          image_exists_status() {
+            local ref="$1"
+
+            inspect_image "${ref}" >/dev/null
+            return $?
           }
 
           image_digest() {
             local ref="$1"
-            docker buildx imagetools inspect "${ref}" \
-              | awk '/^Digest:/ {print $2; exit}'
+            local output
+            local digest
+            local rc
+
+            output="$(inspect_image "${ref}")"
+            rc=$?
+
+            if [ "${rc}" -ne 0 ]; then
+              return "${rc}"
+            fi
+
+            digest="$(printf '%s\n' "${output}" | awk '/^Digest:/ {print $2; exit}')"
+
+            if [ -z "${digest}" ]; then
+              echo "No se encontró línea Digest en la inspección de ${ref}" >&2
+              return 2
+            fi
+
+            printf '%s\n' "${digest}"
+            return 0
           }
 
           tag_has_dockerfile() {
             local commit="$1"
+
             git cat-file -e "${commit}:Dockerfile" 2>/dev/null
+          }
+
+          checkout_commit_clean() {
+            local commit="$1"
+
+            if ! git checkout --force "${commit}"; then
+              echo "No se pudo hacer checkout del commit ${commit}" >&2
+              return 1
+            fi
+
+            if ! git clean -fdx; then
+              echo "No se pudo limpiar el workspace para el commit ${commit}" >&2
+              return 1
+            fi
+
+            return 0
           }
 
           build_image_for_tag() {
@@ -142,18 +352,24 @@ jobs:
 
             echo "Construyendo imagen para tag ${tag}, commit ${commit}"
 
-            if ! [[ "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-              echo "El tag Git '${tag}' no es válido como tag Docker. Se omite."
-              return 0
+            if ! is_valid_docker_tag "${tag}"; then
+              echo "El tag Git '${tag}' no es válido como tag Docker." >&2
+              return 3
             fi
 
             if ! tag_has_dockerfile "${commit}"; then
-              echo "El tag ${tag}, commit ${commit}, no contiene Dockerfile en la raíz. Se omite."
-              return 0
+              echo "El commit ${commit} no contiene Dockerfile en la raíz." >&2
+              return 4
             fi
 
-            git checkout --force "${commit}"
-            git clean -fdx
+            if ! checkout_commit_clean "${commit}"; then
+              return 1
+            fi
+
+            if [ ! -f "Dockerfile" ]; then
+              echo "Dockerfile no disponible tras checkout del commit ${commit}." >&2
+              return 1
+            fi
 
             docker buildx build \
               --platform linux/amd64,linux/arm64 \
@@ -168,113 +384,357 @@ jobs:
               --cache-to type=gha,mode=max \
               --push \
               .
+
+            return $?
+          }
+
+          verify_tag_and_sha_same_digest() {
+            local tag_ref="$1"
+            local sha_ref="$2"
+            local tag_digest
+            local sha_digest
+
+            tag_digest="$(image_digest "${tag_ref}")"
+            local tag_rc=$?
+
+            if [ "${tag_rc}" -ne 0 ]; then
+              echo "No se pudo obtener digest de ${tag_ref}" >&2
+              return "${tag_rc}"
+            fi
+
+            sha_digest="$(image_digest "${sha_ref}")"
+            local sha_rc=$?
+
+            if [ "${sha_rc}" -ne 0 ]; then
+              echo "No se pudo obtener digest de ${sha_ref}" >&2
+              return "${sha_rc}"
+            fi
+
+            if [ "${tag_digest}" != "${sha_digest}" ]; then
+              echo "Los digests no coinciden tras la operación." >&2
+              echo "Digest tag: ${tag_digest}" >&2
+              echo "Digest sha: ${sha_digest}" >&2
+              return 1
+            fi
+
+            echo "Verificación correcta. Ambos manifests apuntan al mismo digest: ${tag_digest}"
+            return 0
           }
 
           publish_tag_from_existing_sha_image() {
             local tag="$1"
             local sha_short="$2"
 
-            echo "Actualizando ${IMAGE_NAME}:${tag} desde ${IMAGE_NAME}:sha-${sha_short}"
+            local tag_ref="${IMAGE_NAME}:${tag}"
+            local sha_ref="${IMAGE_NAME}:sha-${sha_short}"
 
-            docker buildx imagetools create \
-              --tag "${IMAGE_NAME}:${tag}" \
-              "${IMAGE_NAME}:sha-${sha_short}"
+            echo "Actualizando ${tag_ref} desde ${sha_ref}"
+
+            local sha_status
+            image_exists_status "${sha_ref}"
+            sha_status=$?
+
+            case "${sha_status}" in
+              0)
+                ;;
+              1)
+                echo "No existe la imagen origen ${sha_ref}. No se puede crear ${tag_ref} sin reconstruir." >&2
+                return 1
+                ;;
+              *)
+                echo "No se pudo comprobar la existencia de ${sha_ref}." >&2
+                return 2
+                ;;
+            esac
+
+            if ! retry 3 10 docker buildx imagetools create \
+              --tag "${tag_ref}" \
+              "${sha_ref}"; then
+              echo "Falló docker buildx imagetools create para ${tag_ref} desde ${sha_ref}" >&2
+              return 1
+            fi
+
+            verify_tag_and_sha_same_digest "${tag_ref}" "${sha_ref}"
+            return $?
           }
 
           publish_latest_from_tag() {
             local tag="$1"
+            local latest_ref="${IMAGE_NAME}:latest"
+            local tag_ref="${IMAGE_NAME}:${tag}"
 
-            echo "Actualizando ${IMAGE_NAME}:latest desde ${IMAGE_NAME}:${tag}"
+            echo "Actualizando ${latest_ref} desde ${tag_ref}"
 
-            docker buildx imagetools create \
-              --tag "${IMAGE_NAME}:latest" \
-              "${IMAGE_NAME}:${tag}"
+            local tag_status
+            image_exists_status "${tag_ref}"
+            tag_status=$?
+
+            case "${tag_status}" in
+              0)
+                ;;
+              1)
+                echo "No existe la imagen origen ${tag_ref}. No se puede actualizar latest." >&2
+                return 1
+                ;;
+              *)
+                echo "No se pudo comprobar la existencia de ${tag_ref}." >&2
+                return 2
+                ;;
+            esac
+
+            if ! retry 3 10 docker buildx imagetools create \
+              --tag "${latest_ref}" \
+              "${tag_ref}"; then
+              echo "Falló docker buildx imagetools create para ${latest_ref} desde ${tag_ref}" >&2
+              return 1
+            fi
+
+            echo "latest actualizado correctamente desde ${tag}"
+            return 0
           }
+
+          # -----------------------------------------------------
+          # Inicio
+          # -----------------------------------------------------
+          validate_environment
+
+          section "Sincronizando tags Git"
+          if ! retry 3 10 git fetch --tags --force --prune; then
+            log_error "No se pudieron sincronizar los tags Git."
+            exit 1
+          fi
 
           mapfile -t TAGS < <(git tag -l 'v*' | sort -V)
 
           if [ "${#TAGS[@]}" -eq 0 ]; then
-            echo "No hay tags v* que publicar."
+            log_info "No hay tags v* que publicar."
             exit 0
           fi
 
-          mapfile -t PUBLISHABLE_TAGS < <(
-            for TAG in "${TAGS[@]}"; do
-              COMMIT="$(git rev-list -n 1 "${TAG}")"
+          section "Tags v* detectados"
+          printf '%s\n' "${TAGS[@]}"
 
-              if git cat-file -e "${COMMIT}:Dockerfile" 2>/dev/null; then
-                echo "${TAG}"
-              else
-                echo "Se omite ${TAG}: el commit ${COMMIT} no contiene Dockerfile en la raíz." >&2
-              fi
-            done
-          )
+          PUBLISHABLE_TAGS=()
+
+          section "Calculando tags publicables"
+          for TAG in "${TAGS[@]}"; do
+            COMMIT="$(git rev-list -n 1 "${TAG}")"
+
+            if ! is_valid_docker_tag "${TAG}"; then
+              add_skip "${TAG}" "el tag Git no es válido como tag Docker"
+              continue
+            fi
+
+            if ! tag_has_dockerfile "${COMMIT}"; then
+              add_skip "${TAG}" "el commit ${COMMIT} no contiene Dockerfile en la raíz"
+              continue
+            fi
+
+            PUBLISHABLE_TAGS+=("${TAG}")
+          done
 
           if [ "${#PUBLISHABLE_TAGS[@]}" -eq 0 ]; then
-            echo "No hay tags v* con Dockerfile que publicar."
+            log_info "No hay tags v* publicables."
             exit 0
           fi
 
           LATEST_TAG="${PUBLISHABLE_TAGS[-1]}"
 
-          echo "Tags detectados:"
-          printf '%s\n' "${TAGS[@]}"
-
-          echo "Tags publicables:"
+          section "Tags publicables"
           printf '%s\n' "${PUBLISHABLE_TAGS[@]}"
-
           echo "Latest tag publicable calculado: ${LATEST_TAG}"
 
+          # -----------------------------------------------------
+          # Procesamiento de tags
+          # -----------------------------------------------------
           for TAG in "${PUBLISHABLE_TAGS[@]}"; do
+            PROCESSED_TAGS+=("${TAG}")
+
             COMMIT="$(git rev-list -n 1 "${TAG}")"
             SHA_SHORT="$(git rev-parse --short "${COMMIT}")"
 
             TAG_REF="${IMAGE_NAME}:${TAG}"
             SHA_REF="${IMAGE_NAME}:sha-${SHA_SHORT}"
 
-            echo "------------------------------------------------------------"
-            echo "Evaluando tag ${TAG}"
+            section "Evaluando tag ${TAG}"
             echo "Commit: ${COMMIT}"
+            echo "SHA corto: ${SHA_SHORT}"
             echo "Imagen tag: ${TAG_REF}"
             echo "Imagen sha: ${SHA_REF}"
 
-            TAG_EXISTS=false
-            SHA_EXISTS=false
+            TAG_STATUS=0
+            SHA_STATUS=0
 
-            if image_exists "${TAG_REF}"; then
-              TAG_EXISTS=true
-            fi
+            image_exists_status "${TAG_REF}"
+            TAG_STATUS=$?
 
-            if image_exists "${SHA_REF}"; then
-              SHA_EXISTS=true
-            fi
+            image_exists_status "${SHA_REF}"
+            SHA_STATUS=$?
+
+            case "${TAG_STATUS}" in
+              0) TAG_EXISTS=true ;;
+              1) TAG_EXISTS=false ;;
+              *)
+                add_failure "${TAG}" "no se pudo comprobar si existe ${TAG_REF}"
+                continue
+                ;;
+            esac
+
+            case "${SHA_STATUS}" in
+              0) SHA_EXISTS=true ;;
+              1) SHA_EXISTS=false ;;
+              *)
+                add_failure "${TAG}" "no se pudo comprobar si existe ${SHA_REF}"
+                continue
+                ;;
+            esac
+
+            echo "Existe tag remoto: ${TAG_EXISTS}"
+            echo "Existe sha remoto: ${SHA_EXISTS}"
 
             if [ "${TAG_EXISTS}" = false ] && [ "${SHA_EXISTS}" = false ]; then
               echo "No existe ni ${TAG_REF} ni ${SHA_REF}. Se construye imagen."
-              build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"
+
+              if build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"; then
+                if verify_tag_and_sha_same_digest "${TAG_REF}" "${SHA_REF}"; then
+                  BUILT_TAGS+=("${TAG}")
+                  log_info "Tag ${TAG} construido y verificado correctamente."
+                else
+                  add_failure "${TAG}" "la imagen se construyó, pero falló la verificación de digest"
+                fi
+              else
+                rc=$?
+                add_failure "${TAG}" "falló la construcción de la imagen; código ${rc}"
+              fi
 
             elif [ "${TAG_EXISTS}" = false ] && [ "${SHA_EXISTS}" = true ]; then
               echo "Existe ${SHA_REF}, pero falta ${TAG_REF}. Se crea el tag Docker sin reconstruir."
-              publish_tag_from_existing_sha_image "${TAG}" "${SHA_SHORT}"
+
+              if publish_tag_from_existing_sha_image "${TAG}" "${SHA_SHORT}"; then
+                UPDATED_TAGS+=("${TAG}")
+                log_info "Tag ${TAG} creado desde ${SHA_REF} correctamente."
+              else
+                rc=$?
+                add_failure "${TAG}" "falló la creación del tag desde ${SHA_REF}; código ${rc}"
+              fi
 
             elif [ "${TAG_EXISTS}" = true ] && [ "${SHA_EXISTS}" = false ]; then
               echo "Existe ${TAG_REF}, pero falta ${SHA_REF}. El tag Git puede haber cambiado. Se reconstruye."
-              build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"
+
+              if build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"; then
+                if verify_tag_and_sha_same_digest "${TAG_REF}" "${SHA_REF}"; then
+                  BUILT_TAGS+=("${TAG}")
+                  log_info "Tag ${TAG} reconstruido y verificado correctamente."
+                else
+                  add_failure "${TAG}" "la imagen se reconstruyó, pero falló la verificación de digest"
+                fi
+              else
+                rc=$?
+                add_failure "${TAG}" "falló la reconstrucción de la imagen; código ${rc}"
+              fi
 
             else
+              echo "Existen ${TAG_REF} y ${SHA_REF}. Se comparan digests."
+
               TAG_DIGEST="$(image_digest "${TAG_REF}")"
+              TAG_DIGEST_RC=$?
+
+              if [ "${TAG_DIGEST_RC}" -ne 0 ]; then
+                add_failure "${TAG}" "no se pudo obtener digest de ${TAG_REF}; código ${TAG_DIGEST_RC}"
+                continue
+              fi
+
               SHA_DIGEST="$(image_digest "${SHA_REF}")"
+              SHA_DIGEST_RC=$?
+
+              if [ "${SHA_DIGEST_RC}" -ne 0 ]; then
+                add_failure "${TAG}" "no se pudo obtener digest de ${SHA_REF}; código ${SHA_DIGEST_RC}"
+                continue
+              fi
+
+              echo "Digest tag: ${TAG_DIGEST}"
+              echo "Digest sha: ${SHA_DIGEST}"
 
               if [ "${TAG_DIGEST}" = "${SHA_DIGEST}" ]; then
                 echo "El tag ${TAG} ya está correctamente publicado. Se ignora."
+                SKIPPED_TAGS+=("${TAG}")
               else
                 echo "El tag ${TAG} existe, pero apunta a un manifest distinto."
-                echo "Digest tag: ${TAG_DIGEST}"
-                echo "Digest sha: ${SHA_DIGEST}"
                 echo "Se actualiza ${TAG_REF} para apuntar al commit actual del tag Git."
-                publish_tag_from_existing_sha_image "${TAG}" "${SHA_SHORT}"
+
+                if publish_tag_from_existing_sha_image "${TAG}" "${SHA_SHORT}"; then
+                  UPDATED_TAGS+=("${TAG}")
+                  log_info "Tag ${TAG} actualizado correctamente."
+                else
+                  rc=$?
+                  add_failure "${TAG}" "falló la actualización del tag desde ${SHA_REF}; código ${rc}"
+                fi
               fi
             fi
           done
 
-          publish_latest_from_tag "${LATEST_TAG}"
+          # -----------------------------------------------------
+          # Actualización de latest
+          # -----------------------------------------------------
+          section "Actualizando latest"
+
+          LATEST_FAILED=false
+
+          for FAILED_TAG in "${FAILED_TAGS[@]}"; do
+            if [ "${FAILED_TAG}" = "${LATEST_TAG}" ]; then
+              LATEST_FAILED=true
+              break
+            fi
+          done
+
+          if [ "${LATEST_FAILED}" = true ]; then
+            add_failure "latest" "no se actualiza porque el último tag publicable (${LATEST_TAG}) falló"
+          else
+            if publish_latest_from_tag "${LATEST_TAG}"; then
+              log_info "latest actualizado correctamente desde ${LATEST_TAG}."
+            else
+              rc=$?
+              add_failure "latest" "falló la actualización de latest desde ${LATEST_TAG}; código ${rc}"
+            fi
+          fi
+
+          # -----------------------------------------------------
+          # Resumen final
+          # -----------------------------------------------------
+          section "Resumen final"
+
+          echo "Tags procesados: ${#PROCESSED_TAGS[@]}"
+          if [ "${#PROCESSED_TAGS[@]}" -gt 0 ]; then
+            printf '  - %s\n' "${PROCESSED_TAGS[@]}"
+          fi
+
+          echo ""
+          echo "Tags construidos/reconstruidos: ${#BUILT_TAGS[@]}"
+          if [ "${#BUILT_TAGS[@]}" -gt 0 ]; then
+            printf '  - %s\n' "${BUILT_TAGS[@]}"
+          fi
+
+          echo ""
+          echo "Tags actualizados sin reconstruir: ${#UPDATED_TAGS[@]}"
+          if [ "${#UPDATED_TAGS[@]}" -gt 0 ]; then
+            printf '  - %s\n' "${UPDATED_TAGS[@]}"
+          fi
+
+          echo ""
+          echo "Tags omitidos: ${#SKIPPED_TAGS[@]}"
+          if [ "${#SKIPPED_TAGS[@]}" -gt 0 ]; then
+            printf '  - %s\n' "${SKIPPED_TAGS[@]}"
+          fi
+
+          echo ""
+          echo "Errores: ${#FAILED_REASONS[@]}"
+          if [ "${#FAILED_REASONS[@]}" -gt 0 ]; then
+            printf '  - %s\n' "${FAILED_REASONS[@]}"
+          fi
+
+          if [ "${#FAILED_REASONS[@]}" -gt 0 ]; then
+            log_error "La publicación terminó con errores en uno o más tags. Revisa el resumen anterior."
+            exit 1
+          fi
+
+          log_info "Publicación finalizada correctamente."

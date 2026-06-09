@@ -63,8 +63,8 @@ optional_env:
     prompt: "Group mention patterns"
     password: false
   - name: PHOTON_HOME_CHANNEL
-    description: "Default Spectrum space id for cron / notification delivery"
-    prompt: "Home space id"
+    description: "Default Photon target for cron / notification delivery: Spectrum space id, DM GUID, or bare E.164 phone number"
+    prompt: "Home Photon target"
     password: false
   - name: PHOTON_HOME_CHANNEL_NAME
     description: "Human label for the home channel"

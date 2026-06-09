@@ -8542,6 +8542,44 @@ def _default_value_for_key(dotted_key: str):
             return None
         node = node[part]
     return node if not isinstance(node, dict) else None
+_SECRET_KEY_LEAVES = {
+    "api_key", "apikey", "token", "secret", "password", "passwd",
+    "client_secret", "access_token", "auth_token", "refresh_token",
+}
+
+_REDACTED_MASK_RE = re.compile(r"[*•·●×]{3,}")
+
+
+def _is_secret_config_key(key: str) -> bool:
+    """True when ``key`` names a credential/secret field."""
+    leaf = key.rsplit(".", 1)[-1].strip().lower()
+    if leaf in _SECRET_KEY_LEAVES:
+        return True
+    upper = key.upper()
+    return upper.endswith(("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))
+
+
+def _looks_redacted_secret(value: str) -> bool:
+    """Heuristic: does ``value`` look like a masked/redacted display placeholder
+    rather than a real secret? Hermes redacts secrets in tool output and config
+    dumps (e.g. ``sk-...``, ``***``, ``[REDACTED]``); persisting those back as
+    literal credentials silently bricks the provider (issue #42727).
+    """
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    if not stripped:
+        return False
+    low = stripped.lower()
+    if low in {"***", "...", "…", "redacted", "[redacted]", "<redacted>"}:
+        return True
+    if stripped.endswith("...") or "…" in stripped:
+        return True
+    if "[redacted]" in low or "<redacted>" in low:
+        return True
+    if _REDACTED_MASK_RE.search(stripped):
+        return True
+    return False
 
 
 # Known top-level config keys that intentionally accept arbitrary user-supplied
@@ -8747,6 +8785,19 @@ def set_config_value(key: str, value: str, force: bool = False):
             file=sys.stderr,
         )
         sys.exit(1)
+    # Refuse to persist a redacted/masked placeholder into a secret field.
+    # Hermes masks secrets in tool output and config dumps, so an agent (or a
+    # copy-paste) can easily write back the display value (``sk-...``, ``***``,
+    # ``[REDACTED]``); storing that literally breaks the provider with a 401 and
+    # can leave the gateway unable to answer (issue #42727).
+    if _is_secret_config_key(key) and _looks_redacted_secret(value):
+        print(
+            f"✗ Refusing to set {key}: '{value}' looks like a redacted/masked "
+            "placeholder, not a real secret. Hermes redacts secrets in tool output "
+            "and config dumps — copy the real value from your provider (or "
+            f"{get_env_path()}) instead of the masked display value."
+        )
+        return
     # Check if it's an API key (goes to .env)
     if _is_env_config_key(key):
         # Unified lifecycle: also rotates any config.yaml mirror of the old

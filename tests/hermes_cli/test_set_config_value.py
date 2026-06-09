@@ -630,3 +630,86 @@ class TestValidateConfigKey:
         from hermes_cli.config import _validate_config_key
         is_known, suggestion = _validate_config_key("agent._max_turns")
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
+# Redacted-secret guard (issue #42727): an agent must not be able to brick the
+# provider by persisting a masked display value (sk-... / *** / [REDACTED]).
+# ---------------------------------------------------------------------------
+
+import yaml  # noqa: E402
+
+from hermes_cli.config import (  # noqa: E402
+    _is_secret_config_key,
+    _looks_redacted_secret,
+)
+
+
+class TestRedactedSecretGuard:
+    @pytest.mark.parametrize("key", [
+        "model.api_key",
+        "auxiliary.vision.api_key",
+        "custom_providers.0.api_key",
+        "OPENAI_API_KEY",
+        "honcho.token",
+        "smtp.password",
+        "x.client_secret",
+    ])
+    def test_secret_keys_detected(self, key):
+        assert _is_secret_config_key(key) is True
+
+    @pytest.mark.parametrize("key", [
+        "model.provider",
+        "model.base_url",
+        "model.default",
+        "auxiliary.vision.model",
+        "display.skin",
+    ])
+    def test_non_secret_keys_not_flagged(self, key):
+        assert _is_secret_config_key(key) is False
+
+    @pytest.mark.parametrize("value", [
+        "sk-...",
+        "sk-proj-abc...",
+        "***",
+        "[REDACTED]",
+        "<redacted>",
+        "REDACTED",
+        "sk-****",
+        "••••••",
+        "abc…",
+    ])
+    def test_redacted_values_detected(self, value):
+        assert _looks_redacted_secret(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "sk-proj-9aZ1real-key-material",
+        "hf_abcdef0123456789",
+        "a-real-token-value",
+        "https://example-provider.invalid/v1",
+        "",
+    ])
+    def test_real_values_not_flagged(self, value):
+        assert _looks_redacted_secret(value) is False
+
+    def test_redacted_value_not_persisted_to_config_yaml(self, _isolated_hermes_home):
+        # A real key is already configured.
+        set_config_value("auxiliary.vision.api_key", "real-secret-abc123")
+        assert "real-secret-abc123" in _read_config(_isolated_hermes_home)
+        # The agent tries to write back the masked display value — must be refused.
+        set_config_value("auxiliary.vision.api_key", "sk-...")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["auxiliary"]["vision"]["api_key"] == "real-secret-abc123"
+
+    def test_redacted_value_not_persisted_to_env(self, _isolated_hermes_home):
+        set_config_value("OPENAI_API_KEY", "***")
+        assert "OPENAI_API_KEY=***" not in _read_env(_isolated_hermes_home)
+
+    def test_real_secret_still_persists(self, _isolated_hermes_home):
+        set_config_value("model.api_key", "sk-real-value-not-masked")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["model"]["api_key"] == "sk-real-value-not-masked"
+
+    def test_redacted_value_allowed_for_non_secret_key(self, _isolated_hermes_home):
+        # The guard only applies to secret fields — a non-secret value that
+        # happens to end in "..." is still written.
+        set_config_value("display.welcome", "loading...")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["display"]["welcome"] == "loading..."

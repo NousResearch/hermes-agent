@@ -854,7 +854,7 @@ export function ChatSidebar({
             sessions={searchResults}
             workingSessionIdSet={workingSessionIdSet}
             presenceBySession={presenceBySession}
-            showSourceBadge={true}
+            showSourceBadge={false}
           />
         )}
 
@@ -884,7 +884,7 @@ export function ChatSidebar({
               workingSessionIdSet={workingSessionIdSet}
               dndSensors={dndSensors}
               presenceBySession={presenceBySession}
-              showSourceBadge={true}
+              showSourceBadge={false}
             />
 
             {/* Recents / All sessions */}
@@ -906,7 +906,7 @@ export function ChatSidebar({
                 ) : null
               }
               forceEmptyState={showSessionSkeletons}
-              groups={showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : agentDeviceGroups}
+              groups={showAllProfiles ? profileGroups : undefined}
               headerAction={sessionsHeaderAction}
               label="Sessions"
               labelMeta={recentsMeta}
@@ -924,7 +924,7 @@ export function ChatSidebar({
               sortable={!showAllProfiles && agentSessions.length > 1}
               workingSessionIdSet={workingSessionIdSet}
               presenceBySession={presenceBySession}
-              showSourceBadge={true}
+              showSourceBadge={false}
             />
           </div>
         )}

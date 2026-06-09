@@ -194,23 +194,12 @@ export function SidebarSessionRow({
           )}
           <div className="min-w-0 flex-1">
             <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
-            {showSourceBadge && (
-              <SessionSourceLine
-                profile={session.profile ?? null}
-                source={session.source}
-              />
-            )}
-            {showDeviceBadge && session.device_name && (
-              <span className="block truncate text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{session.device_name}</span>
-            )}
           </div>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
-            <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-              {age}
-            </span>
-          )}
+          <span className="pointer-events-none absolute right-5 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+            {age}
+          </span>
           <SessionActionsMenu
             onArchive={onArchive}
             onDelete={onDelete}

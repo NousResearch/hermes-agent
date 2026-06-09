@@ -92,6 +92,7 @@ const app = await Spectrum({
   projectId,
   projectSecret,
   providers: [imessage.config()],
+  options: { flattenGroups: true },
 });
 
 // ---------------------------------------------------------------------------

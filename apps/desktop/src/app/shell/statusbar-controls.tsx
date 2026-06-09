@@ -99,7 +99,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+          <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} title={item.title} type="button">
             {content}
           </button>
         </DropdownMenuTrigger>
@@ -164,7 +164,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
   if (item.href || item.variant === 'link') {
     return (
-      <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+      <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank" title={item.title}>
         {content}
       </a>
     )
@@ -174,6 +174,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     <button
       className={cn(STATUSBAR_ACTION_CLASS, item.className)}
       disabled={item.disabled}
+      title={item.title}
       onClick={event => {
         if (item.to) {
           navigate(item.to)

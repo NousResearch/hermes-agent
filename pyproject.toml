@@ -285,6 +285,20 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 # venv) drop the catalogs and gateway/CLI commands surface raw i18n keys like
 # `gateway.reset.header_default` (#27632, #35374, #23943).
 locales = ["locales/*.yaml"]
+# Shipped MCP catalog (optional-mcps/<name>/manifest.yaml). Same bare-data-dir
+# case as locales: data-files ships it in the wheel, `graft optional-mcps` in
+# MANIFEST.in ships it in the sdist. Without this, `hermes mcp catalog` and the
+# dashboard catalog screen come up empty on packaged installs even though the
+# manifests exist in the repo (hermes_cli/mcp_catalog.py:_catalog_root resolves
+# the packaged dir; list_catalog() returns [] when it's missing).
+#
+# data-files flattens every glob match into its single target dir, so each
+# catalog entry needs its OWN target to preserve the per-entry directory the
+# catalog iterates over (a shared `optional-mcps/*/*` glob would collapse all
+# manifests into one colliding optional-mcps/manifest.yaml). One target per
+# entry; tests/test_packaging_metadata.py enforces an entry per optional-mcps/<name>.
+"optional-mcps/linear" = ["optional-mcps/linear/manifest.yaml"]
+"optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]

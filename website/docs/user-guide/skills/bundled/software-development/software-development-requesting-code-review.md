@@ -21,7 +21,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `code-review`, `security`, `verification`, `quality`, `pre-commit`, `auto-fix` |
-| Related skills | [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development), [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) |
+| Related skills | [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development), [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review), [`rendered-ux-reviewer`](/docs/user-guide/skills/bundled/software-development/software-development-rendered-ux-reviewer) |
 
 ## Reference: full SKILL.md
 
@@ -43,7 +43,7 @@ quality gates, an independent reviewer subagent, and an auto-fix loop.
 - After completing a task with 2+ file edits in a git repo
 - After each task in subagent-driven-development (the two-stage review)
 
-**Skip for:** documentation-only changes, pure config tweaks, or when user says "skip verification".
+**Skip for:** non-user-facing documentation-only changes, pure config tweaks, or when user says "skip verification". For user-facing docs, examples, landing pages, or rendered product copy, use `rendered-ux-reviewer` before merging rather than relying on this code-diff review alone.
 
 **This skill vs github-code-review:** This skill verifies YOUR changes before committing.
 `github-code-review` reviews OTHER people's PRs on GitHub with inline comments.

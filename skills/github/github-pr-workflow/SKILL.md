@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Pull-Requests, CI/CD, Git, Automation, Merge]
-    related_skills: [github-auth, github-code-review]
+    related_skills: [github-auth, github-code-review, rendered-ux-reviewer]
 ---
 
 # GitHub Pull Request Workflow
@@ -276,13 +276,15 @@ When asked to auto-fix CI, follow this loop:
 
 ## 6. Merging
 
+Before merging, run any artifact-specific gates that CI cannot cover. For user-facing copy, layout, examples pages, landing pages, docs pages, demos, bookmarklets, screenshots, or preview UIs, load `rendered-ux-reviewer` and record either its PASS verdict or Ryan's explicit acceptance in the PR/issue notes. Do not auto-merge those PRs from green CI alone.
+
 **With gh:**
 
 ```bash
 # Squash merge + delete branch (cleanest for feature branches)
 gh pr merge --squash --delete-branch
 
-# Enable auto-merge (merges when all checks pass)
+# Enable auto-merge (only after rendered-review/Ryan gate is recorded for user-facing artifacts)
 gh pr merge --auto --squash --delete-branch
 ```
 

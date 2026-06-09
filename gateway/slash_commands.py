@@ -114,6 +114,19 @@ class GatewaySlashCommandsMixin:
         except Exception:
             logger.debug("gateway workspace terminal cleanup skipped", exc_info=True)
 
+    def _carry_gateway_session_cwd(self, old_session_id: str, new_session_id: str) -> None:
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return
+        cwd = self._session_db_cwd(old_session_id)
+        if not cwd:
+            return
+        try:
+            self._session_db.update_session_cwd(new_session_id, cwd)
+        except Exception:
+            logger.debug("failed to carry gateway session cwd", exc_info=True)
+        self._register_gateway_session_cwd(new_session_id, cwd)
+        self._clear_gateway_session_cwd(old_session_id)
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source

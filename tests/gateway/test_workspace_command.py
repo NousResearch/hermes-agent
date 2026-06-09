@@ -120,6 +120,19 @@ async def test_workspace_set_and_clear_persist_session_cwd(tmp_path, monkeypatch
     assert entry.session_id in runner._workspace_probe.cleared
 
 
+def test_workspace_cwd_carries_across_session_id_rotation(tmp_path, monkeypatch):
+    runner, entry, db = _runner(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    db.rows[entry.session_id]["cwd"] = str(project)
+
+    runner._carry_gateway_session_cwd(entry.session_id, "sess-2")
+
+    assert db.rows["sess-2"]["cwd"] == str(project)
+    assert ("sess-2", {"cwd": str(project)}) in runner._workspace_probe.registered
+    assert entry.session_id in runner._workspace_probe.cleared
+
+
 @pytest.mark.asyncio
 async def test_workspace_rejects_relative_and_missing_paths(tmp_path, monkeypatch):
     runner, _entry, _db = _runner(tmp_path, monkeypatch)

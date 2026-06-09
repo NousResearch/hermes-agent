@@ -8109,7 +8109,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
+                                        _hyg_old_sid = session_entry.session_id
                                         session_entry.session_id = _hyg_new_sid
+                                        self._carry_gateway_session_cwd(
+                                            _hyg_old_sid, _hyg_new_sid
+                                        )
                                         self.session_store._save()
                                         self._sync_telegram_topic_binding(
                                             source, session_entry,
@@ -8412,7 +8416,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+                _old_session_id = session_entry.session_id
                 session_entry.session_id = agent_result["session_id"]
+                self._carry_gateway_session_cwd(
+                    _old_session_id, session_entry.session_id
+                )
                 self.session_store._save()
                 self._sync_telegram_topic_binding(
                     source, session_entry, reason="agent-result-compression",

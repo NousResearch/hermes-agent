@@ -2023,6 +2023,72 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_minimax_oauth_aux_client(
+    model: str,
+    *,
+    explicit_base_url: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an ``AnthropicAuxiliaryClient`` for a MiniMax OAuth session.
+
+    MiniMax's inference endpoint is Anthropic-API compatible
+    (``POST {base}/v1/messages`` with bearer auth, ``x-api-key`` header),
+    so the same wrapper used for native Anthropic works here.  The token
+    is installed as a per-request callable so the 15-minute MiniMax
+    access-token expiry is auto-refreshed by ``build_anthropic_client``'s
+    bearer-hook machinery — see ``build_minimax_oauth_token_provider`` in
+    ``hermes_cli.auth`` for the refresh path.
+
+    The default model is the one registered on the provider profile
+    (``MiniMax-M2.7`` per ``plugins/model-providers/minimax/__init__.py``);
+    the caller passes the resolved model (from main model fallback or
+    ``auxiliary.<task>.model``).  Returns ``(None, None)`` when the user
+    is not logged in via MiniMax OAuth.
+    """
+    from agent.anthropic_adapter import build_anthropic_client
+    from typing import cast
+    try:
+        from hermes_cli.auth import build_minimax_oauth_token_provider
+    except ImportError:
+        logger.warning(
+            "Auxiliary client: hermes_cli.auth unavailable, "
+            "cannot build MiniMax OAuth client"
+        )
+        return None, None
+    try:
+        token_provider = build_minimax_oauth_token_provider()
+    except Exception as exc:  # noqa: BLE001 — auth not logged in or refresh failed
+        logger.debug("Auxiliary client: MiniMax OAuth token provider unavailable: %s", exc)
+        return None, None
+    base_url = (explicit_base_url or "").rstrip("/") or "https://api.minimax.io/anthropic"
+    if not model:
+        logger.debug(
+            "Auxiliary client: minimax-oauth requested without a model; "
+            "will fall back to provider default or main model"
+        )
+        # Caller did not pass a model — the universal resolver above has
+        # already populated ``final_model`` with the main-model fallback
+        # before reaching here, so an empty string only happens on a
+        # direct call to this builder.  Return None and let the resolver
+        # log the warning.
+        return None, None
+    try:
+        # ``build_anthropic_client`` accepts either a ``str`` api_key or a
+        # ``Callable[[], str]`` — the latter is routed through
+        # ``_build_anthropic_client_with_bearer_hook`` which mints a fresh
+        # ``Authorization`` header on every outbound request, exactly what
+        # we need for MiniMax's 15-minute access-token TTL.  The static
+        # type signature only says ``str``; cast is safe per the runtime
+        # contract documented in ``build_minimax_oauth_token_provider``.
+        real_client = build_anthropic_client(cast(str, token_provider), base_url)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Auxiliary client: build_anthropic_client failed for minimax-oauth: %s", exc
+        )
+        return None, None
+    logger.debug("Auxiliary client: MiniMax OAuth (%s) at %s", model, base_url)
+    return AnthropicAuxiliaryClient(real_client, model, token_provider, base_url), model
+
+
 def _try_azure_foundry(
     *,
     model: Optional[str] = None,
@@ -3967,7 +4033,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external", "oauth_minimax"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
@@ -3975,6 +4041,21 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "minimax-oauth":
+            # MiniMax OAuth: Anthropic-compatible inference endpoint.
+            # Resolve the model once (caller-supplied, then main-model
+            # fallback) before handing to the builder.
+            if not model:
+                model = _read_main_model()
+            client, resolved = _build_minimax_oauth_aux_client(
+                model or "",
+                explicit_base_url=pconfig.inference_base_url,
+            )
+            if client is None:
+                return None, None
+            final_model = resolved or model or "MiniMax-M2.7"
+            return (_to_async_client(client, final_model, is_vision=False) if async_mode
+                    else (client, final_model))
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)

@@ -3791,3 +3791,148 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestMiniMaxOAuthAuxiliaryClient:
+    """Auxiliary client must build successfully for ``minimax-oauth`` and
+    reuse the same Anthropic-compatible inference path as the main runtime.
+
+    Pre-fix the OAuth dispatch gate at line ~3950 was
+    ``{"oauth_device_code", "oauth_external"}``, so the new ``oauth_minimax``
+    auth_type declared in ``hermes_cli/auth.py`` fell through to the generic
+    "unhandled auth_type" warning and returned ``(None, None)`` — causing
+    title generation (and every other auxiliary task) to fail with HTTP 401
+    at the end of every session (#21521).
+    """
+
+    @staticmethod
+    def _make_pconfig():
+        """Build a real ProviderConfig for minimax-oauth matching the one
+        declared in ``hermes_cli/auth.py``."""
+        from hermes_cli.auth import ProviderConfig
+        return ProviderConfig(
+            id="minimax-oauth",
+            name="MiniMax (OAuth \u00b7 minimax.io)",
+            auth_type="oauth_minimax",
+            inference_base_url="https://api.minimax.io/anthropic",
+        )
+
+    @staticmethod
+    def _install_registry(monkeypatch, pconfig):
+        """Patch the lazy-imported PROVIDER_REGISTRY inside hermes_cli.auth
+        so resolve_provider_client sees our minimax-oauth entry."""
+        from collections import OrderedDict
+        monkeypatch.setattr(
+            "hermes_cli.auth.PROVIDER_REGISTRY",
+            OrderedDict({"minimax-oauth": pconfig}),
+        )
+
+    def test_resolve_minimax_oauth_dispatches_to_anthropic_compat(self, monkeypatch):
+        """resolve_provider_client("minimax-oauth", "MiniMax-M2.7") must
+        return a non-None client, not the (None, None) the pre-fix code
+        produced."""
+        from agent.auxiliary_client import resolve_provider_client
+        self._install_registry(monkeypatch, self._make_pconfig())
+        aux_client = MagicMock()
+        with patch("agent.auxiliary_client._build_minimax_oauth_aux_client",
+                   return_value=(aux_client, "MiniMax-M2.7")) as mock_build:
+            client, model = resolve_provider_client(
+                "minimax-oauth", "MiniMax-M2.7"
+            )
+        assert client is aux_client, (
+            "resolve_provider_client must return a real client for "
+            "minimax-oauth, not (None, None).  Pre-fix, the OAuth dispatch "
+            "gate excluded 'oauth_minimax' so the call fell through to the "
+            "generic 'unhandled auth_type' warning."
+        )
+        assert model == "MiniMax-M2.7"
+        mock_build.assert_called_once()
+        # explicit_base_url must come from pconfig.inference_base_url so
+        # the Anthropic client targets the MiniMax gateway, not native
+        # Anthropic.
+        call_kwargs = mock_build.call_args.kwargs
+        assert call_kwargs["explicit_base_url"] == "https://api.minimax.io/anthropic"
+
+    def test_resolve_minimax_oauth_uses_main_model_when_empty(self, monkeypatch):
+        """When the caller passes no model AND there is no catalog default
+        for the provider, resolve_provider_client should fall back to the
+        main model — symmetric with xai-oauth / openai-codex (Step 3 of
+        the universal fallback chain documented at line ~3330)."""
+        from agent.auxiliary_client import resolve_provider_client
+        self._install_registry(monkeypatch, self._make_pconfig())
+        aux_client = MagicMock()
+        with (
+            # No catalog default for the minimax-oauth provider — this
+            # is the case where Step 3 (main model) kicks in.
+            patch("agent.auxiliary_client._get_aux_model_for_provider",
+                  return_value=""),
+            patch("agent.auxiliary_client._read_main_model",
+                  return_value="MiniMax-M3"),
+            patch("agent.auxiliary_client._build_minimax_oauth_aux_client",
+                  return_value=(aux_client, "MiniMax-M3")) as mock_build,
+        ):
+            client, model = resolve_provider_client("minimax-oauth", "")
+        assert client is aux_client
+        assert model == "MiniMax-M3"
+        # The builder must receive the resolved model — not the empty
+        # string the caller passed.
+        assert mock_build.call_args.args[0] == "MiniMax-M3"
+
+    def test_resolve_minimax_oauth_returns_none_when_not_logged_in(self, monkeypatch):
+        """When the user is not logged in via MiniMax OAuth, the builder
+        raises (see build_minimax_oauth_token_provider → AuthError).  The
+        resolver should swallow that and return (None, None) so the chain
+        falls through to its next provider — not crash, not 401 the
+        user."""
+        from agent.auxiliary_client import resolve_provider_client
+        self._install_registry(monkeypatch, self._make_pconfig())
+        with patch("agent.auxiliary_client._build_minimax_oauth_aux_client",
+                   return_value=(None, None)):
+            client, model = resolve_provider_client(
+                "minimax-oauth", "MiniMax-M2.7"
+            )
+        assert client is None
+        assert model is None
+
+    def test_builder_uses_anthropic_sdk_not_openai(self, monkeypatch):
+        """Regression guard for the previous fix attempt (PR #35539) which
+        wrapped an OpenAI client in AnthropicAuxiliaryClient — that
+        crashes at runtime with AttributeError because
+        AnthropicAuxiliaryClient calls self._client.messages.create()
+        (Anthropic SDK interface).  MiniMax's inference is Anthropic-API
+        compatible, so the builder must call build_anthropic_client."""
+        from agent import auxiliary_client
+        captured = {}
+
+        def fake_build(token, base_url):
+            captured["token"] = token
+            captured["base_url"] = base_url
+            return MagicMock(name="anthropic_sdk_client")
+
+        token_provider = lambda: "fake-oauth-token"
+        # The function imports build_anthropic_client lazily from
+        # agent.anthropic_adapter — patch it at the source module so the
+        # ``from agent.anthropic_adapter import build_anthropic_client``
+        # inside the function picks up our fake.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.build_anthropic_client", fake_build
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.build_minimax_oauth_token_provider",
+            lambda: token_provider,
+        )
+        client, model = auxiliary_client._build_minimax_oauth_aux_client(
+            "MiniMax-M2.7",
+            explicit_base_url="https://api.minimax.io/anthropic",
+        )
+        assert client is not None
+        # The base URL must reach build_anthropic_client unchanged — proves
+        # we didn't accidentally swap in native Anthropic.
+        assert captured["base_url"] == "https://api.minimax.io/anthropic"
+        # The token provider (callable, not string) is what gives us
+        # per-request refresh for MiniMax's 15-min TTL.
+        assert callable(captured["token"])
+        # Returned client must be wrapped in AnthropicAuxiliaryClient —
+        # that is the sanity check on the builder's output type.
+        assert isinstance(client, auxiliary_client.AnthropicAuxiliaryClient)
+        assert model == "MiniMax-M2.7"

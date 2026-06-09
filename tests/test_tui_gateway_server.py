@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -8,7 +9,53 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
+
+
+def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("max_concurrent_sessions: 1\n", encoding="utf-8")
+    token = set_hermes_home_override(home)
+
+    def _clear_server_sessions():
+        for session in list(server._sessions.values()):
+            server._teardown_session(session)
+        server._sessions.clear()
+
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        _clear_server_sessions()
+        monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+
+        first = server._methods["session.create"]("r1", {"cols": 80})
+        assert "result" in first
+        sid = first["result"]["session_id"]
+
+        second = server._methods["session.create"]("r2", {"cols": 80})
+        assert second["error"]["message"] == (
+            "Hermes is at the active session limit (1/1). "
+            "Try again when another session finishes."
+        )
+        assert list(server._sessions) == [sid]
+
+        closed = server._methods["session.close"]("r3", {"session_id": sid})
+        assert closed["result"]["closed"] is True
+        assert active_session_registry_snapshot() == []
+
+        third = server._methods["session.create"]("r4", {"cols": 80})
+        assert "result" in third
+    finally:
+        _clear_server_sessions()
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
 
 
 def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
@@ -150,6 +197,21 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     monkeypatch.setattr(server, "_real_stdout", _BrokenStdout())
 
     assert server.write_json({"ok": True}) is False
+
+
+def test_write_json_drops_detached_ws_frames(monkeypatch):
+    out = _ChunkyStdout()
+    monkeypatch.setattr(server, "_real_stdout", out)
+    server._sessions["detached-sid"] = {"transport": server._detached_ws_transport}
+    try:
+        assert server.write_json({
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {"session_id": "detached-sid", "type": "message.delta"},
+        }) is False
+        assert out.parts == []
+    finally:
+        server._sessions.pop("detached-sid", None)
 
 
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
@@ -933,7 +995,7 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
             closed["worker"] = True
 
     server._sessions["orphan-sid"] = _session(
-        transport=server._stdio_transport,
+        transport=server._detached_ws_transport,
         slash_worker=_FakeWorker(),
         running=False,
     )
@@ -949,6 +1011,37 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
         server._sessions.pop("orphan-sid", None)
 
 
+def test_finalize_session_closes_slash_worker(monkeypatch):
+    """_finalize_session closes the slash_worker subprocess itself.
+
+    Regression for #38095: the worker cleanup used to live only in the
+    callers (_teardown_session / _shutdown_sessions), so any code path that
+    finalized a session without going through them leaked the worker. Folding
+    close() into the single _finalized-guarded chokepoint makes the cleanup
+    defense-in-depth and idempotent.
+    """
+    closed = {"count": 0}
+
+    class _FakeWorker:
+        def close(self):
+            closed["count"] += 1
+
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    session = _session(slash_worker=_FakeWorker())
+
+    server._finalize_session(session)
+    assert closed["count"] == 1
+    assert session.get("_finalized") is True
+
+    # Idempotent: a second finalize (or a follow-up teardown) must not
+    # re-close the worker — the _finalized guard short-circuits.
+    server._finalize_session(session)
+    server._teardown_session(session)
+    assert closed["count"] == 1
+
+
 def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     """A session that rebinds a live transport is NOT considered orphaned."""
 
@@ -961,11 +1054,15 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(reattached) is False
 
     # Mid-turn sessions are also spared even if detached.
-    mid_turn = _session(transport=server._stdio_transport, running=True)
+    mid_turn = _session(transport=server._detached_ws_transport, running=True)
     assert server._ws_session_is_orphaned(mid_turn) is False
 
     # Already finalized sessions are spared (idempotency).
-    done = _session(transport=server._stdio_transport, running=False, _finalized=True)
+    done = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+        _finalized=True,
+    )
     assert server._ws_session_is_orphaned(done) is False
 
 
@@ -2206,7 +2303,7 @@ def test_config_set_model_global_persists(monkeypatch):
 
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
 
@@ -2265,7 +2362,7 @@ def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
@@ -2326,7 +2423,7 @@ def test_config_set_model_records_per_session_override_not_env(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
@@ -2381,7 +2478,7 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     def fake_switch_model(**kwargs):
@@ -2533,7 +2630,7 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     restart_calls = []
     monkeypatch.setattr(
-        server, "_restart_slash_worker", lambda s: restart_calls.append(s)
+        server, "_restart_slash_worker", lambda sid, s: restart_calls.append(s)
     )
 
     try:
@@ -4468,6 +4565,56 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     assert rows["sid-b"]["preview"] == "writing code"
 
 
+def test_session_active_list_excludes_finalized_sessions(monkeypatch):
+    """#38950: a finalized-but-not-yet-popped session must not inflate the count.
+
+    The WS grace-reap and idle reaper set ``_finalized`` inside
+    ``_teardown_session`` before popping the entry from ``_sessions``. During
+    that window ``session.active_list`` would otherwise still report the dead
+    session, which is exactly the footer "N sessions" count that only ever grew
+    until a gateway restart. A live session on the real stdio transport (the
+    standalone ``hermes --tui`` case) must still be reported.
+    """
+    class _DB:
+        def get_session_title(self, key):
+            return {"key-live": "Live", "key-dead": "Dead"}.get(key, "")
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    server._sessions["sid-live"] = _session(
+        agent=types.SimpleNamespace(model="model-live"),
+        history=[{"role": "user", "content": "still here"}],
+        session_key="key-live",
+        created_at=10.0,
+        last_active=20.0,
+    )
+    dead = _session(
+        agent=types.SimpleNamespace(model="model-dead"),
+        history=[{"role": "user", "content": "gone"}],
+        session_key="key-dead",
+        created_at=11.0,
+        last_active=21.0,
+    )
+    dead["_finalized"] = True
+    server._sessions["sid-dead"] = dead
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.active_list",
+                "params": {},
+            }
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    session_rows = resp["result"]["sessions"]
+    assert [row["id"] for row in session_rows] == ["sid-live"]
+
+
+
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):
     """Switching into a still-running live session must hydrate partial output.
 
@@ -6046,3 +6193,279 @@ def test_sniff_image_ext_magic_and_filename():
     assert server._sniff_image_ext(b"unknown") == ".png"  # fallback
     # filename hint wins over magic bytes
     assert server._sniff_image_ext(b"\x89PNG", "photo.jpeg") == ".jpeg"
+
+
+def test_slash_worker_close_reaps_zombie_and_closes_fds():
+    """A hung worker is SIGKILLed, the zombie reaped, all pipes closed — once."""
+    calls = {k: 0 for k in ("terminate", "kill", "wait", "stdin", "stdout", "stderr")}
+
+    class FakeStream:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            calls[self.name] += 1
+
+    class FakeProc:
+        stdin, stdout, stderr = (FakeStream(n) for n in ("stdin", "stdout", "stderr"))
+
+        def poll(self):
+            return None  # always alive -> forces terminate then kill
+
+        def terminate(self):
+            calls["terminate"] += 1
+
+        def kill(self):
+            calls["kill"] += 1
+
+        def wait(self, timeout=None):
+            calls["wait"] += 1
+            raise subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+
+    worker = object.__new__(server._SlashWorker)
+    worker.proc = FakeProc()
+
+    worker.close()
+    worker.close()  # idempotent
+
+    assert calls["terminate"] == 1
+    assert calls["kill"] == 1
+    assert calls["wait"] >= 2  # reaped after both terminate and kill
+    assert calls["stdin"] == calls["stdout"] == calls["stderr"] == 1
+
+
+def test_close_session_by_id_is_idempotent_and_full(monkeypatch):
+    """One call tears the session down fully; a second is a no-op."""
+    calls = {"worker": 0, "agent": 0, "unreg": 0, "finalize": 0}
+
+    class W:
+        def close(self):
+            calls["worker"] += 1
+
+    class A:
+        def close(self):
+            calls["agent"] += 1
+
+    def _fake_finalize(s, end_reason="tui_close"):
+        # Real _finalize_session is the single chokepoint that closes the
+        # slash-worker; mirror that here so the test exercises the actual
+        # teardown contract (worker close lives in finalize, not the caller).
+        calls["finalize"] += 1
+        w = s.get("slash_worker")
+        if w:
+            w.close()
+
+    monkeypatch.setattr(server, "_finalize_session", _fake_finalize)
+    monkeypatch.setattr(
+        "tools.approval.unregister_gateway_notify",
+        lambda key: calls.__setitem__("unreg", calls["unreg"] + 1), raising=False,
+    )
+    server._sessions["sid-1"] = {"session_key": "k1", "agent": A(), "slash_worker": W()}
+
+    assert server._close_session_by_id("sid-1", end_reason="ws_disconnect") is True
+    assert server._close_session_by_id("sid-1", end_reason="ws_disconnect") is False
+    assert calls == {"worker": 1, "agent": 1, "unreg": 1, "finalize": 1}
+    assert "sid-1" not in server._sessions
+
+
+def test_attach_worker_closes_orphan_when_session_already_torn_down():
+    """A worker built after its session was reaped must be closed, not orphaned."""
+    closed = []
+
+    class W:
+        def close(self):
+            closed.append(True)
+
+    server._sessions.pop("gone", None)
+    detached = {"session_key": "k"}  # not in _sessions -> already torn down
+    server._attach_worker("gone", detached, W())
+
+    assert closed == [True]
+    assert "slash_worker" not in detached
+    assert "gone" not in server._sessions
+
+
+def test_attach_worker_stores_worker_on_live_session():
+    class W:
+        def close(self):
+            raise AssertionError("must not close a worker for a live session")
+
+    live = {"session_key": "k"}
+    server._sessions["live"] = live
+    worker = W()
+    try:
+        server._attach_worker("live", live, worker)
+        assert live["slash_worker"] is worker
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_restart_slash_worker_closes_orphan_when_session_reaped(monkeypatch):
+    """Post-turn restart of a session reaped mid-flight (e.g. close_on_disconnect
+    fired while `running` flipped false) must close the fresh worker, not orphan it."""
+    closed = []
+
+    class _FakeWorker:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    server._sessions.pop("reaped", None)
+    reaped = {"session_key": "k"}  # not in _sessions -> torn down concurrently
+    server._restart_slash_worker("reaped", reaped)
+
+    assert closed == [True]
+    assert reaped.get("slash_worker") is None
+    assert "reaped" not in server._sessions
+
+
+def test_restart_slash_worker_stores_on_live_session(monkeypatch):
+    class _FakeWorker:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    live = {"session_key": "k", "slash_worker": None}
+    server._sessions["live-restart"] = live
+    try:
+        server._restart_slash_worker("live-restart", live)
+        assert isinstance(live["slash_worker"], _FakeWorker)
+    finally:
+        server._sessions.pop("live-restart", None)
+
+
+def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
+    )
+    assert resp["result"] == {"closed": True}
+    assert seen == [("s9", "tui_close")]
+
+
+def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+    )
+    # Detached session "b" would schedule a real grace-reap threading.Timer that
+    # outlives the test; grace=0 short-circuits it so no thread lingers.
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    transport = object()  # the disconnecting transport
+    server._sessions.clear()
+    server._sessions["a"] = {"transport": transport, "close_on_disconnect": True}
+    server._sessions["b"] = {"transport": transport, "close_on_disconnect": False}
+    try:
+        server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
+        assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
+        assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_records_close_on_disconnect_flag(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        on = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"close_on_disconnect": True}}
+        )["result"]["session_id"]
+        off = server.handle_request(
+            {"id": "2", "method": "session.create", "params": {}}
+        )["result"]["session_id"]
+        assert server._sessions[on]["close_on_disconnect"]
+        assert not server._sessions[off]["close_on_disconnect"]
+    finally:
+        server._sessions.clear()
+
+
+def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason: seen.append((sid, end_reason)),
+    )
+    server._sessions.clear()
+    server._sessions["a"] = {}
+    server._sessions["b"] = {}
+    try:
+        server._shutdown_sessions()
+        assert sorted(sid for sid, _ in seen) == ["a", "b"]
+        assert {reason for _, reason in seen} == {"tui_shutdown"}
+    finally:
+        server._sessions.clear()
+
+
+def _idle_evictable_session(now):
+    """A session that satisfies every eviction precondition."""
+    ready = threading.Event()
+    ready.set()
+    old = now - 10 * 3600  # well past the 6h TTL
+    return {
+        "running": False,
+        "agent_ready": ready,
+        "transport": server._detached_ws_transport,  # dead/detached
+        "last_active": old,
+        "created_at": old,
+    }
+
+
+def test_session_is_evictable_when_idle_dead_and_quiescent(monkeypatch):
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    now = time.time()
+    assert server._session_is_evictable("s", _idle_evictable_session(now), now) is True
+
+
+def test_session_not_evictable_violating_each_exemption(monkeypatch):
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    now = time.time()
+    live_transport = type("T", (), {"_closed": False})()
+
+    running = _idle_evictable_session(now) | {"running": True}
+    assert server._session_is_evictable("s", running, now) is False
+
+    starting = _idle_evictable_session(now)
+    starting["agent_ready"] = threading.Event()  # not set -> still starting
+    assert server._session_is_evictable("s", starting, now) is False
+
+    on_socket = _idle_evictable_session(now) | {"transport": live_transport}
+    assert server._session_is_evictable("s", on_socket, now) is False
+
+    recent = _idle_evictable_session(now) | {"last_active": now}
+    assert server._session_is_evictable("s", recent, now) is False
+
+    young = _idle_evictable_session(now) | {"created_at": now}
+    assert server._session_is_evictable("s", young, now) is False
+
+    # Pending input request, even when everything else looks idle.
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "input")
+    assert server._session_is_evictable("s", _idle_evictable_session(now), now) is False
+
+
+def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
+    closed = []
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason: closed.append((sid, end_reason)),
+    )
+    now = time.time()
+    server._sessions.clear()
+    server._sessions["stale"] = _idle_evictable_session(now)
+    server._sessions["fresh"] = _idle_evictable_session(now) | {"last_active": now}
+    try:
+        server._reap_idle_sessions()
+        assert closed == [("stale", "idle_timeout")]
+    finally:
+        server._sessions.clear()

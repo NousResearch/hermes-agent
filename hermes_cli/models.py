@@ -3556,14 +3556,6 @@ def validate_requested_model(
             "message": "Model name cannot be empty.",
         }
 
-    if any(ch.isspace() for ch in requested):
-        return {
-            "accepted": False,
-            "persist": False,
-            "recognized": False,
-            "message": "Model names cannot contain spaces.",
-        }
-
     if normalized == "lmstudio":
         from hermes_cli.auth import AuthError
         # Use probe_lmstudio_models so we can distinguish None (unreachable

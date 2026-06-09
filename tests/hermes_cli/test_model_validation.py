@@ -461,9 +461,18 @@ class TestValidateFormatChecks:
         result = _validate("   ")
         assert result["accepted"] is False
 
-    def test_model_with_spaces_rejected(self):
+    def test_model_with_spaces_not_in_api_rejected(self):
+        """Model names with spaces are allowed through validation; rejection is
+        because the model isn't found in the provider's listing, not because of spaces."""
         result = _validate("anthropic/ claude-opus")
         assert result["accepted"] is False
+        assert "not found" in result["message"]
+
+    def test_model_with_spaces_in_api_accepted(self):
+        """A model name containing spaces that exists in the API listing is accepted."""
+        result = _validate("my model with spaces", api_models=["my model with spaces"])
+        assert result["accepted"] is True
+        assert result["recognized"] is True
 
     def test_no_slash_model_still_probes_api(self):
         result = _validate("gpt-5.4", api_models=["gpt-5.4", "gpt-5.4-pro"])

@@ -359,6 +359,7 @@ def test_closed_issue_clears_assignees_and_sets_automated_execution_mode(tmp_pat
 
     assert result["status"] == "closed"
     assert github.clear_assignee_updates == [("ryanleeai", "lyrv", 12, ["seungjaeryanlee"])]
+    assert github.project_status_updates == [("ryanleeai", 1, "ryanleeai", "lyrv", 12, "Done")]
     assert github.execution_mode_updates == [("ryanleeai", 1, "ryanleeai", "lyrv", 12, "automated")]
     assert github.assignee_updates == []
     state = store.get(IssueRef("ryanleeai", "lyrv", 12))

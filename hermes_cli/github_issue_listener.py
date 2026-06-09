@@ -30,6 +30,7 @@ from typing import Any, Protocol
 import psutil
 
 from hermes_constants import get_hermes_home
+from hermes_cli.project_metadata_rules import ExecutionOutcome, updates_for_automated_closure
 
 WAITING_MARKER = "[HERMES_WAITING_FOR_RYAN]"
 READY_TO_CLOSE_MARKER = "[HERMES_READY_TO_CLOSE]"
@@ -821,9 +822,31 @@ class GitHubIssueListener:
                 if assignees:
                     self.github.clear_assignees(ref.owner, ref.repo, ref.number, assignees)
                 if self.project_owner and self.project_number is not None:
-                    self.github.set_project_execution_mode(
-                        self.project_owner, self.project_number, ref.owner, ref.repo, ref.number, "automated"
-                    )
+                    for update in updates_for_automated_closure(
+                        ExecutionOutcome(
+                            issue_closed=True,
+                            project_owner=self.project_owner,
+                            project_number=self.project_number,
+                        )
+                    ):
+                        if update.field_name == "Status":
+                            self.github.set_project_status(
+                                self.project_owner,
+                                self.project_number,
+                                ref.owner,
+                                ref.repo,
+                                ref.number,
+                                update.value,
+                            )
+                        elif update.field_name == "Execution mode":
+                            self.github.set_project_execution_mode(
+                                self.project_owner,
+                                self.project_number,
+                                ref.owner,
+                                ref.repo,
+                                ref.number,
+                                update.value,
+                            )
             elif status in {"waiting_for_ryan", "awaiting_close_approval"} and self.human_assignee:
                 self.github.set_assignees(ref.owner, ref.repo, ref.number, [self.human_assignee])
             return {"issue": ref.key, "action": "ran", "status": next_state.status, "session_id": next_state.session_id}

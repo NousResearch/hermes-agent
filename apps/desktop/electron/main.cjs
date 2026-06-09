@@ -30,6 +30,15 @@ const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const {
+  buildPosixCleanupScript,
+  buildWindowsCleanupScript,
+  modeRemovesAgent,
+  modeRemovesUserData,
+  resolveRemovableAppPath,
+  shouldRemoveAppBundle,
+  uninstallArgsForMode
+} = require('./desktop-uninstall.cjs')
+const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -110,6 +119,20 @@ if (REMOTE_DISPLAY_REASON) {
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
 }
+
+// Keep the renderer running at full speed while the window is in the background
+// or occluded. The chat transcript streams to screen through a
+// requestAnimationFrame-gated flush; Chromium pauses rAF (and clamps timers)
+// for backgrounded/occluded renderers, so without these the live answer stalls
+// whenever the window loses focus (switching to your editor mid-turn, detached
+// devtools, another window covering it) and only paints on refocus or refresh.
+// `backgroundThrottling: false` on the BrowserWindow covers the blurred case;
+// these process-level switches additionally stop Chromium from backgrounding or
+// occlusion-throttling the renderer. Must run before app `ready`.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
 // Build-time install stamp -- the git ref this .exe was built against.
@@ -1488,6 +1511,20 @@ function forceKillProcessTree(pid) {
 // aggressively SIGKILL-ing the backend here would be an untested behavior change
 // for no benefit. So we no-op off Windows and leave that path exactly as it was.
 async function releaseBackendLockForUpdate(updateRoot) {
+  return releaseBackendLock(updateRoot, 'updates')
+}
+
+// Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
+// hand-off and the desktop uninstaller — they have the identical Windows
+// problem: the desktop's backend (and the grandchildren IT spawned — a hermes
+// REPL, a pty terminal, the gateway) keep `hermes.exe` and other files in the
+// venv mandatory-locked, so any in-place replace/delete of the install tree
+// races a live handle and half-fails (#37532). We tree-kill every backend PID
+// the desktop owns, then poll the shim until it's genuinely writable.
+//
+// `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
+// locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
+async function releaseBackendLock(updateRoot, tag) {
   if (!IS_WINDOWS) return { unlocked: true }
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
@@ -1512,14 +1549,12 @@ async function releaseBackendLockForUpdate(updateRoot) {
   const deadlineMs = Date.now() + 15000
   while (Date.now() < deadlineMs) {
     if (!isShimLocked(shim)) {
-      rememberLog('[updates] venv shim unlocked; safe to hand off the update')
+      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
       return { unlocked: true }
     }
     await new Promise(r => setTimeout(r, 300))
   }
-  // Timed out: the updater's own wait_for_venv_free + force-kill is the second
-  // line of defense, and we pass --force so the guard won't dead-end. Log it.
-  rememberLog('[updates] venv shim still locked after 15s; handing off anyway (updater will force)')
+  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
   return { unlocked: false }
 }
 
@@ -1881,12 +1916,36 @@ function resolveWebDist() {
   const unpackedDist = path.join(unpackedPathFor(APP_ROOT), 'dist')
   if (directoryExists(unpackedDist)) return unpackedDist
 
-  return path.join(APP_ROOT, 'dist')
+  // Final fallback: APP_ROOT/dist. When packaged with asar:true this lives
+  // INSIDE app.asar — not a servable filesystem directory — so the embedded
+  // dashboard backend 404s on static routes (see #41327, #39472). The durable
+  // fix is unpacking dist/ (PR #41411 adds dist/** to asarUnpack so the tier-2
+  // unpackedDist above resolves). If we still land here while packaged, log it
+  // so the cause isn't silent.
+  const fallback = path.join(APP_ROOT, 'dist')
+  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !directoryExists(fallback)) {
+    rememberLog(
+      `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
+        `is not a real directory: ${fallback}. Static routes will 404. ` +
+        `Ensure dist/** is unpacked (asarUnpack) or set HERMES_DESKTOP_WEB_DIST.`
+    )
+  }
+  return fallback
 }
 
 function resolveRendererIndex() {
   const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
-  return candidates.find(fileExists) || candidates[0]
+  const found = candidates.find(fileExists)
+  if (found) return found
+  // Nothing on disk. A packaged build with no renderer bundle blank-pages with
+  // a bare ERR_FILE_NOT_FOUND and no clue why (see #39484). Surface the cause
+  // and the fix before Electron loads the missing file.
+  rememberLog(
+    `[renderer] index.html not found — the desktop app was packaged without a ` +
+      `renderer bundle. Tried: ${candidates.join(', ')}. ` +
+      `Rebuild with: hermes desktop --force-build`
+  )
+  return candidates[0]
 }
 
 function resolveHermesCwd() {
@@ -3116,7 +3175,7 @@ function buildApplicationMenu() {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
         click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0)
+          setAndPersistZoomLevel(mainWindow, 0)
         }
       },
       {
@@ -3124,8 +3183,7 @@ function buildApplicationMenu() {
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            const next = Math.min(mainWindow.webContents.getZoomLevel() + 0.1, 9)
-            mainWindow.webContents.setZoomLevel(next)
+            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + 0.1)
           }
         }
       },
@@ -3134,8 +3192,7 @@ function buildApplicationMenu() {
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            const next = Math.max(mainWindow.webContents.getZoomLevel() - 0.1, -9)
-            mainWindow.webContents.setZoomLevel(next)
+            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - 0.1)
           }
         }
       },
@@ -3197,6 +3254,38 @@ function installPreviewShortcut(window) {
   })
 }
 
+// Zoom level is persisted in the renderer's own localStorage (per-origin,
+// survives reloads/restarts) rather than a main-process JSON file. The main
+// process owns setZoomLevel, so we mirror each change into localStorage and
+// read it back on did-finish-load to re-apply after reloads or crash recovery.
+const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
+
+function clampZoomLevel(value) {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(Math.max(value, -9), 9)
+}
+
+function setAndPersistZoomLevel(window, zoomLevel) {
+  if (!window || window.isDestroyed()) return
+  const next = clampZoomLevel(zoomLevel)
+  window.webContents.setZoomLevel(next)
+  window.webContents
+    .executeJavaScript(`try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`)
+    .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
+}
+
+function restorePersistedZoomLevel(window) {
+  if (!window || window.isDestroyed()) return
+  window.webContents
+    .executeJavaScript(`(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`)
+    .then(stored => {
+      if (stored == null || !window || window.isDestroyed()) return
+      const level = clampZoomLevel(Number(stored))
+      window.webContents.setZoomLevel(level)
+    })
+    .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
+}
+
 function installZoomShortcuts(window) {
   // Override Ctrl/Cmd + +/-/0 with half the default zoom step (0.1 vs 0.2).
   // The menu items handle this on macOS (where the menu is always present),
@@ -3210,15 +3299,13 @@ function installZoomShortcuts(window) {
     const key = input.key
     if (key === '0') {
       event.preventDefault()
-      window.webContents.setZoomLevel(0)
+      setAndPersistZoomLevel(window, 0)
     } else if (key === '=' || key === '+') {
       event.preventDefault()
-      const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
-      window.webContents.setZoomLevel(next)
+      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
     } else if (key === '-') {
       event.preventDefault()
-      const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
-      window.webContents.setZoomLevel(next)
+      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }
   })
 }
@@ -3826,10 +3913,12 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const scoped = key ? config.profiles?.[key] || null : null
   const block = key ? scoped || {} : config.remote || {}
 
+  const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
-  const remoteUrl = String(block.url || '')
-  const mode = (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
+  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+  const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
@@ -3855,7 +3944,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     remoteTokenSet: Boolean(remoteToken),
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
-    envOverride: key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+    envOverride
   }
 }
 
@@ -4348,6 +4437,9 @@ async function spawnPoolBackend(profile, entry) {
       HERMES_HOME,
       ...backend.env,
       HERMES_DASHBOARD_SESSION_TOKEN: token,
+      // Marks this dashboard backend as desktop-spawned so it runs the cron
+      // scheduler tick loop (the gateway isn't running under the app).
+      HERMES_DESKTOP: '1',
       HERMES_WEB_DIST: webDist
     },
     shell: backend.shell,
@@ -4489,6 +4581,9 @@ async function startHermes() {
         HERMES_HOME,
         ...backend.env,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
+        // Marks this dashboard backend as desktop-spawned so it runs the cron
+        // scheduler tick loop (the gateway isn't running under the app).
+        HERMES_DESKTOP: '1',
         HERMES_WEB_DIST: webDist
       },
       shell: backend.shell,
@@ -4587,7 +4682,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1220,
     height: 800,
-    minWidth: 900,
+    minWidth: 400,
     minHeight: 620,
     title: 'Hermes',
     // Frameless title bar on every platform so the renderer can paint the
@@ -4608,7 +4703,16 @@ function createWindow() {
       webviewTag: true,
       sandbox: true,
       nodeIntegration: false,
-      devTools: true
+      devTools: true,
+      // Keep timers + requestAnimationFrame running at full speed when the
+      // window is blurred/occluded. The chat transcript streams to the screen
+      // through a requestAnimationFrame-gated flush (useSessionStateCache),
+      // so with Chromium's default background throttling the live answer
+      // stalls whenever this window isn't focused (e.g. you switch to your
+      // editor mid-turn, or open detached devtools) and only appears once you
+      // refocus or refresh. A streaming chat app must render in the
+      // background, so opt out — matching the secondary windows above.
+      backgroundThrottling: false
     }
   })
 
@@ -4703,6 +4807,7 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
+    restorePersistedZoomLevel(mainWindow)
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
@@ -4710,6 +4815,45 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+// Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
+// so the 'exit'/'error' handlers that would clear a dead connectionPromise never
+// fire — once the remote becomes unreachable across a sleep/wake the renderer
+// re-dials the same dead descriptor forever and the composer stays stuck on
+// "Starting Hermes…". Before the renderer's backoff loop reconnects, it asks us
+// to confirm the cached PRIMARY backend is still reachable; if a remote one is
+// not, we drop the cache so the next getConnection() rebuilds it. Local backends
+// self-heal via their child 'exit' handler, so we never touch them here.
+ipcMain.handle('hermes:connection:revalidate', async () => {
+  if (!connectionPromise) {
+    return { ok: true, rebuilt: false }
+  }
+
+  let conn = null
+  try {
+    conn = await connectionPromise
+  } catch {
+    // The cached boot already rejected (its own catch nulls connectionPromise);
+    // nothing to revalidate — the next getConnection() builds fresh.
+    return { ok: true, rebuilt: false }
+  }
+
+  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
+    return { ok: true, rebuilt: false }
+  }
+
+  const base = conn.baseUrl.replace(/\/+$/, '')
+  try {
+    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    return { ok: true, rebuilt: false }
+  } catch {
+    // Unreachable remote: drop the stale cache so the renderer's next reconnect
+    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
+    // nulls connectionPromise for a remote (no child to SIGTERM).
+    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    resetHermesConnection()
+    return { ok: true, rebuilt: true }
+  }
+})
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }
@@ -5472,6 +5616,199 @@ ipcMain.handle('hermes:version', async () => ({
   platform: process.platform,
   hermesRoot: resolveUpdateRoot()
 }))
+
+// ===========================================================================
+// Uninstall — remove the Chat GUI (and optionally the agent / user data).
+// ===========================================================================
+//
+// The renderer's About → Danger Zone surfaces three options that mirror the
+// CLI exactly: GUI only, Lite (keep user data), Full. We ask the agent to do
+// the actual removal via `hermes uninstall …` so the cross-platform PATH /
+// registry / service / node-symlink cleanup all lives in one place
+// (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
+//
+// getUninstallSummary() shells out to `--gui-summary` (a fast, no-side-effect
+// JSON probe) so the UI can gate options on what's actually installed — and
+// detect a missing agent (a future "lite client" that ships without the
+// bundled agent), hiding the agent/full options when there's nothing to remove.
+
+function uninstallVenvPython() {
+  return getVenvPython(VENV_ROOT)
+}
+
+async function getUninstallSummary() {
+  const py = uninstallVenvPython()
+  const agentRoot = ACTIVE_HERMES_ROOT
+  // Fast JS-side fallback used when the agent venv is gone (lite client) or the
+  // probe fails — the renderer still needs *something* to render options from.
+  const fallback = () => ({
+    hermes_home: HERMES_HOME,
+    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
+    gui_installed: true,
+    source_built_artifacts: [],
+    packaged_app_paths: [],
+    userdata_dir: app.getPath('userData'),
+    userdata_exists: true,
+    platform: process.platform,
+    probe: 'fallback'
+  })
+
+  if (!fileExists(py)) {
+    return fallback()
+  }
+
+  return new Promise(resolve => {
+    let stdout = ''
+    let settled = false
+    const done = value => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    try {
+      const child = spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'], {
+        cwd: agentRoot,
+        env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
+      child.stdout.on('data', chunk => {
+        stdout += chunk.toString()
+      })
+      child.on('error', () => done(fallback()))
+      child.on('exit', code => {
+        if (code !== 0) return done(fallback())
+        try {
+          const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
+          const parsed = JSON.parse(line)
+          // The app bundle the renderer would be removing on *this* machine,
+          // resolved from the running exe (the Python probe only knows the
+          // standard locations, not where THIS build actually runs from).
+          parsed.running_app_path = resolveRemovableAppPath(process.execPath, process.platform, process.env)
+          done(parsed)
+        } catch {
+          done(fallback())
+        }
+      })
+      setTimeout(() => done(fallback()), 8000)
+    } catch {
+      done(fallback())
+    }
+  })
+}
+
+async function runDesktopUninstall(mode) {
+  let uninstallArgs
+  try {
+    uninstallArgs = uninstallArgsForMode(mode)
+  } catch (error) {
+    return { ok: false, error: 'invalid-mode', message: error.message }
+  }
+
+  const venvPy = uninstallVenvPython()
+  if (!fileExists(venvPy)) {
+    return {
+      ok: false,
+      error: 'agent-missing',
+      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
+    }
+  }
+
+  // Interpreter choice (Finding 3): lite/full rmtree the venv that holds the
+  // running python.exe. On Windows a running .exe is mandatory-locked, so the
+  // rmtree must NOT be driven by the venv's own interpreter — use a system
+  // Python with PYTHONPATH=<agentRoot> so `import hermes_cli` resolves from
+  // source while the venv is torn down. gui-only doesn't touch the venv, so the
+  // venv python is fine there. If no system Python exists (the Windows edge
+  // case), fall back to the venv python — gui-only is unaffected; lite/full may
+  // leave venv remnants the user can delete, which we log.
+  let py = venvPy
+  let pythonPath = null
+  if (modeRemovesAgent(mode)) {
+    const sysPy = findSystemPython()
+    if (sysPy) {
+      py = sysPy
+      pythonPath = ACTIVE_HERMES_ROOT
+    } else if (IS_WINDOWS) {
+      rememberLog(
+        '[uninstall] no system Python found for lite/full on Windows; falling back ' +
+          'to the venv python — venv files locked by the running interpreter may ' +
+          'remain and need manual deletion.'
+      )
+    }
+  }
+
+  const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
+  const removeBundle = shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
+
+  // CRITICAL (Windows): tear down every backend the desktop owns and wait for
+  // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete
+  // the venv, and even gui-only removes the install tree's GUI artifacts — a
+  // live backend grandchild (gateway / pty / REPL) holding a mandatory file
+  // lock would make the script's rmdir half-fail (#37532 for the update path).
+  // Reuses the incident-hardened update teardown; no-op on macOS/Linux.
+  try {
+    await releaseBackendLock(ACTIVE_HERMES_ROOT, 'uninstall')
+  } catch (error) {
+    rememberLog(`[uninstall] backend teardown errored (continuing): ${error.message}`)
+  }
+
+  const scriptArgs = {
+    desktopPid: process.pid,
+    pythonExe: py,
+    pythonPath,
+    agentRoot: ACTIVE_HERMES_ROOT,
+    uninstallArgs,
+    appPath: removeBundle,
+    hermesHome: HERMES_HOME
+  }
+
+  let scriptPath
+  let runner
+  let runnerArgs
+  try {
+    if (IS_WINDOWS) {
+      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.cmd`)
+      fs.writeFileSync(scriptPath, buildWindowsCleanupScript(scriptArgs))
+      runner = process.env.ComSpec || 'cmd.exe'
+      runnerArgs = ['/c', scriptPath]
+    } else {
+      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.sh`)
+      fs.writeFileSync(scriptPath, buildPosixCleanupScript(scriptArgs), { mode: 0o755 })
+      runner = '/bin/bash'
+      runnerArgs = [scriptPath]
+    }
+  } catch (error) {
+    return { ok: false, error: 'script-write-failed', message: error.message }
+  }
+
+  try {
+    const child = spawn(runner, runnerArgs, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    child.unref()
+  } catch (error) {
+    return { ok: false, error: 'spawn-failed', message: error.message }
+  }
+
+  rememberLog(
+    `[uninstall] launched detached cleanup (${mode}): ${scriptPath} ` +
+      `(removesAgent=${modeRemovesAgent(mode)} removesUserData=${modeRemovesUserData(mode)} bundle=${removeBundle || 'none'})`
+  )
+
+  // Give the renderer a beat to show its "uninstalling…" state, then quit so
+  // the venv python shim + app bundle unlock and the cleanup script can run.
+  setTimeout(() => app.quit(), 800)
+  return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
+}
+
+ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
+ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
+  const mode = payload && typeof payload === 'object' ? payload.mode : payload
+  return runDesktopUninstall(String(mode || ''))
+})
+
 
 app.whenReady().then(() => {
   if (IS_MAC) {

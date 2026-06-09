@@ -292,7 +292,8 @@ export const en: Translations = {
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
-      themeDesc: 'Desktop palettes only. The selected mode is applied on top.'
+      themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -542,8 +543,16 @@ export const en: Translations = {
       ready: 'Ready',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       noApiKeyRequired: 'No API key required.',
-      postSetup: step =>
-        `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`
+      postSetupHint: step =>
+        `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
+      postSetupRun: 'Run setup',
+      postSetupRunning: 'Installing…',
+      postSetupStarting: 'Starting…',
+      postSetupCompleteTitle: 'Setup complete',
+      postSetupCompleteMessage: step => `${step} installed.`,
+      postSetupErrorTitle: 'Setup finished with errors',
+      postSetupErrorMessage: step => `Check the ${step} log.`,
+      postSetupFailed: step => `Failed to run ${step} setup`
     }
   },
 
@@ -889,8 +898,6 @@ export const en: Translations = {
   cron: {
     close: 'Close cron',
     search: 'Search cron jobs...',
-    refresh: 'Refresh cron jobs',
-    refreshing: 'Refreshing cron jobs',
     loading: 'Loading cron jobs...',
     states: {
       enabled: 'enabled',
@@ -943,9 +950,7 @@ export const en: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `Monthly on day ${dayOfMonth} at ${time}`,
     topOfHour: 'At the top of every hour',
     everyHourAt: minute => `Every hour at :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} active`,
     newCron: 'New cron',
-    createFirst: 'Create first cron',
     emptyDescNew:
       'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.',
     emptyDescSearch: 'Try a broader search query.',
@@ -953,6 +958,11 @@ export const en: Translations = {
     emptyTitleSearch: 'No matches',
     last: 'Last:',
     next: 'Next:',
+    noRuns: 'No runs yet',
+    manage: 'Manage',
+    showRuns: 'Show runs',
+    hideRuns: 'Hide runs',
+    runHistory: 'Run history',
     actionsFor: title => `Actions for ${title}`,
     actionsTitle: 'Cron job actions',
     resume: 'Resume cron',
@@ -1044,6 +1054,7 @@ export const en: Translations = {
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',
+    cronJobs: 'Cron jobs',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
@@ -1227,9 +1238,13 @@ export const en: Translations = {
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
     connectionRetry: 'Check your connection and try again.',
     latestBody: 'You’re running the latest version.',
+    latestBodyBackend: 'The backend is running the latest version.',
     allSetTitle: 'You’re all set',
     availableTitle: 'New update available',
     availableBody: 'A new version of Hermes is ready to install.',
+    availableTitleBackend: 'Backend update available',
+    availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
+    availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
@@ -1240,10 +1255,19 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
+    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
-    notNow: 'Not now'
+    notNow: 'Not now',
+    applyStatus: {
+      preparing: 'Updating backend…',
+      pulling: 'Backend updating…',
+      restarting: 'Backend restarting to load the update…',
+      notAvailable: 'Update not available for this backend.',
+      failed: 'Backend update failed.',
+      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+    }
   },
 
   install: {
@@ -1327,7 +1351,7 @@ export const en: Translations = {
     },
     startingSignIn: provider => `Starting sign-in for ${provider}...`,
     verifyingCode: provider => `Verifying your code with ${provider}...`,
-    connectedProvider: provider => `${provider} connected.`,
+    connectedProvider: provider => `${provider} connected`,
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
     pickDifferentProvider: 'Pick a different provider',
@@ -1353,7 +1377,7 @@ export const en: Translations = {
     free: 'Free',
     price: (input, output) => `${input} in / ${output} out per Mtok`,
     change: 'Change',
-    startChatting: 'Start chatting',
+    startChatting: 'Begin',
     docs: provider => `${provider} docs`
   },
 
@@ -1429,6 +1453,9 @@ export const en: Translations = {
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `Backend v${version}`,
+      clientLabel: version => `client v${version}`,
+      backendLabel: version => `backend v${version}`,
       commit: sha => `commit ${sha}`,
       branch: branch => `branch ${branch}`,
       closeCommandCenter: 'Close Command Center',
@@ -1453,8 +1480,8 @@ export const en: Translations = {
       contextUsage: 'Context usage',
       session: 'Session',
       runtimeSessionElapsed: 'Runtime session elapsed',
-      yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off.',
-      yoloOff: 'YOLO off — click to auto-approve dangerous commands.',
+      yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
+      yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
       modelNone: 'none',
       noModel: 'no model',
       switchModel: 'Switch model',

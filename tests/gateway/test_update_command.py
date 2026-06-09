@@ -86,12 +86,15 @@ class TestHandleUpdateCommand:
             class FakePath(type(Path())):
                 pass
 
-            # Actually, simplest: just patch the specific file attr
-            fake_file = str(fake_root / "gateway" / "run.py")
+            # Actually, simplest: just patch the specific file attr.
+            # The _handle_update_command handler lives in gateway/slash_commands.py
+            # (extracted from run.py in the god-file decomposition); it resolves
+            # project_root via Path(__file__).parent.parent, so fake that file.
+            fake_file = str(fake_root / "gateway" / "slash_commands.py")
             (fake_root / "gateway").mkdir(parents=True)
-            (fake_root / "gateway" / "run.py").touch()
+            (fake_root / "gateway" / "slash_commands.py").touch()
 
-            with patch("gateway.run.__file__", fake_file):
+            with patch("gateway.slash_commands.__file__", fake_file):
                 result = await runner._handle_update_command(event)
 
         assert "Not a git repository" in result
@@ -462,6 +465,31 @@ class TestUpdateCommandPlatformGate:
 
         runner = _make_runner()
         event = _make_event(platform=Platform.MATTERMOST)
+        monkeypatch.setenv("HERMES_MANAGED", "")
+
+        result = await runner._handle_update_command(event)
+
+        assert "only available from messaging platforms" not in result
+
+    @pytest.mark.asyncio
+    async def test_allows_homeassistant_via_registry_fallback(self, monkeypatch):
+        """Same as DISCORD/MATTERMOST: HOMEASSISTANT is now plugin-migrated
+        (PR #40709) and not in the hardcoded frozenset; the registry must
+        keep /update working via ``allow_update_command=True``.
+        """
+        from gateway.run import GatewayRunner
+
+        assert Platform.HOMEASSISTANT not in GatewayRunner._UPDATE_ALLOWED_PLATFORMS
+
+        from hermes_cli.plugins import PluginManager
+        PluginManager().discover_and_load(force=True)
+        from gateway.platform_registry import platform_registry
+        ha_entry = platform_registry.get("homeassistant")
+        assert ha_entry is not None
+        assert ha_entry.allow_update_command is True
+
+        runner = _make_runner()
+        event = _make_event(platform=Platform.HOMEASSISTANT)
         monkeypatch.setenv("HERMES_MANAGED", "")
 
         result = await runner._handle_update_command(event)

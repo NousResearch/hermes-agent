@@ -85,6 +85,34 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     return _resolve_path_for_task(filepath, task_id)
 
 
+# Sentinel ``TERMINAL_CWD`` values that mean "not configured", NOT a literal
+# directory to resolve against. A stale config / .env commonly leaves the
+# literal "." here; "auto"/"cwd" are setup-wizard placeholders. Treating any of
+# these as a real relative base silently anchors edits to the agent PROCESS cwd
+# (e.g. the main repo while a worktree session is active), routing writes to the
+# wrong checkout. The gateway sanitizes the same set at import time
+# (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
+# sessions get the same protection. See references/worktree-cwd-discipline.md.
+_TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+
+
+def _configured_terminal_cwd() -> str | None:
+    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+
+    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
+    rejected — a relative anchor is meaningless without knowing which cwd it is
+    relative to, which is exactly the ambiguity that misroutes worktree edits.
+    Only an absolute, sentinel-free value is honored.
+    """
+    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
+
+
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
     try:
@@ -116,33 +144,54 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     return None
 
 
+def _authoritative_workspace_root(task_id: str = "default") -> str | None:
+    """Best-effort absolute workspace root for divergence checks.
+
+    Prefers the live terminal cwd (the directory the agent is actually working
+    in). When no terminal command has run yet — so the live registry is empty —
+    falls back to a sentinel-free absolute ``$TERMINAL_CWD``. This is what lets
+    a worktree session warn about (and resolve into) the worktree from the very
+    first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
+
+    Returns ``None`` only when there is genuinely no reliable anchor, in which
+    case callers fall back to the process cwd.
+    """
+    live = _get_live_tracking_cwd(task_id)
+    if live:
+        return live
+    return _configured_terminal_cwd()
+
+
 def _resolve_base_dir(task_id: str = "default") -> Path:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
     Resolution order:
       1. The task's live terminal cwd (the directory the agent is actually
          working in — e.g. a git worktree). Authoritative when known.
-      2. ``$TERMINAL_CWD`` from config/env.
+      2. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
+         terminal command has populated the live cwd registry.
       3. The process cwd.
 
     The returned base is ALWAYS absolute. This is the core invariant that
-    prevents the worktree-cwd divergence bug: a relative ``TERMINAL_CWD``
-    (commonly the literal ``"."`` from a stale config) is meaningless as a
-    resolution anchor — left to ``Path.resolve()`` it silently resolves
-    against whatever the agent PROCESS cwd happens to be (e.g. the main repo
-    while the terminal is in a worktree), routing edits to the wrong checkout.
-    Anchoring a relative base against the process cwd here makes the resolution
-    deterministic and inspectable rather than dependent on resolve()-time cwd.
+    prevents the worktree-cwd divergence bug: a relative or sentinel
+    ``TERMINAL_CWD`` (commonly the literal ``"."`` from a stale config) is
+    meaningless as a resolution anchor — left to ``Path.resolve()`` it silently
+    resolves against whatever the agent PROCESS cwd happens to be (e.g. the main
+    repo while the terminal is in a worktree), routing edits to the wrong
+    checkout. We therefore reject sentinel/relative ``TERMINAL_CWD`` values
+    outright (rather than anchoring them to the process cwd) and fall through to
+    the process cwd only as a last resort, deterministically.
     """
-    live = _get_live_tracking_cwd(task_id)
-    if live:
-        base = Path(live).expanduser()
+    root = _authoritative_workspace_root(task_id)
+    if root:
+        base = Path(root).expanduser()
     else:
-        raw = os.environ.get("TERMINAL_CWD")
-        base = Path(raw).expanduser() if raw else Path(os.getcwd())
+        base = Path(os.getcwd())
     if not base.is_absolute():
-        # A relative base (".", "./sub", "..") is anchored to the process cwd
-        # once, here, so the result no longer depends on cwd at resolve() time.
+        # Last-resort anchoring: a live cwd should already be absolute, but if a
+        # terminal backend ever reports a relative cwd, anchor it to the process
+        # cwd once, here, so the result no longer depends on cwd at resolve().
         base = Path(os.getcwd()) / base
     return base.resolve()
 
@@ -164,18 +213,22 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
     Surfaces the worktree-cwd divergence the moment it would matter: if the
     agent passes a relative path but it resolves under a directory that is not
-    the live terminal cwd (i.e. the edit is about to land in a different
-    checkout than the one the agent is working in), return a message naming the
-    absolute target. ``None`` when the path is absolute, the base is unknown,
-    or the resolved path is correctly under the workspace root.
+    the workspace root (i.e. the edit is about to land in a different checkout
+    than the one the agent is working in), return a message naming the absolute
+    target. ``None`` when the path is absolute, the base is unknown, or the
+    resolved path is correctly under the workspace root.
+
+    The workspace root is the live terminal cwd when known, else a sentinel-free
+    absolute ``$TERMINAL_CWD`` — so a worktree session whose terminal registry
+    is still empty (no ``cd`` run yet) is warned on the very first write.
     """
     try:
         if Path(filepath).expanduser().is_absolute():
             return None
-        live = _get_live_tracking_cwd(task_id)
-        if not live:
+        workspace_root = _authoritative_workspace_root(task_id)
+        if not workspace_root:
             return None  # No authoritative workspace root to compare against.
-        root = Path(live).expanduser().resolve()
+        root = Path(workspace_root).expanduser().resolve()
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)

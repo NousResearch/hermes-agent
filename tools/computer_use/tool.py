@@ -54,6 +54,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _approval_callback = None
+_DEFAULT_MAX_ELEMENTS = 200
+_MAX_ALLOWED_MAX_ELEMENTS = 1000
 
 
 def set_approval_callback(cb) -> None:
@@ -419,7 +421,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
-        return _capture_response(cap)
+        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
@@ -565,19 +567,40 @@ def _text_response(res: ActionResult) -> str:
     return json.dumps(payload)
 
 
-def _capture_response(cap: CaptureResult) -> Any:
-    element_index = _format_elements(cap.elements)
+def _coerce_max_elements(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_ELEMENTS
+    if parsed <= 0:
+        return _DEFAULT_MAX_ELEMENTS
+    return min(parsed, _MAX_ALLOWED_MAX_ELEMENTS)
+
+
+def _capture_response(cap: CaptureResult, max_elements: Optional[int] = None) -> Any:
+    max_elements = _DEFAULT_MAX_ELEMENTS if max_elements is None else max_elements
+    is_multimodal = bool(cap.png_b64 and cap.mode != "ax")
+    total_elements = len(cap.elements)
+    returned_elements = cap.elements if is_multimodal else cap.elements[:max_elements]
+    truncated_elements = 0 if is_multimodal else max(0, total_elements - len(returned_elements))
+
+    element_index = _format_elements(returned_elements)
     summary_lines = [
         f"capture mode={cap.mode} {cap.width}x{cap.height}"
         + (f" app={cap.app}" if cap.app else "")
         + (f" window={cap.window_title!r}" if cap.window_title else ""),
-        f"{len(cap.elements)} interactable element(s):",
+        f"{total_elements} interactable element(s):",
     ]
+    if truncated_elements:
+        summary_lines.append(
+            f"response truncated to {len(returned_elements)} of {total_elements} elements; "
+            "call again with a tighter app/window target or max_elements if needed."
+        )
     if element_index:
         summary_lines.extend(element_index)
     summary = "\n".join(summary_lines)
 
-    if cap.png_b64 and cap.mode != "ax":
+    if is_multimodal:
         if _should_route_through_aux_vision():
             routed = _route_capture_through_aux_vision(cap, summary)
             if routed is not None:
@@ -600,15 +623,19 @@ def _capture_response(cap: CaptureResult) -> Any:
                      "elements": len(cap.elements), "png_bytes": cap.png_bytes_len},
         }
     # AX-only (or image missing): text path.
-    return json.dumps({
+    payload: Dict[str, Any] = {
         "mode": cap.mode,
         "width": cap.width,
         "height": cap.height,
         "app": cap.app,
         "window_title": cap.window_title,
-        "elements": [_element_to_dict(e) for e in cap.elements],
+        "elements": [_element_to_dict(e) for e in returned_elements],
+        "total_elements": total_elements,
         "summary": summary,
-    })
+    }
+    if truncated_elements:
+        payload["truncated_elements"] = truncated_elements
+    return json.dumps(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +687,7 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str) -> Optio
 
         ext = ".jpg" if cap.png_b64[:8].startswith("/9j/") else ".png"
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+        cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
         temp_image_path.write_bytes(raw)
 

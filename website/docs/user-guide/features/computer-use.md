@@ -1,3 +1,8 @@
+---
+title: Computer Use
+sidebar_position: 16
+---
+
 # Computer Use (macOS)
 
 Hermes Computer Use lets an agent inspect and operate real macOS apps in the background without moving the user's cursor, stealing keyboard focus, or switching Spaces during normal operation.

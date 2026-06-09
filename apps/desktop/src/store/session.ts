@@ -76,6 +76,15 @@ export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
+// Cron-job sessions (source === 'cron') are fetched as their own list so the
+// scheduler's always-newest sessions never crowd recents out of the page
+// budget. Powers the collapsed "Cron jobs" sidebar section.
+export const $cronSessions = atom<SessionInfo[]>([])
+// Max cron sessions fetched for the sidebar section (single bounded page). When
+// the fetch returns exactly this many rows we know more exist, so the section
+// badge renders "N+". Lives here so the controller (fetch) and sidebar (badge)
+// share one source of truth without a circular import.
+export const CRON_SECTION_LIMIT = 50
 // Listable conversation count per profile (children excluded), keyed by profile
 // name. Lets the sidebar scope its "Load more" footer to the active profile so a
 // huge default profile doesn't keep "Load more" visible while browsing a small
@@ -119,6 +128,7 @@ export const setConnection = (next: Updater<HermesConnection | null>) => updateA
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
+export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
@@ -192,6 +202,47 @@ function clearSessionWatchdog(sessionId: string) {
   }
 }
 
+// A session's "working" flag clears the instant its turn ends, but the
+// cross-profile aggregator (listSessions with min_messages=1) only sees the
+// just-persisted first turn a beat later. The active chat is shielded from that
+// race by sessionsToKeep(), but a brand-new session that finished *while you
+// were viewing a different chat* is, at the next refresh, neither working,
+// pinned, nor active — so mergeSessionPage() evicts it. Nothing re-fetches
+// afterward, so it stays gone until the app restarts. (Repro: start a new chat,
+// then click another session before the first reply lands.)
+//
+// To bridge that window we keep a session in the merge keep-set for a short
+// grace period after its turn settles, giving the aggregator time to catch up.
+// Entries auto-expire, so this never accumulates and can't resurrect a deleted
+// session (mergeSessionPage only revives rows still present in the in-memory
+// list, which optimistic delete/archive already drops).
+const SESSION_SETTLE_GRACE_MS = 30 * 1000
+const settledSessionExpiry = new Map<string, number>()
+
+function markSessionSettled(sessionId: string) {
+  settledSessionExpiry.set(sessionId, Date.now() + SESSION_SETTLE_GRACE_MS)
+}
+
+function clearSessionSettled(sessionId: string) {
+  settledSessionExpiry.delete(sessionId)
+}
+
+/** Stored ids of sessions whose turn ended within the grace window. Prunes
+ *  expired entries as it reads, so it stays bounded without a timer. */
+export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
+  const live: string[] = []
+
+  for (const [id, expiry] of settledSessionExpiry) {
+    if (expiry > now) {
+      live.push(id)
+    } else {
+      settledSessionExpiry.delete(id)
+    }
+  }
+
+  return live
+}
+
 /** Call when a streaming event for a session lands. Refreshes the watchdog
  *  so the session keeps its "working" status as long as data keeps coming. */
 export function noteSessionActivity(sessionId: string | null | undefined) {
@@ -233,13 +284,24 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     return
   }
 
+  const wasWorking = $workingSessionIds.get().includes(sessionId)
+
   toggleMembership(setWorkingSessionIds, sessionId, working)
 
   // Bookend the watchdog: arm on enter, disarm on leave. A later
   // noteSessionActivity() from a streaming event refreshes the timer.
   if (working) {
+    clearSessionSettled(sessionId)
     armSessionWatchdog(sessionId)
   } else {
     clearSessionWatchdog(sessionId)
+
+    // Only grant grace on a real working→idle transition (updateSessionState
+    // re-asserts `false` on every state tick, which must not keep extending the
+    // window). This keeps the just-finished session visible long enough for the
+    // aggregator to return its now-persisted row.
+    if (wasWorking) {
+      markSessionSettled(sessionId)
+    }
   }
 }

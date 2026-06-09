@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
+import gc
 import importlib
 import json
 import sys
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,7 +40,7 @@ class _FakeNemoRelay:
             call_end=self._tool_call_end,
             execute=self._tool_execute,
         )
-        self.plugin = SimpleNamespace(initialize=self._plugin_initialize)
+        self.plugin = SimpleNamespace(initialize=self._plugin_initialize, clear=self._plugin_clear)
         self.LLMRequest = _FakeLLMRequest
         self.AtofExporterConfig = _FakeAtofExporterConfig
         self.AtofExporterMode = SimpleNamespace(Append="append", Overwrite="overwrite")
@@ -93,6 +96,9 @@ class _FakeNemoRelay:
         self.events.append(("plugin.initialize", config))
         return {"diagnostics": []}
 
+    async def _plugin_clear(self):
+        self.events.append(("plugin.clear",))
+
 
 class _FakeLLMRequest:
     def __init__(self, headers, content):
@@ -114,6 +120,10 @@ class _FakeAtofExporter:
 
     def register(self, name):
         self.events.append(("atof.register", name, self.config.output_directory, self.config.filename))
+
+    def deregister(self, name):
+        self.events.append(("atof.deregister", name, self.config.output_directory, self.config.filename))
+        return True
 
 
 class _FakeAtifExporter:
@@ -445,6 +455,252 @@ output_directory = "{atif_dir}"
     assert atif_dir.is_dir()
 
 
+def test_nemo_relay_plugin_clears_plugins_toml_on_final_session_finalize_and_reinitializes(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    plugin.on_session_start(session_id="s2")
+
+    event_names = [event[0] for event in fake.events]
+    assert event_names.count("plugin.initialize") == 2
+    assert event_names.count("plugin.clear") == 1
+
+
+def test_nemo_relay_plugin_keeps_plugins_toml_active_while_other_sessions_remain(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="parent")
+    plugin.on_session_start(session_id="child")
+    plugin.on_session_finalize(session_id="child", reason="shutdown")
+    plugin.on_session_finalize(session_id="parent", reason="shutdown")
+
+    event_names = [event[0] for event in fake.events]
+    assert event_names.count("plugin.initialize") == 1
+    assert event_names.count("plugin.clear") == 1
+
+
+def test_nemo_relay_plugin_reinitializes_plugins_toml_inside_active_event_loop(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    async def _drive() -> None:
+        plugin.on_session_start(session_id="s1")
+        plugin.on_session_finalize(session_id="s1", reason="shutdown")
+        plugin.on_session_start(session_id="s2")
+        await asyncio.sleep(0)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(_drive())
+        gc.collect()
+
+    assert not any("was never awaited" in str(w.message) for w in caught)
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    assert runtime._plugin_config_initialized is True
+    scope_push_names = [event[1] for event in fake.events if event[0] == "scope.push"]
+    assert "hermes-session-s2" in scope_push_names
+
+
+def test_nemo_relay_plugin_retries_plugins_toml_after_clear_failure(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    initialize_calls = 0
+
+    async def _counting_initialize(config):
+        nonlocal initialize_calls
+        initialize_calls += 1
+        fake.events.append(("plugin.initialize.attempt", initialize_calls, config))
+        return {"diagnostics": []}
+
+    async def _failing_clear():
+        fake.events.append(("plugin.clear.failed",))
+        raise RuntimeError("boom")
+
+    fake.plugin.initialize = _counting_initialize
+    fake.plugin.clear = _failing_clear
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    plugin.on_session_start(session_id="s2")
+
+    event_names = [event[0] for event in fake.events]
+    assert event_names.count("plugin.initialize.attempt") == 2
+    assert event_names.count("plugin.clear.failed") == 1
+    scope_push_names = [event[1] for event in fake.events if event[0] == "scope.push"]
+    assert "hermes-session-s2" in scope_push_names
+
+
+def test_nemo_relay_plugin_disables_direct_atif_when_plugins_toml_owns_atif(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config.atif]
+enabled = true
+output_directory = "{(tmp_path / "managed-atif").as_posix()}"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "1")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY", str(tmp_path / "direct-atif"))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+
+    event_names = [event[0] for event in fake.events]
+    assert "plugin.initialize" in event_names
+    assert "plugin.clear" in event_names
+    assert "atif.register" not in event_names
+    assert not (tmp_path / "direct-atif" / "hermes-atif-s1.json").exists()
+
+
+def test_nemo_relay_plugin_keeps_direct_atif_when_plugins_toml_init_fails(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+
+    async def _failing_initialize(config):
+        fake.events.append(("plugin.initialize.failed", config))
+        raise RuntimeError("boom")
+
+    fake.plugin.initialize = _failing_initialize
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config.atif]
+enabled = true
+output_directory = "{(tmp_path / "managed-atif").as_posix()}"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "1")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY", str(tmp_path / "direct-atif"))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+
+    event_names = [event[0] for event in fake.events]
+    assert "plugin.initialize.failed" in event_names
+    assert "plugin.clear" not in event_names
+    assert "atif.register" in event_names
+    assert (tmp_path / "direct-atif" / "hermes-atif-s1.json").exists()
+
+
+def test_nemo_relay_plugin_retries_plugins_toml_after_fallback_only_session_and_clears_direct_atof(
+    tmp_path,
+    monkeypatch,
+):
+    fake = _FakeNemoRelay()
+    initialize_calls = 0
+
+    async def _flaky_initialize(config):
+        nonlocal initialize_calls
+        initialize_calls += 1
+        fake.events.append(("plugin.initialize.attempt", initialize_calls, config))
+        if initialize_calls == 1:
+            raise RuntimeError("boom")
+        return {"diagnostics": []}
+
+    fake.plugin.initialize = _flaky_initialize
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config.atof]
+enabled = true
+output_directory = "{(tmp_path / "managed-atof").as_posix()}"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATOF_ENABLED", "1")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY", str(tmp_path / "direct-atof"))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    plugin.on_session_start(session_id="s2")
+
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    assert runtime._plugin_config_initialized is True
+    event_names = [event[0] for event in fake.events]
+    assert event_names.count("plugin.initialize.attempt") == 2
+    assert event_names.count("atof.register") == 1
+    assert event_names.count("atof.deregister") == 1
+
+
 def test_nemo_relay_adaptive_llm_execution_middleware_preserves_raw_response(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)
@@ -457,8 +713,8 @@ version = 1
 kind = "adaptive"
 enabled = true
 
-[components.config]
-mode = "route"
+[components.config.tool_parallelism]
+mode = "observe_only"
 """,
         encoding="utf-8",
     )
@@ -506,7 +762,7 @@ mode = "route"
     assert response.choices == [raw_choice]
     assert seen_request["intercepted"] is True
     execute_start = next(event for event in fake.events if event[0] == "llm.execute.start")
-    assert execute_start[3]["data"]["mode"] == "route"
+    assert execute_start[3]["data"]["mode"] == "observe_only"
     execute_end = next(event for event in fake.events if event[0] == "llm.execute.end")
     assert execute_end[2] == {
         "model": "demo-model",
@@ -525,6 +781,84 @@ mode = "route"
         "finish_reason": "tool_calls",
         "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
     }
+
+
+def _adaptive_llm_execute_mode(tmp_path, monkeypatch, plugins_toml_text: str) -> str:
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(plugins_toml_text, encoding="utf-8")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_llm_execution_middleware(
+        session_id="s1",
+        provider="anthropic",
+        model="demo-model",
+        request={"messages": [{"role": "user", "content": "hi"}]},
+        next_call=lambda request: {"raw": request},
+    )
+
+    execute_start = next(event for event in fake.events if event[0] == "llm.execute.start")
+    return execute_start[3]["data"]["mode"]
+
+
+def test_nemo_relay_adaptive_llm_execution_middleware_defaults_to_observe_only_when_mode_is_unset(
+    tmp_path, monkeypatch
+):
+    mode = _adaptive_llm_execute_mode(
+        tmp_path,
+        monkeypatch,
+        """
+version = 1
+
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config]
+version = 1
+""",
+    )
+    assert mode == "observe_only"
+
+
+def test_nemo_relay_adaptive_llm_execution_middleware_accepts_legacy_top_level_mode(tmp_path, monkeypatch):
+    mode = _adaptive_llm_execute_mode(
+        tmp_path,
+        monkeypatch,
+        """
+version = 1
+
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config]
+mode = "route"
+""",
+    )
+    assert mode == "route"
+
+
+def test_nemo_relay_adaptive_llm_execution_middleware_prefers_tool_parallelism_mode(tmp_path, monkeypatch):
+    mode = _adaptive_llm_execute_mode(
+        tmp_path,
+        monkeypatch,
+        """
+version = 1
+
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config]
+mode = "route"
+
+[components.config.tool_parallelism]
+mode = "schedule"
+""",
+    )
+    assert mode == "schedule"
 
 
 def test_nemo_relay_llm_execution_middleware_calls_through_without_adaptive(monkeypatch):
@@ -555,8 +889,8 @@ version = 1
 kind = "adaptive"
 enabled = true
 
-[components.config]
-mode = "route"
+[components.config.tool_parallelism]
+mode = "observe_only"
 """,
         encoding="utf-8",
     )
@@ -582,7 +916,7 @@ mode = "route"
     assert response == {"raw": True, "args": {"command": "pwd", "intercepted": True}}
     assert seen_args["intercepted"] is True
     execute_start = next(event for event in fake.events if event[0] == "tool.execute.start")
-    assert execute_start[3]["data"]["mode"] == "route"
+    assert execute_start[3]["data"]["mode"] == "observe_only"
     assert execute_start[3]["data"]["tool_call_id"] == "tool-1"
 
 
@@ -613,8 +947,8 @@ version = 1
 kind = "adaptive"
 enabled = true
 
-[components.config]
-mode = "route"
+[components.config.tool_parallelism]
+mode = "observe_only"
 """,
         encoding="utf-8",
     )

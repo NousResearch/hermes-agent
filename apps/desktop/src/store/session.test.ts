@@ -4,9 +4,14 @@ import type { SessionInfo } from '@/types/hermes'
 
 import {
   $attentionSessionIds,
+  $cronSessions,
+  $sessions,
+  $sessionsTotal,
   $workingSessionIds,
   getRecentlySettledSessionIds,
+  hideArchivedSessionFromSidebar,
   mergeSessionPage,
+  restoreArchivedSessionToSidebar,
   sessionPinId,
   setSessionAttention,
   setSessionWorking
@@ -135,6 +140,50 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+})
+
+describe('archived sidebar session helpers', () => {
+  afterEach(() => {
+    $sessions.set([])
+    $cronSessions.set([])
+    $sessionsTotal.set(0)
+  })
+
+  it('removes a cron session from the cron sidebar list without touching recents total', () => {
+    $sessions.set([session({ id: 'chat', source: 'tui' })])
+    $cronSessions.set([session({ id: 'cron', source: 'cron' })])
+    $sessionsTotal.set(7)
+
+    const snapshot = hideArchivedSessionFromSidebar('cron')
+
+    expect(snapshot.session).toBeNull()
+    expect(snapshot.cronSession?.id).toBe('cron')
+    expect($sessions.get().map(entry => entry.id)).toEqual(['chat'])
+    expect($cronSessions.get()).toEqual([])
+    expect($sessionsTotal.get()).toBe(7)
+  })
+
+  it('restores a cron session to the cron sidebar list after a failed archive', () => {
+    $cronSessions.set([session({ id: 'cron', source: 'cron' })])
+
+    const snapshot = hideArchivedSessionFromSidebar('cron')
+    restoreArchivedSessionToSidebar(snapshot, 'cron')
+
+    expect($cronSessions.get().map(entry => entry.id)).toEqual(['cron'])
+    expect($sessionsTotal.get()).toBe(0)
+  })
+
+  it('removes a regular session from recents and adjusts the sidebar total', () => {
+    $sessions.set([session({ id: 'chat', source: 'tui' })])
+    $sessionsTotal.set(3)
+
+    const snapshot = hideArchivedSessionFromSidebar('chat')
+
+    expect(snapshot.session?.id).toBe('chat')
+    expect(snapshot.cronSession).toBeNull()
+    expect($sessions.get()).toEqual([])
+    expect($sessionsTotal.get()).toBe(2)
   })
 })
 

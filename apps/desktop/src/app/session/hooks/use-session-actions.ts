@@ -20,6 +20,8 @@ import {
   $sessions,
   $yoloActive,
   getRememberedWorkspaceCwd,
+  hideArchivedSessionFromSidebar,
+  restoreArchivedSessionToSidebar,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -39,7 +41,6 @@ import {
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
-  setSessionsTotal,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -333,15 +334,18 @@ export function useSessionActions({
         // Route the new chat to the chosen profile's backend (null = primary,
         // so single-profile users are unaffected).
         await ensureGatewayProfile($newChatProfile.get())
+
         const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (
@@ -836,7 +840,8 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(s => s.id === storedSessionId)
+      const archivedSnapshot = hideArchivedSessionFromSidebar(storedSessionId)
+      const archived = archivedSnapshot.session ?? archivedSnapshot.cronSession ?? null
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -844,11 +849,6 @@ export function useSessionActions({
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(s => s.id !== storedSessionId))
-      // Archived sessions are hidden by the listSessions(min_messages=1) query
-      // on the next refresh, so they count as "removed" for the load-more
-      // footer math.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
@@ -859,10 +859,7 @@ export function useSessionActions({
         await setSessionArchived(storedSessionId, true, archived?.profile)
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
-        if (archived) {
-          setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
-          setSessionsTotal(prev => prev + 1)
-        }
+        restoreArchivedSessionToSidebar(archivedSnapshot, storedSessionId)
 
         $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)

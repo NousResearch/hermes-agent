@@ -164,6 +164,40 @@ export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, ne
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
 
+export interface ArchivedSidebarSessionSnapshot {
+  cronSession: SessionInfo | null
+  session: SessionInfo | null
+}
+
+export function hideArchivedSessionFromSidebar(storedSessionId: string): ArchivedSidebarSessionSnapshot {
+  const session = $sessions.get().find(entry => entry.id === storedSessionId) ?? null
+  const cronSession = $cronSessions.get().find(entry => entry.id === storedSessionId) ?? null
+
+  setSessions(prev => prev.filter(entry => entry.id !== storedSessionId))
+  setCronSessions(prev => prev.filter(entry => entry.id !== storedSessionId))
+
+  if (session) {
+    // Archived sessions are hidden by the listSessions(min_messages=1) query on
+    // the next refresh, so they count as "removed" for the load-more footer.
+    setSessionsTotal(prev => Math.max(0, prev - 1))
+  }
+
+  return { cronSession, session }
+}
+
+export function restoreArchivedSessionToSidebar(snapshot: ArchivedSidebarSessionSnapshot, storedSessionId: string) {
+  if (snapshot.session) {
+    const restoredSession = snapshot.session
+    setSessions(prev => [restoredSession, ...prev.filter(entry => entry.id !== storedSessionId)])
+    setSessionsTotal(prev => prev + 1)
+  }
+
+  if (snapshot.cronSession) {
+    const restoredCronSession = snapshot.cronSession
+    setCronSessions(prev => [restoredCronSession, ...prev.filter(entry => entry.id !== storedSessionId)])
+  }
+}
+
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)
 // can take a few minutes legitimately. We allow 8 minutes of complete

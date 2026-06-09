@@ -59,6 +59,8 @@ _HERMES_CORE_TOOLS = [
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
+    # Explicit lab-only project retrieval
+    "cognee_query",
     # Clarifying questions
     "clarify",
     # Code execution + delegation

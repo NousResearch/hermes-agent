@@ -1622,7 +1622,8 @@ export const en: Translations = {
       restoreCheckpoint: 'Restore checkpoint',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
-      sendEdited: 'Send edited message'
+      sendEdited: 'Send edited message',
+      attachingFile: 'Attaching…'
     },
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',

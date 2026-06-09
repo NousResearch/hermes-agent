@@ -1293,6 +1293,7 @@ export interface Translations {
       restoreNext: string
       goForward: string
       sendEdited: string
+      attachingFile: string
     }
     approval: {
       gatewayDisconnected: string

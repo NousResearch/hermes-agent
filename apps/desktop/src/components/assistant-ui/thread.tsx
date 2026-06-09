@@ -971,6 +971,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
+  // True while OS-drop files are being staged/uploaded into the session. Blocks
+  // submit and shows a spinner so confirming the edit can't race the async
+  // upload and drop the gateway-side ref before it lands in the draft.
+  const [staging, setStaging] = useState(false)
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
@@ -1324,11 +1328,14 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     if (osDrops.length) {
-      void uploadOsDropRefs(osDrops).then(refs => {
-        if (insertRefStrings(refs)) {
-          triggerHaptic('selection')
-        }
-      })
+      setStaging(true)
+      void uploadOsDropRefs(osDrops)
+        .then(refs => {
+          if (insertRefStrings(refs)) {
+            triggerHaptic('selection')
+          }
+        })
+        .finally(() => setStaging(false))
     }
   }
 
@@ -1360,7 +1367,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const submitEdit = (editor: HTMLDivElement) => {
     const nextDraft = syncDraftFromEditor(editor)
 
-    if (submitting || !nextDraft.trim()) {
+    if (submitting || staging || !nextDraft.trim()) {
       return
     }
 
@@ -1517,10 +1524,19 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               suppressContentEditableWarning
             />
             <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
+            {staging && (
+              <span
+                className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.62rem] text-muted-foreground backdrop-blur-[1px]"
+                data-slot="aui_edit-staging"
+              >
+                <Loader2Icon className="size-3 animate-spin" />
+                {copy.attachingFile}
+              </span>
+            )}
             <button
               aria-label={copy.sendEdited}
               className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-              disabled={!canSubmit || submitting}
+              disabled={!canSubmit || submitting || staging}
               onClick={() => {
                 const editor = editorRef.current
 

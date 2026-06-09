@@ -307,6 +307,7 @@ def _run_git(
             timeout=timeout,
             env=env,
             cwd=str(normalized_working_dir),
+            stdin=subprocess.DEVNULL,
         )
         ok = result.returncode == 0
         stdout = result.stdout.strip()
@@ -426,6 +427,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             ["git", "init", "--bare", str(store)],
             capture_output=True, text=True,
             env=init_env, timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             return f"Shadow store init failed: {result.stderr.strip()}"

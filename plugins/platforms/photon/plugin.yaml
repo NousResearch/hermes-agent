@@ -46,6 +46,10 @@ optional_env:
     description: "Photon Dashboard API host (default https://app.photon.codes)"
     prompt: "Dashboard host"
     password: false
+  - name: PHOTON_SPECTRUM_HOST
+    description: "Photon Spectrum API host (default https://spectrum.photon.codes)"
+    prompt: "Spectrum API host"
+    password: false
   - name: PHOTON_ALLOWED_USERS
     description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

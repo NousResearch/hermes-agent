@@ -111,6 +111,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
 | `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
+| `PHOTON_SPECTRUM_HOST`    | https://spectrum.photon.codes | Spectrum API host                 |
 | `PHOTON_HOME_CHANNEL`     | your number (set by setup) | Default space for cron delivery — a space id, or a bare E.164 number (resolved to a DM) |
 | `PHOTON_ALLOWED_USERS`    | your number (set by setup) | Comma-separated E.164 allowlist      |
 | `PHOTON_REQUIRE_MENTION`  | false                      | Gate group chats on a wake word      |
@@ -118,14 +119,14 @@ All env vars are documented in `plugin.yaml`. The most important:
 
 ## Attachments & limitations
 
-- **Inbound attachments are downloaded.** The sidecar reads the bytes
-  (`content.read()`) and base64-inlines them on the NDJSON event; the adapter
-  caches them to the shared media cache and populates `media_urls` /
-  `media_types`, so the agent sees the real image/file (vision included) —
-  parity with the BlueBubbles iMessage channel. Attachments larger than
+- **Inbound attachments and voice notes are downloaded.** The sidecar reads
+  the bytes (`content.read()`) and base64-inlines them on the NDJSON event; the
+  adapter caches them to the shared media cache and populates `media_urls` /
+  `media_types`, so the agent sees the real image/file or can transcribe the
+  voice note — parity with the BlueBubbles iMessage channel. Media larger than
   `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or any byte read that
-  fails, fall back to a text marker (`[Photon attachment received: …]`) so the
-  agent still knows something arrived.
+  fails, falls back to a text marker (`[Photon attachment received: …]` or
+  `[Photon voice received: …]`) so the agent still knows something arrived.
 - **Outbound attachments are supported.** Images, voice notes, video, and
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`

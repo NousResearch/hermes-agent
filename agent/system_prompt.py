@@ -28,20 +28,87 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
-    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
-    OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
-    TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
 from agent.runtime_cwd import resolve_context_cwd
+
+
+# ---------------------------------------------------------------------------
+# Consolidated behavioral guidance — replaces TOOL_USE_ENFORCEMENT_GUIDANCE
+# and model-specific variants to eliminate instruction dilution.
+# See: Tian Pan "200-token system prompt beats 4000-token" and
+#      Anthropic prompt engineering best practices.
+# ---------------------------------------------------------------------------
+
+# Universal behavioral guidance — replaces TOOL_USE_ENFORCEMENT_GUIDANCE.
+# Contains only what TASK_COMPLETION_GUIDANCE does NOT cover:
+# - Specific mandatory tool-use scenarios (7 categories)
+# - Prerequisite dependency checks
+# - Handling missing context with explicit assumptions
+AGENT_BEHAVIOR_GUIDANCE = (
+    "# Agent behavior\n"
+    "<mandatory_tool_use>\n"
+    "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
+    "- Arithmetic, math, calculations → use terminal or execute_code\n"
+    "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n"
+    "- Current time, date, timezone → use terminal (e.g. date)\n"
+    "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n"
+    "- File contents, sizes, line counts → use read_file, search_files, or terminal\n"
+    "- Git history, branches, diffs → use terminal\n"
+    "- Current facts (weather, news, versions) → use web_search\n"
+    "Your memory and user profile describe the USER, not the system you are "
+    "running on. The execution environment may differ from what the user profile "
+    "says about their personal setup.\n"
+    "</mandatory_tool_use>\n"
+    "<prerequisite_checks>\n"
+    "- Before taking an action, check whether prerequisite discovery, lookup, or "
+    "context-gathering steps are needed.\n"
+    "- Do not skip prerequisite steps just because the final action seems obvious.\n"
+    "- If a task depends on output from a prior step, resolve that dependency first.\n"
+    "</prerequisite_checks>\n"
+    "<missing_context>\n"
+    "- If required context is missing, use the appropriate lookup tool. "
+    "Do NOT guess or hallucinate an answer.\n"
+    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
+    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
+    "</missing_context>"
+)
+
+# Google model specific guidance — replaces GOOGLE_MODEL_OPERATIONAL_GUIDANCE.
+# Only retains Google-model-specific behavioral corrections; removes overlap
+# with TASK_COMPLETION_GUIDANCE.
+GOOGLE_SPECIFIC_GUIDANCE = (
+    "# Google model operational directives\n"
+    "- **Absolute paths:** Always construct and use absolute file paths.\n"
+    "- **Dependency checks:** Never assume a library is available. Check "
+    "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
+    "- **Conciseness:** Keep explanatory text brief — a few sentences, not paragraphs.\n"
+    "- **Parallel tool calls:** When you need to perform multiple independent "
+    "operations, make all the tool calls in a single response.\n"
+    "- **Non-interactive commands:** Use flags like -y, --yes to prevent CLI hangs.\n"
+)
+
+# OpenAI model specific guidance — replaces OPENAI_MODEL_EXECUTION_GUIDANCE.
+# Only retains OpenAI/Grok-specific behavioral corrections; removes overlap
+# with TASK_COMPLETION_GUIDANCE.
+OPENAI_SPECIFIC_GUIDANCE = (
+    "# OpenAI/Grok model notes\n"
+    "- **Known failure mode:** claims completion without tool calls, "
+    "suggests workarounds instead of using existing tools.\n"
+    "- **Known failure mode:** abandons work on partial results.\n"
+    "- **Known failure mode:** replies with plans/suggestions instead of executing.\n"
+    "- **Act on obvious defaults:** 'Is port 443 open?' → check THIS machine. "
+    "'What OS am I running?' → run `uname -a` (don't use user profile).\n"
+)
+
 
 
 def _ra():
@@ -103,11 +170,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
-    # models regardless of tool_use_enforcement gating — the failure modes
-    # this targets (stopping after a stub; fabricating output when a real
-    # path is blocked) are not model-family specific.  Gated only by
-    # config.yaml ``agent.task_completion_guidance`` (default True) so
-    # users who want a leaner prompt can turn it off.
+    # models regardless of model-specific gating.  The consolidated
+    # AGENT_BEHAVIOR_GUIDANCE (injected below for matching models) covers
+    # what TOOL_USE_ENFORCEMENT_GUIDANCE used to provide minus overlap.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
 
@@ -146,41 +211,39 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
-    # Tool-use enforcement: tells the model to actually call tools instead
-    # of describing intended actions.  Controlled by config.yaml
-    # agent.tool_use_enforcement:
-    #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
-    #   true  — always inject (all models)
-    #   false — never inject
-    #   list  — custom model-name substrings to match
+    # Consolidated behavioral guidance — replaces the old three-block
+    # redundancy (TOOL_USE_ENFORCEMENT + model-specific variants).
+    # AGENT_BEHAVIOR_GUIDANCE covers universal mandatory tool-use,
+    # prerequisite checks, and missing-context handling.
+    # Model-specific variants only contain per-model behavioral corrections.
     if agent.valid_tool_names:
+        # Universal behavioral guidance — inject for all models when
+        # tool_use_enforcement is enabled (default auto matches same
+        # model set as before).
         _enforce = agent._tool_use_enforcement
-        _inject = False
+        _inject_behavior = False
         if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
-            _inject = True
+            _inject_behavior = True
         elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
-            _inject = False
+            _inject_behavior = False
         elif isinstance(_enforce, list):
             model_lower = (agent.model or "").lower()
-            _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
+            _inject_behavior = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
         else:
-            # "auto" or any unrecognised value — use hardcoded defaults
+            # "auto" — matches same models as old TOOL_USE_ENFORCEMENT_MODELS
             model_lower = (agent.model or "").lower()
-            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
-        if _inject:
-            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+            _inject_behavior = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+        if _inject_behavior:
+            # Universal behavioral guidance (replaces TOOL_USE_ENFORCEMENT_GUIDANCE)
+            stable_parts.append(AGENT_BEHAVIOR_GUIDANCE)
             _model_lower = (agent.model or "").lower()
-            # Google model operational guidance (conciseness, absolute
-            # paths, parallel tool calls, verify-before-edit, etc.)
+            # Google-specific operational guidance (conciseness, absolute
+            # paths, parallel calls — behavioral corrections only)
             if "gemini" in _model_lower or "gemma" in _model_lower:
-                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-            # OpenAI GPT/Codex execution discipline (tool persistence,
-            # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
+                stable_parts.append(GOOGLE_SPECIFIC_GUIDANCE)
+            # OpenAI/Grok-specific execution notes (known failure modes)
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                stable_parts.append(OPENAI_SPECIFIC_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:

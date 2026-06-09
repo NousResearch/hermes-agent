@@ -1354,6 +1354,16 @@ def _build_l1_skills_prompt(l1_skills: list) -> str:
     Returns:
         A compact prompt string (~50-100 tokens).
     """
+    # Normalize: YAML single-key dicts -> (key, value) tuples
+    normalized = []
+    for item in l1_skills:
+        if isinstance(item, dict):
+            for k, v in item.items():
+                normalized.append((k, v))
+        else:
+            normalized.append(item)
+    l1_skills = normalized
+
     if not l1_skills:
         return (
             "## Skills\n"

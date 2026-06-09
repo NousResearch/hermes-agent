@@ -815,6 +815,25 @@ class PhotonAdapter(BasePlatformAdapter):
             chat_id, video_path, caption=caption, reply_to=reply_to,
         )
 
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        # iMessage sends documents/PDFs the same way as any other attachment —
+        # raw bytes + a name (mirrors the BlueBubbles channel). The explicit
+        # MIME (with an application/octet-stream fallback in
+        # _sidecar_send_attachment) is what keeps spectrum-ts' attachment()
+        # builder from throwing on types it can't infer.
+        return await self._sidecar_send_attachment(
+            chat_id, file_path, name=file_name, caption=caption, reply_to=reply_to,
+        )
+
     async def send_animation(
         self,
         chat_id: str,
@@ -979,8 +998,12 @@ class PhotonAdapter(BasePlatformAdapter):
         if not mime_type:
             import mimetypes
 
-            guessed, _ = mimetypes.guess_type(safe_path)
-            mime_type = guessed or None
+            guessed, _ = mimetypes.guess_type(name or safe_path)
+            # spectrum-ts' attachment() builder THROWS when it can't resolve a
+            # MIME type, so always pass one — mirroring the BlueBubbles channel,
+            # which uploads every attachment as application/octet-stream when the
+            # type is unknown. This is what makes documents/PDFs sendable.
+            mime_type = guessed or "application/octet-stream"
         body: Dict[str, Any] = {
             "spaceId": space_id,
             "path": safe_path,

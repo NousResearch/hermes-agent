@@ -96,10 +96,41 @@ async def test_send_voice_marks_kind_voice(
     assert body["kind"] == "voice"
 
 
-def test_no_send_document_override() -> None:
-    # Documents/PDFs aren't a reliable send over the Photon iMessage line, so
-    # the adapter must NOT override send_document (it falls back to base).
-    assert "send_document" not in vars(PhotonAdapter)
+@pytest.mark.asyncio
+async def test_send_document_passes_mime_and_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # Documents/PDFs send like any other attachment, with an explicit MIME so
+    # spectrum-ts' attachment() builder never throws on type resolution.
+    _patch_safe_path(monkeypatch)
+    doc = tmp_path / "report.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send_document("any;-;+1", str(doc), file_name="Q3.pdf")
+
+    _, body = calls[0]
+    assert body["kind"] == "attachment"
+    assert body["name"] == "Q3.pdf"
+    assert body["mimeType"] == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_send_document_unknown_type_falls_back_to_octet_stream(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # An unknown extension must still send (octet-stream), not raise/skip.
+    _patch_safe_path(monkeypatch)
+    blob = tmp_path / "data.weirdext"
+    blob.write_bytes(b"\x00\x01\x02")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send_document("any;-;+1", str(blob))
+
+    _, body = calls[0]
+    assert body["mimeType"] == "application/octet-stream"
 
 
 @pytest.mark.asyncio

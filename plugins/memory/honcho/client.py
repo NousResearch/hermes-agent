@@ -325,6 +325,10 @@ class HonchoClientConfig:
     # Prefetch budget (None = no cap; set to an integer to bound auto-injected context)
     context_tokens: int | None = None
     # Dialectic (peer.chat) settings
+    # Minimum turns between base context refreshes.
+    context_cadence: int = 1
+    # Minimum turns between dialectic model calls.
+    dialectic_cadence: int = 1
     # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
     dialectic_reasoning_level: str = "low"
     # When true, the model can override reasoning_level per-call via the
@@ -540,6 +544,16 @@ class HonchoClientConfig:
                 host_block.get("contextTokens"),
                 raw.get("contextTokens"),
             ),
+            context_cadence=_parse_int_config(
+                host_block.get("contextCadence"),
+                raw.get("contextCadence"),
+                default=1,
+            ),
+            dialectic_cadence=_parse_int_config(
+                host_block.get("dialecticCadence"),
+                raw.get("dialecticCadence"),
+                default=1,
+            ),
             dialectic_reasoning_level=(
                 host_block.get("dialecticReasoningLevel")
                 or raw.get("dialecticReasoningLevel")
@@ -680,8 +694,8 @@ class HonchoClientConfig:
 
         Resolution order:
           1. Manual directory override from sessions map
-          2. Hermes session title (from /title command)
-          3. Gateway session key (stable per-chat identifier from gateway platforms)
+          2. Gateway session key (stable per-chat identifier from gateway platforms)
+          3. Hermes session title (from /title command)
           4. per-session strategy — Hermes session_id ({timestamp}_{hex})
           5. per-repo strategy — git repo root directory name
           6. per-directory strategy — directory basename
@@ -697,23 +711,26 @@ class HonchoClientConfig:
         if manual:
             return manual
 
-        # /title mid-session remap
+        # Gateway session key: stable per-chat identifier passed by the gateway
+        # (e.g. "agent:main:telegram:dm:8439114563"). Sanitize colons to hyphens
+        # for Honcho session ID compatibility. This takes priority over strategy-
+        # and title-based resolution because gateway platforms need per-chat
+        # isolation and continuity that cwd/title-based strategies cannot provide.
+        if gateway_session_key:
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
+            if sanitized:
+                return self._enforce_session_id_limit(sanitized, gateway_session_key)
+
+        # /title mid-session remap. CLI sessions may intentionally title their
+        # Honcho session; gateway sessions already returned above so automatic
+        # or user-triggered title changes cannot fragment one chat into many
+        # Honcho sessions.
         if session_title:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', session_title).strip('-')
             if sanitized:
                 if self.session_peer_prefix and self.peer_name:
                     return f"{self.peer_name}-{sanitized}"
                 return sanitized
-
-        # Gateway session key: stable per-chat identifier passed by the gateway
-        # (e.g. "agent:main:telegram:dm:8439114563"). Sanitize colons to hyphens
-        # for Honcho session ID compatibility. This takes priority over strategy-
-        # based resolution because gateway platforms need per-chat isolation that
-        # cwd-based strategies cannot provide.
-        if gateway_session_key:
-            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
-            if sanitized:
-                return self._enforce_session_id_limit(sanitized, gateway_session_key)
 
         # per-session: inherit Hermes session_id (new Honcho session each run)
         if self.session_strategy == "per-session" and session_id:

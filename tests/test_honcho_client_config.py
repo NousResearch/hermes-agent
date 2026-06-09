@@ -11,6 +11,40 @@ from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho import HonchoMemoryProvider
 
 
+def test_host_block_cadence_overrides_root_defaults(tmp_path):
+    """Cadence knobs written by setup under hosts.hermes must be honored."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "apiKey": "test-api-key-12345",
+        "contextCadence": 9,
+        "dialecticCadence": 8,
+        "hosts": {
+            "hermes": {
+                "contextCadence": 3,
+                "dialecticCadence": 4,
+            }
+        },
+    }))
+
+    cfg = HonchoClientConfig.from_global_config(config_path=config_path, host="hermes")
+
+    assert cfg.context_cadence == 3
+    assert cfg.dialectic_cadence == 4
+
+
+def test_gateway_session_key_wins_over_session_title():
+    """Gateway title changes must not fragment one chat into many Honcho sessions."""
+    cfg = HonchoClientConfig(session_strategy="per-directory")
+
+    resolved = cfg.resolve_session_name(
+        session_title="Auto Generated Conversation Title",
+        gateway_session_key="agent:main:telegram:dm:7724476685",
+        session_id="20260608_test",
+    )
+
+    assert resolved == "agent-main-telegram-dm-7724476685"
+
+
 class TestHonchoClientConfigAutoEnable:
     """Test auto-enable behavior when API key is present."""
 

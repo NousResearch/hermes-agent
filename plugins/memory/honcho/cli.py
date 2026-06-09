@@ -946,7 +946,12 @@ def _active_profile_name() -> str:
 def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     """Return (profile_name, host_key, host_block) for every known profile.
 
-    Reads honcho.json once and maps each profile to its host block.
+    Reads each profile's own honcho.json. Older versions stored all profile
+    host blocks in the default profile and used dotted host keys
+    (``hermes.<profile>``); current code uses profile-local configs with
+    sanitized host keys (``hermes_<profile>``). Accept both shapes so status
+    commands report the same effective identity that runtime config resolution
+    will use.
     """
     try:
         from hermes_cli.profiles import list_profiles
@@ -954,19 +959,31 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     except Exception:
         return [(_active_profile_name(), _host_key(), {})]
 
-    cfg = _read_config()
-    hosts = cfg.get("hosts", {})
     results = []
 
     # Default profile
+    cfg = _read_config()
+    hosts = cfg.get("hosts", {})
     default_block = hosts.get(HOST, {})
     results.append(("default", HOST, default_block))
 
     for p in profiles:
         if p.name == "default":
             continue
-        h = f"{HOST}.{p.name}"
-        results.append((p.name, h, hosts.get(h, {})))
+        h = profile_host_key(p.name)
+        profile_cfg = {}
+        try:
+            profile_config_path = Path(p.path) / "honcho.json"
+            if profile_config_path.exists():
+                profile_cfg = json.loads(profile_config_path.read_text(encoding="utf-8"))
+        except Exception:
+            profile_cfg = {}
+        profile_hosts = profile_cfg.get("hosts", {}) if isinstance(profile_cfg, dict) else {}
+        block = profile_hosts.get(h)
+        if not block:
+            legacy_h = f"{HOST}.{p.name}"
+            block = profile_hosts.get(legacy_h) or hosts.get(h) or hosts.get(legacy_h) or {}
+        results.append((p.name, h, block))
 
     return results
 
@@ -1045,9 +1062,9 @@ def cmd_status(args) -> None:
     print(f"  Recall mode:    {hcfg.recall_mode}")
     print(f"  Context budget: {hcfg.context_tokens or '(uncapped)'} tokens")
     raw = getattr(hcfg, "raw", None) or {}
-    dialectic_cadence = raw.get("dialecticCadence") or 1
+    dialectic_cadence = getattr(hcfg, "dialectic_cadence", 1) or 1
     print(f"  Dialectic cad:  every {dialectic_cadence} turn{'s' if dialectic_cadence != 1 else ''}")
-    reasoning_cap = raw.get("reasoningLevelCap") or hcfg.reasoning_level_cap
+    reasoning_cap = hcfg.reasoning_level_cap
     heuristic_on = "on" if hcfg.reasoning_heuristic else "off"
     print(f"  Reasoning:      base={hcfg.dialectic_reasoning_level}, cap={reasoning_cap}, heuristic={heuristic_on}")
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")

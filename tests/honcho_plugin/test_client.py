@@ -711,15 +711,15 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
 
-    def test_session_title_still_wins_over_gateway_key(self):
-        """Explicit /title remap takes priority over gateway_session_key."""
+    def test_gateway_key_wins_over_session_title(self):
+        """Gateway session key prevents /title from fragmenting one chatbot session."""
         config = HonchoClientConfig(session_strategy="per-session")
         result = config.resolve_session_name(
             session_title="my-custom-title",
             session_id="20260412_171002_69bb38",
             gateway_session_key="agent:main:telegram:dm:8439114563",
         )
-        assert result == "my-custom-title"
+        assert result == "agent-main-telegram-dm-8439114563"
 
     def test_per_session_fallback_without_gateway_key(self):
         """Without gateway_session_key, per-session returns session_id (CLI path)."""
@@ -738,6 +738,38 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
         assert ":" not in result
+
+    def test_gateway_keys_partition_different_chatbots(self):
+        """Different platforms/chats get distinct Honcho sessions across chatbots."""
+        config = HonchoClientConfig(session_strategy="per-directory")
+
+        telegram = config.resolve_session_name(
+            session_title="Same Auto Title",
+            gateway_session_key="agent:main:telegram:dm:7724476685",
+        )
+        imessage = config.resolve_session_name(
+            session_title="Same Auto Title",
+            gateway_session_key="agent:main:bluebubbles:dm:+15625550123",
+        )
+        api = config.resolve_session_name(
+            session_title="Same Auto Title",
+            gateway_session_key="agent:main:api_server:workspace:desktop-mac-mini",
+        )
+
+        assert telegram == "agent-main-telegram-dm-7724476685"
+        assert imessage == "agent-main-bluebubbles-dm-15625550123"
+        assert api == "agent-main-api_server-workspace-desktop-mac-mini"
+        assert len({telegram, imessage, api}) == 3
+
+    def test_cli_title_still_wins_without_gateway_key(self):
+        """Non-gateway CLI sessions can still use explicit /title session names."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_title="my-custom-title",
+            session_id="20260412_171002_69bb38",
+            gateway_session_key=None,
+        )
+        assert result == "my-custom-title"
 
 
 class TestResolveSessionNameLengthLimit:

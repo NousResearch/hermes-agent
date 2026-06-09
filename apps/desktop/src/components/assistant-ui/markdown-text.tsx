@@ -494,11 +494,9 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
 
 const MarkdownTextImpl = () => {
   return (
-    <SmoothStreamingText>
-      <DeferStreamingText>
-        <MarkdownTextSurface />
-      </DeferStreamingText>
-    </SmoothStreamingText>
+    <DeferStreamingText>
+      <MarkdownTextSurface />
+    </DeferStreamingText>
   )
 }
 

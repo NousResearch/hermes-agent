@@ -297,6 +297,14 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  /** Origin platform when this session was handed off from a messaging
+   *  platform (e.g. a Telegram thread continued in the desktop app). The live
+   *  {@link source} becomes local (tui/desktop) after a handoff, so the origin
+   *  is preserved here to surface the platform badge on the row. */
+  handoff_platform?: null | string
+  /** Handoff lifecycle: 'pending' | 'in_progress' | 'completed' | 'failed'. */
+  handoff_state?: null | string
+  handoff_error?: null | string
   /** Owning profile name, set by the cross-profile aggregator
    *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
    *  which the UI treats as the default profile. */

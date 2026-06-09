@@ -250,7 +250,7 @@ hermes -z "hello" --provider my-provider -m some-model
 与所有 Hermes 插件一样，模型提供商可以作为 pip 包发布。在你的 `pyproject.toml` 中添加入口点：
 
 ```toml
-[project.entry-points."hermes.plugins"]
+[project.entry-points."hermes_agent.plugins"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 

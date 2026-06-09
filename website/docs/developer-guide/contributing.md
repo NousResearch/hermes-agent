@@ -33,7 +33,7 @@ We value contributions in this order:
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
+| **Git** | With the `git-lfs` extension installed |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
@@ -41,7 +41,7 @@ We value contributions in this order:
 ### Clone and Install
 
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
 # Create venv with Python 3.11
@@ -94,7 +94,7 @@ pytest tests/ -v
 
 ## Cross-Platform Compatibility
 
-Hermes officially supports **Linux, macOS, WSL2, and native Windows (early beta — via PowerShell install)**.  Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands.  A few features require POSIX kernel primitives and are gated: the dashboard's embedded PTY terminal pane (`/chat` tab) is WSL2-only. The native-Windows path is new and moves fast — if you're doing Windows-heavy dev, expect to hit and fix rough edges.
+Hermes officially supports **Linux, macOS, WSL2, and native Windows (via PowerShell install)**.  Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands.  A few features require POSIX kernel primitives and are gated: the dashboard's embedded PTY terminal pane (`/chat` tab) is WSL2-only. If you're doing Windows-heavy dev, run the Windows-footgun lint (`scripts/check-windows-footguns.py`) before pushing.
 
 When contributing code, keep these rules in mind:
 

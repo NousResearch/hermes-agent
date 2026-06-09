@@ -401,6 +401,14 @@ class GitHubSource(SkillSource):
         {"repo": "openai/skills", "path": "skills/.system/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
+        # NVIDIA/skills: NVIDIA-verified skills for CUDA-X, AIQ, cuOpt,
+        # cuPyNumeric, DeepStream, NeMo, NemoClaw, etc. Each skill ships
+        # alongside a signed `skill.oms.sig`, an OMS-signed `skill-card.md`
+        # (governance card), and an `evals/` directory — synced daily from
+        # the NVIDIA product repos. Treated as `trusted` (see
+        # `tools/skills_guard.py::TRUSTED_REPOS`). Sample layout:
+        # https://github.com/NVIDIA/skills/tree/main/skills
+        {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
     ]
 
@@ -412,6 +420,10 @@ class GitHubSource(SkillSource):
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        # Per-repo cache of the optional skills.sh.json grouping sidecar,
+        # mapping skill_name -> human-readable grouping title. ``None`` means
+        # "fetched, no sidecar"; a missing key means "not fetched yet".
+        self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
         # Set when GitHub returns 403 with rate limit exhausted
         self._rate_limited: bool = False
 
@@ -538,11 +550,8 @@ class GitHubSource(SkillSource):
             return [SkillMeta(**s) for s in cached]
 
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
-        try:
-            resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                return []
-        except httpx.HTTPError:
+        resp = self._github_get(url)
+        if resp is None or resp.status_code != 200:
             return []
 
         entries = resp.json()
@@ -550,6 +559,7 @@ class GitHubSource(SkillSource):
             return []
 
         skills: List[SkillMeta] = []
+        groupings = self._get_skillsh_groupings(repo)
         for entry in entries:
             if entry.get("type") != "dir":
                 continue
@@ -562,6 +572,10 @@ class GitHubSource(SkillSource):
             skill_identifier = f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}"
             meta = self.inspect(skill_identifier)
             if meta:
+                if groupings:
+                    category = groupings.get(meta.name) or groupings.get(dir_name)
+                    if category:
+                        meta.extra["category"] = category
                 skills.append(meta)
 
         # Cache the results
@@ -622,14 +636,97 @@ class GitHubSource(SkillSource):
 
     def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
         """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
-        if resp.status_code == 403:
+        if resp.status_code in (403, 429):
             remaining = resp.headers.get("X-RateLimit-Remaining", "")
-            if remaining == "0":
+            if remaining == "0" or resp.status_code == 429:
                 self._rate_limited = True
                 logger.warning(
                     "GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
                     "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr."
                 )
+
+    def _github_get(
+        self,
+        url: str,
+        *,
+        params: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
+        timeout: float = 15.0,
+        max_retries: int = 3,
+    ) -> Optional["httpx.Response"]:
+        """GET against the GitHub API with retry/backoff on transient failures.
+
+        Returns the final ``httpx.Response`` (caller inspects status) or
+        ``None`` when every attempt raised a transport error.
+
+        Retries on:
+          - 403/429 with ``X-RateLimit-Remaining: 0`` — waits until the
+            reset time (capped) when the header is present, else exponential
+            backoff. This is the all-GitHub-tap-collapse case: a single
+            shared rate limit zeroes github + claude-marketplace + well-known
+            at once during the index build.
+          - 5xx and connection/timeout errors — exponential backoff.
+
+        On terminal rate-limit exhaustion the instance is flagged via
+        ``_check_rate_limit_response`` so the build can fail loud instead of
+        silently shipping an index with the GitHub sources dropped to zero.
+        """
+        hdrs = headers if headers is not None else self.auth.get_headers()
+        backoff = 1.0
+        last_resp: Optional["httpx.Response"] = None
+        for attempt in range(max_retries):
+            try:
+                resp = httpx.get(
+                    url, params=params, headers=hdrs,
+                    timeout=timeout, follow_redirects=True,
+                )
+            except httpx.HTTPError as e:
+                logger.debug("GitHub GET %s failed (attempt %d/%d): %s",
+                             url, attempt + 1, max_retries, e)
+                if attempt < max_retries - 1:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
+                return None
+
+            last_resp = resp
+            if resp.status_code == 200:
+                return resp
+
+            # Rate-limited: honor the reset header when present, else back off.
+            if resp.status_code in (403, 429):
+                remaining = resp.headers.get("X-RateLimit-Remaining", "")
+                is_rl = remaining == "0" or resp.status_code == 429
+                if is_rl and attempt < max_retries - 1:
+                    wait = backoff
+                    reset = resp.headers.get("X-RateLimit-Reset", "")
+                    retry_after = resp.headers.get("Retry-After", "")
+                    if retry_after.isdigit():
+                        wait = min(float(retry_after), 60.0)
+                    elif reset.isdigit():
+                        delta = float(reset) - time.time()
+                        if 0 < delta <= 60.0:
+                            wait = delta
+                    logger.debug(
+                        "GitHub rate limited on %s, waiting %.1fs (attempt %d/%d)",
+                        url, wait, attempt + 1, max_retries,
+                    )
+                    time.sleep(wait)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
+                # Out of retries (or not a rate-limit 403) — flag and return.
+                self._check_rate_limit_response(resp)
+                return resp
+
+            # 5xx — retry; 4xx (other than rate limit) — return immediately.
+            if 500 <= resp.status_code < 600 and attempt < max_retries - 1:
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+                continue
+            return resp
+
+        return last_resp
+
 
     def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
         """Recursively download all text files from a GitHub directory.
@@ -751,18 +848,68 @@ class GitHubSource(SkillSource):
     def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
         """Fetch a single file's content from GitHub."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
-        try:
-            resp = httpx.get(
-                url,
-                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-                timeout=15, follow_redirects=True,
-            )
-            if resp.status_code == 200:
-                return resp.text
-            self._check_rate_limit_response(resp)
-        except httpx.HTTPError as e:
-            logger.debug("GitHub contents API fetch failed: %s", e)
+        resp = self._github_get(
+            url,
+            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+        )
+        if resp is not None and resp.status_code == 200:
+            return resp.text
         return None
+
+    def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:
+        """Fetch and parse the repo-root ``skills.sh.json`` grouping sidecar.
+
+        ``skills.sh.json`` is a published cross-ecosystem standard
+        (``$schema: https://skills.sh/schemas/skills.sh.schema.json``) that
+        lets a tap declare human-readable category groupings for its skills:
+
+            {"groupings": [{"title": "Inference AI", "skills": ["dynamo-..."]}]}
+
+        We flatten it into ``{skill_name: grouping_title}`` so the Skills Hub
+        UI can show a real category pill instead of a tag-derived guess. Any
+        tap that ships this file gets categorization for free — this is not
+        NVIDIA-specific.
+
+        Returns the map (possibly empty) on success, or ``None`` when the repo
+        has no sidecar / it couldn't be parsed. Cached per-repo on the instance.
+        """
+        if repo in self._skillsh_groupings:
+            return self._skillsh_groupings[repo]
+
+        content = self._fetch_file_content(repo, "skills.sh.json")
+        groupings = self._parse_skillsh_groupings(content) if content else None
+        self._skillsh_groupings[repo] = groupings
+        return groupings
+
+    @staticmethod
+    def _parse_skillsh_groupings(content: str) -> Optional[Dict[str, str]]:
+        """Flatten a ``skills.sh.json`` document into ``{skill_name: title}``.
+
+        Returns ``None`` when the content isn't a usable grouping document.
+        """
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        groupings = data.get("groupings")
+        if not isinstance(groupings, list):
+            return None
+
+        mapping: Dict[str, str] = {}
+        for group in groupings:
+            if not isinstance(group, dict):
+                continue
+            title = group.get("title")
+            members = group.get("skills")
+            if not isinstance(title, str) or not isinstance(members, list):
+                continue
+            for member in members:
+                if isinstance(member, str) and member:
+                    # First grouping wins if a skill is listed twice.
+                    mapping.setdefault(member, title)
+        return mapping
 
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
@@ -797,6 +944,7 @@ class GitHubSource(SkillSource):
             "repo": meta.repo,
             "path": meta.path,
             "tags": meta.tags,
+            "extra": meta.extra,
         }
 
     @staticmethod
@@ -2300,9 +2448,18 @@ class ClaudeMarketplaceSource(SkillSource):
 
     def __init__(self, auth: GitHubAuth):
         self.auth = auth
+        # Persistent GitHubSource so rate-limit state survives across the
+        # marketplace-index fetch + per-skill inspect calls and can be
+        # surfaced to the index builder (see is_rate_limited).
+        self.github = GitHubSource(auth=auth)
 
     def source_id(self) -> str:
         return "claude-marketplace"
+
+    @property
+    def is_rate_limited(self) -> bool:
+        """Whether the underlying GitHub API hit a rate limit during the crawl."""
+        return self.github.is_rate_limited
 
     def trust_level_for(self, identifier: str) -> str:
         parts = identifier.split("/", 2)
@@ -2342,15 +2499,13 @@ class ClaudeMarketplaceSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         # Delegate to GitHub Contents API since marketplace skills live in GitHub repos
-        gh = GitHubSource(auth=self.auth)
-        bundle = gh.fetch(identifier)
+        bundle = self.github.fetch(identifier)
         if bundle:
             bundle.source = "claude-marketplace"
         return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        gh = GitHubSource(auth=self.auth)
-        meta = gh.inspect(identifier)
+        meta = self.github.inspect(identifier)
         if meta:
             meta.source = "claude-marketplace"
             meta.trust_level = self.trust_level_for(identifier)
@@ -2364,16 +2519,15 @@ class ClaudeMarketplaceSource(SkillSource):
             return cached
 
         url = f"https://api.github.com/repos/{repo}/contents/.claude-plugin/marketplace.json"
+        resp = self.github._github_get(
+            url,
+            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+        )
+        if resp is None or resp.status_code != 200:
+            return []
         try:
-            resp = httpx.get(
-                url,
-                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                return []
             data = json.loads(resp.text)
-        except (httpx.HTTPError, json.JSONDecodeError):
+        except json.JSONDecodeError:
             return []
 
         plugins = data.get("plugins", [])

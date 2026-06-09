@@ -21,10 +21,8 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import os
-import re
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -184,6 +182,8 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
+    "HERMES_CRON_SESSION",
+    "_HERMES_GATEWAY",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
     "HERMES_INFERENCE_MODEL",
@@ -227,6 +227,8 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "TERMINAL_CONTAINER_DISK",
     "TERMINAL_CONTAINER_MEMORY",
     "TERMINAL_CONTAINER_PERSISTENT",
+    "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+    "TERMINAL_DOCKER_ORPHAN_REAPER",
     "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "BROWSER_CDP_URL",
     "CAMOFOX_URL",

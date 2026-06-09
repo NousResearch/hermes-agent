@@ -307,7 +307,8 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
 
 
 def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
-    """blocked tasks with all parents done should be promoted to ready."""
+    """blocked tasks with all parents done should be promoted to ready,
+    unless the circuit-breaker failure limit has been reached."""
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="a")
         child = kb.create_task(
@@ -316,16 +317,16 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         # Complete the parent
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        # Manually block the child (simulates a worker that failed
-        # after the parent finished)
+        # Manually block the child with zero failures (simulates a
+        # dependency block, not a circuit-breaker block).
         conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
-            "last_failure_error='persistent error' WHERE id=?",
+            "UPDATE tasks SET status='blocked', consecutive_failures=0, "
+            "last_failure_error=NULL WHERE id=?",
             (child,),
         )
         conn.commit()
         assert kb.get_task(conn, child).status == "blocked"
-        # recompute_ready should promote blocked → ready and reset failures
+        # recompute_ready should promote blocked → ready
         promoted = kb.recompute_ready(conn)
         assert promoted == 1
         task = kb.get_task(conn, child)
@@ -678,6 +679,207 @@ def test_resolve_crash_grace_seconds_handles_bad_env(monkeypatch):
         )
 
 
+# ---------------------------------------------------------------------------
+# Rate-limit requeue: a worker that bails on a provider quota wall must be
+# released back to ``ready`` WITHOUT counting a failure, so a long (e.g.
+# 5-hour) quota window can't trip the circuit breaker and permanently block
+# the card. The respawn guard then defers it on a cooldown until quota
+# returns. Regression coverage for the kanban-rate-limit-failure report.
+# ---------------------------------------------------------------------------
+
+
+def _exited_status(code: int) -> int:
+    """Raw wait-status for a WIFEXITED child with the given exit code."""
+    return code << 8
+
+
+def test_classify_worker_exit_recognizes_rate_limit_sentinel(kanban_home):
+    import hermes_cli.kanban_db as _kb
+
+    pid = 31337
+    _kb._record_worker_exit(pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE))
+    kind, code = _kb._classify_worker_exit(pid)
+    assert kind == "rate_limited"
+    assert code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE
+
+    # Plain non-zero exit is still a normal crash, not rate-limited.
+    _kb._record_worker_exit(pid + 1, _exited_status(1))
+    assert _kb._classify_worker_exit(pid + 1) == ("nonzero_exit", 1)
+
+
+def test_rate_limit_exit_requeues_without_counting_failure(
+    kanban_home, monkeypatch,
+):
+    """A rate-limit sentinel exit releases the task to ``ready`` and leaves
+    ``consecutive_failures`` untouched — the breaker must never trip on a
+    transient throttle, even across many quota-wall hits."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="rl", assignee="a")
+
+        # Simulate FAR more quota-wall hits than DEFAULT_FAILURE_LIMIT (2).
+        # If any of these counted as a failure the task would be blocked.
+        for i in range(6):
+            pid = 70000 + i
+            # Claim to open a real run (so detect_crashed_workers can close
+            # it with a rate_limited outcome), then point the claim at this
+            # host + a dead pid so the crash path acts on it.
+            kb.claim_task(conn, tid, claimer=f"{host}:w{i}")
+            conn.execute(
+                "UPDATE tasks SET worker_pid=?, consecutive_failures=? "
+                "WHERE id=?",
+                (pid, 0, tid),
+            )
+            conn.commit()
+            _kb._record_worker_exit(
+                pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+            )
+
+            crashed = kb.detect_crashed_workers(conn)
+            # Rate-limited requeues are NOT crashes.
+            assert tid not in crashed
+            rl = getattr(_kb.detect_crashed_workers, "_last_rate_limited", [])
+            assert tid in rl
+
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"hit {i}: should requeue ready, got {task.status}"
+            )
+            assert task.consecutive_failures == 0, (
+                f"hit {i}: rate-limit must not count a failure, "
+                f"got {task.consecutive_failures}"
+            )
+
+        # Last failure error stamped so the respawn guard recognizes the
+        # quota wall.
+        assert task.last_failure_error and "rate-limited" in task.last_failure_error
+
+        # A ``rate_limited`` run outcome was recorded (not ``crashed``).
+        outcomes = [
+            r["outcome"] for r in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
+            ).fetchall()
+        ]
+        assert "rate_limited" in outcomes
+        assert "crashed" not in outcomes
+
+
+def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
+    """Sanity: a genuine non-zero crash (not the sentinel) still increments
+    the failure counter and trips the breaker — the rate-limit carve-out is
+    surgical, not a blanket "never count crashes"."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="crash", assignee="a")
+
+        for i in range(2):  # DEFAULT_FAILURE_LIMIT == 2
+            pid = 60000 + i
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (pid, f"{host}:w{i}", tid),
+            )
+            conn.commit()
+            _kb._record_worker_exit(pid, _exited_status(1))  # generic failure
+            kb.detect_crashed_workers(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"genuine crashes should still trip the breaker, got {task.status}"
+        )
+
+
+def test_respawn_guard_defers_rate_limited_within_cooldown(
+    kanban_home, monkeypatch,
+):
+    """Within the cooldown after a rate-limit requeue, the guard defers the
+    respawn; after the cooldown it allows a probe — and crucially does NOT
+    fall into ``blocker_auth`` (which would defer forever)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rl-guard", assignee="a")
+        # Seed a rate_limited run that just ended + the stamped error.
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        # Inside cooldown → defer with the rate-limit-specific reason.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kb.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        # Past cooldown → allowed (None), NOT trapped by blocker_auth even
+        # though last_failure_error contains "rate-limited".
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_rate_limit_cooldown_zero_allows_immediately(
+    kanban_home, monkeypatch,
+):
+    """Cooldown of 0 disables the wait — task is spawnable on the next tick,
+    and the stamped rate-limit text does not re-trap it via blocker_auth."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    now = 6_000_000
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rl-zero", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall)", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_resolve_rate_limit_cooldown_handles_bad_env(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    for bad_val in ("notanumber", "-5", ""):
+        monkeypatch.setenv(
+            "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", bad_val
+        )
+        assert (
+            _kb._resolve_rate_limit_cooldown_seconds()
+            == _kb.DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+        )
+
+
 def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch):
     """A retry should get a fresh max-runtime window.
 
@@ -813,6 +1015,149 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.status == "ready"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+
+
+def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
+    """recompute_ready must not auto-recover tasks whose consecutive_failures
+    has reached the circuit-breaker limit (#35072).
+
+    Without this guard, a task that repeatedly exhausts its iteration
+    budget would cycle forever: block → auto-recover (counter reset)
+    → respawn → budget exhausted → block → …
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(conn, title="child", assignee="a",
+                               parents=[parent])
+        # Complete the parent so the child's dependencies are satisfied.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, summary="done")
+
+        # Simulate the child having exhausted its budget twice,
+        # hitting the default failure limit (2).
+        kb.claim_task(conn, child)
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 2",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, child)
+        assert task.status == "blocked"
+        assert task.consecutive_failures >= 2
+
+        # recompute_ready must NOT promote this task — the circuit
+        # breaker has tripped and it should stay blocked.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Explicit unblock should still work and reset the counter.
+        assert kb.unblock_task(conn, child)
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+
+def test_recompute_ready_recovers_below_limit(kanban_home):
+    """recompute_ready auto-recovers blocked tasks that haven't hit the
+    failure limit yet — the counter is preserved across recovery."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task", assignee="a")
+        kb.claim_task(conn, t)
+        # One failure, below the default limit of 2.
+        kb._record_task_failure(
+            conn, t, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+        # Simulate being blocked by something else (not circuit breaker).
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked' WHERE id = ?", (t,),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        # Counter must be preserved, not reset.
+        assert task.consecutive_failures == 1
+
+
+def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
+    """The guard's effective limit must follow the same resolution order
+    as the circuit breaker (#35072): per-task max_retries → dispatcher
+    failure_limit → DEFAULT_FAILURE_LIMIT.
+
+    Without threading the dispatcher's ``kanban.failure_limit`` through,
+    the guard falls back to DEFAULT_FAILURE_LIMIT and disagrees with the
+    breaker — sticking a task prematurely (config limit > default) or
+    letting a tripped task escape (config limit < default).
+    """
+    with kb.connect() as conn:
+        # Config allows MORE retries than the default. A task blocked
+        # with failures below the configured limit must still recover.
+        t = kb.create_task(conn, title="lenient", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=? "
+            "WHERE id=?",
+            (kb.DEFAULT_FAILURE_LIMIT, t),
+        )
+        conn.commit()
+        # Default-limit call would stick it (failures >= default).
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, t).status == "blocked"
+        # Dispatcher configured a higher limit → recover, preserve counter.
+        promoted = kb.recompute_ready(
+            conn, failure_limit=kb.DEFAULT_FAILURE_LIMIT + 2
+        )
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == kb.DEFAULT_FAILURE_LIMIT
+
+        # Config allows FEWER retries than the default. A task at the
+        # stricter limit must stay blocked even though it's below default.
+        t2 = kb.create_task(conn, title="strict", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 "
+            "WHERE id=?",
+            (t2,),
+        )
+        conn.commit()
+        # Default-limit (2) would recover it (1 < 2).
+        # Stricter config limit (1) must keep it blocked (1 >= 1).
+        assert kb.recompute_ready(conn, failure_limit=1) == 0
+        assert kb.get_task(conn, t2).status == "blocked"
+
+
+def test_recompute_ready_per_task_max_retries_overrides_dispatcher(kanban_home):
+    """A per-task ``max_retries`` wins over the dispatcher failure_limit,
+    matching ``_record_task_failure``'s resolution order."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="per-task", assignee="a")
+        # Per-task allows 4 retries; dispatcher config says 2.
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=2, "
+            "max_retries=4 WHERE id=?",
+            (t,),
+        )
+        conn.commit()
+        # failures(2) < per-task limit(4) → recover, despite dispatcher=2.
+        promoted = kb.recompute_ready(conn, failure_limit=2)
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1659,6 +2004,91 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
         kb.complete_task(conn, t, result="ok")
 
     assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
+
+
+# ---------------------------------------------------------------------------
+# Deferred scratch cleanup for parent/child handoff (#33774)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_workspace_deferred_while_child_active(kanban_home):
+    """A scratch parent's workspace survives completion while a child is still active.
+
+    The dependency chain (parents=[A]) must guarantee child B can read A's
+    handoff artifacts. The old cleanup deleted A's scratch dir immediately on
+    A's completion, before B ever ran.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)  # child depends on parent
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        assert parent_ws.is_dir()
+        # Parent completes; child is still 'todo' -> cleanup must be deferred.
+        kb.complete_task(conn, parent, result="handoff written")
+
+    assert parent_ws.exists(), (
+        "Parent scratch workspace must survive while a linked child is active"
+    )
+
+
+def test_cleanup_workspace_swept_after_last_child_completes(kanban_home):
+    """Once all children are terminal, the deferred parent scratch dir is removed."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        # Give the child its own scratch dir too.
+        c_task = kb.get_task(conn, child)
+        child_ws = kb.resolve_workspace(c_task)
+        kb.set_workspace_path(conn, child, child_ws)
+
+        kb.complete_task(conn, parent, result="ok")
+        assert parent_ws.exists(), "deferred while child active"
+
+        # Child completes -> recompute promotes nothing new; the child's
+        # cleanup sweep should now reap the parent's deferred workspace.
+        kb.complete_task(conn, child, result="done")
+
+    assert not parent_ws.exists(), (
+        "Parent scratch workspace should be swept once all children are terminal"
+    )
+    assert not child_ws.exists(), "Child scratch workspace should be cleaned up too"
+
+
+def test_dir_child_completion_unblocks_deferred_scratch_parent(kanban_home, tmp_path):
+    """A non-scratch ('dir') child completing must still sweep its scratch parent.
+
+    Regression for the gap where ``_cleanup_workspace`` returned early for a
+    non-scratch task and never ran the parent sweep — leaking the parent's
+    deferred scratch dir forever.
+    """
+    child_dir = tmp_path / "persistent-child"
+    child_dir.mkdir()
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="scratch parent")
+        child = kb.create_task(
+            conn, title="dir child", workspace_kind="dir",
+            workspace_path=str(child_dir),
+        )
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+
+        kb.complete_task(conn, parent, result="handoff")
+        assert parent_ws.exists(), "deferred while dir child active"
+
+        kb.complete_task(conn, child, result="built")
+
+    assert not parent_ws.exists(), (
+        "A 'dir' child completing must trigger the parent scratch sweep"
+    )
+    assert child_dir.exists(), "Non-scratch 'dir' child workspace is never deleted"
 
 
 def test_is_managed_scratch_path_accepts_per_board_workspaces(kanban_home, tmp_path):
@@ -2566,7 +2996,6 @@ def test_resolve_hermes_argv_module_actually_runs():
     Run it as a real subprocess to catch that regression.
     """
     import subprocess
-    import sys
     import hermes_cli.kanban_db as kb
     import shutil
     import unittest.mock as mock
@@ -3145,7 +3574,6 @@ def test_detect_stale_skips_recently_started_task(kanban_home, monkeypatch):
 
 def test_detect_stale_skips_when_timeout_zero(kanban_home, monkeypatch):
     """stale_timeout_seconds=0 disables stale detection entirely."""
-    import hermes_cli.kanban_db as _kb
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="disabled", assignee="worker")
@@ -3628,7 +4056,7 @@ def test_write_txn_preserves_original_exception_when_rollback_fails(kanban_home)
     )
 def test_write_txn_healthy_commit_no_exception(tmp_path):
     """Normal commit does not trigger the torn-extend check."""
-    from hermes_cli.kanban_db import connect, write_txn, create_task
+    from hermes_cli.kanban_db import connect, write_txn
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
     # Should not raise
@@ -3645,7 +4073,6 @@ def test_write_txn_healthy_commit_no_exception(tmp_path):
 def test_write_txn_raises_on_truncated_file(tmp_path):
     """A mocked smaller file size triggers the torn-extend check."""
     from hermes_cli.kanban_db import connect, write_txn
-    import hermes_cli.kanban_db as kanban_db_module
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
     # Get actual page size so we can fake a smaller file
@@ -3705,7 +4132,7 @@ def test_connect_sets_wal_autocheckpoint_100(tmp_path):
 def test_write_txn_check_reads_correct_header_fields(tmp_path):
     """Synthetic DB file with mismatched header page_count triggers the check."""
     import struct
-    from hermes_cli.kanban_db import connect, write_txn, _check_file_length_invariant
+    from hermes_cli.kanban_db import connect, _check_file_length_invariant
     db = tmp_path / "synthetic.db"
     conn = connect(db_path=db)
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]

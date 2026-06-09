@@ -85,6 +85,21 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+## Update Behavior
+
+`hermes update` settings live under `updates` in `config.yaml`:
+
+```yaml
+updates:
+  pre_update_backup: false       # Create a full HERMES_HOME zip before every update
+  backup_keep: 5                 # Keep this many pre-update backup zips
+  non_interactive_local_changes: stash  # stash | discard
+```
+
+For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
+
+Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
+
 ## Terminal Backend Configuration
 
 Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
@@ -130,7 +145,7 @@ The agent has the same filesystem access as your user account. Use `hermes tools
 
 Runs commands inside a Docker container with security hardening (all capabilities dropped, no privilege escalation, PID limits).
 
-**Single persistent container, not per-command.** Hermes starts ONE long-lived container on first use and routes every terminal, file, and `execute_code` call through `docker exec` into that same container — across sessions, `/new`, `/reset`, and `delegate_task` subagents — for the lifetime of the Hermes process. Working-directory changes, installed packages, and files in `/workspace` carry over from one tool call to the next, just like a local shell. The container is stopped and removed on shutdown. See **Container lifecycle** below for details.
+**Single persistent container, shared across Hermes processes.** Hermes starts ONE long-lived container on first use and routes every terminal, file, and `execute_code` call through `docker exec` into that same container — across sessions, `/new`, `/reset`, and `delegate_task` subagents. Working-directory changes, installed packages, files in `/workspace`, and **background processes** all carry over from one tool call to the next, and from one Hermes process to the next. When you close a TUI session, run `/quit`, or start a new `hermes` invocation, the container keeps running and the next Hermes process reuses it via a labeled lookup. See **Container lifecycle** below for the exact teardown rules.
 
 ```yaml
 terminal:
@@ -138,8 +153,11 @@ terminal:
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
   docker_mount_cwd_to_workspace: false  # Mount launch dir into /workspace
   docker_run_as_host_user: false   # See "Running container as host user" below
-  docker_forward_env:              # Env vars to forward into container
+  docker_forward_env:              # Host env vars to forward into container
     - "GITHUB_TOKEN"
+  docker_env:                      # Literal env vars to inject (KEY=value)
+    DEBUG: "1"
+    PYTHONUNBUFFERED: "1"
   docker_volumes:                  # Host directory mounts
     - "/home/user/projects:/workspace/projects"
     - "/home/user/data:/data:ro"   # :ro for read-only
@@ -151,14 +169,49 @@ terminal:
   container_cpu: 1                 # CPU cores (0 = unlimited)
   container_memory: 5120           # MB (0 = unlimited)
   container_disk: 51200            # MB (requires overlay2 on XFS+pquota)
-  container_persistent: true       # Persist /workspace and /root across sessions
+  container_persistent: true       # Persist /workspace and /root bind-mount dirs
+
+  # Cross-process container reuse (defaults match the "one long-lived
+  # container shared across sessions" contract — see Container lifecycle).
+  docker_persist_across_processes: true   # Reuse container across Hermes restarts
+  docker_orphan_reaper: true              # Sweep abandoned Exited containers at startup
+
+  # Cross-backend lifecycle settings (apply to docker as well)
+  timeout: 180                     # Per-command timeout in seconds
+  lifetime_seconds: 300            # Idle-reaper window; also feeds 2× orphan-reaper threshold
 ```
+
+**`docker_env`** vs **`docker_forward_env`**: the former injects literal `KEY=value` pairs you specify in the config (the values live in your `config.yaml` or are passed as a JSON dict via `TERMINAL_DOCKER_ENV='{"DEBUG":"1"}'`). The latter forwards values from your shell or `~/.hermes/.env`, so the actual secret never appears in the config file. Use `docker_forward_env` for tokens and `docker_env` for static knobs the container needs.
 
 **`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
-**Container lifecycle:** Hermes reuses a single long-lived container (`docker run -d ... sleep 2h`) for every terminal and file-tool call, across sessions, `/new`, `/reset`, and `delegate_task` subagents, for the lifetime of the Hermes process. Commands run via `docker exec` with a login shell, so working-directory changes, installed packages, and files in `/workspace` all persist from one tool call to the next. The container is stopped and removed on Hermes shutdown (or when the idle-sweep reclaims it).
+#### Container lifecycle
+
+Every Hermes-managed container is tagged with three labels so subsequent processes (and the orphan reaper) can identify it:
+
+- `hermes-agent=1` — marks it as Hermes-managed
+- `hermes-task-id=<sanitized task_id>` — keys the per-task reuse probe
+- `hermes-profile=<sanitized profile name>` — scopes reuse and reaping to the active Hermes profile
+
+On startup, Hermes runs `docker ps --filter label=hermes-task-id=<id> --filter label=hermes-profile=<profile>` and **attaches to the existing container** when it finds one. If the container is `exited` (e.g. after a Docker daemon restart), it's `docker start`'d and reused — filesystem state and any installed packages survive, but in-container background processes do not.
+
+When a Hermes process exits — `/quit`, closing a TUI session, gateway shutdown, even SIGKILL — the cleanup path is a **no-op for the container in default mode**. The container keeps running. The next Hermes process attaches to it in milliseconds via the label probe. This is the behavior the "one long-lived container shared across sessions" contract requires: it's the only way background processes (npm watchers, dev servers, long-running pytest) survive across sessions.
+
+**The container is only torn down (stopped and `docker rm -f`'d) in these cases:**
+
+| Trigger | When it fires |
+|---|---|
+| `docker_persist_across_processes: false` | Explicit per-process isolation. Every `cleanup()` does `stop` + `rm -f`. Matches pre-issue-#20561 behavior. |
+| Idle reaper (`lifetime_seconds`, default 300s) | Only when the env is `persist_across_processes=false`. Persist-mode envs are no-op'd; container survives the idle sweep. |
+| Orphan reaper at next startup | Sweeps **Exited** hermes-labeled containers older than `2 × lifetime_seconds` (default 600s = 10 min), scoped to the current profile. **Running containers are never touched** — sibling-process safety. Set `docker_orphan_reaper: false` to disable. |
+| Direct user action | `docker rm -f`, `docker system prune`, Docker Desktop restart. We don't set `--restart=always`, so a host reboot leaves the container `Exited` (its CoW layer survives and gets reused on next startup, but bg processes are gone). |
+
+Edge cases worth knowing:
+
+- **OOM kill of in-container PID 1** transitions the container to `Exited`. Next reuse will `docker start` it; filesystem state survives, bg processes do not.
+- **Switching profiles** isolates containers from each other — a container labeled `hermes-profile=work` is invisible to a Hermes process running under `hermes-profile=research`. The orphan reaper is profile-scoped too, so cross-profile containers don't get reaped accidentally, but they also won't get cleaned up automatically until you start Hermes again under their original profile.
 
 Parallel subagents spawned via `delegate_task(tasks=[...])` share this one container — concurrent `cd`, env mutations, and writes to the same path will collide. If a subagent needs an isolated sandbox, it must register a per-task image override via `register_task_env_overrides()`, which RL and benchmark environments (TerminalBench2, HermesSweEnv, etc.) do automatically for their per-task Docker images.
 
@@ -169,6 +222,29 @@ Parallel subagents spawned via `delegate_task(tasks=[...])` share this one conta
 - Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB)
 
 **Credential forwarding:** Env vars listed in `docker_forward_env` are resolved from your shell environment first, then `~/.hermes/.env`. Skills can also declare `required_environment_variables` which are merged automatically.
+
+#### Environment variable overrides
+
+Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_UPPERCASE>`. The most useful ones for the Docker backend:
+
+| Env var | Maps to | Notes |
+|---|---|---|
+| `TERMINAL_DOCKER_IMAGE` | `docker_image` | Base image |
+| `TERMINAL_DOCKER_FORWARD_ENV` | `docker_forward_env` | JSON array: `'["GITHUB_TOKEN","OPENAI_API_KEY"]'` |
+| `TERMINAL_DOCKER_ENV` | `docker_env` | JSON dict: `'{"DEBUG":"1"}'` |
+| `TERMINAL_DOCKER_VOLUMES` | `docker_volumes` | JSON array of `"host:container[:ro]"` strings |
+| `TERMINAL_DOCKER_EXTRA_ARGS` | `docker_extra_args` | JSON array |
+| `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | `docker_mount_cwd_to_workspace` | `true` / `false` |
+| `TERMINAL_DOCKER_RUN_AS_HOST_USER` | `docker_run_as_host_user` | `true` / `false` |
+| `TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES` | `docker_persist_across_processes` | `true` / `false` — default `true` |
+| `TERMINAL_DOCKER_ORPHAN_REAPER` | `docker_orphan_reaper` | `true` / `false` — default `true` |
+| `TERMINAL_CONTAINER_CPU` | `container_cpu` | CPU cores |
+| `TERMINAL_CONTAINER_MEMORY` | `container_memory` | MB |
+| `TERMINAL_CONTAINER_DISK` | `container_disk` | MB |
+| `TERMINAL_CONTAINER_PERSISTENT` | `container_persistent` | `true` / `false` — controls the bind-mount workspace dirs, distinct from `docker_persist_across_processes` |
+| `TERMINAL_LIFETIME_SECONDS` | `lifetime_seconds` | Idle reaper window |
+| `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
+| `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
 
 ### SSH Backend
 
@@ -803,7 +879,7 @@ Available providers for auxiliary tasks: `auto`, `main`, plus any provider in th
 :::
 
 :::warning `"main"` is for auxiliary tasks only
-The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/integrations/providers) for all main model provider options.
+The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and primary fallback entries (`fallback_providers:` or legacy `fallback_model:`). It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/integrations/providers) for all main model provider options.
 :::
 
 ### Full auxiliary config reference
@@ -873,7 +949,7 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
+Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
@@ -916,7 +992,7 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 
 ### Provider Options
 
-These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`, `fallback_model:`), not to your main `model.provider` setting.
+These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`) and primary fallback entries (`fallback_providers:` or legacy `fallback_model:`), not to your main `model.provider` setting.
 
 | Provider | Description | Requirements |
 |----------|-------------|-------------|
@@ -1174,7 +1250,7 @@ Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to su
 
 The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
 
-Supported values: `en` (default), `zh` (Simplified Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian). Unknown values fall back to English.
+Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian). Unknown values fall back to English.
 
 You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
 
@@ -1192,15 +1268,17 @@ display:
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
+Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
+
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn — same info the CLI shows in its status bar (model, context %, cwd, session duration, tokens, cost). Off by default; opt in per-gateway if your team wants every reply to include the provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # any of: model, context_pct, cwd, duration, tokens, cost
+    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
 ```
 
 The `/footer` slash command toggles this at runtime in any session.
@@ -1215,14 +1293,14 @@ Only the **final** message of a turn gets the footer; interim updates stay clean
 
 ### Per-platform progress overrides
 
-Different platforms have different verbosity needs. For example, Signal can't edit messages, so each progress update becomes a separate message — noisy. Use `display.platforms` to set per-platform modes:
+Different platforms have different verbosity needs. Use `display.platforms` to set per-platform modes:
 
 ```yaml
 display:
   tool_progress: all          # global default
   platforms:
     signal:
-      tool_progress: 'off'    # silence progress on Signal
+      tool_progress: 'off'    # Signal cannot currently display tool-progress bubbles
     telegram:
       tool_progress: verbose  # detailed progress on Telegram
     slack:
@@ -1230,6 +1308,8 @@ display:
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+
+Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
@@ -1331,11 +1411,30 @@ For separate natural mid-turn assistant updates without progressive token editin
 
 **Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. When `fresh_final_after_seconds > 0` (default `60`), the completed reply is delivered as a brand-new message (with the stale preview best-effort deleted) so Telegram's visible timestamp reflects completion time. Short previews still finalize in place. Set to `0` to always edit in place.
 
-:::note
-Streaming is disabled by default. Enable it in `~/.hermes/config.yaml` to try the streaming UX.
+:::note Per-platform streaming defaults
+The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
 ## Group Chat Session Isolation
+
+Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
+and messaging gateway:
+
+```yaml
+max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
+```
+
+When the cap is reached, Hermes returns a direct limit message for new sessions.
+Existing active sessions keep their normal behavior.
+
+The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
+`gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
+both are set.
+
+The cap is enforced with a local runtime lease file and is best-effort: Hermes
+fails open if the registry cannot be read or locked so users are not stranded.
+It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
+mounted across multiple machines.
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
@@ -1523,7 +1622,7 @@ Pre-execution security scanning and secret redaction:
 
 ```yaml
 security:
-  redact_secrets: false          # Redact API key patterns in tool output and logs (off by default)
+  redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
   tirith_enabled: true           # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
@@ -1534,7 +1633,7 @@ security:
     shared_files: []
 ```
 
-- `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **Off by default** — enable if you commonly work with real credentials in tool output and want a safety net. Set to `true` explicitly to turn on.
+- `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
@@ -1665,12 +1764,14 @@ See also:
 | Context | Default |
 |---------|---------|
 | **CLI (`hermes`)** | Current directory where you run the command |
-| **Messaging gateway** | Home directory `~` (override with `MESSAGING_CWD`) |
+| **Messaging gateway** | `terminal.cwd` from `~/.hermes/config.yaml`; if unset, home directory `~` |
 | **Docker / Singularity / Modal / SSH** | User's home directory inside the container or remote machine |
 
 Override the working directory:
-```bash
-# In ~/.hermes/.env or ~/.hermes/config.yaml:
-MESSAGING_CWD=/home/myuser/projects    # Gateway sessions
-TERMINAL_CWD=/workspace                # All terminal sessions
+```yaml
+# In ~/.hermes/config.yaml:
+terminal:
+  cwd: /home/myuser/projects
 ```
+
+`MESSAGING_CWD` and direct `TERMINAL_CWD` entries in `~/.hermes/.env` are legacy compatibility fallbacks. New configurations should use `terminal.cwd`.

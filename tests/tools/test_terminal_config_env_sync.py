@@ -7,9 +7,9 @@ at startup, by THREE separate code paths:
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
   2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
-  3. hermes_cli/config.py:save_config_value
-                       -> ``_config_to_env_sync`` dict (one-shot when the
-                          user runs ``hermes config set …``)
+  3. hermes_cli/config.py:set_config_value
+                       -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
+                          (one-shot when the user runs ``hermes config set …``)
 
 If any one of these is missing a key, the corresponding config.yaml setting
 silently does nothing for that entry-point.  This bug already shipped once
@@ -87,14 +87,20 @@ def _gateway_env_map_keys() -> set[str]:
 
 
 def _save_config_env_sync_keys() -> set[str]:
-    """terminal config keys bridged by ``hermes config set foo bar``."""
+    """terminal config keys bridged by ``hermes config set foo bar``.
+
+    ``set_config_value`` no longer carries its own ``_config_to_env_sync``
+    dict — it bridges through the canonical ``TERMINAL_CONFIG_ENV_MAP`` via
+    ``terminal_config_env_var_for_key()`` (config.py), excluding ``cwd``
+    (handled separately).  Read the live map so this test tracks the actual
+    source of truth that the config-set path uses, rather than a string
+    literal that the consolidation removed.
+    """
     from hermes_cli import config as hc_config
-    source = inspect.getsource(hc_config.set_config_value)
-    keys = _extract_dict_keys(source, "_config_to_env_sync")
-    # set_config_value uses fully-qualified ``terminal.foo`` keys; strip the
-    # prefix so we can compare against the other two maps which use bare
-    # leaf keys.
-    return {k.split(".", 1)[1] for k in keys if k.startswith("terminal.")}
+    # set_config_value bridges every TERMINAL_CONFIG_ENV_MAP key except
+    # terminal.cwd (see the ``key != "terminal.cwd"`` guard in
+    # set_config_value); mirror that exclusion here.
+    return {k for k in hc_config.TERMINAL_CONFIG_ENV_MAP if k != "cwd"}
 
 
 # Keys present in cli.py env_mappings but intentionally absent from
@@ -180,8 +186,8 @@ def test_save_config_set_supports_critical_bridged_keys():
     missing = required - save_keys
     assert not missing, (
         f"`hermes config set terminal.X` doesn't sync these load-bearing "
-        f"keys to .env: {sorted(missing)}.  Add them to _config_to_env_sync "
-        f"in hermes_cli/config.py:set_config_value."
+        f"keys to .env: {sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP "
+        f"in hermes_cli/config.py (set_config_value bridges through it)."
     )
 
 

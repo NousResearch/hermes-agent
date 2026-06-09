@@ -1033,7 +1033,7 @@ function SidebarPinnedEmptyState() {
   const { t } = useI18n()
 
   return (
-    <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
+    <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.8125rem] text-muted-foreground">
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>

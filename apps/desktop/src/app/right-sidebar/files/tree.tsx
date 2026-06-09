@@ -3,6 +3,7 @@ import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-
 
 import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -152,7 +153,7 @@ function ProjectTreeRow({
   const isPlaceholder = Boolean(node.data.placeholder)
   const isErrorPlaceholder = node.data.placeholder === 'error'
 
-  return (
+  const row = (
     <div
       aria-expanded={isFolder ? node.isOpen : undefined}
       aria-selected={node.isSelected}
@@ -225,5 +226,21 @@ function ProjectTreeRow({
       </span>
       <span className="min-w-0 flex-1 truncate">{node.data.name}</span>
     </div>
+  )
+
+  if (isPlaceholder || isFolder) {
+    return row
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuContent aria-label={`Actions for ${node.data.name}`} className="w-40">
+        <ContextMenuItem onSelect={() => onPreviewFile?.(node.data.id)}>
+          <Codicon name="preview" size="0.875rem" />
+          <span>Preview</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

@@ -333,13 +333,44 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
+    Also catches shell-encoded bypass attempts targeting hardline commands
+    (e.g. ${0/x/r}m -rf /, r\m -rf /, etc.) that construct dangerous commands
+    at runtime.
+
     Returns:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
+
+    # First-pass: direct hardline pattern matching
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
             return (True, description)
+
+    # Second-pass: detect shell-encoded attempts to construct hardline commands
+    # (e.g. ${0/x/r}m -rf /, r\\m -rf /, r''m -rf /, $(echo rm) -rf /)
+    hardline_bypass_patterns = [
+        # Backslash escape before rm/dd/mkfs followed by dangerous args
+        (r"[a-z]\\[a-z]{1,4}\s+(?:(-[^\s]*\s+)*/|if=|of=)",
+         "shell-encoded hardline command (backslash escape)"),
+        # Empty quote insertions: r''m etc. followed by dangerous args
+        (r"[a-z]''[a-z]{1,4}\s+(?:(-[^\s]*\s+)*/|if=|of=)",
+         "shell-encoded hardline command (quote insertion)"),
+        # Command substitution: $(echo rm) -rf /
+        (r"\$\(\s*echo\s+(rm|dd|mkfs|shutdown|reboot|halt|poweroff)\b[^)]*\)\s+(?:(-[^\s]*\s+)*/|if=|of=)",
+         "shell-encoded hardline command (command substitution)"),
+        # Backtick variant
+        (r"`\s*echo\s+(rm|dd|mkfs|shutdown|reboot|halt|poweroff)\b[^`]*`\s+(?:(-[^\s]*\s+)*/|if=|of=)",
+         "shell-encoded hardline command (backtick substitution)"),
+        # Parameter expansion: ${0/x/r}m -rf /
+        (r"\$\{[^}]*\}(?:rm|dd)(?:\s+(?:(-[^\s]*\s+)*)/)\\b",
+         "shell-encoded hardline command (parameter expansion)"),
+    ]
+
+    for pattern, description in hardline_bypass_patterns:
+        if re.search(pattern, normalized):
+            return (True, description)
+
     return (False, None)
 
 

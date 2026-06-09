@@ -551,15 +551,23 @@ def _get_session_model_pool():
     Uses a sentinel so that a ``None`` result (pool disabled/not configured)
     is not cached permanently — if the pool is created later in the process
     lifetime, subsequent calls will find it.
+
+    Import failures are also not cached, so transient import errors (e.g.
+    during startup) don't permanently disable pool tracking.
     """
     global _aux_pool_cache
     if _aux_pool_cache is not _UNSET:
         return _aux_pool_cache
     try:
         from gateway.session_model_pool import get_session_model_pool
-        _aux_pool_cache = get_session_model_pool({})
+        _pool = get_session_model_pool({})
+        if _pool is not None:
+            # Cache only non-None (enabled) results.
+            _aux_pool_cache = _pool
+        # None (disabled/unconfigured) is NOT cached — next call retries.
     except Exception:
-        _aux_pool_cache = None
+        # Import failure is NOT cached — next call retries.
+        pass
     return _aux_pool_cache
 
 
@@ -5008,10 +5016,13 @@ def call_llm(
 
     if not _pool_aux_acquired and _pool and _pool.enabled:
         logger.warning(
-            "Auxiliary %s: blocked by SessionModelPool for %s:%s — skipping call",
+            "Auxiliary %s: blocked by SessionModelPool for %s:%s — throttled",
             task or "call", resolved_provider, final_model,
         )
-        return None
+        raise RuntimeError(
+            f"Auxiliary call '{task or 'call'}' throttled by SessionModelPool: "
+            f"no auxiliary slots available for {resolved_provider}:{final_model}"
+        )
 
     try:
         return _validate_llm_response(
@@ -5395,9 +5406,8 @@ async def async_call_llm(
 
     Same as call_llm() but async. See call_llm() for full documentation.
 
-    TODO: SessionModelPool auxiliary slot tracking is not yet integrated
-    here — async auxiliary calls are not throttled. See call_llm() for
-    the synchronous implementation. Tracked in #37744.
+    Includes SessionModelPool auxiliary slot tracking (acquire before call,
+    release in finally block), mirroring the synchronous implementation.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
@@ -5469,6 +5479,28 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    # Session Model Pool: acquire an auxiliary slot before making the async call
+    # so the pool can throttle concurrent auxiliary requests to the same model.
+    _async_pool_aux_acquired = False
+    _async_pool = _get_session_model_pool()
+    try:
+        if _async_pool and _async_pool.enabled:
+            _async_pool_aux_acquired = _async_pool.acquire_auxiliary_slot(
+                final_model or "", resolved_provider or ""
+            )
+    except Exception:
+        pass
+
+    if not _async_pool_aux_acquired and _async_pool and _async_pool.enabled:
+        logger.warning(
+            "Auxiliary %s (async): blocked by SessionModelPool for %s:%s — throttled",
+            task or "call", resolved_provider, final_model,
+        )
+        raise RuntimeError(
+            f"Async auxiliary call '{task or 'call'}' throttled by SessionModelPool: "
+            f"no auxiliary slots available for {resolved_provider}:{final_model}"
+        )
 
     try:
         return _validate_llm_response(
@@ -5721,3 +5753,17 @@ async def async_call_llm(
                 logger.debug("Auxiliary (async): cache eviction after connection error failed",
                              exc_info=True)
         raise
+    finally:
+        # Session Model Pool: release auxiliary slot after the async call
+        # completes (success, error, or fallback).
+        if _async_pool_aux_acquired:
+            try:
+                if _async_pool and _async_pool.enabled:
+                    _async_pool.release_auxiliary_slot(
+                        final_model or "", resolved_provider or ""
+                    )
+            except Exception as _exc:
+                logger.error(
+                    "SessionModelPool: FAILED to release async auxiliary slot for %s:%s — "
+                    "slot may be leaked: %s", resolved_provider, final_model, _exc,
+                )

@@ -367,6 +367,16 @@ def build_top_level_parser():
         help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
     )
     chat_parser.add_argument(
+        "-x",
+        "--extra-body",
+        default=None,
+        help=(
+            "Arbitrary JSON object to pass as OpenAI SDK extra_body. "
+            "Useful for provider-specific request options, e.g. "
+            '\'{"provider":{"only":["anthropic"]}}\' for OpenRouter.'
+        ),
+    )
+    chat_parser.add_argument(
         "--source",
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",

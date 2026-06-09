@@ -785,10 +785,21 @@ class PhotonAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        # The gateway's _keep_typing loop calls this on a cadence while the agent
+        # computes; the sidecar re-sends typing("start") each tick (iMessage
+        # indicators auto-expire) so the bubble tracks Hermes' actual status.
         try:
-            await self._sidecar_call("/typing", {"spaceId": chat_id})
+            await self._sidecar_call("/typing", {"spaceId": chat_id, "state": "start"})
         except Exception as e:
             logger.debug("[photon] send_typing failed: %s", e)
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        # Clear the indicator the moment the agent stops computing, instead of
+        # waiting for iMessage's auto-expire — keeps the bubble in sync.
+        try:
+            await self._sidecar_call("/typing", {"spaceId": chat_id, "state": "stop"})
+        except Exception as e:
+            logger.debug("[photon] stop_typing failed: %s", e)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return whatever we know about a Spectrum space id.

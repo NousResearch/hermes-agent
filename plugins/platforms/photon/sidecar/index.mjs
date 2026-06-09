@@ -24,7 +24,7 @@
 //       body: {"spaceId": "...", "paths": ["...", ...],
 //              "caption": "..." | null, "pacingMs": 600 | null}
 //   - POST /typing                      -> {"ok": true}
-//       body: {"spaceId": "..."}
+//       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown                    -> {"ok": true}; then process exits
 //
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
@@ -66,9 +66,9 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice, effect;
+let Spectrum, imessage, attachment, voice, effect, typing;
 try {
-  ({ Spectrum, attachment, voice } = await import("spectrum-ts"));
+  ({ Spectrum, attachment, voice, typing } = await import("spectrum-ts"));
   ({ imessage, effect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
@@ -95,9 +95,19 @@ const SEND_READ_RECEIPTS =
   (process.env.PHOTON_READ_RECEIPTS || "true").toLowerCase() !== "false";
 
 async function markRead(space, message) {
-  if (!SEND_READ_RECEIPTS || typeof provider.read !== "function") return;
+  if (!SEND_READ_RECEIPTS) return;
   try {
-    await provider.read(space, message);
+    // The read receipt is a Space/Message *sugar* — `space.read(message)`
+    // (sends `read(message)` through the space). It lives on the live Space and
+    // Message objects from the inbound stream, NOT on the provider, so call it
+    // there (prefer the space; fall back to the message's own `read()`).
+    if (space && typeof space.read === "function") {
+      await space.read(message);
+    } else if (message && typeof message.read === "function") {
+      await message.read();
+    } else {
+      console.error("photon-sidecar: no read() on space/message — receipt skipped");
+    }
   } catch (e) {
     // Best-effort — SMS/some services don't support read receipts.
     console.error(
@@ -520,13 +530,23 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageIds });
     }
     if (req.url === "/typing") {
-      const { spaceId } = body || {};
+      const { spaceId, state } = body || {};
       if (!spaceId) return badRequest(res, "spaceId is required");
       const space = await resolveSpace(spaceId);
-      if (typeof space.typing === "function") {
-        await space.typing();
-      } else if (typeof space.setTyping === "function") {
-        await space.setTyping(true);
+      // spectrum-ts 1.x has no `space.typing()` method — the typing indicator
+      // is content: `space.send(typing("start" | "stop"))`. The gateway's
+      // _keep_typing loop re-sends "start" on a cadence (iMessage indicators
+      // auto-expire), and stop_typing sends "stop" when the agent is done — so
+      // the bubble tracks Hermes' actual compute status. Best-effort: a missed
+      // typing tick must never fail the turn.
+      const sig = state === "stop" ? "stop" : "start";
+      try {
+        if (typeof typing === "function") await space.send(typing(sig));
+      } catch (e) {
+        console.error(
+          "photon-sidecar: typing(" + sig + ") failed: " +
+            (e && e.message ? e.message : e)
+        );
       }
       return ok(res, {});
     }

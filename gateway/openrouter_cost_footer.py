@@ -92,13 +92,13 @@ def build_openrouter_cost_line(
 
     status = str(agent_result.get("turn_cost_status") or "unknown").strip().lower()
     if status == "unknown":
-        return "💸 OpenRouter: cost n/a за запрос"
+        return "💸 OpenRouter: cost n/a per request"
 
     amount = _cost_amount(agent_result, "turn_estimated_cost_usd")
     if amount is None:
-        return "💸 OpenRouter: cost n/a за запрос"
+        return "💸 OpenRouter: cost n/a per request"
 
-    return f"💸 OpenRouter: {_cost_prefix(status)}{_format_usd(amount)} за запрос"
+    return f"💸 OpenRouter: {_cost_prefix(status)}{_format_usd(amount)} per request"
 
 
 def build_openrouter_background_review_cost_line(
@@ -126,12 +126,12 @@ def build_openrouter_background_review_cost_line(
     main_amount = _cost_amount(main_agent_result, "turn_estimated_cost_usd")
     bg_amount = _cost_amount(background_review_result, "estimated_cost_usd")
     if main_status == "unknown" or bg_status == "unknown" or main_amount is None or bg_amount is None:
-        return "💸 OpenRouter итого: cost n/a за запрос (фон cost n/a)"
+        return "💸 OpenRouter total: cost n/a per request (bg cost n/a)"
 
     total = max(0.0, main_amount) + max(0.0, bg_amount)
     total_prefix = "~" if "estimated" in {main_status, bg_status} else ""
     return (
-        f"💸 OpenRouter итого: {total_prefix}{_format_usd(total)} за запрос "
-        f"(ответ {_cost_prefix(main_status)}{_format_usd(main_amount)} + "
-        f"фон {_cost_prefix(bg_status)}{_format_usd(bg_amount)})"
+        f"💸 OpenRouter total: {total_prefix}{_format_usd(total)} per request "
+        f"(main {_cost_prefix(main_status)}{_format_usd(main_amount)} + "
+        f"bg {_cost_prefix(bg_status)}{_format_usd(bg_amount)})"
     )

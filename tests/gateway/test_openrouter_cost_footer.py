@@ -18,7 +18,7 @@ def test_openrouter_cost_line_for_telegram_estimated():
             "turn_cost_status": "estimated",
         },
     )
-    assert line == "💸 OpenRouter: ~$0.0123 за запрос"
+    assert line == "💸 OpenRouter: ~$0.0123 per request"
 
 
 def test_openrouter_cost_line_formats_tiny_amounts():
@@ -31,7 +31,7 @@ def test_openrouter_cost_line_formats_tiny_amounts():
             "turn_cost_status": "estimated",
         },
     )
-    assert line == "💸 OpenRouter: ~$0.000012 за запрос"
+    assert line == "💸 OpenRouter: ~$0.000012 per request"
 
 
 def test_openrouter_cost_line_skips_non_telegram():
@@ -69,7 +69,7 @@ def test_openrouter_cost_line_detects_custom_provider_by_base_url():
             "turn_cost_status": "estimated",
         },
     )
-    assert line == "💸 OpenRouter: ~$0.0068 за запрос"
+    assert line == "💸 OpenRouter: ~$0.0068 per request"
 
 
 def test_openrouter_cost_line_detects_custom_openrouter_provider_name():
@@ -82,7 +82,7 @@ def test_openrouter_cost_line_detects_custom_openrouter_provider_name():
             "turn_cost_status": "estimated",
         },
     )
-    assert line == "💸 OpenRouter: ~$0.0068 за запрос"
+    assert line == "💸 OpenRouter: ~$0.0068 per request"
 
 
 def test_openrouter_cost_line_unknown_pricing():
@@ -95,7 +95,7 @@ def test_openrouter_cost_line_unknown_pricing():
             "turn_cost_status": "unknown",
         },
     )
-    assert line == "💸 OpenRouter: cost n/a за запрос"
+    assert line == "💸 OpenRouter: cost n/a per request"
 
 
 def test_openrouter_background_review_cost_line_adds_main_and_background_costs():
@@ -114,7 +114,7 @@ def test_openrouter_background_review_cost_line_adds_main_and_background_costs()
         },
     )
 
-    assert line == "💸 OpenRouter итого: ~$0.0500 за запрос (ответ ~$0.0316 + фон ~$0.0184)"
+    assert line == "💸 OpenRouter total: ~$0.0500 per request (main ~$0.0316 + bg ~$0.0184)"
 
 
 def test_openrouter_background_review_cost_line_skips_when_no_background_call():

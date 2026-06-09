@@ -223,10 +223,13 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
     if agent_number:
         print()
-        print("┌─ Your agent's iMessage number ───────────────────────────────")
-        print(f"│  📱 {agent_number}")
-        print("│  Text this number from your phone to talk to your agent.")
-        print("└──────────────────────────────────────────────────────────────")
+        print(color("┌─ Your agent's iMessage number ───────────────────────────────", Colors.GREEN))
+        print(
+            color("│  📱 ", Colors.GREEN)
+            + color(str(agent_number), Colors.GREEN, Colors.BOLD)
+        )
+        print(color("│  Text this number from your phone to talk to your agent.", Colors.GREEN))
+        print(color("└──────────────────────────────────────────────────────────────", Colors.GREEN))
     else:
         print("      No iMessage line assigned yet — check the Photon dashboard.")
 

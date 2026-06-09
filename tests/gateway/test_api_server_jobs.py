@@ -199,6 +199,29 @@ class TestCreateJob:
                 assert call_kwargs["profile"] == "ju3-dev"
 
     @pytest.mark.asyncio
+    async def test_create_job_runtime_context_value_error_returns_400(self, adapter):
+        """POST /api/jobs maps cron runtime-context validation errors to 400."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(
+            side_effect=ValueError("Cron workdir must be an absolute path")
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                    "workdir": "relative/path",
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "absolute path" in data["error"]
+
+    @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
         """POST /api/jobs without name returns 400."""
         app = _create_app(adapter)
@@ -400,6 +423,27 @@ class TestUpdateJob:
                 sanitized = call_args[0][1]
                 assert sanitized["workdir"] == "/Users/seiyeong/sywork"
                 assert sanitized["profile"] == "ju3-dev"
+
+    @pytest.mark.asyncio
+    async def test_update_job_runtime_context_value_error_returns_400(self, adapter):
+        """PATCH /api/jobs/{id} maps cron runtime-context validation errors to 400."""
+        app = _create_app(adapter)
+        mock_update = MagicMock(
+            side_effect=ValueError("Cron profile does not exist")
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"profile": "missing-profile"},
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert "profile" in data["error"]
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):

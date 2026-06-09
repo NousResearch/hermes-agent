@@ -353,6 +353,27 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+def _parse_extra_body(raw: str | dict | None) -> dict | None:
+    """Parse --extra-body JSON string into a dict for OpenAI SDK extra_body.
+
+    Accepts None, empty string, a pre-parsed dict, or a JSON string.
+    Returns None for None/empty (no extra body). Rejects non-object JSON
+    values (list, string, number, boolean, null) with a ValueError.
+    """
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        raise ValueError("--extra-body must be a JSON object")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--extra-body must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--extra-body must decode to a JSON object")
+    return parsed
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -3155,6 +3176,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        extra_body: str | dict | None = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -3378,6 +3400,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
+        self.extra_body = _parse_extra_body(extra_body)
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -13237,6 +13260,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    extra_body: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -13259,6 +13283,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        extra_body: Arbitrary JSON object string to pass as OpenAI SDK extra_body.
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -13356,6 +13381,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        extra_body=extra_body,
     )
 
     if parsed_skills:

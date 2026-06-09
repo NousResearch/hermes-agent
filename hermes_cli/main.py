@@ -2208,6 +2208,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False),
         "compact": getattr(args, "compact", False),
+        "extra_body": getattr(args, "extra_body", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}

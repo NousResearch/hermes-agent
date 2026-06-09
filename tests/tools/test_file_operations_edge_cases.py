@@ -8,6 +8,7 @@ Covers:
 import pytest
 from unittest.mock import MagicMock, patch
 
+from tools.binary_extensions import has_binary_extension, BINARY_EXTENSIONS
 from tools.file_operations import ShellFileOperations, _parse_search_context_line
 
 
@@ -74,6 +75,35 @@ class TestIsLikelyBinary:
         # Remaining 1000 chars: all NUL → ignored by [:1000] slice
         sample = "\x00" * 200 + "a" * 800 + "\x00" * 1000
         assert ops._is_likely_binary("file.xyz", content_sample=sample) is False
+
+
+class TestPdfBinaryDetection:
+    """PDF files must be detected as binary (issue #43059)."""
+
+    @pytest.fixture()
+    def ops(self):
+        return ShellFileOperations.__new__(ShellFileOperations)
+
+    def test_pdf_in_binary_extensions(self):
+        """PDF must be in the BINARY_EXTENSIONS set."""
+        assert ".pdf" in BINARY_EXTENSIONS
+
+    def test_has_binary_extension_pdf(self):
+        """has_binary_extension must return True for .pdf files."""
+        assert has_binary_extension("document.pdf") is True
+        assert has_binary_extension("report.PDF") is True
+        assert has_binary_extension("path/to/file.pdf") is True
+
+    def test_is_likely_binary_pdf_extension_gate(self, ops):
+        """_is_likely_binary should catch .pdf via extension before content analysis."""
+        # PDF first 1000 bytes are ASCII header — content sniff would NOT detect it.
+        # The extension gate must catch it instead.
+        pdf_header = "%PDF-1.4 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj"
+        assert ops._is_likely_binary("document.pdf", content_sample=pdf_header) is True
+
+    def test_is_likely_binary_pdf_no_content_sample(self, ops):
+        """Even without content sample, .pdf extension alone should trigger binary."""
+        assert ops._is_likely_binary("report.pdf") is True
 
 
 # =========================================================================

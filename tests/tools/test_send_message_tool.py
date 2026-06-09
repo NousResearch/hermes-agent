@@ -1199,6 +1199,11 @@ class TestParseTargetRefE164:
         assert chat_id == "+15551234567"
         assert is_explicit is True
 
+    def test_photon_e164_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("photon", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
     def test_signal_bare_digits_still_work(self):
         """Bare digit strings continue to match the generic numeric branch."""
         chat_id, _, is_explicit = _parse_target_ref("signal", "15551234567")

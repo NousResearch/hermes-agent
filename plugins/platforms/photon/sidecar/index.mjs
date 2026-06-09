@@ -55,6 +55,9 @@ const sharedToken = process.env.PHOTON_SIDECAR_TOKEN;
 // single NDJSON line. Override via PHOTON_MAX_INLINE_ATTACHMENT_BYTES.
 const MAX_INLINE_ATTACHMENT_BYTES =
   Number(process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES) || 20 * 1024 * 1024;
+const DM_CHAT_GUID_RE = /^any;-;(\+\d{6,})$/;
+const E164_RE = /^\+\d{6,}$/;
+const MAX_KNOWN_SPACES = 2048;
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -91,6 +94,34 @@ const app = await Spectrum({
 // At most one Python consumer is attached at a time (the gateway adapter).
 let consumerRes = null;
 let consumerWaiters = [];
+const knownSpaces = new Map();
+
+function rememberKnownSpace(id, space) {
+  if (!id || typeof id !== "string" || !space) return;
+  if (knownSpaces.has(id)) knownSpaces.delete(id);
+  knownSpaces.set(id, space);
+  if (knownSpaces.size > MAX_KNOWN_SPACES) {
+    const oldest = knownSpaces.keys().next().value;
+    if (oldest) knownSpaces.delete(oldest);
+  }
+}
+
+function phoneTargetFromSpaceId(spaceId) {
+  if (typeof spaceId !== "string") return null;
+  if (E164_RE.test(spaceId)) return spaceId;
+  const dmGuid = spaceId.match(DM_CHAT_GUID_RE);
+  return dmGuid ? dmGuid[1] : null;
+}
+
+function rememberInboundSpace(space, message) {
+  const msgSpace = message?.space || {};
+  const ids = [space?.id, msgSpace.id];
+  for (const id of ids) {
+    rememberKnownSpace(id, space);
+    const phone = phoneTargetFromSpaceId(id);
+    if (phone) rememberKnownSpace(phone, space);
+  }
+}
 
 function waitForConsumer() {
   if (consumerRes) return Promise.resolve();
@@ -215,6 +246,7 @@ async function normalizeEvent(space, message) {
       if (message && message.direction && message.direction !== "inbound") {
         continue;
       }
+      rememberInboundSpace(space, message);
       const event = await normalizeEvent(space, message);
       if (!event) continue;
       await deliver(JSON.stringify(event));
@@ -303,17 +335,26 @@ function handleInbound(req, res) {
 }
 
 async function resolveSpace(spaceId) {
+  const cached = knownSpaces.get(spaceId);
+  if (cached) return cached;
+
+  const phoneTarget = phoneTargetFromSpaceId(spaceId);
   // A bare E.164 phone number addresses a DM. Resolve the user, then the (DM)
   // space — `imessage(app).user(phone)` -> `im.space(user)` — so callers can
   // pass just "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of
-  // an opaque inbound space id. Real inbound space ids never match this shape,
-  // so this only kicks in for phone-addressed sends.
-  if (typeof spaceId === "string" && /^\+\d{6,}$/.test(spaceId) && imessage) {
+  // an opaque inbound space id. Photon also represents DM chat ids as
+  // `any;-;+1...`; normalize those through the same path so replies to inbound
+  // DMs still resolve after Python stores the inbound `space.id`.
+  if (phoneTarget && imessage) {
     try {
       const im = imessage(app);
       if (typeof im.user === "function" && typeof im.space === "function") {
-        const user = await im.user(spaceId);
-        return await im.space(user);
+        const user = await im.user(phoneTarget);
+        const space = await im.space(user);
+        rememberKnownSpace(spaceId, space);
+        rememberKnownSpace(phoneTarget, space);
+        rememberKnownSpace(space?.id, space);
+        return space;
       }
     } catch (e) {
       console.error(
@@ -327,16 +368,25 @@ async function resolveSpace(spaceId) {
   // narrowed helpers; we fall back through a few accessor shapes to
   // tolerate small SDK API drift.
   if (typeof app.space === "function") {
-    return await app.space(spaceId);
+    const space = await app.space(spaceId);
+    rememberKnownSpace(spaceId, space);
+    rememberKnownSpace(space?.id, space);
+    return space;
   }
   if (app.spaces && typeof app.spaces.get === "function") {
-    return await app.spaces.get(spaceId);
+    const space = await app.spaces.get(spaceId);
+    rememberKnownSpace(spaceId, space);
+    rememberKnownSpace(space?.id, space);
+    return space;
   }
   if (imessage) {
     const im = imessage(app);
     if (typeof im.space === "function") {
       try {
-        return await im.space({ id: spaceId });
+        const space = await im.space({ id: spaceId });
+        rememberKnownSpace(spaceId, space);
+        rememberKnownSpace(space?.id, space);
+        return space;
       } catch {
         /* fall through */
       }

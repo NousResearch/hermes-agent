@@ -182,16 +182,20 @@ def _print_post_register_hint(
     portal_base_url: str,
     custom_redirect_uri: Optional[str],
     wrote_portal_url: bool,
+    public_url: str = "",
 ) -> None:
     """Print the success summary + the gate-engagement caveat."""
     from hermes_cli.config import get_env_path
 
     env_path = get_env_path()
+    _cid = client_id
     print()
     print(f"  Wrote to {env_path}:")
-    print(f"    HERMES_DASHBOARD_OAUTH_CLIENT_ID={client_id}")
+    print("    HERMES_DASHBOARD_OAUTH_CLIENT_ID=" + str(_cid))
     if wrote_portal_url:
-        print(f"    HERMES_DASHBOARD_PORTAL_URL={portal_base_url}")
+        print("    HERMES_DASHBOARD_PORTAL_URL=" + str(portal_base_url))
+    if public_url:
+        print("    HERMES_DASHBOARD_PUBLIC_URL=" + str(public_url))
     print()
     print(
         "  Heads up — Nous login only *engages* on a non-loopback bind. A plain\n"
@@ -370,10 +374,54 @@ def cmd_dashboard_register(args) -> None:
             # Non-fatal: the client_id is the load-bearing value.
             pass
 
+    # Persist the dashboard public URL derived from the OAuth redirect URI.
+    #
+    # --redirect-uri is the full public HTTPS callback the user registered with
+    # the portal, e.g. https://hermes.example.com/auth/callback. At serve time
+    # the dashboard auth layer (dashboard_auth/routes._redirect_uri) reconstructs
+    # that same callback by taking HERMES_DASHBOARD_PUBLIC_URL and appending
+    # "/auth/callback" verbatim. So the value the runtime actually consumes is
+    # the ORIGIN (scheme://host[:port]), not the full callback path — persisting
+    # the raw redirect URI would double up the path. We derive the origin from
+    # the supplied redirect URI and persist it as HERMES_DASHBOARD_PUBLIC_URL so
+    # the operator doesn't have to re-supply it and the public-URL override is
+    # actually wired (the gate engages and the callback round-trips correctly).
+    #
+    # Like the portal URL, an explicitly supplied value is always written
+    # (updating an existing entry in place rather than appending a duplicate),
+    # a no-op when it already matches, and never written on a localhost-only
+    # install (no --redirect-uri).
+    wrote_public_url = False
+    public_url = ""
+    if custom_redirect_uri:
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(custom_redirect_uri)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                public_url = f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            public_url = ""
+
+    if public_url:
+        existing_public_url = None
+        try:
+            existing_public_url = get_env_value("HERMES_DASHBOARD_PUBLIC_URL")
+        except Exception:
+            existing_public_url = None
+        if existing_public_url != public_url:
+            try:
+                save_env_value("HERMES_DASHBOARD_PUBLIC_URL", public_url)
+                wrote_public_url = True
+            except Exception:
+                # Non-fatal: the client_id is the load-bearing value.
+                pass
+
     # 4. Hint.
     _print_post_register_hint(
         client_id=client_id,
         portal_base_url=portal_base_url,
         custom_redirect_uri=custom_redirect_uri,
         wrote_portal_url=wrote_portal_url,
+        public_url=public_url if wrote_public_url else "",
     )

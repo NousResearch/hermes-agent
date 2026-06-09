@@ -395,6 +395,165 @@ class TestCustomPortalPersistence:
         assert "HERMES_DASHBOARD_PORTAL_URL" not in saved
 
 
+class TestPublicUrlPersistence:
+    """`--redirect-uri` derives & persists HERMES_DASHBOARD_PUBLIC_URL in .env.
+
+    --redirect-uri is the full public callback (e.g.
+    https://hermes.example.com/auth/callback). At serve time the dashboard auth
+    layer reconstructs that callback by appending "/auth/callback" to
+    HERMES_DASHBOARD_PUBLIC_URL, so the value that's actually consumed is the
+    ORIGIN (scheme://host). We derive the origin from the supplied redirect URI
+    and persist THAT as HERMES_DASHBOARD_PUBLIC_URL — the var the runtime reads
+    — so the public-URL override is genuinely wired, not just stored.
+
+    An explicitly supplied value is always written (updating an existing entry
+    in place rather than appending a duplicate); a no-op when it already
+    matches; and never written on a localhost-only install (no --redirect-uri).
+    """
+
+    def _run(self, *, args, existing_public=None):
+        """Drive cmd_dashboard_register, capturing save_env_value calls.
+
+        `existing_public` is what get_env_value returns for
+        HERMES_DASHBOARD_PUBLIC_URL (None = not present in .env).
+        """
+        response = {
+            "client_id": "agent:selfhost-1",
+            "id": "selfhost-1",
+            "name": "dreamy_tesla",
+            "kind": "SELF_HOSTED",
+            "custom_redirect_uri": getattr(args, "redirect_uri", None),
+            "created_at": "2026-06-04T12:00:00.000Z",
+        }
+
+        saved: dict = {}
+
+        def fake_save(key, value):
+            saved[key] = value
+
+        def fake_get_env_value(key, *a, **kw):
+            if key == "HERMES_DASHBOARD_PUBLIC_URL":
+                return existing_public
+            return None
+
+        with patch(
+            "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
+        ), patch("hermes_cli.config.is_managed", return_value=False), patch.dict(
+            dr.os.environ, {}, clear=False
+        ), patch.object(
+            dr, "_resolve_portal_base_url", return_value="https://portal.nousresearch.com"
+        ), patch(
+            "hermes_cli.config.get_env_value", side_effect=fake_get_env_value
+        ), patch(
+            "hermes_cli.config.save_env_value", side_effect=fake_save
+        ), patch.object(
+            dr.urllib.request, "urlopen", return_value=_fake_http_ok(response)
+        ):
+            dr.os.environ.pop("HERMES_DASHBOARD_PORTAL_URL", None)
+            dr.cmd_dashboard_register(args)
+        return saved
+
+    def test_origin_derived_from_full_callback_path(self, capsys):
+        # The key behaviour: a full callback URL is reduced to its ORIGIN so
+        # the runtime's "public_url + /auth/callback" reconstruction matches.
+        saved = self._run(
+            args=_ns(redirect_uri="https://hermes.example.com/auth/callback"),
+            existing_public=None,
+        )
+        assert saved["HERMES_DASHBOARD_PUBLIC_URL"] == "https://hermes.example.com"
+        # The full callback path must NOT be persisted verbatim (would double
+        # the path at serve time).
+        assert "/auth/callback" not in saved["HERMES_DASHBOARD_PUBLIC_URL"]
+
+    def test_origin_preserves_port(self, capsys):
+        saved = self._run(
+            args=_ns(redirect_uri="https://hermes.example.com:8443/auth/callback"),
+            existing_public=None,
+        )
+        assert saved["HERMES_DASHBOARD_PUBLIC_URL"] == "https://hermes.example.com:8443"
+
+    def test_public_url_updates_existing_in_place(self, capsys):
+        # A stale public-url entry exists; the new derived origin overwrites it.
+        saved = self._run(
+            args=_ns(redirect_uri="https://new.example.com/auth/callback"),
+            existing_public="https://old.example.com",
+        )
+        assert saved["HERMES_DASHBOARD_PUBLIC_URL"] == "https://new.example.com"
+
+    def test_public_url_equal_to_existing_is_noop(self, capsys):
+        # Derived origin already matches what's stored → no redundant write.
+        saved = self._run(
+            args=_ns(redirect_uri="https://hermes.example.com/auth/callback"),
+            existing_public="https://hermes.example.com",
+        )
+        assert "HERMES_DASHBOARD_PUBLIC_URL" not in saved
+
+    def test_no_redirect_flag_not_written(self, capsys):
+        # Localhost-only install (no --redirect-uri) → var left untouched.
+        saved = self._run(
+            args=_ns(),
+            existing_public=None,
+        )
+        assert "HERMES_DASHBOARD_PUBLIC_URL" not in saved
+
+    def test_no_redirect_flag_does_not_overwrite_existing(self, capsys):
+        # No --redirect-uri supplied but a value already exists → never touch
+        # it (an existing entry is only changed by an explicit new value).
+        saved = self._run(
+            args=_ns(),
+            existing_public="https://already-set.example.com",
+        )
+        assert "HERMES_DASHBOARD_PUBLIC_URL" not in saved
+
+    def test_non_http_redirect_not_persisted(self, capsys):
+        # A malformed / non-http(s) redirect yields no derivable origin → skip.
+        saved = self._run(
+            args=_ns(redirect_uri="not-a-url"),
+            existing_public=None,
+        )
+        assert "HERMES_DASHBOARD_PUBLIC_URL" not in saved
+
+    def test_public_url_persisted_alongside_portal_url(self, capsys):
+        # Both --portal-url and --redirect-uri supplied → portal_url AND the
+        # derived public_url are both persisted (ADD semantics: the public-url
+        # write does not displace portal-url persistence).
+        response = {
+            "client_id": "agent:selfhost-1",
+            "id": "selfhost-1",
+            "name": "dreamy_tesla",
+            "kind": "SELF_HOSTED",
+            "custom_redirect_uri": "https://hermes.example.com/auth/callback",
+            "created_at": "2026-06-04T12:00:00.000Z",
+        }
+        saved: dict = {}
+
+        def fake_save(key, value):
+            saved[key] = value
+
+        with patch(
+            "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
+        ), patch("hermes_cli.config.is_managed", return_value=False), patch.dict(
+            dr.os.environ, {}, clear=False
+        ), patch.object(
+            dr, "_resolve_portal_base_url", return_value="https://preview.example.com"
+        ), patch(
+            "hermes_cli.config.get_env_value", return_value=None
+        ), patch(
+            "hermes_cli.config.save_env_value", side_effect=fake_save
+        ), patch.object(
+            dr.urllib.request, "urlopen", return_value=_fake_http_ok(response)
+        ):
+            dr.os.environ.pop("HERMES_DASHBOARD_PORTAL_URL", None)
+            dr.cmd_dashboard_register(
+                _ns(
+                    portal_url="https://preview.example.com",
+                    redirect_uri="https://hermes.example.com/auth/callback",
+                )
+            )
+        assert saved["HERMES_DASHBOARD_PORTAL_URL"] == "https://preview.example.com"
+        assert saved["HERMES_DASHBOARD_PUBLIC_URL"] == "https://hermes.example.com"
+
+
 class TestPortalResolution:
     def test_override_arg_wins(self):
         assert (

@@ -4411,6 +4411,54 @@ def test_health_guard_honors_ttl_cache_then_reprobes(tmp_path, monkeypatch):
     assert resolved not in kb._LAST_HEALTH_OK
 
 
+def test_health_guard_ignores_transient_single_probe_failure(tmp_path, monkeypatch):
+    """A lone non-ok integrity probe must NOT quarantine a healthy DB.
+
+    Regression for the spurious-``.corrupt.bak`` storm: under concurrent
+    writers on a no-FUA disk a read/write probe can transiently read a
+    mid-checkpoint page as malformed while the DB is fine. Observed live as
+    ~45 quarantine copies of a *healthy, progressing* board in 20 min. The
+    guard now requires every probe in a row to fail; a single clean probe
+    means the DB is healthy and nothing is quarantined.
+    """
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
+
+    # First two probes flag corruption, the third comes back clean → transient.
+    probes = iter(["integrity_check returned 'malformed'",
+                   "integrity_check returned 'malformed'",
+                   None])
+    monkeypatch.setattr(kb, "_run_integrity_probe", lambda _p: next(probes))
+
+    kb._guard_existing_db_is_healthy(db_path)  # must not raise
+    assert kb._LAST_HEALTH_OK.get(resolved) is not None
+    assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
+
+
+def test_health_guard_quarantines_persistent_corruption(tmp_path, monkeypatch):
+    """Corruption that reproduces on *every* probe is still quarantined and
+    fails closed — the confirmation loop must not mask real damage."""
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        kb, "_run_integrity_probe",
+        lambda _p: "integrity_check returned 'malformed'",
+    )
+
+    with pytest.raises(kb.KanbanDbCorruptError):
+        kb._guard_existing_db_is_healthy(db_path)
+    assert resolved not in kb._LAST_HEALTH_OK
+    assert list(tmp_path.glob("*.corrupt.*.bak"))  # quarantine happened
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite

@@ -1292,6 +1292,17 @@ _INITIALIZED_PATHS: set[str] = set()
 # writer notices post-init corruption within one window instead of never.
 _LAST_HEALTH_OK: dict[str, float] = {}
 _HEALTH_CHECK_TTL_SECONDS = 30.0
+# A single non-ok integrity_check is NOT trusted as corruption: under concurrent
+# writers on a weak-durability FS (WSL2 virtual disk reports no DPO/FUA), a
+# read/write probe can transiently read a mid-checkpoint page as malformed even
+# though the DB is fine and the very next read is clean. Empirically a swarm of
+# workers produced ~45 spurious .corrupt.bak of a *healthy*, progressing board
+# in 20 min. Real corruption reproduces on every probe; a transient torn read
+# does not. So require N consecutive non-ok probes (with a brief backoff) before
+# quarantining + failing closed. Only the suspected-corrupt path pays this cost;
+# a healthy DB returns after the first ok probe.
+_HEALTH_CONFIRM_ATTEMPTS = 3
+_HEALTH_CONFIRM_BACKOFF_SECONDS = 0.1
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
@@ -1674,28 +1685,51 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     last_ok = _LAST_HEALTH_OK.get(str(resolved))
     if last_ok is not None and (time.monotonic() - last_ok) < _HEALTH_CHECK_TTL_SECONDS:
         return
+    # Confirm before quarantining: a lone non-ok result is often a transient
+    # mid-checkpoint read on a no-FUA disk, not real corruption. Only declare
+    # the DB damaged if it fails every probe in a row; a single clean probe
+    # means it was a transient and the DB is healthy. ``OperationalError``
+    # (lock/busy) still propagates raw from the first occurrence — never a
+    # quarantine. The healthy path costs exactly one probe (first ok → return).
     reason: Optional[str] = None
+    for attempt in range(_HEALTH_CONFIRM_ATTEMPTS):
+        reason = _run_integrity_probe(resolved)
+        if reason is None:
+            break
+        if attempt + 1 < _HEALTH_CONFIRM_ATTEMPTS:
+            time.sleep(_HEALTH_CONFIRM_BACKOFF_SECONDS)
+    if reason is None:
+        _LAST_HEALTH_OK[str(resolved)] = time.monotonic()
+        return
+    # Confirmed damaged across every probe: force the next connect to re-probe
+    # instead of honoring a stale "ok" timestamp, then fail closed.
+    _LAST_HEALTH_OK.pop(str(resolved), None)
+    backup = _backup_corrupt_db(resolved)
+    raise KanbanDbCorruptError(resolved, backup, reason)
+
+
+def _run_integrity_probe(resolved: Path) -> Optional[str]:
+    """One ``PRAGMA integrity_check`` pass. Returns ``None`` if healthy, else a
+    short reason string describing why it looked corrupt.
+
+    Opens read/write so SQLite can replay a healthy WAL/hot-journal before the
+    check (a pure read-only open would flag a recoverable DB as corrupt).
+    ``sqlite3.OperationalError`` (lock/busy/transient IO) is re-raised, never
+    classified as corruption — the caller lets it propagate.
+    """
     try:
         probe = _sqlite_connect(resolved)
         try:
             row = probe.execute("PRAGMA integrity_check").fetchone()
         finally:
             probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
     except sqlite3.OperationalError:
-        # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise
     except sqlite3.DatabaseError as exc:
-        reason = f"sqlite refused to open file: {exc}"
-    if reason is None:
-        _LAST_HEALTH_OK[str(resolved)] = time.monotonic()
-        return
-    # Damaged: force the next connect to re-probe instead of honoring a stale
-    # "ok" timestamp, then fail closed.
-    _LAST_HEALTH_OK.pop(str(resolved), None)
-    backup = _backup_corrupt_db(resolved)
-    raise KanbanDbCorruptError(resolved, backup, reason)
+        return f"sqlite refused to open file: {exc}"
+    if not row or (row[0] or "").lower() != "ok":
+        return f"integrity_check returned {row[0] if row else '<no row>'!r}"
+    return None
 
 
 def connect(

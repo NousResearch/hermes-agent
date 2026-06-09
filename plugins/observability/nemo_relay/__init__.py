@@ -293,10 +293,18 @@ class _Runtime:
             return request_body
 
         raw_response: dict[str, Any] = {"set": False, "value": None}
+        # NeMo Relay's native managed execution may wrap callback failures; keep
+        # the real downstream error so Hermes retry classification still sees it.
+        downstream_error: BaseException | None = None
 
         def _impl(next_request: Any) -> Any:
+            nonlocal downstream_error
             next_body = getattr(next_request, "content", next_request)
-            raw = next_call(next_body if isinstance(next_body, dict) else request_body)
+            try:
+                raw = next_call(next_body if isinstance(next_body, dict) else request_body)
+            except Exception as exc:
+                downstream_error = _original_downstream_error(exc)
+                raise
             raw_response["set"] = True
             raw_response["value"] = raw
             return _llm_response_payload(raw)
@@ -322,7 +330,12 @@ class _Runtime:
                 return await result
             return result
 
-        managed_result = _resolve_awaitable(_managed_execute())
+        try:
+            managed_result = _resolve_awaitable(_managed_execute())
+        except Exception as exc:
+            if downstream_error is not None and _is_relay_internal_error(exc):
+                raise downstream_error
+            raise
         return raw_response["value"] if raw_response["set"] else managed_result
 
     def execute_tool(self, kwargs: dict[str, Any]) -> Any:
@@ -334,10 +347,18 @@ class _Runtime:
             return args
 
         raw_response: dict[str, Any] = {"set": False, "value": None}
+        # NeMo Relay's native managed execution may wrap callback failures; keep
+        # the real downstream error so Hermes retry classification still sees it.
+        downstream_error: BaseException | None = None
 
         def _impl(next_args: Any) -> Any:
+            nonlocal downstream_error
             effective_args = next_args if isinstance(next_args, dict) else args
-            raw = next_call(effective_args)
+            try:
+                raw = next_call(effective_args)
+            except Exception as exc:
+                downstream_error = _original_downstream_error(exc)
+                raise
             raw_response["set"] = True
             raw_response["value"] = raw
             return _jsonable(raw)
@@ -362,7 +383,12 @@ class _Runtime:
                 return await result
             return result
 
-        managed_result = _resolve_awaitable(_managed_execute())
+        try:
+            managed_result = _resolve_awaitable(_managed_execute())
+        except Exception as exc:
+            if downstream_error is not None and _is_relay_internal_error(exc):
+                raise downstream_error
+            raise
         return raw_response["value"] if raw_response["set"] else managed_result
 
 
@@ -804,6 +830,17 @@ def _value(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _original_downstream_error(exc: Exception) -> BaseException:
+    original = getattr(exc, "original", None)
+    if exc.__class__.__name__ == "_DownstreamExecutionError" and isinstance(original, BaseException):
+        return original
+    return exc
+
+
+def _is_relay_internal_error(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and str(exc).lower().startswith("internal error:")
 
 
 def _llm_response_payload(response: Any) -> Any:

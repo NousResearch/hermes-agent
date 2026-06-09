@@ -12,6 +12,7 @@ import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from hermes_cli.plugins import PluginManager
@@ -151,6 +152,33 @@ def _fresh_plugin(monkeypatch, fake):
     plugin = importlib.import_module("plugins.observability.nemo_relay")
     plugin.reset_for_tests()
     return plugin
+
+
+def _wrapped_downstream_error(original):
+    class _DownstreamExecutionError(Exception):
+        def __init__(self, original):
+            super().__init__(str(original))
+            self.original = original
+
+    return _DownstreamExecutionError(original)
+
+
+def _enable_adaptive_plugin(tmp_path, monkeypatch) -> None:
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config.tool_parallelism]
+mode = "observe_only"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
 
 
 def test_manifest_fields():
@@ -783,6 +811,76 @@ mode = "observe_only"
     }
 
 
+def test_nemo_relay_adaptive_llm_execution_preserves_downstream_error(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+
+    def native_like_execute(name, request, func, **kwargs):
+        fake.events.append(("llm.execute.start", name, request.content, kwargs))
+        try:
+            return func(_FakeLLMRequest(request.headers, {"intercepted": True, **request.content}))
+        except Exception as exc:
+            raise RuntimeError(f"internal error: {type(exc).__name__}: {exc}") from None
+
+    fake.llm.execute = native_like_execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_adaptive_plugin(tmp_path, monkeypatch)
+
+    class ProviderAuthError(Exception):
+        status_code = 403
+
+    provider_error = ProviderAuthError("provider auth failed")
+
+    def next_call(request):
+        raise _wrapped_downstream_error(provider_error)
+
+    with pytest.raises(ProviderAuthError) as caught:
+        plugin.on_llm_execution_middleware(
+            session_id="s1",
+            provider="anthropic",
+            model="demo-model",
+            request={"messages": [{"role": "user", "content": "hi"}]},
+            next_call=next_call,
+        )
+
+    assert caught.value is provider_error
+    assert caught.value.status_code == 403
+
+
+def test_nemo_relay_adaptive_llm_execution_keeps_relay_translated_error(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+
+    class RelayPolicyError(Exception):
+        pass
+
+    relay_error = RelayPolicyError("relay policy blocked")
+
+    def translated_execute(name, request, func, **kwargs):
+        try:
+            return func(_FakeLLMRequest(request.headers, {"intercepted": True, **request.content}))
+        except Exception:
+            raise relay_error
+
+    fake.llm.execute = translated_execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_adaptive_plugin(tmp_path, monkeypatch)
+
+    provider_error = RuntimeError("provider failed")
+
+    def next_call(request):
+        raise _wrapped_downstream_error(provider_error)
+
+    with pytest.raises(RelayPolicyError) as caught:
+        plugin.on_llm_execution_middleware(
+            session_id="s1",
+            provider="anthropic",
+            model="demo-model",
+            request={"messages": [{"role": "user", "content": "hi"}]},
+            next_call=next_call,
+        )
+
+    assert caught.value is relay_error
+
+
 def _adaptive_llm_execute_mode(tmp_path, monkeypatch, plugins_toml_text: str) -> str:
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)
@@ -918,6 +1016,74 @@ mode = "observe_only"
     execute_start = next(event for event in fake.events if event[0] == "tool.execute.start")
     assert execute_start[3]["data"]["mode"] == "observe_only"
     assert execute_start[3]["data"]["tool_call_id"] == "tool-1"
+
+
+def test_nemo_relay_adaptive_tool_execution_preserves_downstream_error(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+
+    def native_like_execute(name, args, func, **kwargs):
+        fake.events.append(("tool.execute.start", name, args, kwargs))
+        try:
+            return func({"intercepted": True, **args})
+        except Exception as exc:
+            raise RuntimeError(f"internal error: {type(exc).__name__}: {exc}") from None
+
+    fake.tools.execute = native_like_execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_adaptive_plugin(tmp_path, monkeypatch)
+
+    class ToolAuthError(Exception):
+        status_code = 403
+
+    tool_error = ToolAuthError("tool auth failed")
+
+    def next_call(args):
+        raise _wrapped_downstream_error(tool_error)
+
+    with pytest.raises(ToolAuthError) as caught:
+        plugin.on_tool_execution_middleware(
+            session_id="s1",
+            tool_name="terminal",
+            args={"command": "pwd"},
+            next_call=next_call,
+        )
+
+    assert caught.value is tool_error
+    assert caught.value.status_code == 403
+
+
+def test_nemo_relay_adaptive_tool_execution_keeps_relay_translated_error(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+
+    class RelayPolicyError(Exception):
+        pass
+
+    relay_error = RelayPolicyError("relay policy blocked")
+
+    def translated_execute(name, args, func, **kwargs):
+        try:
+            return func({"intercepted": True, **args})
+        except Exception:
+            raise relay_error
+
+    fake.tools.execute = translated_execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_adaptive_plugin(tmp_path, monkeypatch)
+
+    tool_error = RuntimeError("tool failed")
+
+    def next_call(args):
+        raise _wrapped_downstream_error(tool_error)
+
+    with pytest.raises(RelayPolicyError) as caught:
+        plugin.on_tool_execution_middleware(
+            session_id="s1",
+            tool_name="terminal",
+            args={"command": "pwd"},
+            next_call=next_call,
+        )
+
+    assert caught.value is relay_error
 
 
 def test_nemo_relay_tool_execution_middleware_calls_through_without_adaptive(monkeypatch):

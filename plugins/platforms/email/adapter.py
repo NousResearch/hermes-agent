@@ -372,7 +372,14 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Adapter initialized for %s", self._address)
 
     def _trim_seen_uids(self) -> None:
-        """Keep only the highest half of UIDs once over the cap (UIDs are monotonic; UNSEEN prevents re-delivery)."""
+        """Keep only the highest half of UIDs once over the cap (UIDs are monotonic).
+
+        Since the fetch uses BODY.PEEK[] (no ``\\Seen`` side effect), ``_seen_uids``
+        is the sole deduplication mechanism — a trimmed UID could be re-fetched if
+        enough higher-UID messages arrive within one long-lived session. On
+        reconnect, ``connect()`` reseeds from ``search ALL``, so only in-session
+        redelivery is possible.
+        """
         if len(self._seen_uids) <= self._seen_uids_max:
             return
         try:

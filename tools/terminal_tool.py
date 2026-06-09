@@ -264,10 +264,28 @@ def _check_all_guards(command: str, env_type: str) -> dict:
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
-# Covers alphanumeric, path separators, Windows drive/UNC separators, tilde,
-# dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
-# else is rejected.
-_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/\\:_\-.~ +@=,]+$')
+# Covers alphanumeric (ASCII + Unicode letters/digits), path separators,
+# Windows drive/UNC separators, tilde, dot, hyphen, underscore, space,
+# plus, at, equals, and comma.  Everything else (shell metacharacters,
+# control chars, etc.) is rejected.
+_WORKDIR_SAFE_RE = re.compile(
+    "^[A-Za-z0-9/"
+    "\\\\"
+    ":_"
+    "\\"
+    "-.~ +@=,"
+    "\u00C0-\u024F"
+    "\u0370-\u03FF"
+    "\u0400-\u04FF"
+    "\u0500-\u052F"
+    "\u0590-\u05FF"
+    "\u1E00-\u1EFF"
+    "\u1100-\u11FF"
+    "\u3040-\u309F"
+    "\u30A0-\u30FF"
+    "\u3400-\u9FFF]+"
+    "$"
+)
 
 
 def _validate_workdir(workdir: str) -> str | None:

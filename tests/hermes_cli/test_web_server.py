@@ -266,6 +266,36 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/media", params={"path": str(outside)})
         assert resp.status_code == 403
 
+    def test_get_media_extra_roots_env_widens_allowlist(self, tmp_path):
+        """HERMES_MEDIA_EXTRA_ROOTS adds extra dirs the gateway may serve from.
+
+        Covers the common multi-host setup where an agent writes generated
+        images into a project/output dir outside ``~/.hermes`` — operators opt
+        that dir in explicitly rather than the endpoint reading anywhere.
+        """
+        extra = tmp_path / "brain" / "output"
+        extra.mkdir(parents=True, exist_ok=True)
+        img = extra / "card.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        # Forbidden by default — the dir is outside the built-in media roots.
+        resp = self.client.get("/api/media", params={"path": str(img)})
+        assert resp.status_code == 403
+
+        # Allowed once the dir is opted in via HERMES_MEDIA_EXTRA_ROOTS.
+        with patch.dict(os.environ, {"HERMES_MEDIA_EXTRA_ROOTS": str(extra)}):
+            resp = self.client.get("/api/media", params={"path": str(img)})
+        assert resp.status_code == 200
+        assert resp.json()["data_url"].startswith("data:image/png;base64,")
+
+        # A sibling dir not listed stays forbidden, so the widening is scoped.
+        sibling = tmp_path / "elsewhere" / "card.png"
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_bytes(b"\x89PNG\r\n\x1a\n")
+        with patch.dict(os.environ, {"HERMES_MEDIA_EXTRA_ROOTS": str(extra)}):
+            resp = self.client.get("/api/media", params={"path": str(sibling)})
+        assert resp.status_code == 403
+
     def test_get_media_rejects_non_image_extension(self):
         from hermes_constants import get_hermes_home
 

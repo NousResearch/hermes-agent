@@ -822,6 +822,16 @@ def _media_serve_roots() -> list[Path]:
     """
     home = get_hermes_home()
     roots = [home / "images", home / "screenshots", home / "cache"]
+    # Operators can allow extra read roots (e.g. an agent's project/output dir,
+    # where it writes generated images) via HERMES_MEDIA_EXTRA_ROOTS — an
+    # os.pathsep-separated list of absolute directories. Each is still resolved
+    # symlink-safe below, so this widens the allowlist deliberately without
+    # bypassing the suffix/size guards.
+    extra = os.environ.get("HERMES_MEDIA_EXTRA_ROOTS", "")
+    for raw in extra.split(os.pathsep):
+        raw = raw.strip()
+        if raw:
+            roots.append(Path(raw).expanduser())
     out: list[Path] = []
     for root in roots:
         try:

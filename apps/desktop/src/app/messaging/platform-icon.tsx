@@ -12,10 +12,73 @@ import {
   SiWechat,
   SiWhatsapp
 } from '@icons-pack/react-simple-icons'
-import type { ComponentType, SVGProps } from 'react'
+import { type ComponentType, type SVGProps, useEffect, useState } from 'react'
 
 import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+
+/** sRGB relative luminance (0 = black, 1 = white). */
+export function luminance(hex: string): number {
+  const clean = hex.trim().replace(/^#/, '')
+
+  if (!/^[0-9a-f]{6}$/i.test(clean)) {
+    return 0.5
+  }
+
+  const [r, g, b] = [0, 2, 4].map(i => {
+    const c = parseInt(clean.slice(i, i + 2), 16) / 255
+
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/**
+ * Lift very-dark brand colours so the icon glyph stays legible on dark
+ * surfaces.  Returns the original colour unchanged when in light mode or
+ * when the colour is already bright enough.
+ */
+export function ensureVisible(hex: string, isDark: boolean): string {
+  if (!isDark) {
+    return hex
+  }
+
+  const LUMINANCE_FLOOR = 0.12 // ~#4a4a4a — readable on near-black surfaces
+
+  if (luminance(hex) >= LUMINANCE_FLOOR) {
+    return hex
+  }
+
+  // Parse and lighten the RGB channels uniformly.
+  const clean = hex.trim().replace(/^#/, '')
+
+  if (!/^[0-9a-f]{6}$/i.test(clean)) {
+    return hex
+  }
+
+  const channels = [0, 2, 4].map(i => parseInt(clean.slice(i, i + 2), 16))
+
+  // Binary-search the lightening factor that brings luminance up to the floor.
+  let lo = 0
+  let hi = 1
+
+  for (let i = 0; i < 16; i++) {
+    const mid = (lo + hi) / 2
+    const blended = channels.map(c => Math.round(c + (255 - c) * mid))
+    const lum = luminance(`#${blended.map(c => c.toString(16).padStart(2, '0')).join('')}`)
+
+    if (lum < LUMINANCE_FLOOR) {
+      lo = mid
+    } else {
+      hi = mid
+    }
+  }
+
+  const factor = hi
+
+  return `#${channels.map(c => Math.round(c + (255 - c) * factor).toString(16).padStart(2, '0')).join('')}`
+}
 
 // We render simpleicons.org brand glyphs for platforms whose owners publish a
 // usable mark (telegram, discord, matrix, ...). A few brands — Slack, Dingtalk,
@@ -60,8 +123,32 @@ interface PlatformAvatarProps {
   className?: string
 }
 
+/** Read the `.dark` class set by ThemeProvider on <html>. */
+function useIsDark(): boolean {
+  const [isDark, setIsDark] = useState(() =>
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  )
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return
+    }
+
+    const el = document.documentElement
+    const observer = new MutationObserver(() => setIsDark(el.classList.contains('dark')))
+
+    observer.observe(el, { attributes: true, attributeFilter: ['class'] })
+    setIsDark(el.classList.contains('dark'))
+
+    return () => observer.disconnect()
+  }, [])
+
+  return isDark
+}
+
 export function PlatformAvatar({ className, platformId, platformName }: PlatformAvatarProps) {
   const spec = PLATFORM_ICONS[platformId]
+  const isDark = useIsDark()
 
   const baseClass = cn(
     'inline-grid size-6 shrink-0 place-items-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
@@ -76,7 +163,8 @@ export function PlatformAvatar({ className, platformId, platformName }: Platform
     )
   }
 
-  const { Icon, color } = spec
+  const { Icon } = spec
+  const color = ensureVisible(spec.color, isDark)
 
   return (
     <span

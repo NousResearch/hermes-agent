@@ -264,3 +264,40 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     # Every on-disk catalog has the .yaml extension the globs above match.
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
+
+
+def test_optional_mcps_manifests_ship_in_both_wheel_and_sdist():
+    """Regression guard: the shipped MCP catalog must reach packaged installs.
+
+    hermes_cli/mcp_catalog.py resolves the catalog via get_optional_mcps_dir()
+    -> _get_packaged_data_dir("optional-mcps"), and list_catalog() returns []
+    when that directory is absent. optional-mcps/ is a bare data directory (no
+    __init__.py), invisible to packages.find and package-data. It must ship as
+    setuptools data-files (wheel) AND be grafted in MANIFEST.in (sdist), or
+    `hermes mcp catalog` and the dashboard catalog screen come up empty on
+    pip / Homebrew / Nix installs even though the manifests exist in the repo.
+
+    data-files flattens every glob match into its single target dir, so each
+    catalog entry needs its OWN target to preserve the optional-mcps/<name>/
+    directory the catalog iterates over. This asserts one target per on-disk
+    entry so a newly-added MCP can't silently miss the wheel.
+    """
+    entries = sorted(
+        p.parent.name for p in (REPO_ROOT / "optional-mcps").glob("*/manifest.yaml")
+    )
+    assert entries, "expected optional-mcps/<name>/manifest.yaml on disk"
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+    for name in entries:
+        target = f"optional-mcps/{name}"
+        assert target in data_files, (
+            f"pyproject [tool.setuptools.data-files] must declare a '{target}' "
+            f"target so the wheel ships optional-mcps/{name}/manifest.yaml "
+            f"(data-files flattens globs, so each catalog entry needs its own target)"
+        )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships MCP manifests"
+    )

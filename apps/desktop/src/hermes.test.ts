@@ -46,4 +46,29 @@ describe('Hermes REST session helpers', () => {
       })
     )
   })
+
+  it('does not exclude cron sessions from all-profile recents unless asked', async () => {
+    await listAllProfileSessions(25, 1, 'exclude', 'recent', 'all')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles/sessions?limit=25&offset=0&min_messages=1&archived=exclude&order=recent&profile=all'
+      })
+    )
+  })
+
+  it('serializes source filters for dedicated sidebar slices', async () => {
+    await listAllProfileSessions(10, 1, 'exclude', 'recent', 'all', {
+      excludeSources: ['telegram', 'discord'],
+      source: 'cron'
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path:
+          '/api/profiles/sessions?limit=10&offset=0&min_messages=1&archived=exclude&order=recent&profile=all' +
+          '&source=cron&exclude_sources=telegram%2Cdiscord'
+      })
+    )
+  })
 })

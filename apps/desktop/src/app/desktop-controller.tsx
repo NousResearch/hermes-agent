@@ -129,18 +129,18 @@ const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).P
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
 
-// Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
-// Cron sessions are written by a background scheduler tick (the desktop
-// backend), so no user action signals the UI. Poll the bounded cron list on
-// this cadence while the app is open + visible so new runs surface promptly
-// instead of waiting for the next user-triggered refreshSessions().
-const CRON_POLL_INTERVAL_MS = 30_000
-// The recents list is local-only: cron rows have their own section, and each
-// messaging platform (telegram, discord, …) is fetched separately into its own
-// self-managed sidebar section (refreshMessagingSessions). Excluding both here
-// keeps "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', ...MESSAGING_SESSION_SOURCE_IDS]
+// Latest cron-job sessions are written by a background scheduler tick (the
+// desktop backend), so no user action signals the UI. Poll while the app is open
+// + visible so new cron runs surface in the left sidebar promptly instead of
+// waiting for a manual reload. Keep this short: the fetch is bounded and cron
+// runs are exactly the kind of background event users expect to appear live.
+const CRON_POLL_INTERVAL_MS = 5_000
+// The recents list excludes messaging platforms because each platform
+// (telegram, discord, …) is fetched separately into its own self-managed sidebar
+// section (refreshMessagingSessions). Do NOT exclude cron here: completed cron
+// runs are local session history and should appear in the same left-nav recents
+// / workspace groups as CLI, TUI, and desktop chats.
+const SIDEBAR_EXCLUDED_SOURCES = MESSAGING_SESSION_SOURCE_IDS
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -377,9 +377,9 @@ export function DesktopController() {
       // clutter the sidebar.
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
-      // the same rows tagged profile="default". Cron sessions are excluded here
-      // and fetched separately (refreshCronSessions) so the scheduler's
-      // always-newest rows can't consume the recents page budget.
+      // the same rows tagged profile="default". Cron sessions are intentionally
+      // included here so completed scheduled runs show up in the same left-menu
+      // recents / workspace groupings as CLI, TUI, and desktop chats.
       // Scope the fetch to the active profile (not always 'all') so a profile
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page — the empty-history-on-profile-switch bug.
@@ -722,20 +722,24 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
 
-  // Keep the cron jobs section live without a user action: the scheduler ticks
-  // in the background (advancing next-run/state and creating runs), so poll the
-  // job list on an interval (and on tab re-focus) while connected.
+  // Keep background cron state and run sessions live without a user action. The
+  // scheduler writes cron sessions from a backend tick, outside the active chat
+  // stream, so refresh the normal session list too. Otherwise new cron runs are
+  // persisted but invisible in the left sidebar until the user reloads the app.
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
     }
 
     const tick = () => {
-      if (document.visibilityState === 'visible') {
-        void refreshCronJobs()
+      if (document.visibilityState !== 'visible') {
+        return
       }
+      void refreshCronJobs()
+      void refreshSessions().catch(() => undefined)
     }
 
+    tick()
     const intervalId = window.setInterval(tick, CRON_POLL_INTERVAL_MS)
     document.addEventListener('visibilitychange', tick)
 
@@ -743,7 +747,7 @@ export function DesktopController() {
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', tick)
     }
-  }, [gatewayState, refreshCronJobs])
+  }, [gatewayState, refreshCronJobs, refreshSessions])
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {

@@ -154,10 +154,11 @@ export async function listSessions(
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged
 // profile="default".
-// Source scoping lets callers split the unified list into independent slices:
-// recents pass `excludeSources: ['cron']`, the cron-jobs section passes
-// `source: 'cron'`. Without this a burst of (always-newest) cron sessions
-// consumes the whole recents page and starves real conversations.
+// Source scoping lets callers split the unified list into independent slices
+// when they need a dedicated feed. The cron-jobs section passes `source: 'cron'`
+// for its bounded run list, but the main Sessions list intentionally includes
+// cron rows too so completed cron runs appear as first-class, grouped session
+// history in the left sidebar.
 export interface SessionSourceFilter {
   source?: string
   excludeSources?: string[]

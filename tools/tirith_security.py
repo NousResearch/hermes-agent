@@ -21,11 +21,14 @@ never blocks.
 """
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import platform
+import re
 import shutil
+import shlex
 import stat
 import subprocess
 import tarfile
@@ -33,6 +36,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 
@@ -851,6 +855,23 @@ def check_command_security(command: str) -> dict:
             findings = []
             summary = ""
 
+    # LAN health/status probes are normal in local-first Hermes/Niko setups.
+    # Tirith's raw-IP/private-network/plain-HTTP heuristics are useful for
+    # public IPs, opaque network fetches, SSRF, and execution chains; but
+    # prompting on a read-only GET/HEAD to an RFC1918/link-local health/status
+    # endpoint creates noise and trains operators to bypass blockers. Downgrade
+    # only the narrow case where every finding is one of these LAN-probe
+    # context warnings and the command shape is an inspect-only private-LAN
+    # status probe. Anything mixed with another finding, mutating HTTP
+    # method/data, credentials, redirects to execution, or shell chaining
+    # remains a warning/block.
+    if action == "warn" and findings:
+        non_suppressible = [f for f in findings if not _is_safe_lan_probe_context_finding(f)]
+        if not non_suppressible and _is_private_lan_readonly_probe(command):
+            action = "allow"
+            findings = []
+            summary = ""
+
     return {"action": action, "findings": findings, "summary": summary}
 
 
@@ -869,3 +890,131 @@ def _is_app_tld_finding(finding: dict) -> bool:
         if val is not None and ".app" in str(val).lower():
             return True
     return False
+
+
+_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
+_SHELL_CHAIN_RE = re.compile(r"\||&&|\|\||;|`|\$\(|>|<")
+_READONLY_PROBE_PATHS = (
+    "/",
+    "/health",
+    "/healthz",
+    "/status",
+    "/version",
+    "/metrics",
+    "/api/tags",
+    "/api/version",
+)
+_SAFE_CURL_SHORT_FLAGS = frozenset("fsSI")
+_SAFE_CURL_LONG_FLAGS = {"--fail", "--silent", "--show-error", "--head"}
+_SAFE_CURL_VALUE_FLAGS = {"-m", "--max-time", "--connect-timeout"}
+_PRIVATE_PROBE_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "::1/128",
+        "fe80::/10",
+    )
+)
+
+
+def _is_safe_lan_probe_context_finding(finding: dict) -> bool:
+    """Return True for findings tolerated only on safe private-LAN probes."""
+    if not isinstance(finding, dict):
+        return False
+    text = _finding_text(finding)
+    human_text = text.replace("_", " ")
+    return (
+        "raw_ip" in text
+        or "ip_address_url" in text
+        or "private_network" in text
+        or "private network access" in human_text
+        or "plain_http" in text
+        or "plain http" in human_text
+        or "unencrypted http" in human_text
+        or "url uses raw ip address" in human_text
+        or "url points to ip address" in human_text
+    )
+
+
+def _finding_text(finding: dict) -> str:
+    return " ".join(
+        str(finding.get(field, "") or "")
+        for field in ("rule_id", "id", "name", "title", "detail", "description", "message", "summary")
+    ).lower().replace("-", "_")
+
+
+def _is_private_lan_readonly_probe(command: str) -> bool:
+    """Return True for narrowly-scoped private-LAN read-only health probes."""
+    if not command or _SHELL_CHAIN_RE.search(command):
+        return False
+
+    urls = _URL_RE.findall(command)
+    if not urls or not all(_is_private_http_probe_url(url) for url in urls):
+        return False
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+
+    executable = os.path.basename(tokens[0])
+    if executable != "curl":
+        return False
+
+    index = 1
+    seen_urls = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in urls:
+            seen_urls += 1
+        elif token in _SAFE_CURL_LONG_FLAGS:
+            pass
+        elif token in _SAFE_CURL_VALUE_FLAGS:
+            index += 1
+            if index >= len(tokens):
+                return False
+            try:
+                if float(tokens[index]) <= 0:
+                    return False
+            except ValueError:
+                return False
+        elif any(token.startswith(flag + "=") for flag in _SAFE_CURL_VALUE_FLAGS if flag.startswith("--")):
+            try:
+                if float(token.split("=", 1)[1]) <= 0:
+                    return False
+            except ValueError:
+                return False
+        elif token.startswith("-") and not token.startswith("--"):
+            if token.startswith("-m") and len(token) > 2:
+                try:
+                    if float(token[2:]) <= 0:
+                        return False
+                except ValueError:
+                    return False
+            elif not token[1:] or not set(token[1:]) <= _SAFE_CURL_SHORT_FLAGS:
+                return False
+        else:
+            return False
+        index += 1
+    return seen_urls == len(urls)
+
+
+def _is_private_http_probe_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        host = (parsed.hostname or "").strip("[]")
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if not any(ip in network for network in _PRIVATE_PROBE_NETWORKS):
+        return False
+    path = parsed.path or "/"
+    return any(path == allowed or path.startswith(allowed + "/") for allowed in _READONLY_PROBE_PATHS)

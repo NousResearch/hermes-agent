@@ -15,9 +15,12 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
+  $archivedSessions,
+  $archivedSessionsTotal,
   $currentCwd,
   $messages,
   $sessions,
+  $sessionsTotal,
   $yoloActive,
   getRememberedWorkspaceCwd,
   sessionPinId,
@@ -842,10 +845,6 @@ export function useSessionActions({
 
       const archived = $sessions.get().find(s => s.id === storedSessionId)
       const wasSelected = selectedStoredSessionId === storedSessionId
-      const previousPinned = $pinnedSessionIds.get()
-      // Pins are keyed on the durable lineage-root id; the stored id may be the
-      // live tip after compression. Drop both so the pin can't linger.
-      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
       // Soft-hide: drop from the live sidebar immediately, keep the data in the
       // Archive slice so the completed-work section updates without waiting for
@@ -861,7 +860,6 @@ export function useSessionActions({
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
         startFreshSessionDraft(true)
@@ -878,11 +876,45 @@ export function useSessionActions({
           setArchivedSessionsTotal(prev => Math.max(0, prev - 1))
         }
 
-        $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)
       }
     },
     [copy, selectedStoredSessionId, startFreshSessionDraft]
+  )
+
+  const unarchiveSession = useCallback(
+    async (storedSessionId: string) => {
+      clearNotifications()
+
+      const previousSessions = $sessions.get()
+      const previousSessionsTotal = $sessionsTotal.get()
+      const previousArchivedSessions = $archivedSessions.get()
+      const previousArchivedSessionsTotal = $archivedSessionsTotal.get()
+      const restored = previousArchivedSessions.find(s => s.id === storedSessionId)
+      const alreadyLive = previousSessions.some(s => s.id === storedSessionId)
+
+      if (restored) {
+        setArchivedSessions(prev => prev.filter(s => s.id !== storedSessionId))
+        setArchivedSessionsTotal(prev => Math.max(0, prev - 1))
+        setSessions(prev => [{ ...restored, archived: false }, ...prev.filter(s => s.id !== storedSessionId)])
+
+        if (!alreadyLive) {
+          setSessionsTotal(prev => prev + 1)
+        }
+      }
+
+      try {
+        await setSessionArchived(storedSessionId, false, restored?.profile)
+        notify({ durationMs: 2_000, kind: 'success', message: copy.restored })
+      } catch (err) {
+        setSessions(previousSessions)
+        setSessionsTotal(previousSessionsTotal)
+        setArchivedSessions(previousArchivedSessions)
+        setArchivedSessionsTotal(previousArchivedSessionsTotal)
+        notifyError(err, copy.unarchiveFailed)
+      }
+    },
+    [copy]
   )
 
   return {
@@ -894,6 +926,7 @@ export function useSessionActions({
     removeSession,
     resumeSession,
     selectSidebarItem,
-    startFreshSessionDraft
+    startFreshSessionDraft,
+    unarchiveSession
   }
 }

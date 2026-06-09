@@ -263,6 +263,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
+  onUnarchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => void
@@ -276,6 +277,7 @@ export function ChatSidebar({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
+  onUnarchiveSession,
   onNewSessionInWorkspace,
   onManageCronJob,
   onTriggerCronJob
@@ -405,7 +407,10 @@ export function ChatSidebar({
     for (const pinId of pinnedSessionIds) {
       const session = sessionByAnyId.get(pinId)
 
-      if (session && !seen.has(session.id)) {
+      // Archived rows stay in the Archive section even if their durable pin id
+      // remains stored, so unarchive can restore the curated pin without making
+      // Archive leak back into Pinned.
+      if (session && session.archived !== true && !seen.has(session.id)) {
         seen.add(session.id)
         out.push(session)
       }
@@ -901,6 +906,7 @@ export function ChatSidebar({
             onResumeSession={onResumeSession}
             onToggle={() => setSidebarArchiveOpen(!archiveOpen)}
             onTogglePin={pinSession}
+            onUnarchiveSession={onUnarchiveSession}
             open={archiveOpen}
             pinned={false}
             rootClassName="shrink-0 p-0 pb-1"
@@ -1021,6 +1027,7 @@ interface SidebarSessionsSectionProps {
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession?: (sessionId: string) => void
+  onUnarchiveSession?: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
@@ -1048,6 +1055,7 @@ function SidebarSessionsSection({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
+  onUnarchiveSession,
   onTogglePin,
   onNewSessionInWorkspace,
   pinned,
@@ -1078,6 +1086,7 @@ function SidebarSessionsSection({
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
+      onUnarchive: onUnarchiveSession ? () => onUnarchiveSession(session.id) : undefined,
       session
     }
 
@@ -1156,6 +1165,7 @@ function SidebarSessionsSection({
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
         onTogglePin={onTogglePin}
+        onUnarchiveSession={onUnarchiveSession}
         pinned={pinned}
         sessions={sessions}
         sortable={sortable}

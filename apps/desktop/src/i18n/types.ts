@@ -834,6 +834,7 @@ export interface Translations {
       export: string
       rename: string
       archive: string
+      unarchive: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
@@ -1392,6 +1393,8 @@ export interface Translations {
     deleteFailed: string
     archived: string
     archiveFailed: string
+    restored: string
+    unarchiveFailed: string
     cwdChangeFailed: string
     cwdStagedTitle: string
     cwdStagedMessage: string

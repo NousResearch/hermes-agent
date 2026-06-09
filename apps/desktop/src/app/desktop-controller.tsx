@@ -525,7 +525,8 @@ export function DesktopController() {
     removeSession,
     resumeSession,
     selectSidebarItem,
-    startFreshSessionDraft
+    startFreshSessionDraft,
+    unarchiveSession
   } = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
@@ -742,6 +743,7 @@ export function DesktopController() {
           .then(() => refreshCronJobs())
           .catch(() => undefined)
       }}
+      onUnarchiveSession={sessionId => void unarchiveSession(sessionId)}
     />
   )
 

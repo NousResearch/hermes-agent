@@ -20,6 +20,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   isSelected: boolean
   isWorking: boolean
   onArchive?: () => void
+  onUnarchive?: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
@@ -53,6 +54,7 @@ export function SidebarSessionRow({
   isSelected,
   isWorking,
   onArchive,
+  onUnarchive,
   onDelete,
   onPin,
   onResume,
@@ -79,6 +81,7 @@ export function SidebarSessionRow({
       onArchive={onArchive}
       onDelete={onDelete}
       onPin={onPin}
+      onUnarchive={onUnarchive}
       pinned={isPinned}
       profile={session.profile}
       sessionId={session.id}
@@ -203,6 +206,7 @@ export function SidebarSessionRow({
             onArchive={onArchive}
             onDelete={onDelete}
             onPin={onPin}
+            onUnarchive={onUnarchive}
             pinned={isPinned}
             profile={session.profile}
             sessionId={session.id}

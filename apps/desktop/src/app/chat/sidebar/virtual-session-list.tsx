@@ -15,6 +15,7 @@ interface SessionRowCommonProps {
   isSelected: boolean
   isWorking: boolean
   onArchive?: () => void
+  onUnarchive?: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
@@ -27,6 +28,7 @@ interface VirtualSessionListProps {
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
+  onUnarchiveSession?: (sessionId: string) => void
   pinned: boolean
   liveSessionIds?: Set<string>
   sessions: SessionInfo[]
@@ -44,6 +46,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onDeleteSession,
   onResumeSession,
   onTogglePin,
+  onUnarchiveSession,
   pinned,
   liveSessionIds = new Set<string>(),
   sessions,
@@ -83,7 +86,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onArchive: onArchiveSession ? () => onArchiveSession(session.id) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id)
+      onResume: () => onResumeSession(session.id),
+      onUnarchive: onUnarchiveSession ? () => onUnarchiveSession(session.id) : undefined
     }
 
     return sortable ? (

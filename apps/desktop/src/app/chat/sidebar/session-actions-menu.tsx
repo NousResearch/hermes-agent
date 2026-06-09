@@ -29,6 +29,7 @@ interface SessionActions {
   profile?: string
   onPin?: () => void
   onArchive?: () => void
+  onUnarchive?: () => void
   onDelete?: () => void
 }
 
@@ -43,7 +44,16 @@ interface ItemSpec {
   variant?: 'destructive'
 }
 
-function useSessionActions({ sessionId, title, pinned = false, profile, onPin, onArchive, onDelete }: SessionActions) {
+function useSessionActions({
+  sessionId,
+  title,
+  pinned = false,
+  profile,
+  onPin,
+  onArchive,
+  onUnarchive,
+  onDelete
+}: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
@@ -86,19 +96,31 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
         setRenameOpen(true)
       }
     },
-    ...(onArchive
+    ...(onUnarchive
       ? [
           {
             disabled: false,
             icon: 'archive',
-            label: r.archive,
+            label: r.unarchive,
             onSelect: () => {
               triggerHaptic('selection')
-              onArchive()
+              onUnarchive()
             }
           }
         ]
-      : []),
+      : onArchive
+        ? [
+            {
+              disabled: false,
+              icon: 'archive',
+              label: r.archive,
+              onSelect: () => {
+                triggerHaptic('selection')
+                onArchive()
+              }
+            }
+          ]
+        : []),
     {
       className: 'text-destructive focus:text-destructive',
       disabled: !onDelete,

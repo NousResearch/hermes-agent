@@ -16864,6 +16864,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Older restart paths may reach here without ``runner.exit_code`` set.
     # Keep the historical non-zero fallback for service-managed restarts.
+    if runner._restart_requested and sys.platform == "darwin" and not runner._restart_detached:
+        logger.info(
+            "Exiting with code %s (launchd restart requested) so launchd "
+            "relaunches the gateway instead of leaving the job loaded but stopped.",
+            GATEWAY_SERVICE_RESTART_EXIT_CODE,
+        )
+        raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
     if runner._restart_via_service:
         logger.info(
             "Exiting with code 75 (service-restart requested) so the service "

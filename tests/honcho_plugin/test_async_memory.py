@@ -160,6 +160,16 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
         assert result == "my-title"
 
+    def test_gateway_session_key_beats_title(self):
+        cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="my-title",
+            session_id="20260309_175514_9797dd",
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "agent-main-telegram-dm-8439114563"
+
     def test_manual_beats_session_id(self):
         cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
         result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
@@ -457,4 +467,3 @@ class TestPrefetchCacheAccessors:
 
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
-

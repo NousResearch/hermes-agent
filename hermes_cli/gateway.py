@@ -3322,31 +3322,41 @@ def _launchd_service_state(label: str | None = None) -> dict:
 
     On current macOS, ``launchctl list <label>`` can return an empty
     non-zero result even for a running LaunchAgent.  ``launchctl print
-    gui/<uid>/<label>`` is the source of truth used by launchd itself.
+    <domain>/<label>`` is the source of truth used by launchd itself.
+    Prefer the configured management domain, then fall back to the GUI domain
+    because user LaunchAgents can be reported there even when the CLI was
+    started from a non-Aqua session.
     """
     label = label or get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
     state = {
         "loaded": False,
         "running": False,
         "pid": None,
         "state": "unknown",
         "stdout": "",
+        "domain": _launchd_domain(),
     }
-    try:
-        result = subprocess.run(
-            ["launchctl", "print", target],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return state
-    state["stdout"] = result.stdout
-    if result.returncode != 0:
+    domains = [_launchd_domain(), f"gui/{os.getuid()}"]
+    for target_domain in dict.fromkeys(domains):
+        target = f"{target_domain}/{label}"
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", target],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if result.returncode != 0:
+            continue
+        state["domain"] = target_domain
+        state["stdout"] = result.stdout
+        break
+    else:
         return state
     state["loaded"] = True
-    for raw_line in result.stdout.splitlines():
+    for raw_line in state["stdout"].splitlines():
         line = raw_line.strip()
         if line.startswith("state = ") and state["state"] == "unknown":
             state["state"] = line.split("=", 1)[1].strip()

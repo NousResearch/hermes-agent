@@ -9,11 +9,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# python-telegram-bot is an optional dep — skip the entire module when
-# it isn't installed (e.g. CI bare env). Tests that patch telegram.Bot
-# or call _send_telegram need it; tests for other platforms don't but
-# keeping the whole file consistent is simpler.
-_HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+# python-telegram-bot is optional. Keep a tiny stub available so non-Telegram
+# tests in this mixed module still run in the hermetic wrapper when the real
+# dependency is absent.
+try:
+    import telegram as _telegram_module  # noqa: F401
+    _HAS_TELEGRAM = True
+except ImportError:
+    parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
+    constants_mod = SimpleNamespace(ParseMode=parse_mode)
+
+    class _MissingTelegramBot:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    telegram_mod = SimpleNamespace(
+        Bot=_MissingTelegramBot,
+        MessageEntity=lambda **_kw: SimpleNamespace(**_kw),
+        constants=constants_mod,
+    )
+    sys.modules["telegram"] = telegram_mod
+    sys.modules["telegram.constants"] = constants_mod
+    _HAS_TELEGRAM = False
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +47,7 @@ from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
     _send_matrix_via_adapter,
+    _send_qqbot,
     _send_signal,
     _send_telegram,
     _send_to_platform,
@@ -1454,6 +1472,174 @@ class TestSendToPlatformDiscordThread:
         send_mock.assert_awaited_once()
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] is None
+
+
+class _FakeQQBotResponse:
+    def __init__(self, status_code, *, data=None, text=""):
+        self.status_code = status_code
+        self._data = data or {}
+        self.text = text
+
+    def json(self):
+        return self._data
+
+
+class _FakeQQBotHttp:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __call__(self, *_args, **_kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        if not self.responses:
+            raise AssertionError("Unexpected QQBot POST")
+        return self.responses.pop(0)
+
+
+def _install_qqbot_http(monkeypatch, fake):
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", fake)
+
+
+class TestSendQQBotDiagnostics:
+    def test_token_failure_includes_endpoint_status_body_and_redacts_secrets(self, monkeypatch):
+        secret = "qq-client-secret-raw"
+        echoed_access_token = "qq-access-token-from-error"
+        fake = _FakeQQBotHttp([
+            _FakeQQBotResponse(
+                401,
+                text=(
+                    '{"error":"invalid secret","clientSecret":"%s",'
+                    '"accessToken":"%s"} Authorization: QQBot raw-auth-token'
+                ) % (secret, echoed_access_token),
+            )
+        ])
+        _install_qqbot_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_qqbot(
+                SimpleNamespace(token=secret, extra={"app_id": "appid-123"}),
+                "target-1",
+                "hello",
+            )
+        )
+
+        error = result["error"]
+        assert "QQBot token request failed" in error
+        assert "token endpoint=https://bots.qq.com/app/getAppAccessToken" in error
+        assert "status=401" in error
+        assert "invalid secret" in error
+        assert secret not in error
+        assert echoed_access_token not in error
+        assert "raw-auth-token" not in error
+        assert '"clientSecret":"***"' in error
+        assert '"accessToken":"***"' in error
+        assert "Authorization: QQBot ***" in error
+
+    def test_missing_access_token_includes_token_response_body(self, monkeypatch):
+        secret = "qq-client-secret-raw"
+        fake = _FakeQQBotHttp([
+            _FakeQQBotResponse(
+                200,
+                data={"expires_in": 7200},
+                text='{"expires_in":7200,"client_secret":"echoed-secret"}',
+            )
+        ])
+        _install_qqbot_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_qqbot(
+                SimpleNamespace(token=secret, extra={"app_id": "appid-123"}),
+                "target-1",
+                "hello",
+            )
+        )
+
+        error = result["error"]
+        assert "QQBot: no access_token in response" in error
+        assert "token endpoint=https://bots.qq.com/app/getAppAccessToken" in error
+        assert "status=200" in error
+        assert "expires_in" in error
+        assert secret not in error
+        assert "echoed-secret" not in error
+        assert '"client_secret":"***"' in error
+
+    def test_all_send_endpoint_failures_include_each_body_and_redact_tokens(self, monkeypatch):
+        access_token = "qq-access-token-raw"
+        fake = _FakeQQBotHttp([
+            _FakeQQBotResponse(200, data={"access_token": access_token}),
+            _FakeQQBotResponse(400, text="channel missing"),
+            _FakeQQBotResponse(
+                403,
+                text='{"message":"c2c denied","access_token":"echoed-access-token"}',
+            ),
+            _FakeQQBotResponse(404, text="group failed accessToken=echoed-camel-token"),
+        ])
+        _install_qqbot_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_qqbot(
+                SimpleNamespace(token="qq-client-secret-raw", extra={"app_id": "appid-123"}),
+                "target-1",
+                "hello",
+            )
+        )
+
+        error = result["error"]
+        assert "QQBot send failed" in error
+        assert "channel endpoint=https://api.sgroup.qq.com/channels/target-1/messages status=400 body=channel missing" in error
+        assert "c2c endpoint=https://api.sgroup.qq.com/v2/users/target-1/messages status=403" in error
+        assert "c2c denied" in error
+        assert "group endpoint=https://api.sgroup.qq.com/v2/groups/target-1/messages status=404" in error
+        assert "group failed" in error
+        assert access_token not in error
+        assert "echoed-access-token" not in error
+        assert "echoed-camel-token" not in error
+        assert '"access_token": "***"' in error
+        assert "accessToken=***" in error
+
+    def test_long_response_body_secret_is_redacted_before_truncation(self, monkeypatch):
+        long_token = "qq-" + ("access-token-" * 80)
+        long_secret = "qq-" + ("client-secret-" * 80)
+        fake = _FakeQQBotHttp([
+            _FakeQQBotResponse(
+                500,
+                text=(
+                    '{"message":"token failure",'
+                    f'"access_token":"{long_token}",'
+                    f'"clientSecret":"{long_secret}"'
+                ),
+            )
+        ])
+        _install_qqbot_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_qqbot(
+                SimpleNamespace(token=long_secret, extra={"app_id": "appid-123"}),
+                "target-1",
+                "hello",
+            )
+        )
+
+        error = result["error"]
+        assert "QQBot token request failed" in error
+        assert "status=500" in error
+        assert "token failure" in error
+        assert long_token not in error
+        assert long_secret not in error
+        assert "access-token-access-token" not in error
+        assert "client-secret-client-secret" not in error
+        assert '"access_token": "***"' in error
+        assert '"clientSecret":"***"' in error
 
 
 # ---------------------------------------------------------------------------

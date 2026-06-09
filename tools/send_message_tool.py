@@ -65,19 +65,68 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_CAMEL_SECRET_JSON_RE = re.compile(
+    r'("?(?:accessToken|clientSecret|client_secret|access_token)"?\s*:\s*")([^"\s,}]+)("?)',
+    re.IGNORECASE,
+)
+_CAMEL_SECRET_ASSIGN_RE = re.compile(
+    r"\b(accessToken|clientSecret|client_secret)\s*=\s*([^\s,;]+)",
+    re.IGNORECASE,
+)
+_QQBOT_AUTH_HEADER_RE = re.compile(
+    r"(Authorization:\s*QQBot\s+)(\S+)",
+    re.IGNORECASE,
+)
+_QQBOT_DIAGNOSTIC_BODY_LIMIT = 500
 
 
 def _sanitize_error_text(text) -> str:
     """Redact secrets from error text before surfacing it to users/models."""
-    redacted = redact_sensitive_text(text)
+    redacted = redact_sensitive_text(text, force=True)
     redacted = _URL_SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}***", redacted)
     redacted = _GENERIC_SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=***", redacted)
+    redacted = _CAMEL_SECRET_JSON_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", redacted)
+    redacted = _CAMEL_SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=***", redacted)
+    redacted = _QQBOT_AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}***", redacted)
     return redacted
 
 
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _http_response_body_for_diagnostics(resp) -> str:
+    """Return a compact response body string for user-visible diagnostics."""
+    body = ""
+    try:
+        body = getattr(resp, "text", "")
+        if callable(body):
+            body = body()
+    except Exception:
+        body = ""
+
+    if not body:
+        try:
+            body = json.dumps(resp.json(), ensure_ascii=False, sort_keys=True)
+        except Exception:
+            body = ""
+
+    body = str(body).strip()
+    body = _sanitize_error_text(body)
+    if len(body) > _QQBOT_DIAGNOSTIC_BODY_LIMIT:
+        body = f"{body[:_QQBOT_DIAGNOSTIC_BODY_LIMIT]}…"
+    return body
+
+
+def _http_response_diagnostic(label: str, url: str, resp) -> str:
+    """Format endpoint, status, and response body for HTTP send failures."""
+    status = getattr(resp, "status_code", getattr(resp, "status", "unknown"))
+    detail = f"{label} endpoint={url} status={status}"
+    body = _http_response_body_for_diagnostics(resp)
+    if body:
+        detail += f" body={body}"
+    return detail
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -1704,11 +1753,25 @@ async def _send_qqbot(pconfig, chat_id, message):
                 json={"appId": str(appid), "clientSecret": str(secret)},
             )
             if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
+                return _error(
+                    "QQBot token request failed: "
+                    + _http_response_diagnostic(
+                        "token",
+                        "https://bots.qq.com/app/getAppAccessToken",
+                        token_resp,
+                    )
+                )
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
             if not access_token:
-                return _error(f"QQBot: no access_token in response")
+                return _error(
+                    "QQBot: no access_token in response: "
+                    + _http_response_diagnostic(
+                        "token",
+                        "https://bots.qq.com/app/getAppAccessToken",
+                        token_resp,
+                    )
+                )
 
             # Step 2: Send message via REST
             # QQ Bot API has separate endpoints for channels, C2C, and groups.
@@ -1744,7 +1807,16 @@ async def _send_qqbot(pconfig, chat_id, message):
                         "message_id": data.get("id")}
 
             # All endpoints failed — return the most informative error
-            return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
+            return _error(
+                "QQBot send failed: "
+                + "; ".join(
+                    [
+                        _http_response_diagnostic("channel", url, resp),
+                        _http_response_diagnostic("c2c", url_c2c, resp_c2c),
+                        _http_response_diagnostic("group", url_group, resp_group),
+                    ]
+                )
+            )
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
 

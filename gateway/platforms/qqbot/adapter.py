@@ -2371,7 +2371,7 @@ class QQAdapter(BasePlatformAdapter):
         """Upload media and return file_info."""
         path = (
             f"/v2/users/{target_id}/files"
-            if target_type == "c2c"
+            if target_type in {"c2c", "dm"}
             else f"/v2/groups/{target_id}/files"
         )
 
@@ -3058,7 +3058,7 @@ class QQAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send an input notify to a C2C user (only supported for C2C).
+        """Send an input notify to a C2C/DM user (only supported for C2C and DM).
 
         Debounced to one request per ~50s (the API sets a 60s indicator).
         The QQ API requires the originating message ID — retrieved from
@@ -3068,7 +3068,7 @@ class QQAdapter(BasePlatformAdapter):
             return
 
         chat_type = self._guess_chat_type(chat_id)
-        if chat_type != "c2c":
+        if chat_type not in {"c2c", "dm"}:
             return
 
         msg_id = self._last_msg_id.get(chat_id)

@@ -49,6 +49,10 @@ hermes plugins disable disk-cleanup
 # or: remove it from plugins.enabled in config.yaml
 ```
 
+:::note Dashboard tabs are a different loader
+Two of the bundled plugins on this page — `hermes-achievements` and `kanban/dashboard` — are **dashboard tabs**, not lifecycle plugins. The dashboard server (`hermes_cli/web_server.py::_discover_dashboard_plugins`) auto-discovers any plugin with a `plugins/<name>/dashboard/manifest.json` and ignores `plugins.enabled` entirely. So `hermes plugins enable kanban` returns "not installed or bundled" while the Kanban tab is already serving at `http://127.0.0.1:9119/kanban`. See the "Dashboard Plugins" note under each tab plugin below for hide / opt-out instructions. Upstream issues tracking the loader-consistency gap: #27631, #30010.
+:::
+
 ## Currently shipped
 
 The repo ships these bundled plugins under `plugins/`. All are opt-in — enable them via `hermes plugins enable <name>`.
@@ -65,8 +69,8 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
-| `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
-| `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
+| `hermes-achievements` | dashboard tab *(auto-loads)* | Steam-style collectible badges generated from your real Hermes session history. No `hermes plugins enable` step. |
+| `kanban/dashboard` | dashboard tab *(auto-loads)* | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). No `hermes plugins enable` step. |
 
 Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
 

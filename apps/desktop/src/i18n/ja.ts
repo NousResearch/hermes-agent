@@ -638,8 +638,9 @@ export const ja = defineLocale({
       ready: '準備完了',
       nousIncluded: 'Nous サブスクリプションに含まれています。有効にするには Nous Portal にサインインしてください。',
       noApiKeyRequired: 'API キーは不要です。',
-      postSetup: step =>
-        `このプロバイダーは追加のセットアップ手順 (${step}) が必要です。今は CLI で hermes tools を実行してください。`
+      postSetupHint: step =>
+        `このプロバイダーは追加のセットアップ手順 (${step}) が必要です。今は CLI で hermes tools を実行してください。`,
+      postSetupRun: 'セットアップを実行',
     }
   },
 
@@ -1148,6 +1149,7 @@ export const ja = defineLocale({
     results: '結果',
     pinned: 'ピン留め',
     sessions: 'セッション',
+    cronJobs: 'cronジョブ',
     groupAriaGrouped: 'セッションを単一リストとして表示',
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     groupTitleGrouped: 'セッションのグループ化を解除',

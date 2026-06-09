@@ -622,7 +622,8 @@ export const zhHant = defineLocale({
       ready: '就緒',
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',
       noApiKeyRequired: '不需要 API 金鑰。',
-      postSetup: step => `此提供方需要額外設定步驟 (${step})。暫時請在 CLI 中執行 hermes tools。`
+      postSetupHint: step => `此提供方需要額外設定步驟 (${step})。暫時請在 CLI 中執行 hermes tools。`,
+      postSetupRun: '執行設定',
     }
   },
 
@@ -1114,6 +1115,7 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
+    cronJobs: '排程作業',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     groupTitleGrouped: '取消分組',

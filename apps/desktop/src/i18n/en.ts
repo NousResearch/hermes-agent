@@ -292,7 +292,9 @@ export const en: Translations = {
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
-      themeDesc: 'Desktop palettes only. The selected mode is applied on top.'
+      themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeProfileNote: (profile: string) =>
+        `Appearance is currently being managed by the ${profile} profile. Edit the theme in that profile to see changes reflected globally.`
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -544,8 +546,19 @@ export const en: Translations = {
       ready: 'Ready',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       noApiKeyRequired: 'No API key required.',
-      postSetup: step =>
-        `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`
+      postSetupHint: step =>
+        `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`,
+      postSetupRun: 'Run setup',
+      postSetupRunning: 'Running setup…',
+      postSetupStarting: 'Starting setup…',
+      postSetupCompleteTitle: 'Setup complete',
+      postSetupCompleteMessage: (step: string) =>
+        `The setup step "${step}" completed successfully.`,
+      postSetupErrorTitle: 'Setup failed',
+      postSetupErrorMessage: (step: string) =>
+        `The setup step "${step}" failed with an error.`,
+      postSetupFailed: (step: string) =>
+        `Setup step "${step}" failed. Run it from the CLI with hermes tools.`,
     }
   },
 
@@ -955,6 +968,11 @@ export const en: Translations = {
     emptyTitleSearch: 'No matches',
     last: 'Last:',
     next: 'Next:',
+    noRuns: 'No runs yet',
+    manage: 'Manage',
+    showRuns: 'Show runs',
+    hideRuns: 'Hide runs',
+    runHistory: 'Run history',
     actionsFor: title => `Actions for ${title}`,
     actionsTitle: 'Cron job actions',
     resume: 'Resume cron',
@@ -1046,6 +1064,7 @@ export const en: Translations = {
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',
+    cronJobs: 'Cron jobs',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
@@ -1249,8 +1268,18 @@ export const en: Translations = {
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
-    errorBody: 'No worries — nothing was lost. You can try again now.',
-    notNow: 'Not now'
+    errorBody: 'No worries \u2014 nothing was lost. You can try again now.',
+    notNow: 'Not now',
+    latestBodyBackend: 'The backend is running the latest version.',
+    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it\u2019s back.',
+    applyStatus: {
+      preparing: 'Preparing update…',
+      pulling: 'Downloading update…',
+      restarting: 'Restarting…',
+      notAvailable: 'Update not available',
+      failed: 'Update failed',
+      noReturn: 'No response from update process'
+    }
   },
 
   install: {
@@ -1435,10 +1464,13 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
-      rebuildNeeded: 'Source code changed — rebuild to apply local changes.',
+      rebuildNeeded: 'Local rebuild needed',
       desktopVersion: version => `Hermes Desktop v${version}`,
       commit: sha => `commit ${sha}`,
       branch: branch => `branch ${branch}`,
+      backendVersion: version => `Backend v${version}`,
+      clientLabel: version => `client v${version}`,
+      backendLabel: version => `backend v${version}`,
       closeCommandCenter: 'Close Command Center',
       openCommandCenter: 'Open Command Center',
       gateway: 'Gateway',

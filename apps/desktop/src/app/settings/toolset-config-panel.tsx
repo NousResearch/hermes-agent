@@ -311,7 +311,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 )}
                 {provider.post_setup && (
                   <p className="text-[0.72rem] text-muted-foreground">
-                    {copy.postSetup(provider.post_setup)}
+                    {copy.postSetupHint(provider.post_setup)}
                   </p>
                 )}
               </div>

@@ -287,7 +287,9 @@ export const zh: Translations = {
       technical: '技术',
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
-      themeDesc: '仅桌面端调色板。所选模式叠加其上。'
+      themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeProfileNote: (profile: string) =>
+        `外观当前正由 ${profile} 个人资料管理。在该资料中编辑主题以全局应用更改。`
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -698,7 +700,18 @@ export const zh: Translations = {
       ready: '就绪',
       nousIncluded: '包含在 Nous 订阅中；登录 Nous Portal 即可激活。',
       noApiKeyRequired: '不需要 API 密钥。',
-      postSetup: step => `此提供方需要额外设置步骤 (${step})。暂时请在 CLI 中运行 hermes tools。`
+      postSetupHint: step => `此提供方需要额外设置步骤 (${step})。暂时请在 CLI 中运行 hermes tools。`,
+      postSetupRun: '运行设置',
+      postSetupRunning: '正在运行设置…',
+      postSetupStarting: '正在开始设置…',
+      postSetupCompleteTitle: '设置完成',
+      postSetupCompleteMessage: (step: string) =>
+        `设置步骤 "${step}" 已成功完成。`,
+      postSetupErrorTitle: '设置失败',
+      postSetupErrorMessage: (step: string) =>
+        `设置步骤 "${step}" 失败。`,
+      postSetupFailed: (step: string) =>
+        `设置步骤 "${step}" 失败。暂时请在 CLI 中运行 hermes tools。`,
     }
   },
 
@@ -1099,9 +1112,14 @@ export const zh: Translations = {
     emptyDescNew: '按 cron 表达式排程一个提示词。Hermes 会运行它，并把结果发送到你选择的目的地。',
     emptyDescSearch: '尝试更宽泛的搜索词。',
     emptyTitleNew: '暂无排程任务',
-    emptyTitleSearch: '无匹配项',
-    last: '上次：',
+    emptyTitleSearch: '无结果',
+    last: '上一次：',
     next: '下次：',
+    noRuns: '暂无运行记录',
+    manage: '管理',
+    showRuns: '显示运行记录',
+    hideRuns: '隐藏运行记录',
+    runHistory: '运行历史',
     actionsFor: title => `${title} 的操作`,
     actionsTitle: '定时任务操作',
     resume: '恢复定时任务',
@@ -1193,6 +1211,7 @@ export const zh: Translations = {
     results: '结果',
     pinned: '已置顶',
     sessions: '会话',
+    cronJobs: '定时任务',
     groupAriaGrouped: '以单一列表显示会话',
     groupAriaUngrouped: '按工作区分组会话',
     groupTitleGrouped: '取消分组',
@@ -1397,7 +1416,17 @@ export const zh: Translations = {
     applyingClose: 'Hermes 将关闭以应用更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
-    notNow: '暂不'
+    notNow: '暂不更新',
+    latestBodyBackend: '后端正在运行最新版本。',
+    applyingBodyBackend: '远程后端正在应用更新并即将重启。恢复后 Hermes 会自动重新连接。',
+    applyStatus: {
+      preparing: '正在准备更新…',
+      pulling: '正在下载更新…',
+      restarting: '正在重启…',
+      notAvailable: '更新不可用',
+      failed: '更新失败',
+      noReturn: '更新进程无响应'
+    }
   },
 
   install: {
@@ -1580,6 +1609,9 @@ export const zh: Translations = {
       desktopVersion: version => `Hermes Desktop v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
+      backendVersion: version => `后端 v${version}`,
+      clientLabel: version => `客户端 v${version}`,
+      backendLabel: version => `后端 v${version}`,
       closeCommandCenter: '关闭命令中心',
       openCommandCenter: '打开命令中心',
       gateway: '网关',

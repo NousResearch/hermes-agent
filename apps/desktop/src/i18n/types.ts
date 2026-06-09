@@ -219,6 +219,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeProfileNote: (profile: string) => string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -452,7 +453,15 @@ export interface Translations {
       ready: string
       nousIncluded: string
       noApiKeyRequired: string
-      postSetup: (step: string) => string
+      postSetupHint: (step: string) => string
+      postSetupRun: string
+      postSetupRunning: string
+      postSetupStarting: string
+      postSetupCompleteTitle: string
+      postSetupCompleteMessage: (step: string) => string
+      postSetupErrorTitle: string
+      postSetupErrorMessage: (step: string) => string
+      postSetupFailed: (step: string) => string
     }
   }
 
@@ -693,8 +702,6 @@ export interface Translations {
   cron: {
     close: string
     search: string
-    refresh: string
-    refreshing: string
     loading: string
     states: Record<string, string>
     deliveryLabels: Record<string, string>
@@ -708,15 +715,22 @@ export interface Translations {
     monthlyOnDayAt: (dayOfMonth: string, time: string) => string
     topOfHour: string
     everyHourAt: (minute: string) => string
+    refresh: string
+    refreshing: string
     active: (enabled: number, total: number) => string
-    newCron: string
     createFirst: string
+    newCron: string
     emptyDescNew: string
     emptyDescSearch: string
     emptyTitleNew: string
     emptyTitleSearch: string
     last: string
     next: string
+    noRuns: string
+    manage: string
+    showRuns: string
+    hideRuns: string
+    runHistory: string
     actionsFor: (title: string) => string
     actionsTitle: string
     resume: string
@@ -803,6 +817,7 @@ export interface Translations {
     results: string
     pinned: string
     sessions: string
+    cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
     groupTitleGrouped: string
@@ -929,6 +944,7 @@ export interface Translations {
     unsupportedMessage: string
     connectionRetry: string
     latestBody: string
+    latestBodyBackend: string
     allSetTitle: string
     availableTitle: string
     availableBody: string
@@ -947,10 +963,19 @@ export interface Translations {
     copied: string
     done: string
     applyingBody: string
+    applyingBodyBackend: string
     applyingClose: string
     errorTitle: string
     errorBody: string
     notNow: string
+    applyStatus: {
+      preparing: string
+      pulling: string
+      restarting: string
+      notAvailable: string
+      failed: string
+      noReturn: string
+    }
   }
 
   install: {
@@ -1109,6 +1134,9 @@ export interface Translations {
       commitsBehind: (count: number, branch: string) => string
       rebuildNeeded: string
       desktopVersion: (version: string) => string
+      backendVersion: (version: string) => string
+      clientLabel: (version: string) => string
+      backendLabel: (version: string) => string
       commit: (sha: string) => string
       branch: (branch: string) => string
       closeCommandCenter: string

@@ -73,8 +73,10 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
+    ("poolside/laguna-m.1:free",               "free"),
     ("tencent/hy3-preview:free",               "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 

@@ -414,14 +414,19 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
-        if len(self._seen_messages) > _DEDUP_MAX_SIZE:
-            cutoff = now - _DEDUP_WINDOW_SECONDS
-            self._seen_messages = {
-                k: v for k, v in self._seen_messages.items() if v > cutoff
-            }
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
+        seen = self._seen_messages
+        t = seen.get(msg_id)
+        if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
+            return True  # seen, unexpired
+        # New or expired: record and enforce a HARD size bound (evict oldest,
+        # insertion-order) so a burst of unique ids within the window can't grow
+        # the dict without limit — not just the expired-only prune.
+        if msg_id in seen:
+            del seen[msg_id]  # refresh insertion order
+        seen[msg_id] = now
+        if len(seen) > _DEDUP_MAX_SIZE:
+            for old in list(seen.keys())[: len(seen) - _DEDUP_MAX_SIZE]:
+                del seen[old]
         return False
 
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:

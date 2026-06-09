@@ -21683,8 +21683,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 )
                     except (TimeoutError, Exception) as _boundary_err:
                         _boundary_ok = False
-                        # On timeout: mark boundary as cancelled so it won't send
-                        # visible finalize text after the approval prompt
+                        # Mark as cancelled for backward compat (the boundary
+                        # handler no longer reads this flag — it always finalizes).
                         if _cancelled_flag is not None:
                             _cancelled_flag["cancelled"] = True
                         logger.warning(

@@ -93,7 +93,7 @@ Hermes:    200ms throttle + 85 帧上限（无 ack，靠时间模拟）
 | 边界类型 | finalize | reset | 说明 |
 |---------|----------|-------|------|
 | **Segment break（工具边界）** | ❌ | ❌ | 保持 cumulative text，一条消息 |
-| **Approval boundary** | ✅ | ✅ | 关闭旧 stream，新 turn_id，清 reply_to |
+| **Approval boundary** | ✅ | ✅ | Finalize 当前 stream，禁用 native，post-approval 走 send() |
 | **Turn done** | ✅ | ✅ | 正常关闭 |
 
 ### Approval Boundary 机制
@@ -108,17 +108,27 @@ consumer.close_for_approval_prompt()
 
 # consumer run() (async task, serial processing):
 _handle_approval_boundary():
-  1. Finalize stream with accumulated text (closes WeCom thinking bubble)
-     - 正常路径: self._accumulated or "⏸ 等待审批中..."
-     - cancelled 路径: self._accumulated or "⏸" (不用零宽字符，避免空气泡)
-  2. If finalize failed: clean up adapter StreamTurn, disable native streaming
-  3. Reset: _native_stream_opened=False, new turn_id, clear _initial_reply_to_id
-  4. Resolve future with boundary_ok status
+  1. Finalize stream with accumulated text (stable pre-approval message)
+     - ok = await send_stream_frame(accumulated or "⏸ 等待审批中...", finalize=True)
+     - 如果 finalize 失败（返回 False 或异常）: fallback 到 send() 投递 pre-approval 文本
+  2. Disable native streaming (_use_native_streaming=False)
+  3. Set cfg.buffer_only=True (post-approval 内容积累到 got_done 一次性投递)
+  4. Reset segment state
+  5. Resolve future with True
 ```
+
+**设计决策：不跨 approval 保持 stream**
+
+- WeCom stream finalize ack 只代表服务端收到 frame，不保证客户端渲染
+- Approval 等待期间 stream 处于半开状态，客户端可能停止跟踪
+- 如果 `content_delivered=True` 但客户端未渲染，normal final send 被 suppress → 用户什么都看不到
+- Approval 本身是交互边界，"审批前状态 + 审批后结果" 分为两条消息是可接受的 UX
+
+**Post-approval 输出走 buffer_only send()**：native streaming 在 boundary 后被禁用，`buffer_only=True` 让 consumer 积累所有 post-approval 文本，在 `got_done` 时一次性通过 `send()` 投递。
 
 **Post-approval req_id 分离**：
 
-确认消息（"✅ Approved..."）通过 `force_proactive_send` metadata 强制走 `APP_CMD_SEND`（DM）或绑定 `reply_to=event.message_id` 精确定位 req_id（群聊 fallback）。这确保确认消息不消费 `_last_chat_req_ids[chat]` 的 req_id，留给 stream consumer post-approval 重开 stream。
+确认消息（"✅ Approved..."）通过 `force_proactive_send` metadata 强制走 `APP_CMD_SEND`（DM）或绑定 `reply_to=event.message_id` 精确定位 req_id（群聊 fallback）。
 
 ```python
 # slash_commands.py _handle_approve_command:
@@ -133,7 +143,7 @@ await _adapter.send(
 )
 ```
 
-**群聊安全**：`force_proactive_send` 对群聊不生效（`_group_chat_ids` 检测），群聊仍走 passive reply。群聊若无可用 req_id 则 fail-early 并记 warning（不尝试已知会失败的 `APP_CMD_SEND`）。
+**群聊安全**：`force_proactive_send` 对群聊不生效（`_group_chat_ids` 检测），群聊仍走 passive reply。群聊若无可用 req_id 则 fail-early 并记 warning。
 
 ### 错误处理
 
@@ -271,12 +281,11 @@ tests/tools/test_send_message_cross_loop.py — 4 passed
 - Same chat concurrent turns isolated
 - Native fallback closes stream
 
-### test_approval_boundary.py (5 tests)
-- **Cancelled boundary finalizes with accumulated text (not zero-width space)** ✓
-- Finalize failure returns False ✓
-- Clears initial_reply_to for fresh req_id ✓
-- Re-seed uses new turn_id ✓
-- Success path sends visible placeholder ✓
+### test_approval_boundary.py (4 tests)
+- **Boundary finalizes stream and disables native** ✓
+- **Empty accumulated uses placeholder** ✓
+- **Post-approval content uses send() not stream** ✓
+- **Stream-not-opened boundary skips finalize** ✓
 
 ### test_send_message_cross_loop.py (4 tests)
 - Cross-loop dispatches to gateway loop ✓

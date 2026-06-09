@@ -55,9 +55,8 @@ _COMMENTARY = object()
 # last thing on screen, not racing ahead of buffered prose.
 _FLUSH = object()
 
-# Sentinel to signal an approval boundary — close current native stream,
-# reset turn state, generate new turn_id for post-approval output.
-# Used by WeCom to prevent typing bubbles from spanning approval waits.
+# Sentinel to signal an approval boundary — finalize the current stream,
+# disable native streaming, and let post-approval output go via send().
 _APPROVAL_BOUNDARY = object()
 
 
@@ -444,12 +443,17 @@ class GatewayStreamConsumer:
         self._queue.put(_NEW_SEGMENT)
 
     def close_for_approval_prompt(self) -> asyncio.Future:
-        """Close current native stream for approval prompt.
+        """Signal approval boundary — finalize stream and disable native.
 
         Queues an approval boundary signal that the consumer processes
-        serially: flush accumulated text → finalize stream → reset state →
-        generate new turn_id. Returns a Future that resolves when the
-        boundary has been processed.
+        serially: finalize the current stream with accumulated text
+        (creating a stable message), then disable native streaming so
+        post-approval output goes through reliable send().
+
+        Returns a (Future, cancelled_flag) tuple. The Future resolves True
+        when the boundary has been processed. cancelled_flag is included
+        for backward compatibility with callers that set it on timeout;
+        the boundary handler no longer reads it (finalize always runs).
 
         For platforms without native streaming this is a no-op (returns
         an immediately-resolved Future).
@@ -471,8 +475,8 @@ class GatewayStreamConsumer:
             return f
 
         # Create a future that run() will resolve after processing.
-        # Also include a cancelled flag so if the caller times out,
-        # the handler won't send a visible finalize message after the prompt.
+        # cancelled_flag is retained for backward compatibility with callers
+        # (run.py sets it on timeout) but the handler always finalizes regardless.
         if loop:
             boundary_future = loop.create_future()
         else:
@@ -573,98 +577,94 @@ class GatewayStreamConsumer:
             self._draft_id = type(self)._draft_id_counter
 
     async def _handle_approval_boundary(self, boundary_future, cancelled_flag=None) -> None:
-        """Process an approval boundary: close current native stream, prepare for new one.
+        """Process an approval boundary: finalize stream, disable native for post-approval.
 
         This method is called serially from run() when _APPROVAL_BOUNDARY is dequeued.
-        It ensures no race conditions with pending deltas or other queue items.
 
-        If cancelled_flag["cancelled"] is True (caller timed out and continued),
-        we still reset state but skip sending visible finalize text to avoid
-        the finalize message appearing after the approval prompt.
+        Strategy: finalize the current stream with accumulated text (creating a
+        stable message for pre-approval content), then disable native streaming
+        so post-approval output goes through the reliable send() path.
 
-        If finalize fails, we still reset state to prevent trapped typing on
-        post-approval output.
+        Why not keep the stream open across approval:
+        - WeCom stream finalize ack only confirms server receipt, not client render.
+        - Approval waits introduce an idle gap where the stream may become stale
+          on the client side (no server-side 846608, but client stops tracking it).
+        - If content_delivered=True but the client didn't render, the normal
+          final send is suppressed → user sees nothing.
+        - Approval is a natural interaction boundary; "pre-approval preamble" +
+          "post-approval result" as two messages is acceptable UX.
+
+        Post-approval output uses regular send() which is unconditionally reliable.
         """
-        import uuid
-        is_cancelled = cancelled_flag and cancelled_flag.get("cancelled", False)
-
-        boundary_ok = False
-        finalize_succeeded = False
+        delivery_failed = False
         try:
             if self._native_stream_opened:
-                # Finalize current stream directly with accumulated content.
-                # Do NOT send an intermediate flush before finalize — WeCom may
-                # treat a final frame with identical content as the preceding
-                # intermediate as a duplicate and silently drop it (no ack),
-                # causing a 5-second timeout that disables native streaming.
-                # Dedup handling (zero-width space append) is done in the adapter
-                # layer (wecom.py send_stream_frame) to cover all finalize paths.
-                if is_cancelled:
-                    # Caller timed out and already moved on. We still MUST send
-                    # finalize=true to close the WeCom client's thinking bubble
-                    # (opened by the seed frame). Without it the bubble stays
-                    # visible indefinitely. Use accumulated text (what the user
-                    # already saw) — NOT a zero-width space which WeCom renders
-                    # as an empty message bubble.
-                    finalize_text = self._accumulated or "⏸"
-                else:
-                    finalize_text = self._accumulated or "⏸ 等待审批中..."
+                # Finalize current stream with accumulated content.
+                # This converts the typing bubble into a stable message.
+                finalize_text = self._accumulated or "⏸ 等待审批中..."
+                finalize_ok = False
                 try:
-                    await self.adapter.send_stream_frame(
+                    result = await self.adapter.send_stream_frame(
                         finalize_text,
                         finalize=True,
                         chat_id=self.chat_id,
                         reply_to=self._initial_reply_to_id,
                         turn_id=self._turn_id,
                     )
-                    finalize_succeeded = True
-                    logger.debug(
-                        "Approval boundary: finalized stream (chat=%s, turn=%s, cancelled=%s)",
-                        self.chat_id, self._turn_id, is_cancelled,
-                    )
+                    finalize_ok = bool(result)
                 except Exception as e:
                     logger.warning("Approval boundary: finalize failed: %s", e)
-                    # Don't raise — we still need to reset state below to prevent
-                    # post-approval output from being trapped in old stream
-                    #
-                    # Clean up the StreamTurn in the adapter so
-                    # _find_active_turn_for_chat() doesn't keep finding it.
-                    _turn_key = f"{self.chat_id}:{self._turn_id}"
-                    if hasattr(self.adapter, "_stream_turns"):
-                        self.adapter._stream_turns.pop(_turn_key, None)
 
-            # Step 3: Reset native stream state
-            # Do this even if finalize failed to prevent post-approval output
-            # from continuing to use the old stream with stale req_id
+                if not finalize_ok:
+                    # Stream finalize didn't land — the typing bubble may still
+                    # be showing partial content. Fallback: deliver the pre-approval
+                    # text via reliable send() so the user at least sees it.
+                    logger.warning(
+                        "Approval boundary: finalize not confirmed, "
+                        "falling back to send() for pre-approval text (chat=%s)",
+                        self.chat_id,
+                    )
+                    fallback_ok = False
+                    try:
+                        send_result = await self.adapter.send(
+                            self.chat_id, finalize_text,
+                        )
+                        fallback_ok = getattr(send_result, "success", False)
+                    except Exception as send_err:
+                        logger.warning(
+                            "Approval boundary: fallback send also failed: %s", send_err
+                        )
+                    if not fallback_ok:
+                        # Both finalize and fallback failed — pre-approval text
+                        # may be lost. Mark boundary as failed so the caller knows.
+                        logger.error(
+                            "Approval boundary: both finalize and fallback send failed "
+                            "(chat=%s) — pre-approval text may not have been delivered",
+                            self.chat_id,
+                        )
+                        delivery_failed = True
+                else:
+                    logger.debug(
+                        "Approval boundary: finalized stream (chat=%s, turn=%s)",
+                        self.chat_id, self._turn_id,
+                    )
+
+            # Disable native streaming for post-approval output.
+            # Post-approval content will go through regular send() which is
+            # unconditionally reliable (no client-side stream state dependency).
+            # Also set buffer_only=True so the consumer accumulates all
+            # post-approval text and delivers it in one shot on got_done,
+            # avoiding mid-stream flushes that would create multiple messages
+            # on non-editable platforms like WeCom.
+            self._use_native_streaming = False
             self._native_stream_opened = False
             self._native_last_pushed_len = 0
+            self.cfg.buffer_only = True
 
-            # Step 4: Generate new turn_id for post-approval output
-            self._turn_id = str(uuid.uuid4())
-
-            # Step 5: Clear initial_reply_to_id so post-approval stream uses
-            # the latest inbound req_id (_last_chat_req_ids[chat]) instead of
-            # the original user message's req_id which may be stale after /approve.
-            self._initial_reply_to_id = None
-
-            # Step 6: If finalize failed, disable native streaming to force
-            # fallback to reliable send() path for post-approval output
-            if not finalize_succeeded:
-                self._use_native_streaming = False
-                logger.debug(
-                    "Approval boundary: disabled native streaming after finalize failure"
-                )
-
-            logger.debug(
-                "Approval boundary: new turn_id=%s, cleared reply_to for fresh req_id",
-                self._turn_id,
-            )
-
-            # Step 7: Reset segment state (accumulated text, message_id, etc.)
+            # Reset segment state so post-approval output starts fresh via send().
             self._reset_segment_state()
 
-            # Only set boundary_ok = True if finalize succeeded
-            boundary_ok = finalize_succeeded
+            boundary_ok = not delivery_failed
 
         except Exception as e:
             logger.warning("Approval boundary processing failed: %s", e)

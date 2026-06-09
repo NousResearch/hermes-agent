@@ -5880,8 +5880,88 @@ ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
   return runDesktopUninstall(String(mode || ''))
 })
 
+// --- macOS first-launch helpers (restored after accidental removal) ---
+
+function maybeRelocateToApplications() {
+  if (!IS_MAC || !IS_PACKAGED || process.env.HERMES_DESKTOP_NO_AUTO_MOVE === '1') return false
+  try {
+    if (app.isInApplicationsFolder()) return false
+    const moved = app.moveToApplicationsFolder({ conflictHandler: type => type !== 'existsAndRunning' })
+    if (moved) rememberLog('[install] relocated into /Applications; relaunching')
+    return moved
+  } catch (err) {
+    rememberLog(`[install] move to /Applications skipped: ${err.message}`)
+    return false
+  }
+}
+
+const DOCK_PINNED_MARKER = 'dock-pinned.json'
+
+// Pin the /Applications copy to the Dock once. macOS has no Electron API for
+// this, so we append to com.apple.dock's persistent-apps and restart the Dock.
+// Guarded by a userData marker + membership check so we never duplicate the tile.
+// Uses file-reference URLs (type 15) — raw POSIX paths (type 0) are silently
+// dropped on Dock restart.
+function maybePinToDock() {
+  if (!IS_MAC || !IS_PACKAGED || process.env.HERMES_DESKTOP_NO_DOCK_PIN === '1') return
+  const marker = path.join(app.getPath('userData'), DOCK_PINNED_MARKER)
+  if (fileExists(marker)) return
+
+  let bundle
+  try {
+    if (!app.isInApplicationsFolder()) return // don't pin a soon-to-be-stale path
+    bundle = runningAppBundle()
+  } catch {
+    return
+  }
+  if (!bundle) return
+
+  // The Dock stores tiles as file-reference URLs (type 15), e.g.
+  // file:///Applications/Hermes.app/ — NOT a raw POSIX path. A type-0/raw-path
+  // tile is silently dropped when the Dock rewrites persistent-apps on restart.
+  const url = pathToFileURL(bundle.endsWith('/') ? bundle : `${bundle}/`).href
+
+  const done = note => {
+    try {
+      fs.writeFileSync(marker, JSON.stringify({ bundle, pinnedAt: new Date().toISOString(), ...note }) + '\n')
+    } catch {
+      // best-effort; we re-check next launch (membership guard dedupes)
+    }
+  }
+
+  try {
+    const apps = execFileSync('defaults', ['read', 'com.apple.dock', 'persistent-apps'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    if (apps.includes(url)) return done({ alreadyPresent: true })
+  } catch {
+    // persistent-apps may not exist yet; -array-add creates it
+  }
+
+  const tile =
+    '<dict><key>tile-data</key><dict><key>file-data</key><dict>' +
+    `<key>_CFURLString</key><string>${url}</string><key>_CFURLStringType</key><integer>15</integer>` +
+    '</dict></dict></dict>'
+  try {
+    execFileSync('defaults', ['write', 'com.apple.dock', 'persistent-apps', '-array-add', tile], { stdio: 'ignore' })
+    // Flush the write through cfprefsd before restarting the Dock, otherwise the
+    // Dock reloads stale prefs and our tile is lost in the race.
+    execFileSync('defaults', ['read', 'com.apple.dock', 'persistent-apps'], { stdio: 'ignore' })
+    execFileSync('killall', ['Dock'], { stdio: 'ignore' })
+    done()
+    rememberLog(`[install] pinned to Dock: ${url}`)
+  } catch (err) {
+    rememberLog(`[install] Dock pin skipped: ${err.message}`)
+  }
+}
 
 app.whenReady().then(() => {
+  // macOS: relocate into /Applications before anything else so setup + state
+  // land in the final location; on success this relaunches, so bail here.
+  if (maybeRelocateToApplications()) return
+  maybePinToDock()
+
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {

@@ -7520,6 +7520,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_goal_command(cmd_original)
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
+        elif canonical == "loop":
+            self._handle_loop_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -7715,6 +7717,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return mgr
 
 
+
+    def _handle_loop_command(self, cmd: str) -> None:
+        """Dispatch /loop subcommands: create / status / pause / resume / stop."""
+        from hermes_cli.loop_command import handle_loop_command, parse_loop_result
+
+        parts = (cmd or "").strip().split(None, 1)
+        args = parts[1].strip() if len(parts) > 1 else ""
+
+        text, is_error = parse_loop_result(handle_loop_command(args))
+        if is_error:
+            _cprint(f"  \033[1;31m{text}\033[0m")
+        elif text:
+            _cprint(f"  {text}")
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.

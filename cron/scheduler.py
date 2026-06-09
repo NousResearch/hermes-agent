@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -1029,6 +1030,185 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _format_loop_alert(job: dict, job_id: str, reason: str) -> str:
+    """Format an auto-pause alert with context."""
+    name = job.get("name", job_id)
+    prompt_snippet = (job.get("prompt") or "")[:60]
+    if len(job.get("prompt") or "") > 60:
+        prompt_snippet += "..."
+    runs = (job.get("repeat") or {}).get("completed", 0)
+    # +1 because mark_job_run hasn't incremented yet when this is called
+    runs += 1
+    parts = [f"🔄 Loop job '{name}' ({job_id}) auto-paused: {reason}"]
+    if prompt_snippet:
+        parts.append(f"   Goal: {prompt_snippet}")
+    parts.append(f"   Runs completed: {runs}")
+    parts.append(f"   Use /loop resume {job_id} to restart.")
+    return "\n".join(parts)
+
+
+def _run_loop_verify(job: dict) -> Optional[str]:
+    """Run a loop job's --verify command and return error context or None."""
+    verify_cmd = job.get("loop_verify")
+    if not verify_cmd:
+        return None
+    try:
+        result = subprocess.run(
+            verify_cmd, shell=True, capture_output=True,
+            text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            stdout = (result.stdout or "").strip()
+            parts = [f"verify command failed (exit {result.returncode})"]
+            if stderr:
+                parts.append(f"stderr: {stderr}")
+            if stdout:
+                parts.append(f"stdout: {stdout}")
+            return "\n".join(parts)
+    except subprocess.TimeoutExpired:
+        return f"verify command timed out after 60s: {verify_cmd}"
+    except Exception as exc:
+        return f"verify command error: {exc}"
+    return None
+
+
+def _adapt_loop_interval(job: dict, output_changed: bool) -> dict:
+    """Compute an adaptive interval update for a dynamic loop.
+
+    Dynamic loops watch closer when output changes (halve the interval) and
+    back off when output is stable (double it), clamped to [1m, 24h]. Returns
+    schedule fields to merge into the job record, or {} when the interval is
+    unchanged or the loop is not a dynamic interval loop.
+    """
+    if not job.get("loop_dynamic") or job.get("schedule", {}).get("kind") != "interval":
+        return {}
+    old_minutes = job["schedule"].get("minutes", 5)
+    new_minutes = max(1, old_minutes // 2) if output_changed else min(1440, old_minutes * 2)
+    if new_minutes == old_minutes:
+        return {}
+    logger.info(
+        "Job '%s' dynamic loop: interval %dm → %dm (%s)",
+        job["id"], old_minutes, new_minutes,
+        "output changed" if output_changed else "output stable",
+    )
+    return {
+        "schedule": {**job["schedule"], "minutes": new_minutes, "display": f"every {new_minutes}m"},
+        "schedule_display": f"every {new_minutes}m",
+    }
+
+
+def _evaluate_loop_tick(job: dict, final_response: str) -> tuple[Optional[str], bool]:
+    """Evaluate a loop job tick and update tracking state.
+
+    Returns (alert_message, skip_delivery).
+    - alert_message: non-None when the loop is auto-paused.
+    - skip_delivery: True when the output hash matches last delivered.
+    """
+    from cron.jobs import update_job, pause_job
+
+    job_id = job["id"]
+    threshold = job.get("loop_no_progress_threshold", 3)
+    last_hash = job.get("loop_last_output_hash")
+    no_progress_count = job.get("loop_no_progress_count", 0)
+    last_delivered_hash = job.get("loop_last_delivered_hash")
+
+    # Hash the final_response (sha256, truncated to 16 hex chars)
+    response_hash = hashlib.sha256(
+        (final_response or "").encode("utf-8")
+    ).hexdigest()[:16]
+
+    # Compare to previous output hash — identical output = no progress
+    output_changed = (response_hash != last_hash)
+    if not output_changed:
+        no_progress_count += 1
+        logger.info(
+            "Job '%s' loop: output unchanged (%s), no_progress_count=%d/%d",
+            job_id, response_hash, no_progress_count, threshold,
+        )
+    else:
+        no_progress_count = 0
+        logger.info(
+            "Job '%s' loop: output changed (%s → %s), resetting count",
+            job_id, last_hash, response_hash,
+        )
+
+    # Adaptive interval for dynamic loops: halve on change, double on stability.
+    schedule_update = _adapt_loop_interval(job, output_changed)
+
+    # Early exit: hash-based threshold hit — skip judge to save a model call
+    if no_progress_count >= threshold:
+        alert = _format_loop_alert(
+            job, job_id,
+            f"{threshold} consecutive identical outputs detected (no progress)",
+        )
+        update_job(job_id, {
+            "loop_no_progress_count": no_progress_count,
+            "loop_last_output_hash": response_hash,
+            "loop_last_response": final_response,
+        })
+        pause_job(job_id, reason="no progress detected")
+        return alert, True
+
+    # Judge-based evaluation
+    verdict = None
+    try:
+        from hermes_cli.goals import judge_goal
+        verdict, reason, parse_failed = judge_goal(
+            job.get("prompt", ""), final_response,
+        )
+        logger.info(
+            "Job '%s' loop judge: verdict=%s reason=%s parse_failed=%s",
+            job_id, verdict, reason, parse_failed,
+        )
+    except Exception as exc:
+        logger.debug("Job '%s' loop judge failed: %s", job_id, exc)
+
+    # For loops: verdict='done' means NOT useful (goal is satisfied,
+    # nothing more to do). verdict='continue' means useful progress.
+    if verdict == "done":
+        no_progress_count += 1
+        logger.info(
+            "Job '%s' loop: judge says done (no progress), count=%d/%d",
+            job_id, no_progress_count, threshold,
+        )
+
+    # Unified auto-pause check (handles both hash and judge paths)
+    if no_progress_count >= threshold:
+        alert = _format_loop_alert(
+            job, job_id,
+            f"{threshold} consecutive no-progress detections (hash + judge)",
+        )
+        update_job(job_id, {
+            "loop_no_progress_count": no_progress_count,
+            "loop_last_output_hash": response_hash,
+            "loop_last_response": final_response,
+        })
+        pause_job(job_id, reason="no progress detected")
+        return alert, True
+
+    # Run --verify command if configured
+    verify_error = _run_loop_verify(job)
+
+    # Determine delivery gating: skip if hash matches last delivered
+    skip_delivery = (last_delivered_hash is not None and response_hash == last_delivered_hash)
+
+    # Update loop state on the job record
+    updates = {
+        "loop_no_progress_count": no_progress_count,
+        "loop_last_output_hash": response_hash,
+        "loop_last_response": final_response,
+        "loop_last_verify_error": verify_error,
+        **schedule_update,
+    }
+    # Track last delivered hash only when we actually deliver
+    if not skip_delivery and (final_response or "").strip():
+        updates["loop_last_delivered_hash"] = response_hash
+    update_job(job_id, updates)
+
+    return None, skip_delivery
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1049,6 +1229,50 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # pastes `rm -rf /`), so it must not be scanned with the strict
     # user-prompt pattern set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+
+    # Inject previous loop response as context for the next tick.
+    if job.get("loop") and job.get("loop_last_response"):
+        prev_response = job["loop_last_response"]
+        # Truncate to 4K to avoid prompt bloat
+        _MAX_PREV = 4000
+        if len(prev_response) > _MAX_PREV:
+            prev_response = prev_response[:_MAX_PREV] + "\n\n[... truncated ...]"
+        prompt = (
+            "## Previous tick response\n"
+            "The following was the final response from the previous run of this "
+            "loop. Use it as context \u2014 continue from where it left off, or "
+            "improve upon it.\n\n"
+            f"```\n{prev_response}\n```\n\n"
+            f"{prompt}"
+        )
+
+    # Inject loop verify error as context for the next tick.
+    if job.get("loop") and job.get("loop_last_verify_error"):
+        verify_err = job["loop_last_verify_error"]
+        # Truncate to 2K — verify errors are typically short
+        _MAX_VERIFY = 2000
+        if len(verify_err) > _MAX_VERIFY:
+            verify_err = verify_err[:_MAX_VERIFY] + "\n\n[... truncated ...]"
+        prompt = (
+            "## Post-run verification failure\n"
+            "The verification command after the previous tick failed. "
+            "Address this failure in your next response.\n\n"
+            f"```\n{verify_err}\n```\n\n"
+            f"{prompt}"
+        )
+
+    # Inject cadence info for dynamic loops so the agent knows its interval.
+    if job.get("loop") and job.get("loop_dynamic"):
+        minutes = job.get("schedule", {}).get("minutes", 5)
+        no_progress = job.get("loop_no_progress_count", 0)
+        threshold = job.get("loop_no_progress_threshold", 3)
+        prompt = (
+            f"## Loop cadence\n"
+            f"Current interval: {minutes}m | "
+            f"No-progress: {no_progress}/{threshold} | "
+            f"Interval adapts: output changes → faster, stable → slower\n\n"
+            f"{prompt}"
+        )
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
@@ -2052,6 +2276,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
+                # --- Loop self-evaluation ---
+                # After each run, evaluate progress and update loop tracking state.
+                loop_alert_msg = None
+                loop_skip_delivery = False
+                if job.get("loop") and success:
+                    loop_alert_msg, loop_skip_delivery = _evaluate_loop_tick(job, final_response)
+
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
@@ -2064,6 +2295,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
+                # Loop delivery gating: skip when output unchanged from last delivery
+                if loop_skip_delivery:
+                    logger.info("Job '%s': loop output unchanged from last delivery — skipping", job["id"])
+                    should_deliver = False
+
                 delivery_error = None
                 if should_deliver:
                     try:
@@ -2071,6 +2307,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                # Deliver loop alert (auto-pause notification) as a separate message
+                if loop_alert_msg:
+                    try:
+                        _deliver_result(job, loop_alert_msg, adapters=adapters, loop=loop)
+                    except Exception as de:
+                        logger.warning("Loop alert delivery failed for job %s: %s", job["id"], de)
 
                 # Treat empty final_response as a soft failure so last_status
                 # is not "ok" — the agent ran but produced nothing useful.

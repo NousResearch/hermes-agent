@@ -6754,6 +6754,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
 
+            # /loop is safe mid-run — it only manages cron jobs (control-plane).
+            if _cmd_def_inner and _cmd_def_inner.name == "loop":
+                return await self._handle_loop_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -7189,6 +7193,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
+
+        if canonical == "loop":
+            return await self._handle_loop_command(event)
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
@@ -9205,6 +9212,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
 
+
+    async def _handle_loop_command(self, event: "MessageEvent") -> str:
+        """Handle /loop for gateway platforms.
+
+        Subcommands: ``/loop <interval> <prompt>`` / ``/loop status`` /
+        ``/loop pause <id>`` / ``/loop resume <id>`` / ``/loop stop <id>``.
+        """
+        from hermes_cli.loop_command import handle_loop_command, parse_loop_result
+
+        args = (event.get_command_args() or "").strip()
+
+        # Extract origin from event for delivery routing
+        origin = None
+        if event.source:
+            origin = {
+                "platform": str(event.source.platform),
+                "chat_id": event.source.chat_id,
+                "chat_name": event.source.chat_name,
+                "thread_id": event.source.thread_id,
+            }
+
+        text, _is_error = parse_loop_result(handle_loop_command(args, origin=origin))
+        # Empty text means success with nothing to show — shouldn't happen with
+        # current subcommands, but fall back to a generic confirmation.
+        return text or "Loop command completed."
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
@@ -116,17 +116,27 @@ export function useStatusbarItems({
   const desktopVersion = useStore($desktopVersion)
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  const approvalModeRevision = useRef(0)
 
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
     }
 
-    void getGlobalApprovalMode(requestGateway).catch(() => undefined)
+    const revision = ++approvalModeRevision.current
+
+    void getGlobalApprovalMode(requestGateway)
+      .then(mode => {
+        if (revision === approvalModeRevision.current) {
+          setApprovalMode(mode)
+        }
+      })
+      .catch(() => undefined)
   }, [gatewayState, requestGateway])
 
   const applyApprovalMode = useCallback(
     async (next: ApprovalMode) => {
+      const revision = ++approvalModeRevision.current
       const previousMode = $approvalMode.get()
       const previousYolo = $yoloActive.get()
       const sid = $activeSessionId.get()
@@ -137,12 +147,21 @@ export function useStatusbarItems({
       try {
         const activeMode = await setGlobalApprovalMode(requestGateway, next)
 
+        if (revision !== approvalModeRevision.current) {
+          return
+        }
+
+        setApprovalMode(activeMode)
+        setYoloActive(activeMode === 'off')
+
         if (activeMode !== 'off' && previousYolo && sid) {
           await setSessionYolo(requestGateway, sid, false).catch(() => undefined)
         }
       } catch {
-        setApprovalMode(previousMode)
-        setYoloActive(previousYolo)
+        if (revision === approvalModeRevision.current) {
+          setApprovalMode(previousMode)
+          setYoloActive(previousYolo)
+        }
       }
     },
     [requestGateway]

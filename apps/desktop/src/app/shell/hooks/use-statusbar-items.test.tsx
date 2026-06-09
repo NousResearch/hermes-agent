@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -46,6 +46,17 @@ const idleApply = {
   message: '',
   percent: null,
   stage: 'idle' as const
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, reject, resolve }
 }
 
 function statusSnapshot(overrides: Partial<StatusResponse> = {}): StatusResponse {
@@ -274,6 +285,50 @@ describe('useStatusbarItems', () => {
       })
     })
     expect($yoloActive.get()).toBe(false)
+  })
+
+  it('keeps a newer approval mode selection when the initial mode read resolves late', async () => {
+    $activeSessionId.set('sess-1')
+    $approvalMode.set('smart')
+    $currentModel.set('gpt-5.5')
+    $currentProvider.set('openai-codex')
+    const initialMode = deferred<{ value: string }>()
+    const requestGateway = vi.fn(async (method, params) => {
+      if (method === 'config.get' && params?.key === 'approvals.mode') {
+        return initialMode.promise
+      }
+
+      if (method === 'config.set' && params?.key === 'approvals.mode') {
+        return { value: params.value }
+      }
+
+      if (method === 'config.set' && params?.key === 'yolo') {
+        return { value: params.value }
+      }
+
+      return {}
+    }) as RequestGateway
+
+    renderStatusbar({ requestGateway })
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Approve for me/i }), {
+      button: 0,
+      ctrlKey: false
+    })
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /Full access/i }))
+
+    await waitFor(() => {
+      expect($approvalMode.get()).toBe('off')
+      expect($yoloActive.get()).toBe(true)
+    })
+
+    await act(async () => {
+      initialMode.resolve({ value: 'manual' })
+      await initialMode.promise
+    })
+
+    expect($approvalMode.get()).toBe('off')
+    expect($yoloActive.get()).toBe(true)
   })
 
   it('keeps the approval mode menu visible between active sessions', () => {

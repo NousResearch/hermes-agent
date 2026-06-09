@@ -89,7 +89,8 @@ function isUpdateToastSnoozed(): boolean {
 // against. The backend reports its own value in session runtime info; a lower
 // value (or none — a pre-GUI checkout) means GUI<->backend skew.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
-const REQUIRED_BACKEND_CONTRACT = 2
+// v3: requires approvals.mode config RPCs and session.info approval_mode.
+const REQUIRED_BACKEND_CONTRACT = 3
 const SKEW_TOAST_ID = 'backend-contract-skew'
 
 /**

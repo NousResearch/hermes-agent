@@ -1,4 +1,4 @@
-import { setApprovalMode, setYoloActive } from '@/store/session'
+import { setYoloActive } from '@/store/session'
 import type { ApprovalMode } from '@/types/hermes'
 
 export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -19,8 +19,6 @@ export async function getGlobalApprovalMode(requestGateway: GatewayRequester): P
   })
   const mode = normalizeApprovalMode(result?.value) ?? 'manual'
 
-  setApprovalMode(mode)
-
   return mode
 }
 
@@ -33,9 +31,6 @@ export async function setGlobalApprovalMode(
     value: mode
   })
   const activeMode = normalizeApprovalMode(result?.value) ?? mode
-
-  setApprovalMode(activeMode)
-  setYoloActive(activeMode === 'off')
 
   return activeMode
 }

@@ -968,6 +968,16 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # OpenRouter/Nous phrasing of the same condition.
         "in the output" in error_lower
         and "maximum context length" in error_lower
+    ) or (
+        # LM Studio / llama.cpp / some OpenAI-compatible servers:
+        #   "This model's maximum context length is 65536 tokens. However, you
+        #    requested 65536 output tokens and your prompt contains 77409
+        #    characters ..."
+        # The "requested N output tokens" phrasing means the OUTPUT cap is the
+        # problem (the input itself fits) — reduce max_tokens, don't compress.
+        "maximum context length" in error_lower
+        and "requested" in error_lower
+        and "output tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -996,6 +1006,22 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     )
     if _m_ctx and _m_parts:
         _available = int(_m_ctx.group(1)) - int(_m_parts.group(1)) - int(_m_parts.group(2))
+        if _available >= 1:
+            return _available
+
+    # LM Studio / llama.cpp style: context window is reported in tokens but the
+    # prompt size is reported in CHARACTERS, e.g.
+    #   "maximum context length is 65536 tokens ... your prompt contains 77409
+    #    characters ...".
+    # Estimate the input tokens conservatively (~3 chars/token, which
+    # over-reserves the input so the retried output cap stays safely inside the
+    # window) and leave the remainder of the window for output.
+    _m_ctx_tok = re.search(r'maximum context length is (\d+)\s*token', error_lower)
+    _m_chars = re.search(r'prompt contains (\d+)\s*character', error_lower)
+    if _m_ctx_tok and _m_chars:
+        _ctx = int(_m_ctx_tok.group(1))
+        _est_input = (int(_m_chars.group(1)) + 2) // 3
+        _available = _ctx - _est_input
         if _available >= 1:
             return _available
 

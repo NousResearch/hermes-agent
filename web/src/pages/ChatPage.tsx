@@ -318,9 +318,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // is false; enabling it gives users a single-action selection
       // path on top of the modifier-based bypass above.
       rightClickSelectsWord: true,
-      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
-      // history in xterm.js so the browser wheel can scroll it directly.
-      scrollback: 5000,
+      // Keep the browser xterm as a display/input bridge only. The embedded
+      // Hermes TUI already owns transcript history, sticky tail-following,
+      // and "pause auto-follow when the user scrolls up" semantics.
+      scrollback: 0,
       theme: terminalTheme,
     });
     termRef.current = term;
@@ -423,16 +424,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
+    // Let the inner Hermes TUI own transcript scrolling. Browser-side
+    // scrollback breaks the TUI's sticky-tail behavior and drifts from the
+    // terminal's own notion of whether the user is reviewing history.
     term.attachCustomWheelEventHandler((ev) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return false;
+      }
+
       const delta = ev.deltaY;
       if (!delta) {
         return false;
       }
 
+      // Shift+Up / Shift+Down are the TUI's known-good line scroll inputs.
+      // Routing wheel gestures through them preserves the transcript's
+      // existing sticky-at-tail rules instead of inventing a second one.
       const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
+      const seq = delta > 0 ? "\x1b[1;2B" : "\x1b[1;2A";
+
+      for (let i = 0; i < step; i += 1) {
+        ws.send(seq);
+      }
 
       ev.preventDefault();
       ev.stopPropagation();

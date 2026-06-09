@@ -1,0 +1,128 @@
+schema_version: 1
+milestone: M3
+profile: auto-coder
+hermes_home: /home/khall/.hermes/profiles/auto-coder
+evidence_receipt: /tmp/hermes-workflows/setup-gate-ladder/20260609-171951/receipt.json
+permission_boundary: read-only
+
+runtime_truth:
+  smart_routing_module_on_main: false
+  smart_routing_module_worktree_hint: /home/khall/.hermes/hermes-agent/.worktrees/smart-routing-final-20260502T014157Z/hermes_cli/smart_routing.py
+  gateway_owner_profile: auto-coder
+  gateway_service: hermes-gateway-auto-coder.service
+
+spend_runaway:
+  delegation_max_concurrent_children: 3
+  delegation_child_timeout_seconds: 600
+  delegation_max_spawn_depth: 3
+  delegation_subagent_auto_approve: false
+  agent_max_turns: 240
+  policy_notes:
+    - Do not increase child_timeout to fix broad worker timeouts
+    - Run routing_smoke.py --no-network before live lane pings
+    - Block delegation spawn if worker profile lacks auth/model smoke
+
+lanes:
+  - id: interactive_default
+    tag: config-only
+    provider: xai-oauth
+    model: grok-composer-2.5-fast
+    cost_tier: high
+    toolsets: platform_toolsets.cli
+    network: true
+    workdir: session_cwd
+    timeout_budget: agent.max_turns=240
+    fallback: none_configured
+    smoke_command: M2b G1 evidence
+    escalation: manual_approval_destructive
+
+  - id: smart_cheap
+    tag: config-only
+    provider: openai-codex
+    model: gpt-5.4-mini
+    cost_tier: low
+    toolsets: inherited_interactive
+    network: true
+    workdir: session_cwd
+    timeout_budget: per_turn
+    fallback: interactive_default
+    smoke_command: routing_smoke.py --no-network
+    escalation: merge smart_routing runtime first
+
+  - id: smart_routine_coding
+    tag: config-only
+    provider: openai-codex
+    model: gpt-5.3-codex
+    cost_tier: medium
+    toolsets: coding
+    network: true
+    workdir: worktrees_preferred
+    timeout_budget: per_turn
+    fallback: interactive_default
+    smoke_command: routing_smoke.py --no-network
+    escalation: merge smart_routing runtime first
+
+  - id: smart_hard
+    tag: config-only
+    provider: openai-codex
+    model: gpt-5.5
+    cost_tier: high
+    toolsets: delegation_full
+    network: true
+    workdir: session_cwd
+    timeout_budget: reasoning_effort xhigh
+    fallback: interactive_default
+    smoke_command: routing_smoke.py --no-network
+    escalation: merge smart_routing runtime first
+
+  - id: delegation_worker
+    tag: config-only
+    provider: openai-codex
+    model: gpt-5.5
+    cost_tier: high
+    toolsets: [terminal, file]
+    network: true
+    workdir: isolated_worktree
+    timeout_budget: child_timeout_seconds=600
+    fallback: parent_session
+    smoke_command: worker_profile_auth_preflight
+    escalation: block_spawn_without_credentials
+
+  - id: gateway_owner
+    tag: verified
+    provider: xai-oauth
+    profile: auto-coder
+    cost_tier: always_on
+    toolsets: gateway_mcp
+    network: true
+    workdir: auto-coder
+    timeout_budget: gateway_timeout=1800
+    fallback: none
+    smoke_command: hermes gateway status
+    escalation: gateway_restart_requires_approval
+
+  - id: setup_audit
+    tag: verified
+    provider: none
+    model: none
+    cost_tier: none
+    toolsets: []
+    network: local_cli_only
+    workdir: profile_home
+    timeout_budget: per_gate_probe
+    fallback: skip_gate
+    smoke_command: scripts/setup_gate_ladder_audit.py
+    escalation: live_probes_attended_only
+
+  - id: cron_steward
+    tag: verified
+    provider: per_job
+    model: per_job
+    cost_tier: low_medium
+    toolsets: per_job_skills
+    network: watcher_jobs_yes
+    workdir: profile_scripts
+    timeout_budget: schedule
+    fallback: none
+    smoke_command: hermes cron list
+    escalation: cron_mutations_require_approval

@@ -1,0 +1,47 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Claude Code proxy (:11435) -- the OpenAI-compatible shim in front of the
+# OAuth `claude -p` CLI. Hermes gateways reach Claude through it.
+#
+# IMAGE-BAKED (Phase 3): this is the static s6-rc service that replaces the old
+# volume-defined $HERMES_HOME/services/claude-proxy. The proxy source is COPYed
+# into the image at /opt/hermes/deploy/claude-proxy/claude_proxy.py (the same
+# tree the repo reviews + tests), so a rebuilt container always runs the code
+# that was reviewed -- no more drift between the running proxy and the repo.
+# Only env/config (cache, breaker knobs) and the OAuth state stay on the volume.
+#
+# ROLE GATE: only the GATEWAY container may run the proxy. The dashboard shares
+# the volume + image; if it also ran the proxy, the two s6-log processes would
+# deadlock on the shared /opt/data/logs/claude-proxy/lock (exit 111, flap
+# forever) and take the bots down. As a STATIC s6-rc service this run script
+# fires in BOTH containers, so unlike the volume seed (which 02/03 skip via the
+# role gate) we MUST self-gate here. Mirrors the dashboard slot's pattern: in
+# the dashboard role we exit 0 and the companion finish script returns 125 so
+# s6-supervise marks the slot permanently down (s6-svstat reflects reality).
+# shellcheck source=docker/hermes-role.sh disable=SC1091
+. /opt/hermes/docker/hermes-role.sh
+if [ "$(hermes_role)" = dashboard ]; then
+    echo "claude-proxy: dashboard role -- not starting (gateway-only service)"
+    exit 0
+fi
+
+# with-contenv repopulates HOME from /init as /root. The proxy anchors its
+# OAuth/claude state under /opt/data/home (see CLAUDE_BIN / HOME in
+# claude_proxy.py); reset HOME before dropping privileges so nothing lands
+# under /root.
+export HOME=/opt/data
+
+PROXY=/opt/hermes/deploy/claude-proxy/claude_proxy.py
+
+if [ ! -f "$PROXY" ]; then
+    # Should never happen in a correctly built image; fail loud rather than
+    # silently leave the gateway without a Claude provider.
+    echo "claude-proxy: FATAL $PROXY missing from image" >&2
+    exit 1
+fi
+
+# Run as the hermes user (UID 10000 / remapped), matching every other
+# supervised service and the volume-proxy contract. Use the image's python3 --
+# the proxy is pure stdlib, so the system interpreter is sufficient and keeps
+# us independent of the venv.
+exec s6-setuidgid hermes python3 "$PROXY"

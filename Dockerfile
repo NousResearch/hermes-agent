@@ -218,6 +218,24 @@ RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
 # /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
+# ---------- Claude proxy: image-baked (Phase 3) ----------
+# The :11435 Claude proxy used to live ONLY on the data volume under
+# $HERMES_HOME/services/claude-proxy/, seeded into the scandir by
+# 03-seed-data-services. That copy drifted from deploy/claude-proxy/ in the
+# repo (the reviewed + tested source), so prod could run unreviewed code and a
+# volume reset silently lost fixes. We now bake the proxy into the image: the
+# static s6-rc service docker/s6-rc.d/claude-proxy (copied just above) execs
+# THIS path. Re-COPYing it to a stable, explicit location -- rather than
+# relying on the broad `COPY . .` below -- makes the bake self-documenting and
+# robust against future .dockerignore changes. The deploy migration retires the
+# volume copy (services/claude-proxy.legacy) so the image copy is authoritative.
+# NOTE: a build-time version/SHA marker that the proxy could surface on /health
+# (per the Phase 3 acceptance) would need a change in claude_proxy.py itself,
+# which is owned by the proxy lane -- left as a follow-up there. The image-level
+# guarantee here is that /opt/hermes/.hermes_build_sha (baked below) identifies
+# the exact commit the running proxy was built from.
+COPY --chmod=0644 deploy/claude-proxy/claude_proxy.py /opt/hermes/deploy/claude-proxy/claude_proxy.py
+
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
 # skills sync — all the work the old entrypoint.sh did before
 # `exec hermes`. Wired in as cont-init.d/01- so it

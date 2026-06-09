@@ -1,7 +1,7 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Thread } from './thread'
 
@@ -376,6 +376,10 @@ function IntroHarness() {
 }
 
 describe('assistant-ui streaming renderer', () => {
+  afterEach(() => {
+    cleanup()
+  })
+
   beforeEach(() => {
     resizeObservers.clear()
   })
@@ -487,6 +491,37 @@ describe('assistant-ui streaming renderer', () => {
     await wait(0)
 
     expect(viewport.scrollTop).toBe(420)
+  })
+
+  it('shows a back-to-present button when scrolled up and jumps to the newest message', async () => {
+    const { container } = render(<StaticThreadHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    const backToPresent = await screen.findByRole('button', { name: 'Back to present' })
+
+    await act(async () => {
+      fireEvent.click(backToPresent)
+      await wait(0)
+    })
+
+    expect(viewport.scrollTop).toBe(scrollHeight)
+    expect(screen.queryByRole('button', { name: 'Back to present' })).toBeNull()
   })
 
   it('does not follow streaming content growth even while parked at the bottom', async () => {

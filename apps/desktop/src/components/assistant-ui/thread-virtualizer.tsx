@@ -9,9 +9,11 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react'
 
+import { ChevronDown } from '@/lib/icons'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
@@ -82,6 +84,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const [scrolledUp, setScrolledUp] = useState(false)
 
   // Shared ref so scrollToFn can check whether the user is parked at the
   // bottom without needing a ref from inside useThreadScrollAnchor.
@@ -122,10 +125,11 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     }
   })
 
-  useThreadScrollAnchor({
+  const jumpToBottom = useThreadScrollAnchor({
     enabled: !renderEmpty,
     groupCount: groups.length,
     isRunning,
+    onScrolledUpChange: setScrolledUp,
     scrollerRef,
     sessionKey: sessionKey ?? null,
     stickyBottomRef,
@@ -208,6 +212,18 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
           </div>
         )}
       </div>
+      {!renderEmpty && scrolledUp && (
+        <button
+          aria-label="Back to present"
+          className="absolute right-5 bottom-5 z-20 inline-flex size-10 items-center justify-center rounded-full border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) text-(--ui-text-primary) shadow-md transition hover:bg-(--ui-control-hover-background) focus-visible:ring-[0.1875rem] focus-visible:ring-(--dt-ring)/35 focus-visible:outline-none"
+          data-slot="aui_back-to-present"
+          onClick={jumpToBottom}
+          title="Back to present"
+          type="button"
+        >
+          <ChevronDown aria-hidden="true" className="size-4" />
+        </button>
+      )}
     </div>
   )
 }
@@ -222,6 +238,7 @@ interface ScrollAnchorOptions {
   enabled: boolean
   groupCount: number
   isRunning: boolean
+  onScrolledUpChange: (value: boolean) => void
   scrollerRef: React.RefObject<HTMLDivElement | null>
   sessionKey: string | null
   stickyBottomRef: React.MutableRefObject<boolean>
@@ -232,6 +249,7 @@ function useThreadScrollAnchor({
   enabled,
   groupCount,
   isRunning,
+  onScrolledUpChange,
   scrollerRef,
   sessionKey,
   stickyBottomRef,
@@ -293,9 +311,40 @@ function useThreadScrollAnchor({
 
   const jumpToBottom = useCallback(() => {
     setMutableRef(stickyBottomRef, true)
+    onScrolledUpChange(false)
+    setThreadScrolledUp(false)
 
     if (groupCount > 0) {
       virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
+    }
+
+    const pinNextFrame = (remaining: number) => {
+      if (remaining <= 0) {
+        return
+      }
+
+      requestAnimationFrame(() => {
+        if (stickyBottomRef.current) {
+          pinToBottom()
+          pinNextFrame(remaining - 1)
+        }
+      })
+    }
+
+    pinNextFrame(2)
+  }, [groupCount, onScrolledUpChange, pinToBottom, stickyBottomRef, virtualizer])
+
+  const jumpToBottomNow = useCallback(() => {
+    setMutableRef(stickyBottomRef, true)
+    onScrolledUpChange(false)
+    setThreadScrolledUp(false)
+
+    if (groupCount > 0) {
+      virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
+    }
+
+    if (stickyBottomRef.current) {
+      pinToBottom()
     }
 
     requestAnimationFrame(() => {
@@ -303,9 +352,15 @@ function useThreadScrollAnchor({
         pinToBottom()
       }
     })
-  }, [groupCount, pinToBottom, stickyBottomRef, virtualizer])
+  }, [groupCount, onScrolledUpChange, pinToBottom, stickyBottomRef, virtualizer])
 
-  useEffect(() => () => setThreadScrolledUp(false), [])
+  useEffect(
+    () => () => {
+      onScrolledUpChange(false)
+      setThreadScrolledUp(false)
+    },
+    [onScrolledUpChange]
+  )
 
   // Track at-bottom state, dim composer when scrolled up, disarm on user
   // scroll/wheel/touch.
@@ -339,6 +394,7 @@ function useThreadScrollAnchor({
         // Always re-arm — sticky-bottom should hold through clamp races.
         setMutableRef(stickyBottomRef, true)
         const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
+        onScrolledUpChange(!atBottom)
         setThreadScrolledUp(!atBottom)
 
         return
@@ -367,6 +423,7 @@ function useThreadScrollAnchor({
         setMutableRef(stickyBottomRef, true)
       }
 
+      onScrolledUpChange(!atBottom)
       setThreadScrolledUp(!atBottom)
     }
 
@@ -385,7 +442,7 @@ function useThreadScrollAnchor({
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('touchmove', disarm)
     }
-  }, [scrollerRef, stickyBottomRef])
+  }, [onScrolledUpChange, scrollerRef, stickyBottomRef])
 
   // Intentionally NO streaming auto-follow. Earlier builds ran a
   // ResizeObserver here that re-pinned the viewport to the bottom on every
@@ -462,4 +519,6 @@ function useThreadScrollAnchor({
   }, [isRunning])
 
   useAuiEvent('thread.runStart', jumpToBottom)
+
+  return jumpToBottomNow
 }

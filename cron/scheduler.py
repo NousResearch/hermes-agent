@@ -1107,6 +1107,35 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _bump_job_skill_usage(job: dict) -> None:
+    """Best-effort bump usage for all skills attached to a cron job.
+
+    Called on early-return paths (wakeAgent=false gate, empty script output)
+    so the curator still sees these skills as actively used even when the
+    agent is not actually invoked.
+    """
+    from tools.skill_usage import bump_use
+
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
+
+    for name in skills:
+        _name = str(name).strip() if name else ""
+        if not _name:
+            continue
+        try:
+            bump_use(_name)
+        except Exception:
+            logger.debug(
+                "Cron job: failed to bump skill usage for '%s'", _name,
+                exc_info=True,
+            )
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1139,6 +1168,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
             else:
                 # Script produced no output — nothing to report, skip AI call.
+                # Still bump skill usage so the curator doesn't prune them.
+                _bump_job_skill_usage(job)
                 return None
         else:
             prompt = (
@@ -1492,6 +1523,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
                 job_name, job_id,
             )
+            # Bump usage for skills attached to this job so the curator
+            # still sees them as active even though the agent was skipped.
+            _bump_job_skill_usage(job)
             silent_doc = (
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"

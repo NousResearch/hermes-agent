@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
+import pytest
 import tools.approval as approval_module
 from hermes_constants import get_hermes_home
 from tools.approval import (
@@ -870,6 +871,22 @@ class TestNormalizationBypass:
         assert dangerous is True
         assert "delete" in desc
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "$(printf rm) -rf /home/victim",
+            "$(printf %s rm) -rf /home/victim",
+            "$(printf r)m -rf /home/victim",
+            "$(echo -n rm) -rf /home/victim",
+            "${unset:-rm} -rf /home/victim",
+        ],
+    )
+    def test_literal_substitution_command_name_rm(self, cmd):
+        """Literal shell substitutions used as argv[0] must be inspected as rm."""
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"literal substitution rm bypass was not caught: {cmd!r}"
+        assert "delete" in desc
+
     def test_parameter_replacement_command_name_rm(self):
         """Simple shell parameter replacement in argv[0] must be inspected."""
         cmd = "${0/x/r}m -rf /home/victim"
@@ -879,9 +896,15 @@ class TestNormalizationBypass:
 
     def test_echo_argument_substitution_not_promoted_to_command(self):
         """Command-name deobfuscation should not rewrite ordinary echo arguments."""
-        cmd = "echo $(echo rm) -rf /"
-        dangerous, key, desc = detect_dangerous_command(cmd)
-        assert dangerous is False
+        for cmd in (
+            "echo $(echo rm) -rf /",
+            "echo $(printf rm) -rf /",
+            "echo $(printf %s rm) -rf /",
+            "echo $(echo -n rm) -rf /",
+            "echo ${unset:-rm} -rf /",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is False, f"ordinary echo argument was promoted: {cmd!r}"
 
     def test_null_byte_in_dd(self):
         """Null bytes in 'dd' must be stripped."""

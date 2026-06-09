@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -605,12 +606,9 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return command
 
 
-_SIMPLE_ECHO_COMMAND_SUB_RE = re.compile(
-    r"""\$\(\s*echo\s+(?P<dollar_word>"[^"]*"|'[^']*'|[A-Za-z0-9_./:@%+=,-]+)\s*\)"""
-    r"""|`\s*echo\s+(?P<backtick_word>"[^"]*"|'[^']*'|[A-Za-z0-9_./:@%+=,-]+)\s*`""",
-    re.IGNORECASE | re.VERBOSE,
-)
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
+_PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
+_SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {
     "sudo",
@@ -740,13 +738,69 @@ def _strip_optional_shell_quotes(word: str) -> str:
     return word
 
 
-def _replace_simple_shell_expansions(word: str) -> str:
-    def _replace_echo(match: re.Match) -> str:
-        replacement = match.group("dollar_word") or match.group("backtick_word") or ""
-        return _strip_optional_shell_quotes(replacement)
+def _is_simple_shell_literal(value: str) -> bool:
+    return bool(value and _SIMPLE_SHELL_LITERAL_RE.fullmatch(value))
 
-    word = _SIMPLE_ECHO_COMMAND_SUB_RE.sub(_replace_echo, word)
-    return _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
+
+def _literal_command_substitution_output(script: str) -> str | None:
+    """Resolve tiny literal command substitutions without executing a shell."""
+    try:
+        tokens = shlex.split(script, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    command = tokens[0].lower()
+    args = tokens[1:]
+    if command == "echo":
+        while args and re.fullmatch(r"-[nEe]+", args[0]):
+            args = args[1:]
+        if len(args) == 1 and _is_simple_shell_literal(args[0]):
+            return args[0]
+        return None
+
+    if command == "printf":
+        if len(args) == 1 and _is_simple_shell_literal(args[0]):
+            return args[0]
+        if (
+            len(args) == 2
+            and args[0] == "%s"
+            and _is_simple_shell_literal(args[1])
+        ):
+            return args[1]
+    return None
+
+
+def _replace_simple_command_substitutions(word: str) -> str:
+    chars: list[str] = []
+    i = 0
+    while i < len(word):
+        if word.startswith("$(", i):
+            end = _scan_dollar_paren_end(word, i)
+            if end is not None:
+                replacement = _literal_command_substitution_output(word[i + 2:end - 1])
+                if replacement is not None:
+                    chars.append(replacement)
+                    i = end
+                    continue
+        if word[i] == "`":
+            end = _scan_backtick_end(word, i)
+            if end is not None:
+                replacement = _literal_command_substitution_output(word[i + 1:end - 1])
+                if replacement is not None:
+                    chars.append(replacement)
+                    i = end
+                    continue
+        chars.append(word[i])
+        i += 1
+    return "".join(chars)
+
+
+def _replace_simple_shell_expansions(word: str) -> str:
+    word = _replace_simple_command_substitutions(word)
+    word = _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
+    return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
 
 
 def _strip_shell_word_syntax(word: str) -> str:

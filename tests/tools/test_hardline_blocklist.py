@@ -50,7 +50,12 @@ _HARDLINE_BLOCK = [
     "r''m -rf /",
     'r""m -rf /',
     "$(echo rm) -rf /",
+    "$(printf rm) -rf /",
+    "$(printf %s rm) -rf /",
+    "$(printf r)m -rf /",
+    "$(echo -n rm) -rf /",
     "${0/x/r}m -rf /",
+    "${unset:-rm} -rf /",
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",
@@ -140,6 +145,10 @@ _HARDLINE_ALLOW = [
     "sudo apt update",
     "curl https://example.com | head",
     "echo $(echo rm) -rf /",
+    "echo $(printf rm) -rf /",
+    "echo $(printf %s rm) -rf /",
+    "echo $(echo -n rm) -rf /",
+    "echo ${unset:-rm} -rf /",
     r"echo r\m -rf /",
     "echo r''m -rf /",
 ]

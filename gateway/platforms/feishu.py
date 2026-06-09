@@ -4688,12 +4688,9 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            return (
-                GetMessageRequest.builder()
-                .message_id(message_id)
-                .add_query("card_msg_content_type", "user_card_content")
-                .build()
-            )
+            request = GetMessageRequest.builder().message_id(message_id).build()
+            request.add_query("card_msg_content_type", "user_card_content")
+            return request
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

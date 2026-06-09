@@ -4459,6 +4459,87 @@ def test_health_guard_quarantines_persistent_corruption(tmp_path, monkeypatch):
     assert list(tmp_path.glob("*.corrupt.*.bak"))  # quarantine happened
 
 
+# Real-world shape of an integrity_check racing a concurrent WAL checkpoint:
+# every failure is an unreadable page (SQLITE_IOERR_SHORT_READ = 522), plus
+# the "never used" accounting noise from pages the check could not visit.
+_SHORT_READ_INTEGRITY_TEXT = (
+    "*** in database main ***\n"
+    "Tree 8 page 2053: unable to get the page. error code=522\n"
+    "Tree 22 page 22: unable to get the page. error code=522\n"
+    "Page 93: never used\n"
+    "Page 94: never used"
+)
+
+
+def test_health_guard_persistent_short_read_raises_operational_not_quarantine(
+    tmp_path, monkeypatch,
+):
+    """An integrity failure that is *only* unreadable pages (IOERR family,
+    e.g. 522 SHORT_READ) must not quarantine, even when it outlives the whole
+    confirmation loop.
+
+    Regression for the post-confirm-loop quarantine storm: under sustained
+    worker load the probe⇄checkpoint race persisted across all
+    ``_HEALTH_CONFIRM_ATTEMPTS`` probes, so a healthy, progressing board was
+    still copied to ``.corrupt.bak`` and connects failed closed. The read
+    failing is not the content being malformed — surface it like the
+    lock/busy case (raw ``OperationalError``), no backup, and evict the
+    health stamp so the next connect re-probes.
+    """
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+    monkeypatch.setattr(kb.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        kb, "_run_integrity_probe",
+        lambda _p: f"integrity_check returned {_SHORT_READ_INTEGRITY_TEXT!r}",
+    )
+
+    with pytest.raises(sqlite3.OperationalError):
+        kb._guard_existing_db_is_healthy(db_path)
+    assert resolved not in kb._LAST_HEALTH_OK
+    assert not list(tmp_path.glob("*.corrupt.*.bak"))  # nothing quarantined
+
+
+def test_integrity_failure_transient_io_classifier():
+    """Only all-IOERR reports classify as transient; anything mentioning
+    content damage, a non-IOERR code, or an unexpected line stays corruption."""
+    wrap = lambda text: f"integrity_check returned {text!r}"
+
+    # The real-world short-read storm shape → transient.
+    assert kb._integrity_failure_is_transient_io(wrap(_SHORT_READ_INTEGRITY_TEXT))
+    # Extended IOERR codes other than SHORT_READ (low byte 10) also qualify.
+    assert kb._integrity_failure_is_transient_io(
+        wrap("Tree 2 page 9: unable to get the page. error code=266")
+    )
+
+    # Genuine content damage → corruption, fail closed.
+    assert not kb._integrity_failure_is_transient_io(wrap("malformed"))
+    assert not kb._integrity_failure_is_transient_io(
+        wrap("*** in database main ***\nbtree page 5 is malformed")
+    )
+    # IOERR lines mixed with content damage → corruption.
+    assert not kb._integrity_failure_is_transient_io(
+        wrap(
+            "Tree 8 page 2053: unable to get the page. error code=522\n"
+            "row 7 missing from index idx_tasks_status"
+        )
+    )
+    # Non-IOERR error code → corruption.
+    assert not kb._integrity_failure_is_transient_io(
+        wrap("Tree 8 page 2053: unable to get the page. error code=11")
+    )
+    # Other reason shapes (refused open, no row) → not transient.
+    assert not kb._integrity_failure_is_transient_io(
+        "sqlite refused to open file: file is not a database"
+    )
+    assert not kb._integrity_failure_is_transient_io(
+        "integrity_check returned <no row>"
+    )
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite

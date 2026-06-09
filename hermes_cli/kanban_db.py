@@ -70,6 +70,7 @@ new locking.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 import json
@@ -1303,6 +1304,24 @@ _HEALTH_CHECK_TTL_SECONDS = 30.0
 # a healthy DB returns after the first ok probe.
 _HEALTH_CONFIRM_ATTEMPTS = 3
 _HEALTH_CONFIRM_BACKOFF_SECONDS = 0.1
+# ``PRAGMA integrity_check`` can fail without the database being malformed:
+# when the probe races a concurrent WAL checkpoint (a swarm of workers on the
+# dispatch board), page reads come back as SQLITE_IOERR_SHORT_READ (522) —
+# "unable to get the page. error code=522" — i.e. *the read failed*, not *the
+# content is bad*. Under sustained load that race can outlive the whole
+# confirmation loop, so quarantining on it copies a healthy board into a
+# ``.corrupt.bak`` (observed live: 3 quarantines of an ``ok``, progressing DB
+# in 90s, every failure line an IOERR). Classify an all-IOERR failure as
+# transient I/O and surface it like a lock/busy error instead of corruption.
+_SQLITE_IOERR_PRIMARY = 10  # low byte of extended IOERR codes (522 = SHORT_READ)
+# Lines integrity_check emits when pages are unreadable (not malformed):
+# the per-database header, the unreadable-page report itself, and the
+# "never used" accounting noise that follows from pages it could not visit.
+_TRANSIENT_IO_REPORT_LINE = re.compile(
+    r"^(?:\*\*\* in database .+ \*\*\*"
+    r"|.*: unable to get the page\. error code=\d+"
+    r"|Page \d+: never used)$"
+)
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
@@ -1701,11 +1720,57 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     if reason is None:
         _LAST_HEALTH_OK[str(resolved)] = time.monotonic()
         return
-    # Confirmed damaged across every probe: force the next connect to re-probe
-    # instead of honoring a stale "ok" timestamp, then fail closed.
+    # Non-ok on every probe: force the next connect to re-probe instead of
+    # honoring a stale "ok" timestamp.
     _LAST_HEALTH_OK.pop(str(resolved), None)
+    # An all-IOERR failure means the probe could not *read* the file (e.g. a
+    # checkpoint-truncate race that outlived the confirmation loop), not that
+    # the content is malformed. Surface it like the lock/busy case — a raw
+    # transient error, no quarantine copy, no fail-closed corruption state.
+    if _integrity_failure_is_transient_io(reason):
+        raise sqlite3.OperationalError(
+            f"kanban integrity probe could not read {resolved} after "
+            f"{_HEALTH_CONFIRM_ATTEMPTS} attempts (SQLITE_IOERR-family, e.g. "
+            f"SHORT_READ racing a checkpoint — transient I/O, not corruption): "
+            f"{reason}"
+        )
+    # Confirmed damaged across every probe: quarantine and fail closed.
     backup = _backup_corrupt_db(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)
+
+
+def _integrity_failure_is_transient_io(reason: str) -> bool:
+    """True when a confirmed non-ok integrity result describes only unreadable
+    pages (SQLITE_IOERR family, e.g. 522 SHORT_READ) rather than malformed
+    content.
+
+    Real corruption reports content damage ("btree page N is malformed",
+    "row N missing from index", ...) with no I/O error code; a probe racing a
+    concurrent WAL checkpoint reports "unable to get the page. error code=5xx"
+    plus the "never used" noise that follows from pages it could not visit.
+    Strict on purpose: any line that is not provably I/O noise, or any error
+    code outside the IOERR family, classifies as corruption so the guard still
+    fails closed on genuine damage.
+    """
+    prefix = "integrity_check returned "
+    if not reason.startswith(prefix):
+        return False
+    # _run_integrity_probe embeds the raw integrity_check row via !r; recover
+    # the original (possibly multi-line) text from its repr.
+    try:
+        text = ast.literal_eval(reason[len(prefix):])
+    except (ValueError, SyntaxError):
+        return False
+    if not isinstance(text, str):
+        return False
+    codes = [int(c) for c in re.findall(r"unable to get the page\. error code=(\d+)", text)]
+    if not codes or any((code & 0xFF) != _SQLITE_IOERR_PRIMARY for code in codes):
+        return False
+    return all(
+        _TRANSIENT_IO_REPORT_LINE.match(line.strip())
+        for line in text.splitlines()
+        if line.strip()
+    )
 
 
 def _run_integrity_probe(resolved: Path) -> Optional[str]:

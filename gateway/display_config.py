@@ -110,7 +110,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "tool_progress": "off",
         "busy_ack_detail": False,
     },
-    "discord":     _TIER_HIGH,
+    # Discord is a normal chat surface by default.  Keep raw tool telemetry
+    # (tool names, command/code previews, args) out of user-visible channels;
+    # bounded debug/admin telemetry needs a separate explicit approval path.
+    "discord":     {**_TIER_HIGH, "tool_progress": "off"},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;

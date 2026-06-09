@@ -140,6 +140,27 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+_RAW_TOOL_TELEMETRY_SUPPRESSED_PLATFORMS = {"telegram", "discord"}
+
+
+def _should_suppress_raw_tool_progress(platform: Any) -> bool:
+    """Return True for normal chat platforms that must not show raw tool chrome.
+
+    Telegram/Discord user-visible chats should receive final answers, approval
+    prompts, blockers, and safe progress summaries — not raw tool names,
+    command/code previews, argument dicts, file paths, stack/log-like chatter,
+    or runtime/config/token-shaped material.  A future debug/admin surface can
+    opt into richer telemetry through a separate explicit gate; the normal
+    gateway path stays final-answer-first.
+    """
+    return _gateway_platform_value(platform) in _RAW_TOOL_TELEMETRY_SUPPRESSED_PLATFORMS
+
+
+def _safe_gateway_tool_progress_message(platform: Any = None) -> str:
+    """Safe generic progress line for platforms with raw telemetry suppressed."""
+    return "⏳ Working — internal steps in progress."
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
@@ -12870,9 +12891,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
-        last_tool = [None]  # Mutable container for tracking in closure
-        last_progress_msg = [None]  # Track last message for dedup
-        repeat_count = [0]  # How many times the same message repeated
+        last_tool: List[Optional[str]] = [None]  # Mutable container for tracking in closure
+        last_progress_msg: List[Optional[str]] = [None]  # Track last message for dedup
+        repeat_count: List[int] = [0]  # How many times the same message repeated
 
         # ── Discord voice "verbal ack before tool calls" ────────────────
         # When the bot is in a voice channel with the continuous mixer
@@ -12991,6 +13012,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
             except Exception:
                 pass
+
+            if _should_suppress_raw_tool_progress(source.platform):
+                msg = _safe_gateway_tool_progress_message(source.platform)
+                if msg == last_progress_msg[0]:
+                    return
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
+                progress_queue.put(msg)
+                return
 
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:

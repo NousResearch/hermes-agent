@@ -27,8 +27,9 @@ Credential storage mirrors every other Hermes channel:
     * runtime SDK creds  -> ``~/.hermes/.env``  (``PHOTON_PROJECT_ID`` =
       spectrumProjectId, ``PHOTON_PROJECT_SECRET``) via ``save_env_value``
     * management metadata -> ``~/.hermes/auth.json`` under
-      ``credential_pool.photon`` (device token) and
-      ``credential_pool.photon_project`` (dashboard id, spectrum id, name)
+      ``credential_pool.photon`` (device token),
+      ``credential_pool.photon_project`` (dashboard id, spectrum id, name), and
+      ``credential_pool.photon_user`` (operator number + assigned text line)
 
 Reference: https://github.com/photon-hq/cli and
 https://photon.codes/docs/api-reference/device-login/request-device-+-user-code
@@ -203,6 +204,30 @@ def store_project_credentials(
     auth.setdefault("credential_pool", {})["photon_project"] = [record]
     _save_auth(auth)
     _persist_runtime_env(spectrum_project_id, project_secret)
+
+
+def store_user_numbers(
+    *,
+    phone_number: Optional[str] = None,
+    assigned_phone_number: Optional[str] = None,
+    user_id: Optional[str] = None,
+    dashboard_project_id: Optional[str] = None,
+) -> None:
+    """Persist non-secret Photon user numbers for offline ``status`` output."""
+    if not phone_number and not assigned_phone_number:
+        return
+    auth = _load_auth()
+    record: Dict[str, Any] = {"issued_at": int(time.time())}
+    if phone_number:
+        record["phone_number"] = phone_number
+    if assigned_phone_number:
+        record["assigned_phone_number"] = assigned_phone_number
+    if user_id:
+        record["user_id"] = user_id
+    if dashboard_project_id:
+        record["dashboard_project_id"] = dashboard_project_id
+    auth.setdefault("credential_pool", {})["photon_user"] = [record]
+    _save_auth(auth)
 
 
 def _persist_runtime_env(spectrum_project_id: str, project_secret: str) -> None:
@@ -766,6 +791,95 @@ def user_assigned_line(user: Optional[Dict[str, Any]]) -> Optional[str]:
     return str(val) if val else None
 
 
+def load_user_numbers() -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(operator_phone_number, assigned_phone_number)`` for status."""
+    auth = _load_auth()
+    user_entries = auth.get("credential_pool", {}).get("photon_user") or []
+    if isinstance(user_entries, list) and user_entries:
+        entry = user_entries[0] or {}
+        if isinstance(entry, dict):
+            phone = entry.get("phone_number") or entry.get("phoneNumber")
+            assigned = (
+                entry.get("assigned_phone_number")
+                or entry.get("assignedPhoneNumber")
+            )
+            if phone or assigned:
+                return (
+                    str(phone) if phone else _configured_operator_phone(),
+                    str(assigned) if assigned else None,
+                )
+    return _configured_operator_phone(), None
+
+
+def refresh_user_numbers(
+    token: str, project_id: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Refresh cached user numbers from Photon without provisioning anything."""
+    phone, cached_assigned = load_user_numbers()
+    user: Optional[Dict[str, Any]] = None
+    if phone:
+        user = find_user_by_phone(token, project_id, phone)
+    else:
+        users = list_users(token, project_id)
+        if len(users) == 1:
+            user = users[0]
+
+    user_id = None
+    assigned: Optional[str] = cached_assigned
+    if user:
+        user_id = user.get("id")
+        dashboard_phone = _normalize_phone(str(user.get("phoneNumber") or ""))
+        if E164_RE.match(dashboard_phone):
+            phone = dashboard_phone
+        assigned = user_assigned_line(user)
+
+    if not assigned:
+        try:
+            line = get_imessage_line(token, project_id, create_if_missing=False)
+        except Exception as e:
+            logger.debug("photon: could not refresh iMessage line for status: %s", e)
+        else:
+            if line and line.get("phoneNumber"):
+                assigned = str(line["phoneNumber"])
+
+    store_user_numbers(
+        phone_number=phone,
+        assigned_phone_number=assigned,
+        user_id=str(user_id) if user_id else None,
+        dashboard_project_id=project_id,
+    )
+    return phone, assigned
+
+
+def _configured_operator_phone() -> Optional[str]:
+    """Infer the operator's E.164 number from existing Photon env settings."""
+    home = _get_config_env_value("PHOTON_HOME_CHANNEL")
+    if home:
+        normalized = _normalize_phone(home)
+        if E164_RE.match(normalized):
+            return normalized
+
+    allowed = _get_config_env_value("PHOTON_ALLOWED_USERS")
+    if not allowed:
+        return None
+    candidates = []
+    for part in re.split(r"[,\s]+", allowed):
+        normalized = _normalize_phone(part)
+        if E164_RE.match(normalized):
+            candidates.append(normalized)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _get_config_env_value(key: str) -> Optional[str]:
+    try:
+        from hermes_cli.config import get_env_value
+    except Exception:
+        return os.getenv(key)
+    return get_env_value(key)
+
+
 # ---------------------------------------------------------------------------
 # Dashboard API: iMessage lines (the assigned number inventory)
 
@@ -836,6 +950,13 @@ def print_credential_summary(emit: Any = print) -> None:
     labels["spectrum_project_id"] = sid if sid else "✗ missing"
     labels["dashboard_project_id"] = load_dashboard_project_id() or "—"
     labels["project_key"] = "✓ stored" if sec else "✗ missing"
+    phone, assigned = load_user_numbers()
+    labels["phone_number"] = (
+        phone if phone else "✗ missing (run `hermes photon setup --phone ...`)"
+    )
+    labels["assigned_phone_number"] = (
+        assigned if assigned else "✗ missing (run `hermes photon setup`)"
+    )
 
     rows = [
         "Photon iMessage status",
@@ -844,6 +965,8 @@ def print_credential_summary(emit: Any = print) -> None:
         "  dashboard project   : " + labels["dashboard_project_id"],
         "  spectrum project id : " + labels["spectrum_project_id"],
         "  project secret      : " + labels["project_key"],
+        "  my number           : " + labels["phone_number"],
+        "  assigned number     : " + labels["assigned_phone_number"],
     ]
     emit("\n".join(rows))
 
@@ -864,9 +987,19 @@ def credential_summary() -> Dict[str, str]:
         _sid, sec = load_project_credentials()
         return "✓ stored" if sec else "✗ missing"
 
+    def _present_phone() -> str:
+        phone, _assigned = load_user_numbers()
+        return phone or "✗ missing (run `hermes photon setup --phone ...`)"
+
+    def _present_assigned_phone() -> str:
+        _phone, assigned = load_user_numbers()
+        return assigned or "✗ missing (run `hermes photon setup`)"
+
     return {
         "device_token": _present_token(),
         "dashboard_project_id": load_dashboard_project_id() or "—",
         "spectrum_project_id": _present_spectrum_id(),
         "project_key": _present_secret(),
+        "phone_number": _present_phone(),
+        "assigned_phone_number": _present_assigned_phone(),
     }

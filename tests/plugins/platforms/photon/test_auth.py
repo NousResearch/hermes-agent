@@ -40,6 +40,8 @@ _PHOTON_ENV = (
     "PHOTON_PROJECT_ID",
     "PHOTON_PROJECT_SECRET",
     "PHOTON_DASHBOARD_PROJECT_ID",
+    "PHOTON_ALLOWED_USERS",
+    "PHOTON_HOME_CHANNEL",
 )
 
 
@@ -96,6 +98,62 @@ def test_store_project_credentials_writes_env(tmp_hermes_home: Path) -> None:
     env_text = (tmp_hermes_home / ".env").read_text()
     assert "PHOTON_PROJECT_ID=sp-789" in env_text
     assert "PHOTON_PROJECT_SECRET=sek-ret" in env_text
+
+
+def test_store_user_numbers_round_trip(tmp_hermes_home: Path) -> None:
+    photon_auth.store_user_numbers(
+        phone_number="+15551234567",
+        assigned_phone_number="+16282679185",
+        user_id="user-uuid",
+        dashboard_project_id="dash-uuid",
+    )
+
+    phone, assigned = photon_auth.load_user_numbers()
+    assert phone == "+15551234567"
+    assert assigned == "+16282679185"
+
+    summary = photon_auth.credential_summary()
+    assert summary["phone_number"] == "+15551234567"
+    assert summary["assigned_phone_number"] == "+16282679185"
+
+    rendered: list[str] = []
+    photon_auth.print_credential_summary(rendered.append)
+    assert "  my number           : +15551234567" in rendered[0]
+    assert "  assigned number     : +16282679185" in rendered[0]
+
+
+def test_load_user_numbers_falls_back_to_home_channel(
+    tmp_hermes_home: Path,
+) -> None:
+    from hermes_cli.config import save_env_value
+
+    save_env_value("PHOTON_HOME_CHANNEL", "+15551234567")
+
+    phone, assigned = photon_auth.load_user_numbers()
+    assert phone == "+15551234567"
+    assert assigned is None
+
+
+def test_refresh_user_numbers_reads_existing_assignment(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon_auth.store_user_numbers(phone_number="+15551234567")
+
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        assert kwargs.get("headers", {}).get("Authorization") == "Bearer tok"
+        assert url.endswith("/projects/dash/spectrum/users")
+        return _FakeResponse(json_body=[{
+            "id": "user-uuid",
+            "phoneNumber": "+1 (555) 123-4567",
+            "assignedPhoneNumber": "+16282679185",
+        }])
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    phone, assigned = photon_auth.refresh_user_numbers("tok", "dash")
+    assert phone == "+15551234567"
+    assert assigned == "+16282679185"
+    assert photon_auth.load_user_numbers() == ("+15551234567", "+16282679185")
 
 
 def test_load_project_credentials_env_override(
@@ -435,6 +493,8 @@ def test_credential_summary_no_secret_leak(
     assert summary["project_key"].startswith("✓")
     assert summary["spectrum_project_id"] == "sp-uuid"
     assert summary["dashboard_project_id"] == "dash-uuid"
+    assert summary["phone_number"].startswith("✗ missing")
+    assert summary["assigned_phone_number"].startswith("✗ missing")
 
 
 # ---------------------------------------------------------------------------

@@ -183,6 +183,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         )
     )
     agent_number = None
+    registered_phone = None
+    registered_user_id = None
     if not phone:
         print("      Skipped user registration (no phone given). Re-run with --phone later.")
     else:
@@ -205,6 +207,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(f"      user registration failed: {e}", file=sys.stderr)
             return 1
         print("  ✓ phone registered" if created else "  ✓ phone already registered")
+        registered_phone = phone
+        registered_user_id = user.get("id")
         # The number to text the agent is the user's assigned iMessage line
         # (the dashboard's "TEXTS ON" column). On shared-number plans there is
         # no dedicated entry in /lines, so this per-user field is the source of
@@ -236,6 +240,16 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print(color("└──────────────────────────────────────────────────────────────", Colors.GREEN))
     else:
         print("      No iMessage line assigned yet — check the Photon dashboard.")
+    if registered_phone:
+        try:
+            photon_auth.store_user_numbers(
+                phone_number=registered_phone,
+                assigned_phone_number=agent_number,
+                user_id=str(registered_user_id) if registered_user_id else None,
+                dashboard_project_id=dashboard_id,
+            )
+        except Exception as e:
+            print(f"      (could not save Photon status metadata: {e})", file=sys.stderr)
 
     # 6. Sidecar deps (spectrum-ts).
     if args.skip_sidecar_install:
@@ -280,6 +294,7 @@ def _autoconfigure_access(phone: str) -> None:
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
+    _refresh_status_numbers()
     # Defer the credential rows to auth.print_credential_summary — its emit
     # callback is the only sink that sees credential-derived strings, so
     # cli.py keeps zero taint flow according to CodeQL.
@@ -289,6 +304,20 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
     return 0
+
+
+def _refresh_status_numbers() -> None:
+    phone, assigned = photon_auth.load_user_numbers()
+    if phone and assigned:
+        return
+    token = photon_auth.load_photon_token()
+    dashboard_id = photon_auth.load_dashboard_project_id()
+    if not token or not dashboard_id:
+        return
+    try:
+        photon_auth.refresh_user_numbers(token, dashboard_id)
+    except Exception as e:
+        print(f"      (could not refresh Photon user numbers: {e})", file=sys.stderr)
 
 
 def _cmd_install_sidecar(_args: argparse.Namespace) -> int:

@@ -2789,6 +2789,7 @@ def _retry_same_provider_sync(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    stream: bool = False,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -2823,12 +2824,11 @@ def _retry_same_provider_sync(
         timeout=effective_timeout,
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
+        stream=stream,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
-    return _validate_llm_response(
-        retry_client.chat.completions.create(**retry_kwargs), task,
-    )
+    return _create_chat_completion_response(retry_client, retry_kwargs, task)
 
 
 async def _retry_same_provider_async(
@@ -4929,12 +4929,14 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    stream: bool = False,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
         "timeout": timeout,
+        "stream": stream,
     }
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
@@ -5007,7 +5009,7 @@ def _build_call_kwargs(
     return kwargs
 
 
-def _validate_llm_response(response: Any, task: str = None) -> Any:
+def _validate_llm_response(response: Any, task: Optional[str] = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
     Fails fast with a clear error instead of letting malformed payloads
@@ -5020,6 +5022,15 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    # Streaming chat-completions calls return an iterable of chunks instead
+    # of a final .choices response. Collect them here so existing retry and
+    # fallback call sites can keep the same validation shape as upstream.
+    if (
+        not hasattr(response, "choices")
+        and not isinstance(response, (str, bytes, bytearray, dict))
+        and hasattr(response, "__iter__")
+    ):
+        response = _collect_chat_stream_response(response)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -5038,6 +5049,35 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     return response
 
 
+def _collect_chat_stream_response(stream_obj: Any) -> Any:
+    """Collect OpenAI chat-completions stream chunks into response-like shape."""
+    collected_content: list[str] = []
+    collected_usage = None
+    for chunk in stream_obj:
+        delta = getattr(chunk.choices[0].delta, "content", None) if chunk.choices else None
+        if delta:
+            collected_content.append(delta)
+        usage = getattr(chunk, "usage", None)
+        if usage:
+            collected_usage = usage
+    content = "".join(collected_content)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content)
+        )]
+    )
+    if collected_usage:
+        response.usage = collected_usage
+    return response
+
+
+def _create_chat_completion_response(client: Any, kwargs: dict, task: Optional[str] = None) -> Any:
+    response = client.chat.completions.create(**kwargs)
+    if kwargs.get("stream"):
+        response = _collect_chat_stream_response(response)
+    return _validate_llm_response(response, task)
+
+
 def call_llm(
     task: str = None,
     *,
@@ -5052,6 +5092,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    stream: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -5156,7 +5197,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        base_url=_base_info or resolved_base_url)
+        base_url=_base_info or resolved_base_url, stream=stream)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -5481,7 +5522,9 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    base_url=str(getattr(fb_client, "base_url", "") or ""),
+                    stream=stream,
+                )
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — emit a single user-visible

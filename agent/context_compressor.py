@@ -1435,6 +1435,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),
+                "stream": True,
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:

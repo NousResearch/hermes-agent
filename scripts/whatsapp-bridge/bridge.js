@@ -9,6 +9,7 @@
  *   GET  /messages       - Long-poll for new incoming messages
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
+ *   POST /react          - React to a message { chatId, emoji, messageId?, participant? }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
@@ -139,6 +140,26 @@ function trackSentMessageId(sent) {
   }
 }
 
+function rememberIncomingMessageKey(msg, chatId, senderId) {
+  if (msg?.key?.fromMe || !msg?.key?.id || !chatId) return;
+  const entry = {
+    messageId: msg.key.id,
+    participant: chatId.endsWith('@g.us') ? (msg.key.participant || senderId || null) : null,
+    timestamp: Number(msg.messageTimestamp || Date.now() / 1000),
+  };
+  const items = recentMessageKeys.get(chatId) || [];
+  items.push(entry);
+  while (items.length > MAX_RECENT_KEYS_PER_CHAT) items.shift();
+  recentMessageKeys.set(chatId, items);
+}
+
+function findRecentMessageKey(chatId, messageId = null) {
+  const items = recentMessageKeys.get(chatId) || [];
+  if (!items.length) return null;
+  if (messageId) return items.find(item => item.messageId === messageId) || null;
+  return items[items.length - 1];
+}
+
 function normalizeWhatsAppId(value) {
   if (!value) return '';
   return String(value).replace(':', '@');
@@ -189,6 +210,11 @@ const logger = pino({ level: 'warn' });
 // Message queue for polling
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
+
+// Recent incoming message keys for native reactions. The Python gateway
+// consumes /messages destructively, so /react needs its own small cache.
+const recentMessageKeys = new Map();
+const MAX_RECENT_KEYS_PER_CHAT = 50;
 
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
@@ -332,6 +358,10 @@ async function startSocket() {
           } catch {}
           continue;
         }
+      }
+
+      if (!msg.key.fromMe) {
+        rememberIncomingMessageKey(msg, chatId, senderId);
       }
 
       const messageContent = getMessageContent(msg);
@@ -509,13 +539,64 @@ app.get('/messages', (req, res) => {
   res.json(msgs);
 });
 
+// React to a recent incoming message. If messageId is omitted, react to the
+// latest cached non-fromMe message for that chat.
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, emoji = '👍', messageId, participant } = req.body || {};
+  if (!chatId || !emoji) {
+    return res.status(400).json({ error: 'chatId and emoji are required' });
+  }
+
+  const cached = findRecentMessageKey(chatId, messageId || null);
+  const targetMessageId = messageId || cached?.messageId;
+  const targetParticipant = participant || cached?.participant || null;
+  if (!targetMessageId) {
+    return res.status(404).json({ error: 'No recent incoming message cached for chatId; provide messageId and participant' });
+  }
+
+  const key = { remoteJid: chatId, id: targetMessageId, fromMe: false };
+  if (chatId.endsWith('@g.us') && targetParticipant) {
+    key.participant = targetParticipant;
+  }
+
+  try {
+    const sent = await sendWithTimeout(chatId, { react: { text: emoji, key } });
+    res.json({
+      success: true,
+      messageId: sent?.key?.id || null,
+      targetMessageId,
+      participant: targetParticipant,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function normalizeMentions(mentions) {
+  if (!Array.isArray(mentions)) return [];
+  return mentions
+    .map(jid => String(jid || '').trim())
+    .filter(jid => jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid'));
+}
+
+function textPayload(text, mentions = [], extra = {}) {
+  const normalizedMentions = normalizeMentions(mentions);
+  return normalizedMentions.length
+    ? { text, mentions: normalizedMentions, ...extra }
+    : { text, ...extra };
+}
+
 // Send a message
 app.post('/send', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, message, replyTo } = req.body;
+  const { chatId, message, replyTo, mentions } = req.body;
   if (!chatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
@@ -524,7 +605,7 @@ app.post('/send', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
-      const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+      const sent = await sendWithTimeout(chatId, textPayload(chunks[i], i === 0 ? mentions : []));
       trackSentMessageId(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
@@ -548,7 +629,7 @@ app.post('/edit', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, messageId, message } = req.body;
+  const { chatId, messageId, message, mentions } = req.body;
   if (!chatId || !messageId || !message) {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
   }
@@ -558,10 +639,10 @@ app.post('/edit', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
 
-    await sendWithTimeout(chatId, { text: chunks[0], edit: key });
+    await sendWithTimeout(chatId, textPayload(chunks[0], mentions, { edit: key }));
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
-        const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+        const sent = await sendWithTimeout(chatId, textPayload(chunks[i]));
         trackSentMessageId(sent);
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {

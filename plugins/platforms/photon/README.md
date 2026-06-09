@@ -111,8 +111,8 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
 | `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
-| `PHOTON_HOME_CHANNEL`     | (unset)                    | Default space id for cron delivery   |
-| `PHOTON_ALLOWED_USERS`    | (unset)                    | Comma-separated E.164 allowlist      |
+| `PHOTON_HOME_CHANNEL`     | your number (set by setup) | Default space for cron delivery — a space id, or a bare E.164 number (resolved to a DM) |
+| `PHOTON_ALLOWED_USERS`    | your number (set by setup) | Comma-separated E.164 allowlist      |
 | `PHOTON_REQUIRE_MENTION`  | false                      | Gate group chats on a wake word      |
 | `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | 20 MB           | Max inbound attachment size the sidecar reads & inlines |
 

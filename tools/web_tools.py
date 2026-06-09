@@ -781,6 +781,13 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
+# Hard ceiling for synchronous search calls so a hung backend SDK cannot
+# keep the user waiting indefinitely. 90s is well above the p99 latency
+# for every supported provider while still fitting comfortably under the
+# desktop session watchdog (GH #42360).
+_WEB_SEARCH_TIMEOUT_SECONDS = 90
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -868,7 +875,27 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
+            # All provider search() implementations are synchronous. Wrap
+            # the call in a thread with a hard timeout so a hung SDK or
+            # network stall cannot outlast the user's patience (GH #42360).
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(provider.search, query, limit)
+                try:
+                    response_data = future.result(timeout=_WEB_SEARCH_TIMEOUT_SECONDS)
+                except FutureTimeoutError:
+                    logger.warning(
+                        "Web search via %s timed out after %ds",
+                        provider.name, _WEB_SEARCH_TIMEOUT_SECONDS,
+                    )
+                    response_data = {
+                        "success": False,
+                        "error": (
+                            f"Web search timed out after {_WEB_SEARCH_TIMEOUT_SECONDS}s "
+                            f"via {provider.display_name}. The backend did not respond. "
+                            "Try again or configure a different web backend."
+                        ),
+                    }
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1028,16 +1055,63 @@ async def web_extract_tool(
             )
 
             # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
+            # extract(); exa + tavily are sync. Cap the whole backend call
+            # so a hung provider cannot stall the agent indefinitely
+            # (GH #42360). 240s matches the firecrawl batch ceiling and
+            # keeps us under the desktop session watchdog.
+            _WEB_EXTRACT_BACKEND_TIMEOUT = 240
             import inspect
             if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
+                try:
+                    results = await asyncio.wait_for(
+                        provider.extract(safe_urls, format=format),
+                        timeout=_WEB_EXTRACT_BACKEND_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Web extract via %s timed out after %ds",
+                        provider.name, _WEB_EXTRACT_BACKEND_TIMEOUT,
+                    )
+                    results = [
+                        {
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "error": (
+                                f"Web extract timed out after {_WEB_EXTRACT_BACKEND_TIMEOUT}s "
+                                f"via {provider.display_name}. The backend did not finish. "
+                                "Try fewer URLs or use browser_navigate instead."
+                            ),
+                        }
+                        for url in safe_urls
+                    ]
             else:
                 # Run sync extract() in a thread so we don't block the
                 # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
-                )
+                from concurrent.futures import TimeoutError as FutureTimeoutError
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.to_thread(provider.extract, safe_urls, format=format),
+                        timeout=_WEB_EXTRACT_BACKEND_TIMEOUT,
+                    )
+                except (asyncio.TimeoutError, FutureTimeoutError):
+                    logger.warning(
+                        "Web extract via %s timed out after %ds",
+                        provider.name, _WEB_EXTRACT_BACKEND_TIMEOUT,
+                    )
+                    results = [
+                        {
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "error": (
+                                f"Web extract timed out after {_WEB_EXTRACT_BACKEND_TIMEOUT}s "
+                                f"via {provider.display_name}. The backend did not finish. "
+                                "Try fewer URLs or use browser_navigate instead."
+                            ),
+                        }
+                        for url in safe_urls
+                    ]
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:

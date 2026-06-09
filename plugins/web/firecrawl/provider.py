@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
@@ -385,12 +386,20 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
+    # Cap synchronous search calls so a hung Firecrawl SDK call cannot
+    # block the agent indefinitely. 60s is generous for a search API
+    # round-trip; in practice most responses arrive in <5s.
+    _SEARCH_TIMEOUT_SECONDS = 60
+
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a Firecrawl search.
 
         Sync; matches the legacy ``_get_firecrawl_client().search(...)``
         call directly. Normalizes the response across SDK/direct/gateway
         shapes via :func:`_extract_web_search_results`.
+
+        A hard timeout is applied so a hung SDK/network call cannot
+        outlive the agent's patience (see GH #42360).
 
         Pre-flight errors (``ValueError`` from configuration check,
         ``ImportError`` from missing SDK) propagate to the dispatcher's
@@ -399,6 +408,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         envelope. Only in-flight errors are caught and surfaced as
         ``{"success": False, "error": ...}``.
         """
+        from concurrent.futures import ThreadPoolExecutor
         from tools.interrupt import is_interrupted
 
         if is_interrupted():
@@ -409,20 +419,162 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         # let it propagate so the dispatcher emits the legacy envelope shape.
         client = _get_firecrawl_client()
         try:
-            response = client.search(query=query, limit=limit)
+            # Run the synchronous SDK call in a worker thread so we can
+            # enforce a hard timeout. Each tool call already runs in its
+            # own ThreadPoolExecutor, but a nested executor is safe because
+            # we control the lifecycle and timeout here.
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(client.search, query=query, limit=limit)
+                response = future.result(timeout=self._SEARCH_TIMEOUT_SECONDS)
             web_results = _extract_web_search_results(response)
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}
+        except FutureTimeoutError:
+            logger.warning("Firecrawl search timed out after %ds", self._SEARCH_TIMEOUT_SECONDS)
+            return {
+                "success": False,
+                "error": (
+                    f"Firecrawl search timed out after {self._SEARCH_TIMEOUT_SECONDS}s "
+                    "— the backend did not respond. Try again or use a different web backend."
+                ),
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning("Firecrawl search error: %s", exc)
             return {"success": False, "error": f"Firecrawl search failed: {exc}"}
 
+    # Per-URL scrape timeout. 60s is generous; most pages return in <10s.
+    # URLs are scraped concurrently, so the whole batch normally finishes
+    # in ~60s regardless of how many URLs are requested (GH #42360).
+    _EXTRACT_TIMEOUT_SECONDS = 60
+
+    async def _scrape_one(
+        self,
+        url: str,
+        formats: List[str],
+        format: Optional[str],
+    ) -> Dict[str, Any]:
+        """Scrape a single URL with policy gating and per-URL timeout.
+
+        Returns a result dict matching the legacy extract shape. This
+        helper exists so :meth:`extract` can run multiple URLs concurrently
+        via :func:`asyncio.gather` instead of serializing them (GH #42360).
+        """
+        from tools.interrupt import is_interrupted as _is_interrupted
+
+        if _is_interrupted():
+            return {"url": url, "error": "Interrupted", "title": ""}
+
+        blocked = check_website_access(url)
+        if blocked:
+            logger.info(
+                "Blocked web_extract for %s by rule %s",
+                blocked["host"],
+                blocked["rule"],
+            )
+            return {
+                "url": url,
+                "title": "",
+                "content": "",
+                "error": blocked["message"],
+                "blocked_by_policy": {
+                    "host": blocked["host"],
+                    "rule": blocked["rule"],
+                    "source": blocked["source"],
+                },
+            }
+
+        try:
+            logger.info("Firecrawl scraping: %s", url)
+            try:
+                scrape_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _get_firecrawl_client().scrape,
+                        url=url,
+                        formats=formats,
+                    ),
+                    timeout=self._EXTRACT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Firecrawl scrape timed out for %s", url)
+                return {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": (
+                        "Scrape timed out after 60s — page may be too large "
+                        "or unresponsive. Try browser_navigate instead."
+                    ),
+                }
+
+            scrape_payload = _extract_scrape_payload(scrape_result)
+            metadata = scrape_payload.get("metadata", {})
+            content_markdown = scrape_payload.get("markdown")
+            content_html = scrape_payload.get("html")
+
+            # Ensure metadata is a dict (SDK may return a typed object)
+            if not isinstance(metadata, dict):
+                if hasattr(metadata, "model_dump"):
+                    metadata = metadata.model_dump()
+                elif hasattr(metadata, "__dict__"):
+                    metadata = metadata.__dict__
+                else:
+                    metadata = {}
+
+            title = metadata.get("title", "")
+            final_url = metadata.get("sourceURL", url)
+
+            # Re-check website-access policy after any redirect
+            final_blocked = check_website_access(final_url)
+            if final_blocked:
+                logger.info(
+                    "Blocked redirected web_extract for %s by rule %s",
+                    final_blocked["host"],
+                    final_blocked["rule"],
+                )
+                return {
+                    "url": final_url,
+                    "title": title,
+                    "content": "",
+                    "raw_content": "",
+                    "error": final_blocked["message"],
+                    "blocked_by_policy": {
+                        "host": final_blocked["host"],
+                        "rule": final_blocked["rule"],
+                        "source": final_blocked["source"],
+                    },
+                }
+
+            # Choose markdown vs html according to the requested format
+            if format == "markdown" or (format is None and content_markdown):
+                chosen_content = content_markdown
+            else:
+                chosen_content = content_html or content_markdown or ""
+
+            return {
+                "url": final_url,
+                "title": title,
+                "content": chosen_content,
+                "raw_content": chosen_content,
+                "metadata": metadata,
+            }
+        except Exception as scrape_err:  # noqa: BLE001
+            logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
+            return {
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": str(scrape_err),
+            }
+
     async def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         """Extract content from one or more URLs via Firecrawl.
 
-        Async; each URL is scraped in a background thread with a 60s
-        timeout. After scraping, the final URL (post-redirect) is
-        re-checked against website-access policy.
+        Async; URLs are scraped concurrently, each in a background thread
+        with a 60s timeout. After scraping, the final URL (post-redirect)
+        is re-checked against website-access policy. Because URLs are
+        processed in parallel, a 5-URL batch normally finishes in ~60s
+        regardless of how many pages are requested (GH #42360).
 
         Accepted kwargs (others ignored for forward compat):
           - ``format``: ``"markdown"`` or ``"html"``; default is both
@@ -450,131 +602,27 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         # module level (lazy-friendly because the website_policy import is
         # cheap) so monkeypatching it in tests works as expected.
 
-        results: List[Dict[str, Any]] = []
+        tasks = [self._scrape_one(url, formats, format) for url in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for url in urls:
-            if _is_interrupted():
-                results.append({"url": url, "error": "Interrupted", "title": ""})
-                continue
-
-            # Pre-scrape website policy gate
-            blocked = check_website_access(url)
-            if blocked:
-                logger.info(
-                    "Blocked web_extract for %s by rule %s",
-                    blocked["host"],
-                    blocked["rule"],
-                )
-                results.append(
-                    {
-                        "url": url,
-                        "title": "",
-                        "content": "",
-                        "error": blocked["message"],
-                        "blocked_by_policy": {
-                            "host": blocked["host"],
-                            "rule": blocked["rule"],
-                            "source": blocked["source"],
-                        },
-                    }
-                )
-                continue
-
-            try:
-                logger.info("Firecrawl scraping: %s", url)
-                try:
-                    scrape_result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            _get_firecrawl_client().scrape,
-                            url=url,
-                            formats=formats,
-                        ),
-                        timeout=60,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("Firecrawl scrape timed out for %s", url)
-                    results.append(
-                        {
-                            "url": url,
-                            "title": "",
-                            "content": "",
-                            "error": (
-                                "Scrape timed out after 60s — page may be too large "
-                                "or unresponsive. Try browser_navigate instead."
-                            ),
-                        }
-                    )
-                    continue
-
-                scrape_payload = _extract_scrape_payload(scrape_result)
-                metadata = scrape_payload.get("metadata", {})
-                content_markdown = scrape_payload.get("markdown")
-                content_html = scrape_payload.get("html")
-
-                # Ensure metadata is a dict (SDK may return a typed object)
-                if not isinstance(metadata, dict):
-                    if hasattr(metadata, "model_dump"):
-                        metadata = metadata.model_dump()
-                    elif hasattr(metadata, "__dict__"):
-                        metadata = metadata.__dict__
-                    else:
-                        metadata = {}
-
-                title = metadata.get("title", "")
-                final_url = metadata.get("sourceURL", url)
-
-                # Re-check website-access policy after any redirect
-                final_blocked = check_website_access(final_url)
-                if final_blocked:
-                    logger.info(
-                        "Blocked redirected web_extract for %s by rule %s",
-                        final_blocked["host"],
-                        final_blocked["rule"],
-                    )
-                    results.append(
-                        {
-                            "url": final_url,
-                            "title": title,
-                            "content": "",
-                            "raw_content": "",
-                            "error": final_blocked["message"],
-                            "blocked_by_policy": {
-                                "host": final_blocked["host"],
-                                "rule": final_blocked["rule"],
-                                "source": final_blocked["source"],
-                            },
-                        }
-                    )
-                    continue
-
-                # Choose markdown vs html according to the requested format
-                if format == "markdown" or (format is None and content_markdown):
-                    chosen_content = content_markdown
-                else:
-                    chosen_content = content_html or content_markdown or ""
-
-                results.append(
-                    {
-                        "url": final_url,
-                        "title": title,
-                        "content": chosen_content,
-                        "raw_content": chosen_content,
-                        "metadata": metadata,
-                    }
-                )
-            except Exception as scrape_err:  # noqa: BLE001
-                logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
-                results.append(
+        # Unwrap any exceptions raised by _scrape_one (they are all caught
+        # there, but return_exceptions=True keeps us defensive).
+        cleaned: List[Dict[str, Any]] = []
+        for url, item in zip(urls, results):
+            if isinstance(item, BaseException):
+                logger.warning("Firecrawl scrape task failed for %s: %s", url, item)
+                cleaned.append(
                     {
                         "url": url,
                         "title": "",
                         "content": "",
                         "raw_content": "",
-                        "error": str(scrape_err),
+                        "error": str(item),
                     }
                 )
-
-        return results
+            else:
+                cleaned.append(item)
+        return cleaned
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {

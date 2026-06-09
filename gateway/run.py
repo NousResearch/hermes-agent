@@ -3829,7 +3829,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
 
                 platform_cfg = self.config.platforms.get(platform)
-                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+                _grn = any(
+                    getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+                )
+                if platform_cfg is not None and not _grn:
                     logger.info(
                         "Shutdown notification suppressed for active session: %s has gateway_restart_notification=false",
                         platform_str,
@@ -3892,7 +3896,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            _grn = any(
+                getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+            )
+            if platform_cfg is not None and not _grn:
                 logger.info(
                     "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
                     platform.value,
@@ -4634,122 +4642,125 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
-            if not platform_config.enabled:
-                continue
-            enabled_platform_count += 1
-            
-            adapter = self._create_adapter(platform, platform_config)
-            if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                _pval = platform.value
-                _builtin_names = {m.value for m in Platform.__members__.values()}
-                if _pval not in _builtin_names:
-                    logger.warning(
-                        "No adapter for '%s' — is the plugin installed? "
-                        "(platform is enabled in config.yaml but no plugin registered it)",
-                        _pval,
-                    )
-                else:
-                    logger.warning("No adapter available for %s", _pval)
-                continue
-            
-            # Set up message + fatal error handlers
-            adapter.set_message_handler(self._handle_message)
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter._busy_text_mode = self._busy_text_mode
-            
-            # Try to connect
-            logger.info("Connecting to %s...", platform.value)
-            self._update_platform_runtime_status(
-                platform.value,
-                platform_state="connecting",
-                error_code=None,
-                error_message=None,
-            )
-            try:
-                success = await self._connect_adapter_with_timeout(adapter, platform)
-                if success:
-                    self.adapters[platform] = adapter
-                    self._sync_voice_mode_state_to_adapter(adapter)
-                    connected_count += 1
-                    self._update_platform_runtime_status(
-                        platform.value,
-                        platform_state="connected",
-                        error_code=None,
-                        error_message=None,
-                    )
-                    logger.info("✓ %s connected", platform.value)
-                else:
-                    logger.warning("✗ %s failed to connect", platform.value)
-                    # Defensive cleanup: a failed connect() may have
-                    # allocated resources (aiohttp.ClientSession, poll
-                    # tasks, bridge subprocesses) before giving up.
-                    # Without this call, those resources are orphaned
-                    # and Python logs "Unclosed client session" at
-                    # process exit. Adapter disconnect() implementations
-                    # are expected to be idempotent and tolerate
-                    # partial-init state.
-                    await self._safe_adapter_disconnect(adapter, platform)
-                    if adapter.has_fatal_error:
+            # Multi-app configs may store a list of PlatformConfig instances.
+            configs = platform_config if isinstance(platform_config, list) else [platform_config]
+            for cfg in configs:
+                if not cfg.enabled:
+                    continue
+                enabled_platform_count += 1
+                
+                adapter = self._create_adapter(platform, cfg)
+                if not adapter:
+                    # Distinguish between missing builtin deps and missing plugin
+                    _pval = platform.value
+                    _builtin_names = {m.value for m in Platform.__members__.values()}
+                    if _pval not in _builtin_names:
+                        logger.warning(
+                            "No adapter for '%s' — is the plugin installed? "
+                            "(platform is enabled in config.yaml but no plugin registered it)",
+                            _pval,
+                        )
+                    else:
+                        logger.warning("No adapter available for %s", _pval)
+                    continue
+                
+                # Set up message + fatal error handlers
+                adapter.set_message_handler(self._handle_message)
+                adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+                adapter.set_session_store(self.session_store)
+                adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+                adapter._busy_text_mode = self._busy_text_mode
+                
+                # Try to connect
+                logger.info("Connecting to %s...", platform.value)
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="connecting",
+                    error_code=None,
+                    error_message=None,
+                )
+                try:
+                    success = await self._connect_adapter_with_timeout(adapter, platform)
+                    if success:
+                        self.adapters[platform] = adapter
+                        self._sync_voice_mode_state_to_adapter(adapter)
+                        connected_count += 1
                         self._update_platform_runtime_status(
                             platform.value,
-                            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
-                            error_code=adapter.fatal_error_code,
-                            error_message=adapter.fatal_error_message,
+                            platform_state="connected",
+                            error_code=None,
+                            error_message=None,
                         )
-                        target = (
-                            startup_retryable_errors
-                            if adapter.fatal_error_retryable
-                            else startup_nonretryable_errors
-                        )
-                        target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
-                        )
-                        # Queue for reconnection if the error is retryable
-                        if adapter.fatal_error_retryable:
+                        logger.info("✓ %s connected", platform.value)
+                    else:
+                        logger.warning("✗ %s failed to connect", platform.value)
+                        # Defensive cleanup: a failed connect() may have
+                        # allocated resources (aiohttp.ClientSession, poll
+                        # tasks, bridge subprocesses) before giving up.
+                        # Without this call, those resources are orphaned
+                        # and Python logs "Unclosed client session" at
+                        # process exit. Adapter disconnect() implementations
+                        # are expected to be idempotent and tolerate
+                        # partial-init state.
+                        await self._safe_adapter_disconnect(adapter, platform)
+                        if adapter.has_fatal_error:
+                            self._update_platform_runtime_status(
+                                platform.value,
+                                platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+                                error_code=adapter.fatal_error_code,
+                                error_message=adapter.fatal_error_message,
+                            )
+                            target = (
+                                startup_retryable_errors
+                                if adapter.fatal_error_retryable
+                                else startup_nonretryable_errors
+                            )
+                            target.append(
+                                f"{platform.value}: {adapter.fatal_error_message}"
+                            )
+                            # Queue for reconnection if the error is retryable
+                            if adapter.fatal_error_retryable:
+                                self._failed_platforms[platform] = {
+                                    "config": cfg,
+                                    "attempts": 1,
+                                    "next_retry": time.monotonic() + 30,
+                                }
+                        else:
+                            self._update_platform_runtime_status(
+                                platform.value,
+                                platform_state="retrying",
+                                error_code=None,
+                                error_message="failed to connect",
+                            )
+                            startup_retryable_errors.append(
+                                f"{platform.value}: failed to connect"
+                            )
+                            # No fatal error info means likely a transient issue — queue for retry
                             self._failed_platforms[platform] = {
-                                "config": platform_config,
+                                "config": cfg,
                                 "attempts": 1,
                                 "next_retry": time.monotonic() + 30,
                             }
-                    else:
-                        self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying",
-                            error_code=None,
-                            error_message="failed to connect",
-                        )
-                        startup_retryable_errors.append(
-                            f"{platform.value}: failed to connect"
-                        )
-                        # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
-                            "config": platform_config,
-                            "attempts": 1,
-                            "next_retry": time.monotonic() + 30,
-                        }
-            except Exception as e:
-                logger.error("✗ %s error: %s", platform.value, e)
-                # Same defensive cleanup path for exceptions — an adapter
-                # that raised mid-connect may still have a live
-                # aiohttp.ClientSession or child subprocess.
-                await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
-                    platform.value,
-                    platform_state="retrying",
-                    error_code=None,
-                    error_message=str(e),
-                )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
-                # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
-                    "config": platform_config,
-                    "attempts": 1,
-                    "next_retry": time.monotonic() + 30,
-                }
+                except Exception as e:
+                    logger.error("✗ %s error: %s", platform.value, e)
+                    # Same defensive cleanup path for exceptions — an adapter
+                    # that raised mid-connect may still have a live
+                    # aiohttp.ClientSession or child subprocess.
+                    await self._safe_adapter_disconnect(adapter, platform)
+                    self._update_platform_runtime_status(
+                        platform.value,
+                        platform_state="retrying",
+                        error_code=None,
+                        error_message=str(e),
+                    )
+                    startup_retryable_errors.append(f"{platform.value}: {e}")
+                    # Unexpected exceptions are typically transient — queue for retry
+                    self._failed_platforms[platform] = {
+                        "config": cfg,
+                        "attempts": 1,
+                        "next_retry": time.monotonic() + 30,
+                    }
         
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -5063,7 +5074,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # user_id (thread_sessions_per_user defaults to False) — so the
         # next real user message in the thread shares this same session.
         platform_cfg = self.config.platforms.get(platform)
-        extra = platform_cfg.extra if platform_cfg else {}
+        # Multi-app configs may return a list of PlatformConfig instances.
+        _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+        extra = {}
+        for cfg in _configs:
+            if cfg is not None:
+                extra = cfg.extra
+                break
         session_key = build_session_key(
             dest_source,
             group_sessions_per_user=extra.get("group_sessions_per_user", True),
@@ -11059,7 +11076,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            _grn = any(
+                getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+            )
+            if platform_cfg is not None and not _grn:
                 logger.info(
                     "Restart notification suppressed: %s has gateway_restart_notification=false",
                     platform_str,
@@ -11125,7 +11146,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            _grn = any(
+                getattr(cfg, "gateway_restart_notification", True) for cfg in _configs if cfg is not None
+            )
+            if platform_cfg is not None and not _grn:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,

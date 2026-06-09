@@ -13,7 +13,7 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Union
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
@@ -463,7 +463,7 @@ class GatewayConfig:
     Manages all platform connections, session policies, and delivery settings.
     """
     # Platform configurations
-    platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
+    platforms: Dict[Platform, Union[PlatformConfig, List[PlatformConfig]]] = field(default_factory=dict)
     
     # Session reset policies by type
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
@@ -513,10 +513,13 @@ class GatewayConfig:
         """Return list of platforms that are enabled and configured."""
         connected = []
         for platform, config in self.platforms.items():
-            if not config.enabled:
-                continue
-            if self._is_platform_connected(platform, config):
-                connected.append(platform)
+            configs = config if isinstance(config, list) else [config]
+            for cfg in configs:
+                if not cfg.enabled:
+                    continue
+                if self._is_platform_connected(platform, cfg):
+                    connected.append(platform)
+                    break
         return connected
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
@@ -556,6 +559,11 @@ class GatewayConfig:
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
         config = self.platforms.get(platform)
+        if isinstance(config, list):
+            for cfg in config:
+                if cfg.home_channel:
+                    return cfg.home_channel
+            return None
         if config:
             return config.home_channel
         return None
@@ -581,9 +589,13 @@ class GatewayConfig:
         return self.default_reset_policy
     
     def to_dict(self) -> Dict[str, Any]:
+        def _serialize_platform(cfg):
+            if isinstance(cfg, list):
+                return [c.to_dict() for c in cfg]
+            return cfg.to_dict()
         return {
             "platforms": {
-                p.value: c.to_dict() for p, c in self.platforms.items()
+                p.value: _serialize_platform(c) for p, c in self.platforms.items()
             },
             "default_reset_policy": self.default_reset_policy.to_dict(),
             "reset_by_type": {
@@ -611,7 +623,12 @@ class GatewayConfig:
         for platform_name, platform_data in data.get("platforms", {}).items():
             try:
                 platform = Platform(platform_name)
-                platforms[platform] = PlatformConfig.from_dict(platform_data)
+                if isinstance(platform_data, list):
+                    platforms[platform] = [
+                        PlatformConfig.from_dict(item) for item in platform_data if isinstance(item, dict)
+                    ]
+                elif isinstance(platform_data, dict):
+                    platforms[platform] = PlatformConfig.from_dict(platform_data)
             except ValueError:
                 pass  # Skip unknown platforms
         
@@ -680,22 +697,28 @@ class GatewayConfig:
         """Return the effective unauthorized-DM behavior for a platform."""
         if platform:
             platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "unauthorized_dm_behavior" in platform_cfg.extra:
-                return _normalize_unauthorized_dm_behavior(
-                    platform_cfg.extra.get("unauthorized_dm_behavior"),
-                    self.unauthorized_dm_behavior,
-                )
+            # Multi-app configs may store a list of PlatformConfig instances.
+            configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in configs:
+                if cfg and "unauthorized_dm_behavior" in cfg.extra:
+                    return _normalize_unauthorized_dm_behavior(
+                        cfg.extra.get("unauthorized_dm_behavior"),
+                        self.unauthorized_dm_behavior,
+                    )
         return self.unauthorized_dm_behavior
 
     def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
         """Return the effective notice-delivery mode for a platform."""
         if platform:
             platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "notice_delivery" in platform_cfg.extra:
-                return _normalize_notice_delivery(
-                    platform_cfg.extra.get("notice_delivery"),
-                    "public",
-                )
+            # Multi-app configs may store a list of PlatformConfig instances.
+            configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in configs:
+                if cfg and "notice_delivery" in cfg.extra:
+                    return _normalize_notice_delivery(
+                        cfg.extra.get("notice_delivery"),
+                        "public",
+                    )
         return "public"
 
 
@@ -801,6 +824,10 @@ def load_gateway_config() -> GatewayConfig:
                 if not isinstance(source_platforms, dict):
                     return
                 for plat_name, plat_block in source_platforms.items():
+                    # Multi-app configs may store a list of PlatformConfig dicts.
+                    if isinstance(plat_block, list):
+                        platforms_data[plat_name] = plat_block
+                        continue
                     if not isinstance(plat_block, dict):
                         continue
                     existing = platforms_data.get(plat_name, {})
@@ -1234,15 +1261,18 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.WEIXIN: "WEIXIN_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
-        if not pconfig.enabled:
-            continue
-        env_name = _token_env_names.get(platform)
-        if env_name and pconfig.token is not None and not pconfig.token.strip():
-            logger.warning(
-                "%s is enabled but %s is empty. "
-                "The adapter will likely fail to connect.",
-                platform.value, env_name,
-            )
+        # Multi-app configs may store a list of PlatformConfig instances.
+        configs = pconfig if isinstance(pconfig, list) else [pconfig]
+        for cfg in configs:
+            if not cfg.enabled:
+                continue
+            env_name = _token_env_names.get(platform)
+            if env_name and cfg.token is not None and not cfg.token.strip():
+                logger.warning(
+                    "%s is enabled but %s is empty. "
+                    "The adapter will likely fail to connect.",
+                    platform.value, env_name,
+                )
 
     # Reject known-weak placeholder tokens.
     # Ported from openclaw/openclaw#64586: users who copy .env.example
@@ -1255,20 +1285,22 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
     if has_usable_secret is not None:
         for platform, pconfig in config.platforms.items():
-            if not pconfig.enabled:
-                continue
-            env_name = _token_env_names.get(platform)
-            if not env_name:
-                continue
-            token = pconfig.token
-            if token and token.strip() and not has_usable_secret(token, min_length=4):
-                logger.error(
-                    "%s is enabled but %s is set to a placeholder value ('%s'). "
-                    "Set a real bot token before starting the gateway. "
-                    "The adapter will NOT be started.",
-                    platform.value, env_name, token.strip()[:6] + "...",
-                )
-                pconfig.enabled = False
+            configs = pconfig if isinstance(pconfig, list) else [pconfig]
+            for cfg in configs:
+                if not cfg.enabled:
+                    continue
+                env_name = _token_env_names.get(platform)
+                if not env_name:
+                    continue
+                token = cfg.token
+                if token and token.strip() and not has_usable_secret(token, min_length=4):
+                    logger.error(
+                        "%s is enabled but %s is set to a placeholder value ('%s'). "
+                        "Set a real bot token before starting the gateway. "
+                        "The adapter will NOT be started.",
+                        platform.value, env_name, token.strip()[:6] + "...",
+                    )
+                    cfg.enabled = False
 
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
@@ -1280,6 +1312,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             return config.platforms[platform]
 
         platform_config = config.platforms[platform]
+        # Multi-app configs may store a list of PlatformConfig instances.
+        if isinstance(platform_config, list):
+            for cfg in platform_config:
+                enabled_was_explicit = bool(cfg.extra.pop("_enabled_explicit", False))
+                if not cfg.enabled and not enabled_was_explicit:
+                    cfg.enabled = True
+            return platform_config[0] if platform_config else PlatformConfig(enabled=True)
+
         enabled_was_explicit = bool(platform_config.extra.pop("_enabled_explicit", False))
         if not platform_config.enabled and not enabled_was_explicit:
             platform_config.enabled = True
@@ -1627,21 +1667,40 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = os.getenv("FEISHU_APP_ID")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
-        if Platform.FEISHU not in config.platforms:
+        feishu_cfg = config.platforms.get(Platform.FEISHU)
+        if feishu_cfg is None:
             config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
-        config.platforms[Platform.FEISHU].extra.update({
-            "app_id": feishu_app_id,
-            "app_secret": feishu_app_secret,
-            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
-        })
-        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
-        if feishu_encrypt_key:
-            config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
-        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
-        if feishu_verification_token:
-            config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
+            feishu_cfg = config.platforms[Platform.FEISHU]
+        # Multi-app configs may store a list of PlatformConfig instances.
+        if isinstance(feishu_cfg, list):
+            for cfg in feishu_cfg:
+                cfg.enabled = True
+                cfg.extra.update({
+                    "app_id": feishu_app_id,
+                    "app_secret": feishu_app_secret,
+                    "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
+                    "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+                })
+                feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+                if feishu_encrypt_key:
+                    cfg.extra["encrypt_key"] = feishu_encrypt_key
+                feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+                if feishu_verification_token:
+                    cfg.extra["verification_token"] = feishu_verification_token
+        else:
+            feishu_cfg.enabled = True
+            feishu_cfg.extra.update({
+                "app_id": feishu_app_id,
+                "app_secret": feishu_app_secret,
+                "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
+                "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+            })
+            feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+            if feishu_encrypt_key:
+                feishu_cfg.extra["encrypt_key"] = feishu_encrypt_key
+            feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+            if feishu_verification_token:
+                feishu_cfg.extra["verification_token"] = feishu_verification_token
         feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
         if feishu_home:
             config.platforms[Platform.FEISHU].home_channel = HomeChannel(
@@ -2001,4 +2060,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         logger.debug("Plugin platform enable pass failed: %s", e)
 
     for platform_config in config.platforms.values():
-        platform_config.extra.pop("_enabled_explicit", None)
+        # Multi-app configs may store a list of PlatformConfig instances.
+        configs = platform_config if isinstance(platform_config, list) else [platform_config]
+        for cfg in configs:
+            cfg.extra.pop("_enabled_explicit", None)

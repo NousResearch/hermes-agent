@@ -82,7 +82,13 @@ class GatewayAuthorizationMixin:
                 if config is not None and hasattr(config, "platforms")
                 else None
             )
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            # Multi-app configs may store a list of PlatformConfig instances.
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            extra = None
+            for cfg in _configs:
+                if cfg is not None:
+                    extra = getattr(cfg, "extra", None)
+                    break
             if isinstance(extra, dict):
                 policy = extra.get("dm_policy")
         return str(policy or "").strip().lower()
@@ -362,9 +368,11 @@ class GatewayAuthorizationMixin:
         # Check for an explicit per-platform override first.
         if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:
             platform_cfg = config.platforms.get(platform) if hasattr(config, "platforms") else None
-            if platform_cfg and "unauthorized_dm_behavior" in getattr(platform_cfg, "extra", {}):
-                # Operator explicitly configured behavior for this platform — respect it.
-                return config.get_unauthorized_dm_behavior(platform)
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            for cfg in _configs:
+                if cfg and "unauthorized_dm_behavior" in getattr(cfg, "extra", {}):
+                    # Operator explicitly configured behavior for this platform — respect it.
+                    return config.get_unauthorized_dm_behavior(platform)
 
         # Check for an explicit global config override.
         if config and hasattr(config, "unauthorized_dm_behavior"):
@@ -377,7 +385,12 @@ class GatewayAuthorizationMixin:
         # with a pairing code. An explicit pairing policy opts back into codes.
         if platform and config and hasattr(config, "platforms"):
             platform_cfg = config.platforms.get(platform)
-            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            _configs = platform_cfg if isinstance(platform_cfg, list) else [platform_cfg]
+            extra = None
+            for cfg in _configs:
+                if cfg is not None:
+                    extra = getattr(cfg, "extra", None)
+                    break
             if isinstance(extra, dict):
                 dm_policy = str(extra.get("dm_policy") or "").strip().lower()
                 if dm_policy == "pairing":

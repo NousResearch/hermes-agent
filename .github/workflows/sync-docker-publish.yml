@@ -24,17 +24,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/hermes-agent
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          fetch-tags: true
+
+      # FIX #4: IMAGE_NAME se construye desde IMAGE_REPOSITORY para evitar
+      # que un cambio en IMAGE_REPOSITORY no se propague a IMAGE_NAME.
+      # No se puede referenciar env.IMAGE_REPOSITORY en la sección env del job,
+      # por eso se exporta vía GITHUB_ENV en este step.
+      - name: Set up IMAGE_NAME
+        shell: bash
+        run: |
+          echo "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_TOKEN=${{ secrets.DOCKERHUB_TOKEN }}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/${IMAGE_REPOSITORY}" >> "$GITHUB_ENV"
+          echo "::debug::IMAGE_REPOSITORY=${IMAGE_REPOSITORY}"
+          echo "::debug::IMAGE_NAME resuelto como: ${{ secrets.DOCKERHUB_USERNAME }}/${IMAGE_REPOSITORY}"
+          echo "::debug::DOCKERHUB_USERNAME definido: ${{ secrets.DOCKERHUB_USERNAME != '' }}"
+          echo "::debug::DOCKERHUB_TOKEN definido: ${{ secrets.DOCKERHUB_TOKEN != '' }}"
 
       - name: Validate Docker Hub configuration
         shell: bash
@@ -112,6 +121,9 @@ jobs:
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
           SHA_SHORT="$(git rev-parse --short HEAD)"
 
+          echo "::debug::Publish branch image: BRANCH_NAME=${BRANCH_NAME} SHA_SHORT=${SHA_SHORT}"
+          echo "::debug::Publish branch image: GITHUB_SHA=${GITHUB_SHA} IMAGE_NAME=${IMAGE_NAME}"
+
           case "${BRANCH_NAME}" in
             main|develop)
               echo "Publicando imagen ${IMAGE_NAME}:${BRANCH_NAME} para commit ${GITHUB_SHA}"
@@ -133,6 +145,9 @@ jobs:
             --tag "${IMAGE_NAME}:${BRANCH_NAME}" \
             --tag "${IMAGE_NAME}:sha-${SHA_SHORT}" \
             --label "org.opencontainers.image.title=hermes-agent" \
+            --label "org.opencontainers.image.description=Hermes Agent Docker image" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --cache-from type=gha \
@@ -162,7 +177,7 @@ jobs:
           github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
           log_info() {
             echo "::notice::$*"
@@ -174,6 +189,12 @@ jobs:
 
           log_error() {
             echo "::error::$*"
+          }
+
+          log_debug() {
+            if [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then
+              echo "::debug::$*"
+            fi
           }
 
           section() {
@@ -308,6 +329,8 @@ jobs:
             local err
             local rc
 
+            log_debug "inspect_image: consultando ${ref}"
+
             out="$(mktemp)"
             err="$(mktemp)"
 
@@ -315,12 +338,14 @@ jobs:
             rc=$?
 
             if [ "${rc}" -eq 0 ]; then
+              log_debug "inspect_image: ${ref} existe (rc=0)"
               cat "${out}"
               rm -f "${out}" "${err}"
               return 0
             fi
 
             if grep -Eiq '(not found|manifest unknown|no such manifest|name unknown|404)' "${err}"; then
+              log_debug "inspect_image: ${ref} no encontrada (rc=1)"
               rm -f "${out}" "${err}"
               return 1
             fi
@@ -334,6 +359,9 @@ jobs:
             return 2
           }
 
+          # FIX #5: image_exists_status nunca se llama directamente como sentencia;
+          # siempre se invoca dentro de un bloque if/elif/else para que set -e
+          # no termine el script cuando la imagen no existe (rc != 0).
           image_exists_status() {
             local ref="$1"
 
@@ -371,19 +399,46 @@ jobs:
             git cat-file -e "${commit}:Dockerfile" 2>/dev/null
           }
 
+          # FIX #3: checkout_commit_clean acepta el commit original (HEAD_COMMIT)
+          # para restaurarlo inmediatamente después del build, evitando que los
+          # siguientes tags del bucle se construyan desde el commit incorrecto.
           checkout_commit_clean() {
             local commit="$1"
+
+            log_debug "checkout_commit_clean: checkout de ${commit}"
 
             if ! git checkout --force "${commit}"; then
               echo "No se pudo hacer checkout del commit ${commit}" >&2
               return 1
             fi
 
+            log_debug "checkout_commit_clean: limpiando workspace"
+
             if ! git clean -fdx; then
               echo "No se pudo limpiar el workspace para el commit ${commit}" >&2
               return 1
             fi
 
+            log_debug "checkout_commit_clean: workspace listo en commit ${commit}"
+            return 0
+          }
+
+          restore_head() {
+            local original_commit="$1"
+
+            log_debug "restore_head: restaurando workspace a commit original ${original_commit}"
+
+            if ! git checkout --force "${original_commit}"; then
+              echo "No se pudo restaurar HEAD al commit original ${original_commit}" >&2
+              return 1
+            fi
+
+            if ! git clean -fdx; then
+              echo "No se pudo limpiar el workspace al restaurar HEAD" >&2
+              return 1
+            fi
+
+            log_debug "restore_head: workspace restaurado a ${original_commit}"
             return 0
           }
 
@@ -391,8 +446,12 @@ jobs:
             local tag="$1"
             local commit="$2"
             local sha_short="$3"
+            local head_commit="$4"
 
             echo "Construyendo imagen para tag ${tag}, commit ${commit}"
+            log_debug "build_image_for_tag: tag=${tag} commit=${commit} sha_short=${sha_short} head_commit=${head_commit}"
+            log_debug "build_image_for_tag: plataformas=linux/amd64,linux/arm64"
+            log_debug "build_image_for_tag: destino=${IMAGE_NAME}:${tag} y ${IMAGE_NAME}:sha-${sha_short}"
 
             if ! is_valid_docker_tag "${tag}"; then
               echo "El tag Git '${tag}' no es válido como tag Docker." >&2
@@ -405,29 +464,42 @@ jobs:
             fi
 
             if ! checkout_commit_clean "${commit}"; then
+              restore_head "${head_commit}" || true
               return 1
             fi
 
             if [ ! -f "Dockerfile" ]; then
               echo "Dockerfile no disponible tras checkout del commit ${commit}." >&2
+              restore_head "${head_commit}" || true
               return 1
             fi
 
+            log_debug "build_image_for_tag: iniciando docker buildx build"
+            local build_rc=0
             docker buildx build \
               --platform linux/amd64,linux/arm64 \
               --file Dockerfile \
               --tag "${IMAGE_NAME}:${tag}" \
               --tag "${IMAGE_NAME}:sha-${sha_short}" \
               --label "org.opencontainers.image.title=hermes-agent" \
+              --label "org.opencontainers.image.description=Hermes Agent Docker image" \
+              --label "org.opencontainers.image.licenses=MIT" \
+              --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --label "org.opencontainers.image.version=${tag}" \
               --label "org.opencontainers.image.revision=${commit}" \
               --cache-from type=gha \
               --cache-to type=gha,mode=max \
               --push \
-              .
+              . || build_rc=$?
 
-            return $?
+            log_debug "build_image_for_tag: docker buildx build terminó con rc=${build_rc}"
+
+            # FIX #3: restaurar siempre HEAD al commit original tras el build,
+            # independientemente de si el build tuvo éxito o falló.
+            restore_head "${head_commit}" || true
+
+            return "${build_rc}"
           }
 
           verify_tag_and_sha_same_digest() {
@@ -435,24 +507,12 @@ jobs:
             local sha_ref="$2"
             local tag_digest
             local sha_digest
-            local tag_rc
-            local sha_rc
 
-            tag_digest="$(image_digest "${tag_ref}")"
-            tag_rc=$?
-
-            if [ "${tag_rc}" -ne 0 ]; then
-              echo "No se pudo obtener digest de ${tag_ref}" >&2
-              return "${tag_rc}"
-            fi
-
-            sha_digest="$(image_digest "${sha_ref}")"
-            sha_rc=$?
-
-            if [ "${sha_rc}" -ne 0 ]; then
-              echo "No se pudo obtener digest de ${sha_ref}" >&2
-              return "${sha_rc}"
-            fi
+            # FIX #6: proteger image_digest con || return para evitar que set -e
+            # termine el script cuando la sustitución de comando falla.
+            # NOTA: no se usa "local rc" antes del || porque local resetea $? a 0.
+            tag_digest="$(image_digest "${tag_ref}")" || { local _rc=$?; echo "No se pudo obtener digest de ${tag_ref}" >&2; return "${_rc}"; }
+            sha_digest="$(image_digest "${sha_ref}")" || { local _rc=$?; echo "No se pudo obtener digest de ${sha_ref}" >&2; return "${_rc}"; }
 
             if [ "${tag_digest}" != "${sha_digest}" ]; then
               echo "Los digests no coinciden tras la operación." >&2
@@ -474,9 +534,13 @@ jobs:
 
             echo "Actualizando ${tag_ref} desde ${sha_ref}"
 
+            # FIX #5: image_exists_status se evalúa dentro de if/else
             local sha_status
-            image_exists_status "${sha_ref}"
-            sha_status=$?
+            if image_exists_status "${sha_ref}"; then
+              sha_status=0
+            else
+              sha_status=$?
+            fi
 
             case "${sha_status}" in
               0)
@@ -509,9 +573,13 @@ jobs:
 
             echo "Actualizando ${latest_ref} desde ${tag_ref}"
 
+            # FIX #5: image_exists_status se evalúa dentro de if/else
             local tag_status
-            image_exists_status "${tag_ref}"
-            tag_status=$?
+            if image_exists_status "${tag_ref}"; then
+              tag_status=0
+            else
+              tag_status=$?
+            fi
 
             case "${tag_status}" in
               0)
@@ -537,6 +605,9 @@ jobs:
             return 0
           }
 
+          log_debug "Iniciando Publish missing or updated version tags"
+          log_debug "Evento: ${GITHUB_EVENT_NAME} | Ref: ${GITHUB_REF} | SHA: ${GITHUB_SHA}"
+
           validate_runtime_environment
 
           section "Sincronizando tags Git"
@@ -547,6 +618,8 @@ jobs:
           fi
 
           mapfile -t TAGS < <(git tag -l 'v*' | sort -Vr)
+
+          log_debug "Total de tags v* encontrados: ${#TAGS[@]}"
 
           if [ "${#TAGS[@]}" -eq 0 ]; then
             log_info "No hay tags v* que publicar."
@@ -562,6 +635,7 @@ jobs:
 
           for TAG in "${TAGS[@]}"; do
             COMMIT="$(git rev-list -n 1 "${TAG}")"
+            log_debug "Evaluando publicabilidad: tag=${TAG} commit=${COMMIT}"
 
             if ! is_valid_docker_tag "${TAG}"; then
               add_skip "${TAG}" "el tag Git no es válido como tag Docker"
@@ -587,6 +661,11 @@ jobs:
           printf '%s\n' "${PUBLISHABLE_TAGS[@]}"
           echo "Latest tag publicable calculado: ${LATEST_TAG}"
 
+          # FIX #3: capturar el commit original antes de iniciar el bucle de tags
+          # para poder restaurarlo tras cada checkout de commit de tag.
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          log_debug "HEAD_COMMIT antes del bucle de builds: ${HEAD_COMMIT}"
+
           for TAG in "${PUBLISHABLE_TAGS[@]}"; do
             PROCESSED_TAGS+=("${TAG}")
 
@@ -602,32 +681,37 @@ jobs:
             echo "Imagen tag: ${TAG_REF}"
             echo "Imagen sha: ${SHA_REF}"
 
+            # FIX #5: image_exists_status siempre en contexto condicional (if/else)
+            TAG_EXISTS=false
+            SHA_EXISTS=false
             TAG_STATUS=0
             SHA_STATUS=0
 
-            image_exists_status "${TAG_REF}"
-            TAG_STATUS=$?
-
-            image_exists_status "${SHA_REF}"
-            SHA_STATUS=$?
-
-            case "${TAG_STATUS}" in
-              0) TAG_EXISTS=true ;;
-              1) TAG_EXISTS=false ;;
-              *)
+            if image_exists_status "${TAG_REF}"; then
+              TAG_EXISTS=true
+              TAG_STATUS=0
+            else
+              TAG_STATUS=$?
+              if [ "${TAG_STATUS}" -eq 1 ]; then
+                TAG_EXISTS=false
+              else
                 add_failure "${TAG}" "no se pudo comprobar si existe ${TAG_REF}"
                 continue
-                ;;
-            esac
+              fi
+            fi
 
-            case "${SHA_STATUS}" in
-              0) SHA_EXISTS=true ;;
-              1) SHA_EXISTS=false ;;
-              *)
+            if image_exists_status "${SHA_REF}"; then
+              SHA_EXISTS=true
+              SHA_STATUS=0
+            else
+              SHA_STATUS=$?
+              if [ "${SHA_STATUS}" -eq 1 ]; then
+                SHA_EXISTS=false
+              else
                 add_failure "${TAG}" "no se pudo comprobar si existe ${SHA_REF}"
                 continue
-                ;;
-            esac
+              fi
+            fi
 
             echo "Existe tag remoto: ${TAG_EXISTS}"
             echo "Existe sha remoto: ${SHA_EXISTS}"
@@ -635,7 +719,7 @@ jobs:
             if [ "${TAG_EXISTS}" = false ] && [ "${SHA_EXISTS}" = false ]; then
               echo "No existe ni ${TAG_REF} ni ${SHA_REF}. Se construye imagen."
 
-              if build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"; then
+              if build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}" "${HEAD_COMMIT}"; then
                 if verify_tag_and_sha_same_digest "${TAG_REF}" "${SHA_REF}"; then
                   BUILT_TAGS+=("${TAG}")
                   log_info "Tag ${TAG} construido y verificado correctamente."
@@ -661,7 +745,7 @@ jobs:
             elif [ "${TAG_EXISTS}" = true ] && [ "${SHA_EXISTS}" = false ]; then
               echo "Existe ${TAG_REF}, pero falta ${SHA_REF}. El tag Git puede haber cambiado. Se reconstruye."
 
-              if build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}"; then
+              if build_image_for_tag "${TAG}" "${COMMIT}" "${SHA_SHORT}" "${HEAD_COMMIT}"; then
                 if verify_tag_and_sha_same_digest "${TAG_REF}" "${SHA_REF}"; then
                   BUILT_TAGS+=("${TAG}")
                   log_info "Tag ${TAG} reconstruido y verificado correctamente."
@@ -676,19 +760,18 @@ jobs:
             else
               echo "Existen ${TAG_REF} y ${SHA_REF}. Se comparan digests."
 
-              TAG_DIGEST="$(image_digest "${TAG_REF}")"
-              TAG_DIGEST_RC=$?
+              # FIX #6: proteger image_digest con || para evitar que set -e
+              # termine el script ante un fallo en la sustitución de comando.
+              TAG_DIGEST=""
+              SHA_DIGEST=""
 
-              if [ "${TAG_DIGEST_RC}" -ne 0 ]; then
-                add_failure "${TAG}" "no se pudo obtener digest de ${TAG_REF}; código ${TAG_DIGEST_RC}"
+              if ! TAG_DIGEST="$(image_digest "${TAG_REF}")"; then
+                add_failure "${TAG}" "no se pudo obtener digest de ${TAG_REF}"
                 continue
               fi
 
-              SHA_DIGEST="$(image_digest "${SHA_REF}")"
-              SHA_DIGEST_RC=$?
-
-              if [ "${SHA_DIGEST_RC}" -ne 0 ]; then
-                add_failure "${TAG}" "no se pudo obtener digest de ${SHA_REF}; código ${SHA_DIGEST_RC}"
+              if ! SHA_DIGEST="$(image_digest "${SHA_REF}")"; then
+                add_failure "${TAG}" "no se pudo obtener digest de ${SHA_REF}"
                 continue
               fi
 

@@ -1273,6 +1273,14 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        "gateway_intent": {
+            "provider": "auto",
+            "model": "",           # short boolean intent classification for messaging gateways
+            "base_url": "",
+            "api_key": "",
+            "timeout": 15,
+            "extra_body": {},
+        },
         "mcp": {
             "provider": "auto",
             "model": "",

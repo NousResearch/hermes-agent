@@ -76,6 +76,15 @@ _IMAGE_EDIT_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_IMAGE_EDIT_INTENT_CLASSIFIER_SYSTEM = (
+    "你是消息网关里的意图分类器。用户消息同时附带或引用了一张真实图片。"
+    "判断用户是否希望基于这张图片生成一张修改版/重做版/新图片。"
+    '只返回 JSON：{"edit": true} 或 {"edit": false}。'
+    "当用户要求修改、重做、再来一版、换风格、调整表情/姿势/背景/主体、添加/删除/替换视觉元素、"
+    "或用参考图生成新图时，edit=true。"
+    "当用户只是问能否看到图片、询问图片内容、请求描述/分析/OCR、讨论图片、或意图不明确时，edit=false。"
+)
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -6202,6 +6211,97 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return bool(_IMAGE_EDIT_INTENT_RE.search(text))
 
     @staticmethod
+    def _parse_image_edit_intent_decision(text: str) -> Optional[bool]:
+        if not isinstance(text, str):
+            return None
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+        candidates = [cleaned]
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if match:
+            candidates.insert(0, match.group(0))
+
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            for key in ("edit", "image_edit", "direct_image_edit"):
+                if key not in payload:
+                    continue
+                value = payload.get(key)
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in {"true", "yes", "1"}:
+                        return True
+                    if normalized in {"false", "no", "0"}:
+                        return False
+
+        normalized = cleaned.strip().lower()
+        if normalized in {"true", "yes", "y", "edit", "image_edit"}:
+            return True
+        if normalized in {"false", "no", "n"}:
+            return False
+        return None
+
+    async def _message_semantically_requests_image_edit(self, text: str) -> bool:
+        user_text = (text or "").strip()
+        if not user_text:
+            return False
+        try:
+            from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+
+            response = await async_call_llm(
+                task="gateway_intent",
+                messages=[
+                    {"role": "system", "content": _IMAGE_EDIT_INTENT_CLASSIFIER_SYSTEM},
+                    {"role": "user", "content": f"用户消息：{user_text}"},
+                ],
+                temperature=0,
+                max_tokens=64,
+                timeout=15,
+            )
+            content = extract_content_or_reasoning(response)
+        except Exception as exc:
+            logger.info("Image edit semantic intent classifier failed closed: %s", exc)
+            return False
+
+        decision = self._parse_image_edit_intent_decision(content)
+        if decision is None:
+            logger.info(
+                "Image edit semantic intent classifier returned unclear response: %r",
+                (content or "")[:200],
+            )
+            return False
+        return decision
+
+    async def _should_handle_direct_image_edit_request(
+        self,
+        event: MessageEvent,
+        image_paths: Optional[List[str]] = None,
+    ) -> bool:
+        paths = image_paths if image_paths is not None else self._event_image_paths(event)
+        if not paths:
+            return False
+        text = event.text or ""
+        if self._message_requests_image_edit(text):
+            logger.info("Image edit shortcut intent: keyword fast path")
+            return True
+        if await self._message_semantically_requests_image_edit(text):
+            logger.info("Image edit shortcut intent: semantic fallback")
+            return True
+        return False
+
+    @staticmethod
     def _infer_image_generation_aspect(user_text: str, image_path: str) -> str:
         text = (user_text or "").lower()
         if any(token in text for token in ("1:1", "方图", "方形", "square")):
@@ -6267,9 +6367,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         event: MessageEvent,
         source: SessionSource,
+        *,
+        intent_confirmed: bool = False,
+        image_paths: Optional[List[str]] = None,
     ) -> Optional[str]:
-        image_paths = self._event_image_paths(event)
-        if not image_paths or not self._message_requests_image_edit(event.text or ""):
+        image_paths = image_paths if image_paths is not None else self._event_image_paths(event)
+        if not image_paths:
+            return None
+        if not intent_confirmed and not await self._should_handle_direct_image_edit_request(event, image_paths):
             return None
 
         adapter = self.adapters.get(source.platform)
@@ -6392,6 +6497,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         return ""
+
+    async def _handle_direct_image_edit_shortcut(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+        image_paths: List[str],
+        *,
+        interrupt_existing: bool = False,
+    ) -> Optional[str]:
+        if interrupt_existing:
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason="direct image edit requested",
+                invalidation_reason="direct_image_edit_shortcut",
+            )
+
+        self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[session_key] = time.time()
+        try:
+            return await self._maybe_handle_direct_image_edit_request(
+                event,
+                source,
+                intent_confirmed=True,
+                image_paths=image_paths,
+            )
+        finally:
+            self._release_running_agent_state(session_key)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -6712,6 +6846,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
+            _busy_direct_image_paths = self._event_image_paths(event)
+            _busy_text = (event.text or "").lstrip()
+            if (
+                _busy_direct_image_paths
+                and not _busy_text.startswith("/")
+                and await self._should_handle_direct_image_edit_request(event, _busy_direct_image_paths)
+            ):
+                return await self._handle_direct_image_edit_shortcut(
+                    event,
+                    source,
+                    _quick_key,
+                    _busy_direct_image_paths,
+                    interrupt_existing=True,
+                )
+
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
@@ -7510,13 +7659,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._telegram_topic_root_lobby_message()
             return None
 
-        if self._event_image_paths(event) and self._message_requests_image_edit(event.text or ""):
-            self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-            self._running_agents_ts[_quick_key] = time.time()
-            try:
-                direct_image_edit_response = await self._maybe_handle_direct_image_edit_request(event, source)
-            finally:
-                self._release_running_agent_state(_quick_key)
+        _direct_image_paths = self._event_image_paths(event)
+        if _direct_image_paths and await self._should_handle_direct_image_edit_request(event, _direct_image_paths):
+            direct_image_edit_response = await self._handle_direct_image_edit_shortcut(
+                event,
+                source,
+                _quick_key,
+                _direct_image_paths,
+            )
             if direct_image_edit_response is not None:
                 return direct_image_edit_response
 

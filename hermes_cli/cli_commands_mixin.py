@@ -2575,12 +2575,25 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
 
-    def _handle_debug_command(self):
-        """Handle /debug — upload debug report + logs and print paste URLs."""
+    def _handle_debug_command(self, cmd_original: str = ""):
+        """Handle /debug — upload debug report + logs and print share URLs.
+
+        Accepts optional destination words after the command:
+
+        - ``/debug``        → upload to the public paste service (default)
+        - ``/debug nous``   → upload to Nous-internal storage (private, staff-only)
+        - ``/debug local``  → render the report to stdout, no upload
+
+        ``nous`` and ``local`` are mutually exclusive; if both are given,
+        ``local`` wins (it never touches the network).
+        """
         from hermes_cli.debug import run_debug_share
         from types import SimpleNamespace
 
-        args = SimpleNamespace(lines=200, expire=7, local=False)
+        words = {w.lower() for w in cmd_original.split()[1:]}
+        local = "local" in words
+        nous = "nous" in words and not local
+        args = SimpleNamespace(lines=200, expire=7, local=local, nous=nous)
         run_debug_share(args)
 
     def _handle_update_command(self) -> bool:

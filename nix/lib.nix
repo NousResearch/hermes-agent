@@ -152,14 +152,12 @@ in
       fi
 
       # Check if lockfile changed (either from the npm i above or from an
-      # external edit).  Runs npm ci + fix-lockfiles if so.
+      # external edit).  Runs npm ci if so.
       LOCK_STAMP="$STAMP_DIR/root-lockfile"
       LOCK_STAMP_VALUE=$(sha256sum "$REPO_ROOT/package-lock.json" 2>/dev/null | awk '{print $1}')
       if [ ! -f "$LOCK_STAMP" ] || [ "$(cat "$LOCK_STAMP")" != "$LOCK_STAMP_VALUE" ]; then
         echo "npm: package-lock.json changed, running npm ci..."
         ( cd "$REPO_ROOT" && CI=true ${pkgs.lib.getExe' nodejs "npm"} ci --silent --no-fund --no-audit 2>/dev/null )
-        echo "npm: updating nix hash..."
-        ${fixLockfilesExe} || echo "npm: warning: fix-lockfiles failed, run it manually" >&2
         mkdir -p "$STAMP_DIR"
         echo "$LOCK_STAMP_VALUE" > "$LOCK_STAMP"
       fi

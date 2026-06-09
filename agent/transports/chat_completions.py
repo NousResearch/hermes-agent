@@ -664,8 +664,32 @@ class ChatCompletionsTransport(ProviderTransport):
         if rd:
             provider_data["reasoning_details"] = rd
 
+        # OpenAI structured-refusal field. When a model declines, the SDK
+        # populates ``message.refusal`` with the explanation and leaves
+        # ``content`` empty. OpenAI-compatible proxies that front Anthropic /
+        # Bedrock (e.g. Nous Portal) surface a Claude refusal this way — or via
+        # ``finish_reason="content_filter"`` — instead of the native
+        # ``stop_reason="refusal"``. Without capturing it the refusal looks
+        # like an empty response, so the agent loop retries a deterministic
+        # refusal three times and gives up with "no content after retries".
+        # Promote it to content + a ``content_filter`` finish reason so the
+        # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
+        # ``None`` for normal responses, so this is a no-op in the common case.
+        content = msg.content
+        refusal = getattr(msg, "refusal", None)
+        if refusal is None and hasattr(msg, "model_extra"):
+            _msg_extra = getattr(msg, "model_extra", None) or {}
+            if isinstance(_msg_extra, dict):
+                refusal = _msg_extra.get("refusal")
+        if isinstance(refusal, str) and refusal.strip():
+            if not (isinstance(content, str) and content.strip()):
+                content = refusal
+            if finish_reason in (None, "stop"):
+                finish_reason = "content_filter"
+            provider_data["refusal"] = refusal
+
         return NormalizedResponse(
-            content=msg.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,

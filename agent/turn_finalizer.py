@@ -60,7 +60,8 @@ def finalize_turn(
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
             f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
+            "— asking model to summarise",
+            customer_facing=False,
         )
         if not agent.quiet_mode:
             agent._safe_print(

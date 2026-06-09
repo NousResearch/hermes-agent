@@ -791,11 +791,12 @@ class AIAgent:
         "whatsapp", "slack", "signal", "telegram", "discord",
     })
 
-    # Defensive glyph fallback for call sites that have not been migrated to
+    # Defensive prefix fallback for call sites that have not been migrated to
     # the explicit ``customer_facing=False`` kwarg. Kept narrow on purpose:
-    # the currently reported leak is the compression banner family.
+    # these are internal lifecycle/status banners, not user-facing replies.
     _INTERNAL_STATUS_PREFIXES = (
         "\U0001f5dc",  # 🗜 context-pressure / compression banner family
+        "⚠️ Iteration budget exhausted",
     )
 
     def _emit_status(self, message: str, customer_facing: bool = True) -> None:

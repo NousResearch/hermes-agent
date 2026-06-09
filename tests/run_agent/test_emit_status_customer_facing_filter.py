@@ -53,6 +53,16 @@ def test_glyph_fallback_drops_unmigrated_callers(platform):
     assert captured == [], f"glyph-fallback failed on {platform}: {captured!r}"
 
 
+@pytest.mark.parametrize("platform", ["whatsapp", "slack"])
+def test_iteration_budget_banner_drops_on_customer_facing_platforms(platform):
+    """Iteration-budget lifecycle banners must not leak to customer chats."""
+    agent, captured = _stub_agent(platform)
+    agent._emit_status(
+        "⚠️ Iteration budget exhausted (60/60) — asking model to summarise"
+    )
+    assert captured == [], f"iteration-budget banner leaked to {platform}: {captured!r}"
+
+
 def test_customer_facing_default_lets_normal_messages_through_on_wa():
     """Real customer-facing messages (no glyph) still reach the gateway."""
     agent, captured = _stub_agent("whatsapp")

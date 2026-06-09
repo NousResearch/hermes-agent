@@ -260,6 +260,42 @@ def test_gated_require_token_endpoint_still_rejects_no_cookie(gated_app):
     )
 
 
+# A representative spread of the OTHER ``_require_token`` endpoints (there are
+# 14 in total). The install popup was just the reported symptom; the same bug
+# made API-key reveal, provider validation, the OAuth-provider connect flow,
+# and the rest of plugin management unreachable behind the gate. Each entry is
+# (method, path, json_body); we assert only that a logged-in request is NOT
+# 401'd — i.e. it cleared the auth layer and reached the handler. The
+# handler's own status (400/404/429/etc.) is route-specific and not asserted.
+_GATED_REQUIRE_TOKEN_ROUTES = [
+    ("get", "/api/dashboard/plugins/hub", None),
+    ("post", "/api/env/reveal", {"key": "NONEXISTENT_ENV_VAR_FOR_TEST"}),
+    ("post", "/api/providers/validate", {"key": "OPENAI_API_KEY", "value": ""}),
+    ("delete", "/api/providers/oauth/__not_a_real_provider__", None),
+    ("post", "/api/dashboard/agent-plugins/__nope__/enable", None),
+]
+
+
+@pytest.mark.parametrize("method,path,body", _GATED_REQUIRE_TOKEN_ROUTES)
+def test_gated_require_token_routes_accept_cookie_session(
+    gated_app, method, path, body
+):
+    """Every ``_require_token`` route must clear auth for a logged-in caller.
+
+    Same root cause and fix as
+    ``test_gated_require_token_endpoint_accepts_cookie_session`` — this just
+    proves the fix covers the whole class, not only ``agent-plugins/install``.
+    """
+    _complete_stub_login(gated_app)
+    kwargs = {"json": body} if body is not None else {}
+    r = gated_app.request(method.upper(), path, **kwargs)
+    assert r.status_code != 401, (
+        f"{method.upper()} {path} 401'd a cookie-authenticated request under "
+        f"the OAuth gate — _require_token still rejecting a valid session. "
+        f"Body: {r.text}"
+    )
+
+
 def test_login_unknown_provider_returns_404(gated_app):
     r = gated_app.get("/auth/login?provider=nonexistent", follow_redirects=False)
     assert r.status_code == 404

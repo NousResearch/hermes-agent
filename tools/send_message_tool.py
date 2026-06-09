@@ -89,8 +89,11 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
             return 1.0
 
     text = str(exc).lower()
-    if "timed out" in text or "timeout" in text:
-        return None
+    # Retry transient upstream errors (5xx / rate limiting) with exponential
+    # backoff. This is checked BEFORE the generic timeout bail-out below:
+    # a 504 "Gateway Timeout" contains the substring "timeout", so the
+    # generic check would otherwise shadow this branch and the 504/gateway
+    # timeout cases would never be retried.
     if (
         "bad gateway" in text
         or "502" in text
@@ -102,6 +105,10 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
         or "504" in text
     ):
         return float(2 ** attempt)
+    # A bare client-side read/connect timeout is not safely retryable: the
+    # request may already have reached Telegram, so re-sending risks a dup.
+    if "timed out" in text or "timeout" in text:
+        return None
     return None
 
 

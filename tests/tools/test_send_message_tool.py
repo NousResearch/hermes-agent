@@ -982,6 +982,38 @@ class TestSendTelegramHtmlDetection:
         sleep_mock.assert_awaited_once()
 
 
+class TestTelegramRetryDelay:
+    """``_telegram_retry_delay`` decides whether a failed Telegram send is
+    retried. A 504 / "Gateway Timeout" is a transient upstream error that
+    must be retried like the other 5xx responses it enumerates; the broad
+    ``"timeout" in text`` check must not shadow the ``"gateway timeout"`` /
+    ``"504"`` branch (which was previously dead code)."""
+
+    def test_gateway_timeout_is_retried(self):
+        from tools.send_message_tool import _telegram_retry_delay
+        assert _telegram_retry_delay(Exception("Gateway Timeout"), 0) == 1.0
+        assert _telegram_retry_delay(Exception("504 Gateway Timeout"), 1) == 2.0
+
+    def test_other_transient_5xx_still_retried(self):
+        from tools.send_message_tool import _telegram_retry_delay
+        assert _telegram_retry_delay(Exception("502 Bad Gateway"), 0) == 1.0
+        assert _telegram_retry_delay(Exception("503 Service Unavailable"), 2) == 4.0
+        assert _telegram_retry_delay(Exception("429 Too Many Requests"), 1) == 2.0
+
+    def test_client_side_timeout_not_retried(self):
+        from tools.send_message_tool import _telegram_retry_delay
+        # A bare read/connect timeout may already have reached Telegram, so
+        # re-sending risks a duplicate message — do not retry.
+        assert _telegram_retry_delay(Exception("Read timed out"), 0) is None
+        assert _telegram_retry_delay(Exception("Connection timeout"), 0) is None
+
+    def test_retry_after_takes_precedence(self):
+        from tools.send_message_tool import _telegram_retry_delay
+        exc = Exception("flood")
+        exc.retry_after = 7
+        assert _telegram_retry_delay(exc, 3) == 7.0
+
+
 class TestSendTelegramThreadIdMapping:
     """General-topic mapping in _send_telegram (issue #22267).
 

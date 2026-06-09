@@ -1188,6 +1188,8 @@ class TestBuildAnthropicKwargs:
         # params through its signature, we exercise the strip behavior by
         # calling the internal predicate directly.
         from agent.anthropic_adapter import _forbids_sampling_params
+        assert _forbids_sampling_params("claude-fable-5") is True
+        assert _forbids_sampling_params("anthropic/claude-fable-5") is True
         assert _forbids_sampling_params("claude-opus-4-8") is True
         assert _forbids_sampling_params("claude-opus-4-8-fast") is True
         assert _forbids_sampling_params("claude-opus-4-7") is True

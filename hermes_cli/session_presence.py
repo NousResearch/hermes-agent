@@ -99,21 +99,24 @@ def write_session_presence(
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp_path, path)
+    # Invalidate cache for this root
+    _presence_cache.clear()
     return record
 
 
-def list_session_presence(
+# In-memory cache for list_session_presence: keyed by (hermes_home, include_expired).
+# Stores (mtime_upper_bound, result) — skip re-read if all files are <= mtime_upper_bound.
+_presence_cache: dict[tuple[str, bool], tuple[float, list[dict[str, Any]]]] = {}
+_PRESENCE_CACHE_MAX_AGE = 3.0  # seconds — force re-read after this even if mtime matches
+
+
+def _read_session_presence(
     *,
-    hermes_home: Path | str | None = None,
-    now: float | None = None,
+    root: Path,
+    ts: float,
     include_expired: bool = False,
 ) -> list[dict[str, Any]]:
-    """Read active-session presence records, newest first."""
-    ts = float(time.time() if now is None else now)
-    root = _presence_root(hermes_home)
-    if not root.exists():
-        return []
-
+    """Core logic: glob + parse + dedup presence JSON files."""
     records_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for path in root.glob("*.json"):
         try:
@@ -142,6 +145,67 @@ def list_session_presence(
     return records
 
 
+def list_session_presence(
+    *,
+    hermes_home: Path | str | None = None,
+    now: float | None = None,
+    include_expired: bool = False,
+) -> list[dict[str, Any]]:
+    """Read active-session presence records, newest first.
+
+    Uses an in-memory cache keyed by mtime to avoid re-parsing JSON files
+    when nothing on disk has changed. Cache expires after _PRESENCE_CACHE_MAX_AGE
+    seconds or when any file's mtime is newer than the cached snapshot.
+    """
+    ts = float(time.time() if now is None else now)
+    root = _presence_root(hermes_home)
+    if not root.exists():
+        return []
+
+    # Cache key: normalized root path + include_expired flag
+    cache_key = (str(root.resolve()), include_expired)
+    now_real = time.time()
+
+    # Check cache
+    cached = _presence_cache.get(cache_key)
+    if cached is not None:
+        cached_mtime, cached_result = cached
+        # Expire by age
+        if now_real - cached_mtime > _PRESENCE_CACHE_MAX_AGE:
+            _presence_cache.pop(cache_key, None)
+        else:
+            # Expire by mtime: check if any file is newer than cached snapshot
+            try:
+                newest_mtime = max(
+                    (p.stat().st_mtime for p in root.glob("*.json")),
+                    default=0.0,
+                )
+                if newest_mtime <= cached_mtime:
+                    return cached_result
+            except OSError:
+                pass
+
+    # Re-read from disk
+    records = _read_session_presence(root=root, ts=ts, include_expired=include_expired)
+
+    # Record the mtime upper bound for cache validity
+    try:
+        newest_mtime = max(
+            (p.stat().st_mtime for p in root.glob("*.json")),
+            default=0.0,
+        )
+    except OSError:
+        newest_mtime = 0.0
+    _presence_cache[cache_key] = (newest_mtime, records)
+
+    # Evict stale entries if cache grows (shouldn't normally happen, but defensive)
+    if len(_presence_cache) > 32:
+        oldest_key = min(_presence_cache, key=lambda k: _presence_cache[k][0])
+        del _presence_cache[oldest_key]
+
+    return records
+
+
 def clear_session_presence(
     *,
     session_id: str | None = None,
@@ -164,6 +228,8 @@ def clear_session_presence(
         try:
             path.unlink()
             removed += 1
+            # Invalidate cache since we modified the directory
+            _presence_cache.clear()
         except OSError:
             continue
     return removed

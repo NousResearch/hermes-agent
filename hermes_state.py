@@ -1735,6 +1735,49 @@ class SessionDB:
             current = row["id"]
         return current
 
+    def _batch_compression_tips(self, root_ids: List[str]) -> Dict[str, str]:
+        """Walk compression-continuation chains for multiple roots in a single query.
+
+        Returns a dict mapping root_id -> tip_id for each root that has a
+        continuation chain. Roots with no continuation map to themselves.
+        """
+        if not root_ids:
+            return {}
+
+        # Recursive CTE: seed from each root, walk forward through
+        # compression-continuation edges, then pick MAX(cur_id) as the tip.
+        # We use MAX(cur_id) as a deterministic tiebreaker — it's equivalent
+        # to "latest by started_at" since session IDs are monotonic timestamps.
+        placeholders = ",".join("? " * len(root_ids))
+        query = f"""
+            WITH RECURSIVE chain(root_id, cur_id) AS (
+                SELECT id, id FROM sessions WHERE id IN ({placeholders})
+                UNION ALL
+                SELECT c.root_id, child.id
+                FROM chain c
+                JOIN sessions parent ON parent.id = c.cur_id
+                JOIN sessions child ON child.parent_session_id = c.cur_id
+                WHERE parent.end_reason = 'compression'
+                  AND child.started_at >= parent.ended_at
+            )
+            SELECT root_id, MAX(cur_id) AS tip_id
+            FROM chain
+            GROUP BY root_id
+        """
+        with self._lock:
+            cursor = self._conn.execute(query, root_ids * 2)
+            rows = cursor.fetchall()
+
+        # Map root_id -> tip_id, but only include roots whose tip differs
+        # from the root itself (i.e., they actually have a continuation).
+        tips = {}
+        for row in rows:
+            rid = row["root_id"]
+            tid = row["tip_id"]
+            if tid != rid:
+                tips[rid] = tid
+        return tips
+
     @staticmethod
     def _surfaced_session_clause(alias: str = "s") -> str:
         """SQL predicate for rows shown by list_sessions_rich by default."""
@@ -1964,12 +2007,24 @@ class SessionDB:
         # as the live conversation. Keep the root's started_at to preserve
         # chronological ordering by original conversation start.
         if project_compression_tips and not include_children:
+            # Batch project: collect compression roots, walk all chains in
+            # a single SQL query, then fetch tip rows in a single batch.
+            compression_roots = [
+                s["id"] for s in sessions if s.get("end_reason") == "compression"
+            ]
+            if compression_roots:
+                # Single-query chain walk: for each root, find its tip by
+                # recursively following compression-continuation edges.
+                tips = self._batch_compression_tips(compression_roots)
+            else:
+                tips = {}
+
             projected = []
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     projected.append(s)
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                tip_id = tips.get(s["id"], s["id"])
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue

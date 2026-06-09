@@ -363,10 +363,6 @@ export interface SessionPresenceRecord {
   version?: number
 }
 
-export interface SessionPresenceListResponse {
-  sessions: SessionPresenceRecord[]
-}
-
 export interface SessionMessage {
   codex_reasoning_items?: unknown
   content: unknown

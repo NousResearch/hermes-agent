@@ -163,6 +163,43 @@ class TestGenerateGeminiTts:
         endpoint = mock_post.call_args[0][0]
         assert "gemini-2.5-pro-preview-tts" in endpoint
 
+    def test_prompt_template_wraps_transcript(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"prompt_template": "Director note.\n\nTranscript:\n{text}"}}
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Good morning", str(tmp_path / "test.wav"), config)
+
+        text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert text == "Director note.\n\nTranscript:\nGood morning"
+
+
+    def test_temperature_is_included_when_configured(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"temperature": 1}}
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        generation_config = mock_post.call_args[1]["json"]["generationConfig"]
+        assert generation_config["temperature"] == 1.0
+
+    def test_prompt_template_without_placeholder_appends_transcript(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"prompt_template": "Read naturally."}}
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Good morning", str(tmp_path / "test.wav"), config)
+
+        text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert text == "Read naturally.\n\nGood morning"
+
     def test_response_modality_is_audio(self, tmp_path, monkeypatch, mock_gemini_response):
         from tools.tts_tool import _generate_gemini_tts
 

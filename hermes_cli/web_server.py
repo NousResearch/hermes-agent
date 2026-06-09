@@ -414,7 +414,23 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",
-        "options": ["edge", "elevenlabs", "openai", "neutts"],
+        "options": ["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper"],
+    },
+    "tts.gemini.model": {
+        "type": "string",
+        "description": "Gemini TTS model name",
+    },
+    "tts.gemini.voice": {
+        "type": "string",
+        "description": "Gemini prebuilt voice name",
+    },
+    "tts.gemini.temperature": {
+        "type": "number",
+        "description": "Optional Gemini sampling temperature (empty/null = provider default)",
+    },
+    "tts.gemini.prompt_template": {
+        "type": "text",
+        "description": "Optional Gemini director prompt; include {text} where the transcript should be inserted",
     },
     "stt.provider": {
         "type": "select",

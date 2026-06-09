@@ -68,6 +68,8 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    temperature: null            # optional; null/omitted uses Gemini's default
+    prompt_template: ""          # optional director prompt; include {text} where transcript should be inserted
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code
@@ -96,6 +98,29 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+### Gemini prompt control
+
+Gemini TTS supports style direction in the input prompt. Hermes exposes that through `tts.gemini.prompt_template` and optional `tts.gemini.temperature` passthrough. Use `{text}` in the template where Hermes should insert the assistant response; if `{text}` is omitted, Hermes appends the response after the template.
+
+```yaml
+tts:
+  provider: gemini
+  gemini:
+    voice: "Kore"
+    temperature: 1
+    prompt_template: |
+      Read the following transcript using the requested voice style.
+
+      # Director's note
+      Style: warm, clear, conversational, and natural.
+      Pace: moderate. Delivery: expressive but not exaggerated.
+
+      ## Transcript
+      {text}
+```
+
+Keep provider-specific style cues inside `prompt_template` so the Gemini request remains compatible with models that only expect prompt text plus standard `speechConfig`.
 
 
 ### Input length limits

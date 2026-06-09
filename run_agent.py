@@ -317,6 +317,11 @@ class _StreamErrorEvent(Exception):
         }
 
 
+# OpenAI reasoning model ids: o1, o1-mini, o3-mini, o4-mini, o5, ...
+# Trailing boundary is required so ``olmo-7b`` / ``ollama-3`` do NOT match.
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^o[1-9](?:[-_.]|$)")
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1256,7 +1261,20 @@ class AIAgent:
         'max_completion_tokens' for gpt-5.x models served via the
         OpenAI-compatible endpoint. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
+
+        Model-name detection runs alongside the URL checks because a
+        ``custom:openai`` provider configured with
+        ``base_url: https://api.openai.com/v1`` may route through the
+        custom-provider path with ``_base_url_hostname`` unset, so the
+        URL check misses and plain ``max_tokens`` would otherwise be
+        sent to a gpt-5.x or o-series model that only accepts
+        ``max_completion_tokens`` — the server then drops the request
+        and the client sees ``[Errno 32] Broken pipe`` after retries
+        (#37151).
         """
+        model = (getattr(self, "model", "") or "").lower()
+        if model.startswith("gpt-5") or _OPENAI_REASONING_MODEL_RE.match(model):
+            return {"max_completion_tokens": value}
         if self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url():
             return {"max_completion_tokens": value}
         return {"max_tokens": value}

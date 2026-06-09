@@ -5063,6 +5063,69 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_gpt_5_on_non_openai_url(self, agent):
+        """gpt-5.x needs max_completion_tokens regardless of base URL (#37151).
+
+        A ``custom:openai`` provider configured with
+        ``base_url: https://api.openai.com/v1`` may route through a path
+        where ``_base_url_hostname`` isn't set as expected, so the URL
+        check misses. Model-name detection must catch this case.
+        """
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "gpt-5.5"
+        assert agent._max_tokens_param(4096) == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_gpt_5_1(self, agent):
+        """gpt-5.1 variants also need max_completion_tokens."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "gpt-5.1"
+        assert agent._max_tokens_param(4096) == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_o4_mini(self, agent):
+        """OpenAI o-series reasoning models also need max_completion_tokens."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "o4-mini"
+        assert agent._max_tokens_param(4096) == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_o1_and_o3(self, agent):
+        """o1 and o3 reasoning models trigger max_completion_tokens too."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        for model_name in ("o1", "o1-mini", "o3", "o3-mini"):
+            agent.model = model_name
+            assert agent._max_tokens_param(4096) == {
+                "max_completion_tokens": 4096
+            }, f"failed for {model_name}"
+
+    def test_returns_max_tokens_for_gpt_4o_on_non_openai_url(self, agent):
+        """gpt-4o on a non-OpenAI URL uses max_tokens — only gpt-5+ and
+        o-series trip the model-name override."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "gpt-4o"
+        assert agent._max_tokens_param(4096) == {"max_tokens": 4096}
+
+    def test_returns_max_tokens_for_claude(self, agent):
+        """Anthropic Claude models use max_tokens (Anthropic wire requires it)."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "claude-3-5-sonnet"
+        assert agent._max_tokens_param(4096) == {"max_tokens": 4096}
+
+    def test_o_prefix_without_digit_uses_max_tokens(self, agent):
+        """Names that happen to start with 'o' but aren't o-series must not match."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        for model_name in ("olmo-7b", "ollama-llama3", "openchat-3.5"):
+            agent.model = model_name
+            assert agent._max_tokens_param(4096) == {
+                "max_tokens": 4096
+            }, f"falsely matched o-series for {model_name}"
+
+    def test_model_name_detection_is_case_insensitive(self, agent):
+        """Mixed-case model names still trigger the gpt-5 / o-series override."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "GPT-5.5"
+        assert agent._max_tokens_param(4096) == {"max_completion_tokens": 4096}
+        agent.model = "O4-Mini"
+        assert agent._max_tokens_param(4096) == {"max_completion_tokens": 4096}
+
 
 class TestGpt5ApiModeRouting:
     """Verify provider-specific GPT-5 API-mode routing."""

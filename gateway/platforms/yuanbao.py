@@ -3338,7 +3338,7 @@ class ConnectionManager:
 
     # -- Inbound dispatch ---------------------------------------------------
 
-    _DEBOUNCE_WINDOW: float = 1.5  # seconds to wait for companion messages
+    _DEBOUNCE_WINDOW: float = 2.5  # seconds to wait for companion messages
 
     def _extract_sender_key(self, raw_data: bytes) -> str:
         """Lightweight decode to extract sender key for debounce grouping.

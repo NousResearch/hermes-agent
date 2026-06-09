@@ -814,7 +814,10 @@ export function ChatSidebar({
         {contentVisible && showSessionSections && (
           // No horizontal padding so the field spans the full content-box width
           // like the nav buttons above (which are w-full inside a p-0 group).
-          <div className="shrink-0 pb-1 pt-1">
+          // pl-px compensates for the nav buttons' 1px transparent border (their
+          // content sits at border+px-2 = 9px) so the search icon/text land on
+          // the same column as the nav icon/label.
+          <div className="shrink-0 pb-1 pl-px pt-1">
             <SearchField
               aria-label={s.searchAria}
               // Match the nav rows: full width + fixed (no field-sizing growth),

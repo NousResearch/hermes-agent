@@ -10863,17 +10863,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
             )
 
-            text_to_speech_tool(text=tts_text, output_path=mp3_path)
+            raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)
+            try:
+                tts_result = json.loads(raw_result) if isinstance(raw_result, str) else {}
+            except Exception:
+                tts_result = {}
+            audio_path = tts_result.get("file_path") or mp3_path
 
-            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
-            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-                play_audio_file(mp3_path)
+            # Play the actual file returned by the TTS provider. Command
+            # providers may keep native formats such as FLAC/WAV instead of
+            # writing the requested MP3 path.
+            if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
+                play_audio_file(audio_path)
                 # Clean up
                 try:
-                    os.unlink(mp3_path)
-                    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                    if os.path.isfile(ogg_path):
-                        os.unlink(ogg_path)
+                    cleanup_paths = {audio_path, mp3_path}
+                    for path in list(cleanup_paths):
+                        ogg_path = path.rsplit(".", 1)[0] + ".ogg"
+                        cleanup_paths.add(ogg_path)
+                    for path in cleanup_paths:
+                        if os.path.isfile(path):
+                            os.unlink(path)
                 except OSError:
                     pass
         except Exception as e:

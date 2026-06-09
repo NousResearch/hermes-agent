@@ -21,6 +21,7 @@ Two usage modes are exposed:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -807,20 +808,28 @@ def speak_text(text: str) -> None:
         )
 
         _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
-        text_to_speech_tool(text=tts_text, output_path=mp3_path)
+        raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)
+        try:
+            tts_result = json.loads(raw_result) if isinstance(raw_result, str) else {}
+        except Exception:
+            tts_result = {}
+        audio_path = tts_result.get("file_path") or mp3_path
 
-        if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-            _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
-            play_audio_file(mp3_path)
+        if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
+            _debug(f"speak_text: playing {audio_path} ({os.path.getsize(audio_path)} bytes)")
+            play_audio_file(audio_path)
             try:
-                os.unlink(mp3_path)
-                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                if os.path.isfile(ogg_path):
-                    os.unlink(ogg_path)
+                cleanup_paths = {audio_path, mp3_path}
+                for path in list(cleanup_paths):
+                    ogg_path = path.rsplit(".", 1)[0] + ".ogg"
+                    cleanup_paths.add(ogg_path)
+                for path in cleanup_paths:
+                    if os.path.isfile(path):
+                        os.unlink(path)
             except OSError:
                 pass
         else:
-            _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
+            _debug(f"speak_text: TTS tool produced no audio at {audio_path}")
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)
         _debug(f"speak_text raised {type(e).__name__}: {e}")

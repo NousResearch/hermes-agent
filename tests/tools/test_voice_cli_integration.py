@@ -1132,6 +1132,23 @@ class TestVoiceSpeakResponseReal:
         cli._voice_speak_response("Hello world")
         mock_play.assert_called_once()
 
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch(
+        "tools.tts_tool.text_to_speech_tool",
+        return_value='{"success": true, "file_path": "/tmp/hermes_voice/actual.flac"}',
+    )
+    def test_play_audio_uses_returned_tts_file_path(
+        self, _tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+        mock_play.assert_called_once_with("/tmp/hermes_voice/actual.flac")
+
 
 class TestVoiceStopAndTranscribeReal:
     """Tests _voice_stop_and_transcribe with real CLI instance."""

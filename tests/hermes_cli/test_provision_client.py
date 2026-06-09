@@ -12,9 +12,12 @@ import pytest
 
 from hermes_cli.clients import load_registry
 from hermes_cli.provision_client import (
+    PROXY_KEY_VAR,
     TELEGRAM_TOKEN_VAR,
     build_create_command,
     build_restart_command,
+    ensure_proxy_key,
+    load_proxy_keys,
     profile_is_created,
     provision_client,
     token_value,
@@ -92,9 +95,12 @@ class TestProvision:
     def test_allow_empty_token_stages_without_restart(self, tmp_path):
         created, calls = self._run(tmp_path, require_token=False)
         assert created is True
-        # profile created, but NO token written and NO restart
+        # profile created, but NO Telegram token written and NO restart
         assert calls == [["hermes", "profile", "create", "acme"]]
-        assert not self._profile_env(tmp_path).exists()
+        # the profile .env exists carrying only the minted proxy key (not the
+        # Telegram token, which wasn't supplied)
+        assert token_value(self._profile_env(tmp_path)) is None
+        assert token_value(self._profile_env(tmp_path), var=PROXY_KEY_VAR)
 
     def test_token_writes_to_profile_env_and_restarts(self, tmp_path):
         created, calls = self._run(tmp_path, token="999:tok")
@@ -216,3 +222,58 @@ class TestProfileIsCreated:
         assert profile_is_created(tmp_path) is False
         (tmp_path / "config.yaml").write_text("x", encoding="utf-8")
         assert profile_is_created(tmp_path) is True
+
+
+class TestProxyKey:
+    def test_mint_and_record_in_keys_json(self, tmp_path):
+        key, created = ensure_proxy_key("acme", tmp_path)
+        assert created is True
+        assert key.startswith("hk-")
+        keys = load_proxy_keys(tmp_path)
+        assert keys == {key: "acme"}
+        # keys.json is 0600
+        kp = tmp_path / "proxy" / "keys.json"
+        assert oct(kp.stat().st_mode)[-3:] == "600"
+
+    def test_idempotent_reuses_existing_key(self, tmp_path):
+        key1, c1 = ensure_proxy_key("acme", tmp_path)
+        key2, c2 = ensure_proxy_key("acme", tmp_path)
+        assert (c1, c2) == (True, False)
+        assert key1 == key2
+        assert load_proxy_keys(tmp_path) == {key1: "acme"}
+
+    def test_distinct_clients_get_distinct_keys(self, tmp_path):
+        ka, _ = ensure_proxy_key("acme", tmp_path)
+        kb, _ = ensure_proxy_key("globex", tmp_path)
+        assert ka != kb
+        assert load_proxy_keys(tmp_path) == {ka: "acme", kb: "globex"}
+
+    def test_provision_writes_key_to_keys_json_and_profile_env(self, tmp_path):
+        calls = []
+        provision_client(
+            "acme", "prod",
+            token="999:tok",
+            registry_path=tmp_path / "clients.yaml",
+            hermes_root=tmp_path / "data",
+            runner=lambda argv: calls.append(list(argv)),
+        )
+        keys = load_proxy_keys(tmp_path / "data")
+        assert list(keys.values()) == ["acme"]
+        key = next(iter(keys))
+        env = tmp_path / "data" / "profiles" / "acme" / ".env"
+        assert token_value(env, var=PROXY_KEY_VAR) == key
+        # Telegram token still lands correctly alongside the proxy key
+        assert token_value(env) == "999:tok"
+
+    def test_provision_is_idempotent_on_key(self, tmp_path):
+        kw = dict(
+            registry_path=tmp_path / "clients.yaml",
+            hermes_root=tmp_path / "data",
+            runner=lambda argv: None,
+            token="t",
+        )
+        provision_client("acme", "prod", **kw)
+        keys_first = load_proxy_keys(tmp_path / "data")
+        provision_client("acme", "prod", **kw)
+        keys_second = load_proxy_keys(tmp_path / "data")
+        assert keys_first == keys_second               # no new key on re-run

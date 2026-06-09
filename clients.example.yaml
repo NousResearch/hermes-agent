@@ -11,6 +11,17 @@
 # One client bot == one Hermes profile (profiles/<profile>/). Secrets never
 # live here: `telegram_token_ref` names the ENV VAR that holds the token,
 # resolved on the host from e.g. /opt/data/secrets/<name>.env.
+#
+# Per-tenant claude-proxy key (added by `hermes-provision-client`):
+#   * Each client gets a random proxy key, minted idempotently at provision
+#     time and recorded in <hermes_root>/proxy/keys.json (key -> client_name,
+#     0600, host-side only — NEVER committed; same secrets/ pattern as tokens).
+#   * The key is also written into the profile's own .env as CLAUDE_PROXY_KEY.
+#     The gateway sends it to the claude-proxy as the custom-provider
+#     `Authorization: Bearer <key>`, so usage is attributed to that tenant.
+#   * The proxy serves anonymous requests by default
+#     (CLAUDE_PROXY_ALLOW_ANON=1) so rolling keys out never takes bots dark;
+#     set CLAUDE_PROXY_ALLOW_ANON=0 only AFTER every live bot has its key.
 
 clients:
   # The baseline 'default' profile is the gateway root itself. It may inherit

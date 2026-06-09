@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +50,57 @@ Runner = Callable[[Sequence[str]], None]
 
 # A per-profile gateway reads this fixed env var from its profile's .env.
 TELEGRAM_TOKEN_VAR = "TELEGRAM_BOT_TOKEN"
+
+# The claude-proxy reads per-tenant keys from <hermes_root>/proxy/keys.json
+# (key -> client_name) and resolves the tenant from the gateway's
+# Authorization: Bearer <key>. The gateway sends its provider api_key as that
+# bearer; we record it in the profile's .env as the fixed var below so the
+# per-profile gateway picks it up the same way it picks up the Telegram token.
+PROXY_KEY_VAR = "CLAUDE_PROXY_KEY"
+PROXY_KEYS_RELPATH = ("proxy", "keys.json")
+
+
+def _keys_path(hermes_root: str | os.PathLike[str]) -> Path:
+    return Path(hermes_root).joinpath(*PROXY_KEYS_RELPATH)
+
+
+def load_proxy_keys(hermes_root: str | os.PathLike[str]) -> dict[str, str]:
+    """Load the key->client map (empty if absent/unreadable)."""
+    path = _keys_path(hermes_root)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_proxy_keys(hermes_root: str | os.PathLike[str], mapping: dict[str, str]) -> None:
+    """Atomically (temp file + os.replace) persist the key map at 0600."""
+    path = _keys_path(hermes_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(mapping, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def ensure_proxy_key(
+    name: str, hermes_root: str | os.PathLike[str]
+) -> tuple[str, bool]:
+    """Return ``(key, created)`` for a client. Idempotent: reuse the existing
+    key if one already maps to this client, else mint a fresh random key and
+    append it to keys.json."""
+    mapping = load_proxy_keys(hermes_root)
+    for key, client in mapping.items():
+        if client == name:
+            return key, False
+    key = "hk-" + secrets.token_urlsafe(32)
+    mapping[key] = name
+    write_proxy_keys(hermes_root, mapping)
+    return key, True
 
 
 def _default_runner(argv: Sequence[str]) -> None:
@@ -163,6 +216,31 @@ def provision_client(
 
     pdir = profile_dir(client, hermes_root)        # <hermes_root>/profiles/<name>
     profile_env = pdir / ".env"
+
+    # 1b. Per-tenant proxy key. Idempotent: reuse this client's existing key, or
+    #     mint one and record it in <hermes_root>/proxy/keys.json (key ->
+    #     client). The claude-proxy resolves the tenant from the Bearer key the
+    #     gateway sends as its provider api_key. We also drop the key into the
+    #     profile's own .env (the same place the gateway reads TELEGRAM_BOT_TOKEN)
+    #     so the gateway can forward it. Secrets never go in the repo / registry.
+    proxy_key, key_created = ensure_proxy_key(name, hermes_root)
+    if key_created:
+        write_token(profile_env, proxy_key, var=PROXY_KEY_VAR)
+        print(
+            f"  minted proxy key for '{name}' → {_keys_path(hermes_root)} "
+            f"(also wrote {PROXY_KEY_VAR} into {profile_env})",
+            file=out,
+        )
+        print(
+            f"  configure the gateway's claude-proxy provider api_key to "
+            f"${PROXY_KEY_VAR} so requests are attributed to tenant '{name}'",
+            file=out,
+        )
+    else:
+        # Reconcile: make sure the profile .env carries the existing key too.
+        if token_value(profile_env, var=PROXY_KEY_VAR) != proxy_key:
+            write_token(profile_env, proxy_key, var=PROXY_KEY_VAR)
+        print(f"  reusing existing proxy key for '{name}'", file=out)
 
     # 2. Guard: don't activate a bot with no token (neither passed nor already
     #    present in the profile's .env).

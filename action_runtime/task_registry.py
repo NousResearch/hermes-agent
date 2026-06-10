@@ -119,19 +119,22 @@ class AgentTaskRecord:
 _TASKS_JSONL = "_tasks.jsonl"
 
 
-def _persist_task_snapshot(session_id: str, record: AgentTaskRecord) -> None:
-    """Append *record*'s snapshot to ``$HERMES_HOME/spawn-trees/<session_id>/_tasks.jsonl``.
+def _persist_task_snapshot(session_id: str, snapshot: dict) -> None:
+    """Append *snapshot* to ``$HERMES_HOME/spawn-trees/<session_id>/_tasks.jsonl``.
 
     Best-effort observability: the whole body is guarded — a persistence
     failure can never break ``complete()``.  Imports are lazy so the module
-    stays import-light on paths that never persist.
+    stays import-light on paths that never persist.  The snapshot is built
+    by the caller under the registry lock so the line is never torn; the
+    append itself is a single unbuffered byte write, because snapshots embed
+    full rich results that can exceed the text-layer chunk size and a
+    buffered text write could interleave between threads.
     """
     try:
         import json
 
         from hermes_constants import get_hermes_home
 
-        snapshot = record.snapshot()
         # Same directory-name sanitization as server._spawn_tree_session_dir,
         # so registry lines land in the session dir the TUI already uses.
         safe = (
@@ -140,8 +143,9 @@ def _persist_task_snapshot(session_id: str, record: AgentTaskRecord) -> None:
         )
         session_dir = get_hermes_home() / "spawn-trees" / safe
         session_dir.mkdir(parents=True, exist_ok=True)
-        with (session_dir / _TASKS_JSONL).open("a", encoding="utf-8") as f:
-            f.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+        line_bytes = (json.dumps(snapshot, ensure_ascii=False) + "\n").encode("utf-8")
+        with (session_dir / _TASKS_JSONL).open("ab", buffering=0) as f:
+            f.write(line_bytes)
     except Exception as exc:
         logger.debug("task snapshot persist failed for %s: %s", session_id, exc)
 
@@ -153,6 +157,7 @@ class AgentTaskRegistry:
 
     REPLAY_TTL_S = 600.0
     REPLAY_CAP = 1024
+    RECORDS_TERMINAL_CAP = 1024
 
     def __init__(self) -> None:
         self._records: dict[str, AgentTaskRecord] = {}
@@ -176,6 +181,21 @@ class AgentTaskRegistry:
         with self._lock:
             return [r for r in self._records.values() if r.status is TaskStatus.RUNNING]
 
+    def get_snapshot(self, task_id: str) -> Optional[dict]:
+        """Locked snapshot for the RPC layer — never a half-mutated record."""
+        with self._lock:
+            record = self._records.get(task_id)
+            return record.snapshot() if record is not None else None
+
+    def list_active_snapshots(self) -> list[dict]:
+        """Locked snapshots of RUNNING records for the RPC layer."""
+        with self._lock:
+            return [
+                r.snapshot()
+                for r in self._records.values()
+                if r.status is TaskStatus.RUNNING
+            ]
+
     def complete(self, task_id: str, result: Optional[ExecutionResult]) -> bool:
         """Transition to a terminal status.
 
@@ -183,11 +203,13 @@ class AgentTaskRegistry:
         status.  ``result=None`` is the timeout/interrupt path and maps to
         FAILED (doc ruling: interrupted == FAILED, ErrorType.TRANSPORT — the
         ExecError itself is built by the Step 2 caller).  Returns False for
-        an unknown task_id.
+        an unknown task_id or one already terminal — a late second
+        ``complete()`` must never falsify the first result or double-append
+        to ``_tasks.jsonl``.
         """
         with self._lock:
             record = self._records.get(task_id)
-            if record is None:
+            if record is None or record.status is not TaskStatus.RUNNING:
                 return False
             record.result = result
             record.status = (
@@ -197,21 +219,66 @@ class AgentTaskRegistry:
             record.agent_ref = None
             key = record.idempotency_key
             session_id = record.session_id
-        # Snapshot + file append happen outside the lock so I/O never
-        # blocks the ledger.
+            # One snapshot, built under the lock so it can never be torn by
+            # a concurrent mutation; reused for the replay write and the
+            # file append below (the I/O itself stays outside the lock).
+            snapshot = record.snapshot()
+            self._evict_terminal_records()
         if key is not None and result is not None:
-            self.remember(key, record.snapshot())
+            # task.submit replays this dict directly as the RPC result, so
+            # it must be the rich wire shape — snapshot()["result"] is
+            # exactly result_to_wire_rich(result).
+            self.remember(key, snapshot["result"])
         if session_id:
-            _persist_task_snapshot(session_id, record)
+            _persist_task_snapshot(session_id, snapshot)
         return True
 
-    def interrupt(self, task_id: str) -> bool:
+    def _evict_terminal_records(self) -> None:
+        # caller holds self._lock.  Bound terminal retention so a long-lived
+        # gateway never grows _records without limit; RUNNING records are
+        # never evicted.
+        terminal = [
+            r for r in self._records.values() if r.status is not TaskStatus.RUNNING
+        ]
+        excess = len(terminal) - self.RECORDS_TERMINAL_CAP
+        if excess <= 0:
+            return
+        terminal.sort(key=lambda r: r.finished_at or 0.0)
+        for record in terminal[:excess]:
+            del self._records[record.task_id]
+
+    def update_progress(
+        self,
+        task_id: str,
+        tool_count: Optional[int] = None,
+        last_tool: Optional[str] = None,
+    ) -> bool:
+        """Live-progress field update from the child progress callback.
+
+        Lock-held so task.status/task.list snapshots never see a torn
+        record.  No-op (False) on unknown or already-terminal records — a
+        late callback after complete() must never mutate a terminal record.
+        """
+        with self._lock:
+            record = self._records.get(task_id)
+            if record is None or record.status is not TaskStatus.RUNNING:
+                return False
+            if tool_count is not None:
+                record.tool_count = tool_count
+            if last_tool is not None:
+                record.last_tool = last_tool
+            return True
+
+    def interrupt(self, task_id: str, reason: Optional[str] = None) -> bool:
         """Interrupt the live agent behind *task_id*.
 
         Same mechanic as today's ``interrupt_subagent``: resolve the stored
         agent and call ``agent.interrupt()`` — outside the registry lock, so
-        agent code never runs under it.  Returns False when the task is
-        unknown, already terminal, or its agent is gone.
+        agent code never runs under it.  *reason* is forwarded as the
+        agent's optional interrupt message when given.  Returns False when
+        the task is unknown, already terminal, its agent is gone, or the
+        interrupt itself raises (parity with ``interrupt_subagent``, which
+        swallows exceptions so a flaky agent can't kill the RPC dispatcher).
         """
         with self._lock:
             record = self._records.get(task_id)
@@ -221,7 +288,14 @@ class AgentTaskRegistry:
         agent = ref() if isinstance(ref, weakref.ref) else ref
         if agent is None or not hasattr(agent, "interrupt"):
             return False
-        agent.interrupt()
+        try:
+            if reason is not None:
+                agent.interrupt(reason)
+            else:
+                agent.interrupt()
+        except Exception as exc:
+            logger.debug("interrupt(%s) failed: %s", task_id, exc)
+            return False
         return True
 
     # -- spawn pause flag (replaces delegate_tool._spawn_paused in Step 3) --
@@ -237,8 +311,13 @@ class AgentTaskRegistry:
     # -- idempotency replay store (folds in server._TASK_RESULTS at Step 5) --
 
     def remember(self, key: str, wire: dict, now: Optional[float] = None) -> None:
-        """Store a terminal wire dict for replay.  Ephemeral by ruling (Q2)."""
-        ts = time.time() if now is None else now
+        """Store a terminal wire dict for replay.  Ephemeral by ruling (Q2).
+
+        TTL bookkeeping runs on ``time.monotonic()`` — same timebase as the
+        legacy ``server._TASK_RESULTS`` it folds in — so a wall-clock jump
+        can't mass-evict or immortalize entries.
+        """
+        ts = time.monotonic() if now is None else now
         with self._lock:
             self._evict_expired(ts)
             if len(self._replay) >= self.REPLAY_CAP:
@@ -247,7 +326,7 @@ class AgentTaskRegistry:
             self._replay[key] = (ts, wire)
 
     def recall(self, key: str, now: Optional[float] = None) -> Optional[dict]:
-        ts = time.time() if now is None else now
+        ts = time.monotonic() if now is None else now
         with self._lock:
             self._evict_expired(ts)
             entry = self._replay.get(key)

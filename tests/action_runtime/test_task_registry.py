@@ -104,6 +104,77 @@ def test_complete_unknown_task_returns_false():
     assert AgentTaskRegistry().complete("nope", _result()) is False
 
 
+def test_second_complete_is_rejected_and_record_unchanged(tmp_path, monkeypatch):
+    """A late second complete() must not falsify the first terminal result
+    nor append a second _tasks.jsonl line."""
+    import json
+
+    _patch_home(monkeypatch, tmp_path)
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="t", session_id="sess-1"))
+    assert reg.complete("t", _result()) is True
+    first_finished = reg.get("t").finished_at
+
+    assert reg.complete("t", _result(Status.FAILED)) is False
+    rec = reg.get("t")
+    assert rec.status is TaskStatus.SUCCEEDED  # not overwritten
+    assert rec.result.status is Status.SUCCEEDED
+    assert rec.finished_at == first_finished
+
+    lines = _tasks_file(tmp_path, "sess-1").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["status"] == "succeeded"
+
+
+def test_terminal_cap_evicts_oldest_terminal_never_running():
+    reg = AgentTaskRegistry()
+    reg.RECORDS_TERMINAL_CAP = 2
+    reg.register(AgentTaskRecord(task_id="run"))  # stays RUNNING throughout
+    for i in range(3):
+        reg.register(AgentTaskRecord(task_id=f"t{i}"))
+        assert reg.complete(f"t{i}", _result()) is True
+
+    assert reg.get("run") is not None  # RUNNING is never evicted
+    assert reg.get("t0") is None  # oldest terminal by finished_at evicted
+    assert reg.get("t1") is not None
+    assert reg.get("t2") is not None
+    assert {r.task_id for r in reg.list_active()} == {"run"}
+
+
+# ---------------------------------------------------------------------------
+# update_progress
+# ---------------------------------------------------------------------------
+
+def test_update_progress_updates_running_record_fields():
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="t"))
+
+    assert reg.update_progress("t", tool_count=3, last_tool="terminal") is True
+    rec = reg.get("t")
+    assert rec.tool_count == 3
+    assert rec.last_tool == "terminal"
+
+    # Partial update: an omitted field keeps its previous value.
+    assert reg.update_progress("t", tool_count=4) is True
+    rec = reg.get("t")
+    assert rec.tool_count == 4
+    assert rec.last_tool == "terminal"
+
+
+def test_update_progress_noop_on_missing_or_terminal():
+    reg = AgentTaskRegistry()
+    assert reg.update_progress("missing", tool_count=1) is False
+
+    reg.register(AgentTaskRecord(task_id="t"))
+    reg.update_progress("t", tool_count=2, last_tool="web_search")
+    assert reg.complete("t", _result()) is True
+    # A late callback after complete() must never mutate a terminal record.
+    assert reg.update_progress("t", tool_count=99, last_tool="late") is False
+    rec = reg.get("t")
+    assert rec.tool_count == 2
+    assert rec.last_tool == "web_search"
+
+
 # ---------------------------------------------------------------------------
 # interrupt
 # ---------------------------------------------------------------------------
@@ -136,6 +207,34 @@ def test_interrupt_unknown_terminal_or_dead_agent_returns_false():
 
     reg.register(AgentTaskRecord(task_id="gone", agent_ref=None))
     assert reg.interrupt("gone") is False  # no live agent
+
+
+def test_interrupt_swallows_agent_exception():
+    """Parity with interrupt_subagent: a raising agent yields False, never
+    an exception escaping into the RPC dispatcher."""
+
+    class _RaisingAgent:
+        def interrupt(self, message=None):
+            raise RuntimeError("boom")
+
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="t", agent_ref=_RaisingAgent()))
+    assert reg.interrupt("t") is False
+
+
+def test_interrupt_forwards_reason_when_given():
+    class _ReasonAgent:
+        def __init__(self):
+            self.message = None
+
+        def interrupt(self, message=None):
+            self.message = message
+
+    reg = AgentTaskRegistry()
+    agent = _ReasonAgent()
+    reg.register(AgentTaskRecord(task_id="t", agent_ref=agent))
+    assert reg.interrupt("t", reason="user cancelled") is True
+    assert agent.message == "user cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -179,13 +278,27 @@ def test_replay_cap_evicts_oldest():
 
 
 def test_complete_with_idempotency_key_populates_replay():
+    # task_id matches _result()'s: since the R5 fix the replay dict is the
+    # rich result wire, so its task_id comes from the ExecutionResult (which
+    # in production always equals the record's id).
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="t-1", idempotency_key="idem-1"))
+    reg.complete("t-1", _result())
+    replayed = reg.recall("idem-1")
+    assert replayed is not None
+    assert replayed["status"] == "succeeded"
+    assert replayed["task_id"] == "t-1"
+
+
+def test_replay_stores_rich_wire_shape():
+    """task.submit replays the stored dict directly as the RPC result, so it
+    must be the result_to_wire_rich shape — not a record snapshot."""
     reg = AgentTaskRegistry()
     reg.register(AgentTaskRecord(task_id="t", idempotency_key="idem-1"))
     reg.complete("t", _result())
     replayed = reg.recall("idem-1")
-    assert replayed is not None
-    assert replayed["status"] == "succeeded"
-    assert replayed["task_id"] == "t"
+    assert set(replayed) == {"task_id", "status", "outputs", "error", "side_effects"}
+    assert replayed["outputs"] == {"output": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +319,26 @@ def test_snapshot_excludes_agent_ref_and_embeds_rich_result():
     rec.status = TaskStatus.SUCCEEDED
     snap2 = rec.snapshot()
     assert snap2["result"]["status"] == "succeeded"
+
+
+def test_get_snapshot_and_list_active_snapshots_round_trip():
+    """Locked RPC readers: serialized views, RUNNING-only listing, no
+    agent_ref leakage."""
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="a", goal="g", agent_ref=_FakeAgent()))
+    reg.register(AgentTaskRecord(task_id="b"))
+    assert reg.complete("b", _result()) is True
+
+    snap = reg.get_snapshot("a")
+    assert snap["task_id"] == "a"
+    assert snap["status"] == "running"
+    assert "agent_ref" not in snap
+    assert reg.get_snapshot("b")["status"] == "succeeded"
+    assert reg.get_snapshot("missing") is None
+
+    active = reg.list_active_snapshots()
+    assert [s["task_id"] for s in active] == ["a"]
+    assert active[0]["status"] == "running"
 
 
 # ---------------------------------------------------------------------------

@@ -1918,6 +1918,8 @@ export const ja = defineLocale({
     branchFailed: 'ブランチに失敗しました',
     deleteFailed: '削除に失敗しました',
     archived: 'アーカイブしました',
+    archivedSessionBlockedTitle: 'アーカイブ済みチャット',
+    archivedSessionBlockedMessage: 'このチャットはアーカイブ済みです。送信するには復元するか、新しいチャットを開始してください。',
     archiveFailed: 'アーカイブに失敗しました',
     cwdChangeFailed: '作業ディレクトリの変更に失敗しました',
     cwdStagedTitle: '作業ディレクトリがステージングされました',

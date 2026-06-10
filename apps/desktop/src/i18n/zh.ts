@@ -1955,6 +1955,8 @@ export const zh: Translations = {
     branchFailed: '分支失败',
     deleteFailed: '删除失败',
     archived: '已归档',
+    archivedSessionBlockedTitle: '已归档对话',
+    archivedSessionBlockedMessage: '此对话已归档。发送前请恢复它或开始新对话。',
     archiveFailed: '归档失败',
     cwdChangeFailed: '工作目录更改失败',
     cwdStagedTitle: '工作目录已暂存',

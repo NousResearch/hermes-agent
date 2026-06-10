@@ -1433,6 +1433,8 @@ export interface Translations {
     branchFailed: string
     deleteFailed: string
     archived: string
+    archivedSessionBlockedTitle: string
+    archivedSessionBlockedMessage: string
     archiveFailed: string
     cwdChangeFailed: string
     cwdStagedTitle: string

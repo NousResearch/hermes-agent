@@ -71,11 +71,10 @@ function Harness({
   seedMessages?: unknown[]
   storedSessionId?: null | string
 }) {
-  const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
-  const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
-    current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
-  }
-  const localBusyRef = busyRef ?? { current: false }
+  const activeSessionIdRef = useRef<string | null>(RUNTIME_SESSION_ID)
+  const selectedStoredSessionIdRef = useRef<string | null>(storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId)
+  const fallbackBusyRef = useRef(false)
+  const localBusyRef = busyRef ?? fallbackBusyRef
   const stateRef = useRef({
     messages: seedMessages ?? [],
     busy: false,
@@ -125,6 +124,7 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    setSessions(() => [])
     vi.restoreAllMocks()
   })
 
@@ -268,8 +268,13 @@ describe('usePromptActions desktop slash pickers', () => {
 })
 
 describe('usePromptActions submit / queue drain semantics', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
   afterEach(() => {
     cleanup()
+    setSessions(() => [])
     vi.restoreAllMocks()
   })
 
@@ -344,11 +349,29 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(accepted).toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
   })
+
+  it('blocks sends into an archived stored session before prompt.submit', async () => {
+    setSessions(() => [sessionInfo({ archived: true })])
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const accepted = await handle!.submitText('should not revive archived chat')
+
+    expect(accepted).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+  })
 })
 
 describe('usePromptActions steerPrompt', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
   afterEach(() => {
     cleanup()
+    setSessions(() => [])
     vi.restoreAllMocks()
   })
 
@@ -520,6 +543,10 @@ describe('usePromptActions restoreToMessage', () => {
 })
 
 describe('usePromptActions file attachment sync', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
   afterEach(() => {
     cleanup()
     $connection.set(null)
@@ -714,6 +741,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
   afterEach(() => {
     cleanup()
+    setSessions(() => [])
     vi.restoreAllMocks()
   })
 

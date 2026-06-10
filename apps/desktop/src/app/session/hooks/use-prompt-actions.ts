@@ -561,6 +561,19 @@ export function usePromptActions({
         return false
       }
 
+      const storedSessionId = selectedStoredSessionIdRef.current
+      const storedSession = storedSessionId ? $sessions.get().find(session => session.id === storedSessionId) : null
+
+      if (storedSession?.archived) {
+        notify({
+          kind: 'error',
+          title: copy.archivedSessionBlockedTitle,
+          message: copy.archivedSessionBlockedMessage
+        })
+
+        return false
+      }
+
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
       const buildUserMessage = (): ChatMessage => ({

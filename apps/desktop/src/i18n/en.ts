@@ -1776,6 +1776,8 @@ export const en: Translations = {
     branchFailed: 'Branch failed',
     deleteFailed: 'Delete failed',
     archived: 'Archived',
+    archivedSessionBlockedTitle: 'Archived chat',
+    archivedSessionBlockedMessage: 'This chat is archived. Restore it or start a new chat before sending.',
     archiveFailed: 'Archive failed',
     cwdChangeFailed: 'Working directory change failed',
     cwdStagedTitle: 'Working directory staged',

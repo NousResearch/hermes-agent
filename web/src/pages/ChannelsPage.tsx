@@ -608,19 +608,28 @@ function TelegramOnboardingPanel({
     setPhase("applying");
     setError("");
     try {
-      await api.applyTelegramOnboarding(setup.pairing_id, {
+      const result = await api.applyTelegramOnboarding(setup.pairing_id, {
         allowed_user_ids: allowedIds,
       });
       resetSetup();
-      showToast("Telegram saved", "success");
-      try {
-        await api.restartGateway();
-        showToast("Gateway restarting…", "success");
+      if (result.restart_started) {
+        showToast("Telegram saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-      } catch (restartError) {
+      } else if (result.restart_started === undefined && result.needs_restart) {
+        try {
+          await api.restartGateway();
+          showToast("Telegram saved; gateway restarting…", "success");
+          setRestartNeeded(false);
+          setTimeout(() => void onChanged(), 4000);
+        } catch (restartError) {
+          onRestartNeeded();
+          showToast(`Telegram saved; gateway restart failed: ${restartError}`, "error");
+        }
+      } else {
         onRestartNeeded();
-        showToast(`Telegram saved; restart failed: ${restartError}`, "error");
+        const detail = result.restart_error ? `: ${result.restart_error}` : "";
+        showToast(`Telegram saved; gateway restart failed${detail}`, "error");
       }
       await onChanged();
     } catch (applyError) {

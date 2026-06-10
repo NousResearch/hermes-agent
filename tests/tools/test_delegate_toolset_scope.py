@@ -66,11 +66,13 @@ class TestToolsetIntersection:
         assert "file" in child
         assert "web" in child
 
-    def test_strip_composite_hermes_cli(self):
-        """hermes-cli bundles send_message + cronjob — must be stripped."""
+    def test_preserves_composite_hermes_cli(self):
+        """hermes-cli is preserved in child toolsets — blocked tools
+        (send_message, cronjob) are subtracted via disabled_toolsets
+        passed to the child AIAgent constructor."""
         child = _strip_blocked_tools(["hermes-cli"])
-        assert "hermes-cli" not in child, (
-            "hermes-cli contains send_message and cronjob — must be stripped"
+        assert "hermes-cli" in child, (
+            "hermes-cli must be preserved; blocked tools removed via disabled_toolsets"
         )
 
     def test_empty_intersection_yields_empty_toolsets(self):

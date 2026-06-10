@@ -758,12 +758,12 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools.
+    """Remove toolsets whose names are explicitly blocked.
 
-    Also strips composite toolsets (e.g. ``hermes-cli``) whose tool lists
-    include any tool from :data:`DELEGATE_BLOCKED_TOOLS`.  Without this
-    expansion a child inheriting a composite name like ``hermes-cli``
-    silently retains ``send_message`` and ``cronjob`` access.
+    Composite toolsets (e.g. ``hermes-cli``) are preserved — the specific
+    dangerous tools (``send_message``, ``cronjob``) are subtracted via
+    ``disabled_toolsets`` passed to the child :class:`AIAgent` constructor
+    in :func:`_build_child_agent`.
     """
     blocked_toolset_names = {
         "delegation",
@@ -773,16 +773,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "messaging",
         "cronjob",
     }
-    result: List[str] = []
-    for t in toolsets:
-        if t in blocked_toolset_names:
-            continue
-        # Expand composite toolsets to check for blocked individual tools.
-        ts_def = TOOLSETS.get(t)
-        if ts_def and DELEGATE_BLOCKED_TOOLS & set(ts_def.get("tools", [])):
-            continue
-        result.append(t)
-    return result
+    return [t for t in toolsets if t not in blocked_toolset_names]
 
 
 def _build_child_progress_callback(
@@ -1239,6 +1230,7 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
+        disabled_toolsets=["messaging", "cronjob"],
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",

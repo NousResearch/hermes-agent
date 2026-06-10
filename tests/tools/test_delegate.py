@@ -167,12 +167,38 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertNotIn("messaging", result)
         self.assertNotIn("cronjob", result)
 
-    def test_strip_composite_toolset_with_blocked_tools(self):
-        """Composite toolsets containing blocked tools (e.g. hermes-cli with
-        send_message and cronjob) must be stripped entirely."""
+    def test_preserves_composite_toolsets(self):
+        """Composite toolsets like hermes-cli are preserved — the dangerous
+        tools (send_message, cronjob) are subtracted via disabled_toolsets
+        passed to the child AIAgent constructor, not by dropping composites."""
         result = _strip_blocked_tools(["hermes-cli"])
-        self.assertNotIn("hermes-cli", result,
-                         "hermes-cli bundles send_message and cronjob — must be stripped")
+        self.assertIn("hermes-cli", result,
+                       "hermes-cli must be preserved; blocked tools removed via disabled_toolsets")
+
+
+class TestChildAgentDisabledToolsets(unittest.TestCase):
+    def test_build_child_agent_passes_disabled_toolsets(self):
+        """_build_child_agent must pass disabled_toolsets=["messaging", "cronjob"]
+        so that blocked tools are subtracted even from composite toolsets."""
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["hermes-cli"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            _build_child_agent(
+                task_index=0,
+                goal="test disabled_toolsets",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(
+                kwargs.get("disabled_toolsets"), ["messaging", "cronjob"],
+                "child AIAgent must disable messaging and cronjob toolsets"
+            )
 
 
 class TestDelegateTask(unittest.TestCase):

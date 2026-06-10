@@ -2,9 +2,12 @@
 # Check upstream/main against main for conflicts, then either merge automatically
 # or hand off to a PR for manual resolution.
 #
-# - Clean merge: open a PR against main and merge it immediately, then update
-#   local main to match. main itself is never used for the merge attempt
-#   directly, so this can never leave it dirty.
+# - Clean merge: open a PR against main and merge it immediately. Local main is
+#   left as-is (now one commit behind origin/main) — main itself is never used
+#   for the merge attempt directly, so this can never leave it dirty. Follow up
+#   with `hermes update` (e.g. `sync-upstream.sh && hermes update --yes`), which
+#   will see new commits on origin/main and run its full pull+rebuild+restart
+#   pipeline.
 # - Conflicting merge: open a PR from upstream/main into main so you can review
 #   and resolve the conflicts yourself (via the PR's "Resolve conflicts" UI, or
 #   by checking out the branch locally, merging main into it, fixing conflicts,
@@ -27,8 +30,8 @@ fi
 git fetch upstream
 git fetch origin
 
-if [[ "$(git rev-parse main)" != "$(git rev-parse origin/main)" ]]; then
-  echo "error: local main and origin/main have diverged; push or reset local main first" >&2
+if ! git merge-base --is-ancestor main origin/main; then
+  echo "error: local main has commits not on origin/main; push or reset local main first" >&2
   exit 1
 fi
 
@@ -56,14 +59,7 @@ if git merge --no-edit upstream/main; then
   echo "Opened PR: $PR_URL"
   gh pr merge "$PR_URL" --merge --delete-branch
 
-  git fetch origin
-  if [[ "$ORIGINAL_BRANCH" == "main" ]]; then
-    git merge --ff-only origin/main
-  else
-    git fetch origin main:main
-  fi
-
-  echo "main is now up to date with upstream (origin/main: $(git rev-parse --short origin/main))"
+  echo "Merged into origin/main. Run 'hermes update' to pull, rebuild, and restart."
 else
   git merge --abort
   git checkout "$ORIGINAL_BRANCH"

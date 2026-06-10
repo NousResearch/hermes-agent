@@ -1061,6 +1061,37 @@ def run_conversation(
                 except Exception:
                     pass
 
+                # Plugin hook: transform_api_request
+                # Fires once per API call, receiving the MUTABLE api_kwargs
+                # dict by reference.  Plugins can modify messages, model,
+                # and other parameters before the request is sent.
+                # Mutations are ephemeral — they affect only the current
+                # API call, never the persisted messages list or session DB.
+                #
+                # Unlike pre_api_request (observational, shallow-copied
+                # messages), this hook is MUTATIVE: callbacks receive the
+                # actual api_kwargs dict that will be passed to the provider
+                # client on the very next line.  Use cases include context
+                # compression, security scanning, format translation, and
+                # cost-aware model routing.
+                try:
+                    if has_hook("transform_api_request"):
+                        _invoke_hook(
+                            "transform_api_request",
+                            api_kwargs=api_kwargs,
+                            session_id=agent.session_id or "",
+                            task_id=effective_task_id,
+                            turn_id=turn_id,
+                            model=agent.model,
+                            provider=agent.provider,
+                            base_url=agent.base_url,
+                            api_mode=agent.api_mode,
+                            api_call_count=api_call_count,
+                            api_request_id=api_request_id,
+                        )
+                except Exception:
+                    pass
+
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
 

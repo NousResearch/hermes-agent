@@ -4580,6 +4580,49 @@ class TestRunConversation:
             "_record_task_failure should not be called outside kanban mode"
         )
 
+    def test_transform_api_request_hook_mutates_api_kwargs(self, agent):
+        """The transform_api_request hook receives mutable api_kwargs and
+        plugins can modify messages before they reach the provider."""
+        self._setup_agent(agent)
+        resp = _mock_response(content="Compressed response", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        hook_received_kwargs = {}
+        transform_called = False
+
+        def _transform_hook(name, **kwargs):
+            nonlocal transform_called, hook_received_kwargs
+            if name == "transform_api_request":
+                hook_received_kwargs = dict(kwargs)
+                # Simulate a compression plugin: strip tool outputs
+                api_kw = kwargs.get("api_kwargs", {})
+                msgs = api_kw.get("messages", [])
+                for m in msgs:
+                    if m.get("role") == "tool" and m.get("content"):
+                        m["content"] = "[compressed]"
+                transform_called = True
+            return []
+
+        with (
+            patch("hermes_cli.plugins.has_hook", side_effect=lambda name: name == "transform_api_request"),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_transform_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("test message")
+
+        assert result["final_response"] == "Compressed response"
+        assert transform_called is True
+        # Verify the hook received api_kwargs by reference
+        assert "api_kwargs" in hook_received_kwargs
+        api_kw = hook_received_kwargs["api_kwargs"]
+        assert isinstance(api_kw, dict)
+        assert "messages" in api_kw
+        # Verify key metadata fields are present
+        assert hook_received_kwargs.get("session_id") == agent.session_id
+        assert hook_received_kwargs.get("model") == agent.model
+
 
 class TestHookPayloadSanitizesSimpleNamespace:
     """Regression: ``_hook_jsonable`` referenced ``SimpleNamespace`` without

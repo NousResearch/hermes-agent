@@ -175,6 +175,17 @@ _DEFAULT_PAYLOADS = {
         "assistant_content_chars": 1200,
         "assistant_tool_call_count": 0,
     },
+    "transform_api_request": {
+        "session_id": "test-session",
+        "task_id": "test-task",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_mode": "anthropic_messages",
+        "api_call_count": 1,
+        "turn_id": "test-turn",
+        "request": {"body": {"messages": [{"role": "user", "content": "hello"}]}},
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess",
         "child_role": None,

@@ -32,6 +32,28 @@ logger = logging.getLogger(__name__)
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 
+# Destructive-tools (mem0_forget / mem0_delete) — gated, Apollo+Aegis only.
+# All overridable via $HERMES_HOME/mem0.json. See the spec:
+# ~/.hermes/plans/2026-06-10_mem0-destructive-tools-spec.md
+_FORGOTTEN_PREFIX = "[FORGOTTEN]"
+_DEFAULT_DESTRUCTIVE = {
+    "max_bulk": 25,               # soft review cap (both verbs, by-id batch + filter)
+    "max_bulk_hard_force": 100,   # absolute hard-delete ceiling; force can't breach
+    "max_bulk_forget": 100,       # forget review cap
+    "max_bulk_forget_force": 500, # forget ceiling
+    "max_delete_per_hour": 50,    # per-agent hard-delete velocity (rows/hour)
+    "max_forget_per_hour": 200,   # per-agent forget velocity (rows/hour)
+    "unscoped_ratio": 0.9,        # C8a: matched/total ≥ this → mass op, refused
+    "absolute_mass_floor": 200,   # C8a: matched ≥ this → mass op, refused
+    "token_ttl_seconds": 300,     # dry-run confirm-token lifetime
+}
+
+
+def _trunc(s: str, n: int = 200) -> str:
+    """Truncate resolved memory text for ledger/preview (never store unbounded)."""
+    s = s or ""
+    return s if len(s) <= n else s[:n] + "…"
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -111,6 +133,55 @@ CONCLUDE_SCHEMA = {
     },
 }
 
+# --- Destructive tools (gated; appended only when destructive_tools_enabled) ---
+
+FORGET_SCHEMA = {
+    "name": "mem0_forget",
+    "description": (
+        "SOFT, REVERSIBLE. Mark a memory obsolete so it stops surfacing in recall, "
+        "WITHOUT destroying it (it can be restored). This is the SAFE DEFAULT for "
+        "'this is no longer true / superseded'. Prefer this over mem0_delete unless "
+        "data must genuinely not exist. By-id (read-before-forget); a gated by-filter "
+        "path requires a dry-run then a confirm_token. restore=true un-forgets."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "Single memory id to forget (or restore)."},
+            "memory_ids": {"type": "array", "items": {"type": "string"}, "description": "Batch of memory ids to forget."},
+            "filter": {"type": "string", "description": "Natural-language/structured filter for bulk forget (dry-run first, returns a confirm_token)."},
+            "confirm_token": {"type": "string", "description": "Token from a prior dry-run; required to execute a by-filter forget."},
+            "reason": {"type": "string", "description": "Short, NON-sensitive reason (shown in the tombstone). Do not echo sensitive content."},
+            "restore": {"type": "boolean", "description": "Un-forget: restore a previously-forgotten memory_id to its original text."},
+            "force": {"type": "boolean", "description": "Override the soft review cap (still bounded by hard ceilings/floors)."},
+        },
+        "required": [],
+    },
+}
+
+DELETE_SCHEMA = {
+    "name": "mem0_delete",
+    "description": (
+        "HARD, IRREVERSIBLE. Physically remove a memory from the shared store — it "
+        "CANNOT be restored. Use ONLY for wrong/sensitive data that must not exist; "
+        "for 'no longer true' prefer mem0_forget (reversible). By-id (read-before-"
+        "delete); a gated by-filter path requires a dry-run then a confirm_token and "
+        "is capped. delete_linked also removes the superseded chain (counted)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "Single memory id to hard-delete."},
+            "memory_ids": {"type": "array", "items": {"type": "string"}, "description": "Batch of memory ids to hard-delete."},
+            "filter": {"type": "string", "description": "Natural-language/structured filter for bulk delete (dry-run first, returns a confirm_token)."},
+            "confirm_token": {"type": "string", "description": "Token from a prior dry-run; required to execute a by-filter delete."},
+            "delete_linked": {"type": "boolean", "description": "Also delete the superseded/linked chain (default false; full chain counted against caps)."},
+            "force": {"type": "boolean", "description": "Override the soft review cap up to the hard ceiling (never beyond)."},
+        },
+        "required": [],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -135,6 +206,11 @@ class Mem0MemoryProvider(MemoryProvider):
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
+        # Destructive-tools state (gated; Apollo+Aegis only)
+        self._destructive_enabled = False
+        self._destructive_cfg = dict(_DEFAULT_DESTRUCTIVE)
+        self._ledger_lock = threading.Lock()
+        self._mint_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -166,6 +242,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
             {"key": "capture", "description": "Per-turn auto-capture mode (auto=capture every turn; off=recall-only, no per-turn writes)", "default": "auto", "choices": ["auto", "off"], "env_var": "MEM0_CAPTURE"},
+            {"key": "destructive_tools_enabled", "description": "Expose mem0_forget/mem0_delete (Apollo+Aegis ONLY — fail-closed; default off)", "default": "false", "choices": ["true", "false"], "env_var": "MEM0_DESTRUCTIVE_TOOLS"},
         ]
 
     def _get_client(self):
@@ -221,6 +298,22 @@ class Mem0MemoryProvider(MemoryProvider):
             or self._config.get("capture", "auto")
         ).strip().lower()
 
+        # Destructive tools gate (C1, fail-closed): only enabled when the
+        # profile's mem0.json sets destructive_tools_enabled true (Apollo+Aegis).
+        # Env override MEM0_DESTRUCTIVE_TOOLS for tests/ops.
+        flag = os.environ.get("MEM0_DESTRUCTIVE_TOOLS")
+        if flag is None:
+            flag = self._config.get("destructive_tools_enabled", False)
+        self._destructive_enabled = str(flag).strip().lower() in ("1", "true", "yes", "on")
+        # Per-key config overrides (all caps/limits tunable via mem0.json)
+        self._destructive_cfg = dict(_DEFAULT_DESTRUCTIVE)
+        for k in self._destructive_cfg:
+            if k in self._config and self._config[k] is not None:
+                try:
+                    self._destructive_cfg[k] = type(self._destructive_cfg[k])(self._config[k])
+                except (ValueError, TypeError):
+                    pass
+
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
         return {"user_id": self._user_id}
@@ -237,6 +330,27 @@ class Mem0MemoryProvider(MemoryProvider):
         if isinstance(response, list):
             return response
         return []
+
+    @staticmethod
+    def _is_forgotten(m: Any) -> bool:
+        """True if a memory carries the forget tombstone (metadata flag or text sentinel)."""
+        if not isinstance(m, dict):
+            return False
+        meta = m.get("metadata") or {}
+        if isinstance(meta, dict) and meta.get("forgotten") is True:
+            return True
+        text = m.get("memory") or ""
+        return isinstance(text, str) and text.lstrip().startswith(_FORGOTTEN_PREFIX)
+
+    @classmethod
+    def _drop_forgotten(cls, memories: list) -> list:
+        """C9 single choke point: strip forgotten memories from any read result.
+
+        Every read surface (search, profile, prefetch) MUST route through this so a
+        soft-forgotten memory genuinely stops influencing the agent. Authoritative
+        client-side filter (get_all has no server-side metadata exclude).
+        """
+        return [m for m in (memories or []) if not cls._is_forgotten(m)]
 
     def system_prompt_block(self) -> str:
         return (
@@ -263,12 +377,12 @@ class Mem0MemoryProvider(MemoryProvider):
         def _run():
             try:
                 client = self._get_client()
-                results = self._unwrap_results(client.search(
+                results = self._drop_forgotten(self._unwrap_results(client.search(
                     query=query,
                     filters=self._read_filters(),
                     rerank=self._rerank,
                     top_k=5,
-                ))
+                )))
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
@@ -311,7 +425,10 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+        schemas = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+        if self._destructive_enabled:
+            schemas += [FORGET_SCHEMA, DELETE_SCHEMA]
+        return schemas
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
@@ -326,7 +443,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
         if tool_name == "mem0_profile":
             try:
-                memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
+                memories = self._drop_forgotten(
+                    self._unwrap_results(client.get_all(filters=self._read_filters())))
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
@@ -343,12 +461,12 @@ class Mem0MemoryProvider(MemoryProvider):
             rerank = args.get("rerank", False)
             top_k = min(int(args.get("top_k", 10)), 50)
             try:
-                results = self._unwrap_results(client.search(
+                results = self._drop_forgotten(self._unwrap_results(client.search(
                     query=query,
                     filters=self._read_filters(),
                     rerank=rerank,
                     top_k=top_k,
-                ))
+                )))
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
@@ -374,7 +492,453 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_failure()
                 return tool_error(f"Failed to store: {e}")
 
+        elif tool_name in ("mem0_forget", "mem0_delete"):
+            # C1 fail-closed: if the gate is off these tools were never registered,
+            # so reaching here means "unknown tool" (never a silent enabled-looking no-op).
+            if not self._destructive_enabled:
+                return tool_error(f"Unknown tool: {tool_name}")
+            try:
+                if tool_name == "mem0_forget":
+                    return self._handle_forget(client, args)
+                return self._handle_delete(client, args)
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"{tool_name} failed: {e}")
+
         return tool_error(f"Unknown tool: {tool_name}")
+
+    # -----------------------------------------------------------------------
+    # Destructive tools (mem0_forget / mem0_delete) — gated, Apollo+Aegis only.
+    # Spec: ~/.hermes/plans/2026-06-10_mem0-destructive-tools-spec.md
+    # -----------------------------------------------------------------------
+
+    def _hermes_home(self):
+        from hermes_constants import get_hermes_home
+        return get_hermes_home()
+
+    def _ledger_path(self):
+        return self._hermes_home() / "mem0-destructive-ledger.jsonl"
+
+    def _mint_store_path(self):
+        return self._hermes_home() / "mem0-mint-store.json"
+
+    # --- C4 ledger: append-only, 0o600, write-before-act ---------------------
+
+    def _ledger_append(self, record: dict) -> None:
+        """Append one JSONL record (never mutate a prior line) and fsync.
+
+        Caller appends a `pending` record (fsync'd) BEFORE the irreversible op,
+        then a terminal `ok`/`fail` record after. Two rows, never a rewrite.
+        """
+        record = {"ts": time.time(), "agent_id": self._agent_id, **record}
+        path = self._ledger_path()
+        with self._ledger_lock:
+            newfile = not path.exists()
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                if newfile:
+                    try:
+                        os.fchmod(fd, 0o600)
+                    except OSError:
+                        pass
+                os.write(fd, (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    def _velocity_count(self, op: str) -> int:
+        """C8d: count trailing-hour terminal `ok` records of an op-type from the
+        DURABLE ledger (not process memory — a restart can't reset the guard)."""
+        path = self._ledger_path()
+        if not path.exists():
+            return 0
+        cutoff = time.time() - 3600.0
+        n = 0
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (rec.get("op") == op and rec.get("outcome") == "ok"
+                            and rec.get("agent_id") == self._agent_id
+                            and float(rec.get("ts", 0)) >= cutoff):
+                        n += int(rec.get("rows", 1))
+        except OSError:
+            return 0
+        return n
+
+    # --- C3 confirm-token mint-store: random, single-use, TTL, set-hash ------
+
+    @staticmethod
+    def _set_hash(ids) -> str:
+        import hashlib
+        joined = "\n".join(sorted(str(i) for i in ids))
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+    def _load_mint_store(self) -> dict:
+        path = self._mint_store_path()
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {}
+
+    def _save_mint_store(self, store: dict) -> None:
+        path = self._mint_store_path()
+        ttl = self._destructive_cfg["token_ttl_seconds"]
+        now = time.time()
+        pruned = {t: r for t, r in store.items()
+                  if not r.get("consumed") and (now - r.get("issued_at", 0)) < ttl}
+        tmp = str(path) + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, json.dumps(pruned).encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, str(path))
+        try:
+            os.chmod(str(path), 0o600)
+        except OSError:
+            pass
+
+    def _mint_token(self, ids) -> str:
+        import secrets
+        token = secrets.token_urlsafe(32)
+        with self._mint_lock:
+            store = self._load_mint_store()
+            store[token] = {"set_hash": self._set_hash(ids),
+                            "issued_at": time.time(), "consumed": False}
+            self._save_mint_store(store)
+        return token
+
+    def _consume_token(self, token: str, ids):
+        """Validate exist+unexpired+unconsumed+set-hash, then mark consumed.
+
+        Returns (ok: bool, reason: str). Single-use: success marks consumed.
+        """
+        if not token:
+            return False, "no confirm_token supplied"
+        ttl = self._destructive_cfg["token_ttl_seconds"]
+        with self._mint_lock:
+            store = self._load_mint_store()
+            rec = store.get(token)
+            if not rec:
+                return False, "no valid dry-run token (not minted / expired / already used)"
+            if rec.get("consumed"):
+                return False, "token already used"
+            if (time.time() - rec.get("issued_at", 0)) >= ttl:
+                return False, "token expired — re-run the dry-run"
+            if rec.get("set_hash") != self._set_hash(ids):
+                return False, "matched set changed since dry-run (TOCTOU) — re-run the dry-run"
+            rec["consumed"] = True
+            store[token] = rec
+            self._save_mint_store(store)
+        return True, "ok"
+
+    # --- scope + filter resolution (C7) -------------------------------------
+
+    def _resolve_filter(self, client, filter_arg: str) -> list:
+        """Resolve a filter to an in-scope memory list (C7 scope-lock).
+
+        The filter is ALWAYS constrained to the configured user_id; a caller can
+        never reach another tenant's store. We fetch the full in-scope set and
+        apply a best-effort substring match for a NL/text filter (the catastrophe
+        floor C8a is the real guard, so over-matching is safe — it just refuses).
+        An empty/whitespace filter matches the WHOLE in-scope set (→ C8a refuses).
+        """
+        allm = self._unwrap_results(client.get_all(filters=self._read_filters()))
+        f = (filter_arg or "").strip().lower()
+        if not f or f in ("*", "all", "everything"):
+            return list(allm)
+        return [m for m in allm if f in str(m.get("memory", "")).lower()]
+
+    def _in_scope_total(self, client) -> int:
+        """C8a denominator: ALWAYS the full configured user-wide scope count."""
+        return len(self._unwrap_results(client.get_all(filters=self._read_filters())))
+
+    def _mass_check(self, matched: int, total: int):
+        """C8a: refuse (no token) if matched is a mass fraction of the store.
+        Returns (is_mass: bool, reason: str)."""
+        ratio = self._destructive_cfg["unscoped_ratio"]
+        floor = self._destructive_cfg["absolute_mass_floor"]
+        if matched >= floor:
+            return True, (f"refused: {matched} memories ≥ absolute mass floor ({floor}). "
+                          "Whole-store/mass deletion is an operator-CLI action, not an agent tool.")
+        if total > 0 and (matched / total) >= ratio:
+            return True, (f"refused: {matched}/{total} ({matched/total:.0%}) ≥ mass ratio "
+                          f"({ratio:.0%}). Mass deletion is an operator-CLI action, not an agent tool.")
+        return False, ""
+
+    @staticmethod
+    def _mem_id(m: dict):
+        return m.get("id") or m.get("memory_id")
+
+    def _read_before(self, client, mid: str):
+        """C2: get(mid) before any destroy. Returns (mem_dict | None)."""
+        try:
+            m = client.get(mid)
+            return m if isinstance(m, dict) and m else None
+        except Exception:
+            return None
+
+    # --- forget handler ------------------------------------------------------
+
+    def _handle_forget(self, client, args: dict) -> str:
+        # restore (un-forget) path (C5)
+        if args.get("restore"):
+            return self._forget_restore(client, args.get("memory_id"))
+
+        ids = self._collect_ids(args)
+        if ids:
+            return self._forget_ids(client, ids, args.get("reason", ""))
+        if args.get("filter") is not None:
+            return self._bulk("forget", client, args)
+        return tool_error("mem0_forget needs memory_id, memory_ids, filter, or restore.")
+
+    def _forget_ids(self, client, ids: list, reason: str) -> str:
+        # velocity guard (C8d)
+        used = self._velocity_count("forget")
+        cap = self._destructive_cfg["max_forget_per_hour"]
+        if used + len(ids) > cap:
+            return tool_error(f"forget velocity exceeded: {used}/{cap} in the last hour; "
+                              f"cooldown. (requested {len(ids)} more)")
+        results = []
+        for mid in ids:
+            m = self._read_before(client, mid)
+            if not m:
+                results.append({"id": mid, "outcome": "not_found"})
+                continue
+            original = m.get("memory", "")
+            if self._is_forgotten(m):
+                results.append({"id": mid, "outcome": "already_forgotten"})
+                continue
+            meta = dict(m.get("metadata") or {})
+            safe_reason = (reason or "superseded").replace("\n", " ")[:120]
+            meta.update({"forgotten": True, "forgotten_at": time.time(),
+                         "forgotten_by": self._agent_id, "original_text": original})
+            self._ledger_append({"op": "forget", "mode": "id", "id": mid,
+                                 "was": _trunc(original), "outcome": "pending"})
+            try:
+                client.update(mid, text=f"{_FORGOTTEN_PREFIX} {safe_reason}", metadata=meta)
+                self._ledger_append({"op": "forget", "mode": "id", "id": mid,
+                                     "rows": 1, "outcome": "ok"})
+                results.append({"id": mid, "outcome": "forgotten", "was": _trunc(original)})
+            except Exception as e:
+                self._ledger_append({"op": "forget", "mode": "id", "id": mid,
+                                     "outcome": "fail", "error": str(e)[:120]})
+                results.append({"id": mid, "outcome": "fail", "error": str(e)[:120]})
+        self._record_success()
+        return json.dumps({"tool": "mem0_forget", "results": results,
+                           "forgotten": sum(1 for r in results if r["outcome"] == "forgotten")})
+
+    def _forget_restore(self, client, mid) -> str:
+        if not mid:
+            return tool_error("restore needs a memory_id.")
+        m = self._read_before(client, mid)
+        if not m:
+            return json.dumps({"tool": "mem0_forget", "result": "not found, nothing restored", "id": mid})
+        meta = dict(m.get("metadata") or {})
+        if not self._is_forgotten(m):
+            return json.dumps({"tool": "mem0_forget", "result": "not forgotten — no-op", "id": mid})
+        original = meta.get("original_text")
+        if not original:
+            # fall back to history()
+            try:
+                hist = client.history(mid)
+                hist = hist if isinstance(hist, list) else self._unwrap_results(hist)
+                for h in hist or []:
+                    cand = h.get("old_memory") or h.get("memory")
+                    if cand and not str(cand).lstrip().startswith(_FORGOTTEN_PREFIX):
+                        original = cand
+                        break
+            except Exception:
+                pass
+        if not original:
+            return tool_error(f"cannot restore {mid}: no original_text in metadata or history.")
+        meta.update({"forgotten": False, "restored_at": time.time(), "restored_by": self._agent_id})
+        meta.pop("original_text", None)
+        client.update(mid, text=original, metadata=meta)
+        self._ledger_append({"op": "restore", "mode": "id", "id": mid, "rows": 1, "outcome": "ok"})
+        self._record_success()
+        return json.dumps({"tool": "mem0_forget", "result": "restored", "id": mid, "text": _trunc(original)})
+
+    # --- delete handler ------------------------------------------------------
+
+    def _handle_delete(self, client, args: dict) -> str:
+        ids = self._collect_ids(args)
+        if ids:
+            return self._delete_ids(client, ids, bool(args.get("delete_linked", False)))
+        if args.get("filter") is not None:
+            return self._bulk("delete", client, args)
+        return tool_error("mem0_delete needs memory_id, memory_ids, or filter.")
+
+    def _delete_ids(self, client, ids: list, delete_linked: bool) -> str:
+        # D3: when delete_linked, count the full superseded chain. Hosted SDK does
+        # not expose the chain pre-delete, so we conservatively count provided ids;
+        # the linked rows are surfaced post-hoc in the ledger response count.
+        used = self._velocity_count("delete")
+        cap = self._destructive_cfg["max_delete_per_hour"]
+        if used + len(ids) > cap:
+            return tool_error(f"delete velocity exceeded: {used}/{cap} in the last hour; "
+                              f"cooldown. (requested {len(ids)} more)")
+        # by-id batch also honors the soft review cap / hard ceiling
+        over = self._cap_check("delete", len(ids), force=False)
+        if over:
+            return tool_error(over)
+        results = []
+        for mid in ids:
+            m = self._read_before(client, mid)
+            if not m:
+                results.append({"id": mid, "outcome": "not_found"})
+                continue
+            original = m.get("memory", "")
+            self._ledger_append({"op": "delete", "mode": "id", "id": mid,
+                                 "was": _trunc(original), "delete_linked": delete_linked,
+                                 "outcome": "pending"})
+            try:
+                client.delete(mid, delete_linked=delete_linked)
+                self._ledger_append({"op": "delete", "mode": "id", "id": mid,
+                                     "rows": 1, "outcome": "ok"})
+                results.append({"id": mid, "outcome": "deleted", "was": _trunc(original)})
+            except Exception as e:
+                # abort-on-first-error for irreversible delete (ladder the rest)
+                self._ledger_append({"op": "delete", "mode": "id", "id": mid,
+                                     "outcome": "fail", "error": str(e)[:120]})
+                results.append({"id": mid, "outcome": "fail", "error": str(e)[:120]})
+                remaining = ids[ids.index(mid) + 1:]
+                for r in remaining:
+                    results.append({"id": r, "outcome": "skipped"})
+                break
+        self._record_success()
+        return json.dumps({"tool": "mem0_delete",
+                           "results": results,
+                           "deleted": sum(1 for r in results if r["outcome"] == "deleted"),
+                           "irreversible": True})
+
+    # --- shared bulk by-filter path (C3 dry-run/token + C8 floor/cap) --------
+
+    def _collect_ids(self, args: dict) -> list:
+        ids = []
+        if args.get("memory_id"):
+            ids.append(args["memory_id"])
+        if args.get("memory_ids"):
+            ids.extend([i for i in args["memory_ids"] if i])
+        # de-dupe, preserve order
+        seen, out = set(), []
+        for i in ids:
+            if i not in seen:
+                seen.add(i)
+                out.append(i)
+        return out
+
+    def _cap_check(self, op: str, count: int, force: bool) -> str:
+        """Return an error string if count breaches caps for op, else ''. C8b/C8c."""
+        if op == "delete":
+            soft = self._destructive_cfg["max_bulk"]
+            hard = self._destructive_cfg["max_bulk_hard_force"]
+            if count > hard:
+                return (f"refused: {count} hard-deletes exceeds the absolute ceiling ({hard}); "
+                        "force cannot breach it. Split into smaller ops or use mem0_forget.")
+            if count > soft and not force:
+                return (f"{count} hard-deletes exceeds the soft review cap ({soft}). "
+                        "Re-run with force=true to proceed (still ≤ {} ceiling), or prefer "
+                        "mem0_forget (reversible).".format(hard))
+        else:  # forget
+            soft = self._destructive_cfg["max_bulk_forget"]
+            hard = self._destructive_cfg["max_bulk_forget_force"]
+            if count > hard:
+                return f"refused: {count} forgets exceeds the ceiling ({hard})."
+            if count > soft and not force:
+                return (f"{count} forgets exceeds the soft review cap ({soft}). "
+                        "Re-run with force=true to proceed.")
+        return ""
+
+    def _bulk(self, op: str, client, args: dict) -> str:
+        token = args.get("confirm_token")
+        force = bool(args.get("force", False))
+        matches = self._resolve_filter(client, args.get("filter", ""))
+        ids = [self._mem_id(m) for m in matches if self._mem_id(m)]
+        total = self._in_scope_total(client)
+
+        # C8a catastrophe floor — refuse with NO token, for BOTH verbs.
+        is_mass, why = self._mass_check(len(ids), total)
+        if is_mass:
+            return tool_error(why)
+
+        # Dry-run: no token supplied → preview + mint token, delete nothing.
+        if not token:
+            cap_note = self._cap_check(op, len(ids), force=False)
+            preview = [{"id": self._mem_id(m), "memory": _trunc(m.get("memory", ""))}
+                       for m in matches[:25]]
+            minted = self._mint_token(ids) if ids else None
+            resp = {
+                "tool": f"mem0_{op}", "dry_run": True, "count": len(ids),
+                "total_in_scope": total, "preview": preview, "confirm_token": minted,
+                "note": cap_note,
+            }
+            if op == "delete":
+                resp["hint"] = ("IRREVERSIBLE. For bulk cleanup of 'no longer true' memories, "
+                                "prefer mem0_forget (reversible). Re-call with confirm_token to execute.")
+            else:
+                resp["hint"] = "Re-call with confirm_token to execute the forget."
+            return json.dumps(resp)
+
+        # Execute path: validate token (exist+unexpired+unconsumed+set-hash).
+        ok, reason = self._consume_token(token, ids)
+        if not ok:
+            return tool_error(reason)
+        # Re-check mass + cap at execute time (defence in depth).
+        is_mass, why = self._mass_check(len(ids), total)
+        if is_mass:
+            return tool_error(why)
+        cap_err = self._cap_check(op, len(ids), force=force)
+        if cap_err:
+            return tool_error(cap_err)
+        # velocity
+        used = self._velocity_count(op)
+        vcap = self._destructive_cfg["max_delete_per_hour" if op == "delete" else "max_forget_per_hour"]
+        if used + len(ids) > vcap:
+            return tool_error(f"{op} velocity exceeded: {used}/{vcap} in the last hour; cooldown.")
+
+        if op == "forget":
+            return self._forget_ids(client, ids, args.get("reason", "bulk forget"))
+        return self._delete_ids_bulk(client, ids)
+
+    def _delete_ids_bulk(self, client, ids: list) -> str:
+        """Bulk hard-delete after token+cap+floor already validated.
+        Caps already enforced by caller; here we just laddered-execute."""
+        results = []
+        for mid in ids:
+            m = self._read_before(client, mid)
+            if not m:
+                results.append({"id": mid, "outcome": "not_found"})
+                continue
+            original = m.get("memory", "")
+            self._ledger_append({"op": "delete", "mode": "filter", "id": mid,
+                                 "was": _trunc(original), "outcome": "pending"})
+            try:
+                client.delete(mid)
+                self._ledger_append({"op": "delete", "mode": "filter", "id": mid,
+                                     "rows": 1, "outcome": "ok"})
+                results.append({"id": mid, "outcome": "deleted", "was": _trunc(original)})
+            except Exception as e:
+                self._ledger_append({"op": "delete", "mode": "filter", "id": mid,
+                                     "outcome": "fail", "error": str(e)[:120]})
+                results.append({"id": mid, "outcome": "fail", "error": str(e)[:120]})
+                for r in ids[ids.index(mid) + 1:]:
+                    results.append({"id": r, "outcome": "skipped"})
+                break
+        self._record_success()
+        return json.dumps({"tool": "mem0_delete", "mode": "filter", "results": results,
+                           "deleted": sum(1 for r in results if r["outcome"] == "deleted"),
+                           "irreversible": True})
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):

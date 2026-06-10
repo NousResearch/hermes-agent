@@ -2789,7 +2789,13 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        if runtime_base_url and main_provider.startswith("custom"):
+            # Any custom-family main provider (custom, custom:<name>, or a
+            # named custom provider like custom-local) exposes a direct
+            # OpenAI-compatible endpoint. Route the aux task straight to that
+            # endpoint with the main model's base_url + key, instead of letting
+            # a named custom provider fall through to the generic "custom"
+            # resolver (which has no base_url) and then to the aggregator chain.
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
@@ -4151,6 +4157,13 @@ def _resolve_task_provider_model(
             # the provider so it can resolve credentials from env vars
             # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
             return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
+        if cfg_base_url:
+            # base_url set alone (no api_key, no/auto provider) → custom
+            # endpoint; auth falls back to OPENAI_API_KEY downstream. Without
+            # this, base_url was silently dropped and the task fell through to
+            # "auto", losing the configured endpoint (see auxiliary docs:
+            # "any provider + base_url set → use the custom endpoint directly").
+            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 

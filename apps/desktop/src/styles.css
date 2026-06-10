@@ -5,14 +5,6 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
-/* In-thread tool/code glyphs render codicons at ~14px. Outline icons read
-   thin at that scale; a hairline stroke on the glyph pseudo-element fills
-   them without swapping icon semantics. */
-.codicon.codicon-modifier-filled::before {
-  -webkit-text-stroke: 0.45px currentColor;
-  paint-order: stroke fill;
-}
-
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));

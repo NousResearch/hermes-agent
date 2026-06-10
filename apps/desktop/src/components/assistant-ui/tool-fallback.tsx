@@ -13,9 +13,9 @@ import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { BrailleSpinner } from '@/components/ui/braille-spinner'
-import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { FadeText } from '@/components/ui/fade-text'
+import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
@@ -136,7 +136,7 @@ function ToolGlyph({ copy, icon, status }: { copy: ToolStatusCopy; icon?: string
   const node = status ? (
     statusGlyph(status, copy)
   ) : icon ? (
-    <Codicon className="text-(--ui-text-tertiary)" filled name={icon} size="0.875rem" />
+    <ToolIcon className="text-(--ui-text-tertiary)" name={icon} size="0.875rem" />
   ) : null
 
   return node ? <span className={TOOL_HEADER_GLYPH_WRAP_CLASS}>{node}</span> : null

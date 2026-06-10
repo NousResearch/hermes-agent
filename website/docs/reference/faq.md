@@ -859,6 +859,63 @@ If using OpenRouter, make sure your API key has credits. A 400 from OpenRouter o
 
 ---
 
+### Gateway keeps restarting — "Gateway shutting down" in a loop
+
+**Scenario:** The gateway starts up, connects to Telegram and email, but after a few seconds it logs "Received SIGTERM" and shuts down. This repeats in a loop. The journal shows `Scheduled auto-resume for 1 restart-interrupted session(s)` on each startup.
+
+**Cause:** A gateway session was interrupted while executing `systemctl --user stop hermes-gateway` or `systemctl --user restart hermes-gateway` via the terminal tool. On restart, the gateway auto-resumes the interrupted session, which re-executes the pending command — killing the gateway again. This creates an infinite restart loop.
+
+Note that `hermes gateway restart` and `hermes gateway stop` are blocked from inside the gateway process (they detect `_HERMES_GATEWAY=1` and refuse), but `systemctl --user stop/restart hermes-gateway` bypasses this check and works from anywhere.
+
+**Solution — break the loop:**
+
+1. Clear the `resume_pending` flag on all sessions:
+   ```bash
+   python3 -c "
+   import json
+   path = os.path.expanduser('~/.hermes/sessions/sessions.json')
+   data = json.load(open(path))
+   for k in data:
+       data[k]['resume_pending'] = False
+       data[k]['resume_reason'] = None
+   json.dump(data, open(path, 'w'), indent=2)
+   print('Cleared resume_pending for all sessions')
+   "
+   ```
+
+2. Reset and restart the gateway:
+   ```bash
+   systemctl --user reset-failed hermes-gateway
+   systemctl --user start hermes-gateway
+   ```
+
+**Prevention — block `systemctl stop` from inside the gateway:**
+
+The gateway sets `_HERMES_GATEWAY=1` in its process environment. Create a wrapper at `~/.local/bin/systemctl` that checks this variable and blocks destructive commands:
+
+```bash
+#!/bin/bash
+# Wrapper for systemctl — blocks stop/restart hermes-gateway from inside the gateway.
+if [ -n "$_HERMES_GATEWAY" ]; then
+  case "$*" in
+    *stop*hermes-gateway*|*restart*hermes-gateway*)
+      echo "Blocked: stopping/restarting the gateway from inside the gateway process" >&2
+      exit 1
+      ;;
+  esac
+fi
+exec /usr/bin/systemctl "$@"
+```
+
+Since the gateway's `PATH` includes `~/.local/bin` before `/usr/bin`, the wrapper takes precedence inside the gateway process. Normal systemctl usage outside the gateway is unaffected.
+
+**Related config:** Set `agent.restart_drain_timeout` to a reasonable value (default 180s, minimum 30s) so running agents have time to finish when a SIGTERM does arrive:
+```bash
+hermes config set agent.restart_drain_timeout 30
+```
+
+---
+
 ## Still Stuck?
 
 If your issue isn't covered here:

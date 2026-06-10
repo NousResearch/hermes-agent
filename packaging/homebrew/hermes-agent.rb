@@ -3,10 +3,8 @@ class HermesAgent < Formula
 
   desc "Self-improving AI agent that creates skills from experience"
   homepage "https://hermes-agent.nousresearch.com"
-  # Stable source should point at the semver-named sdist asset attached by
-  # scripts/release.py, not the CalVer tag tarball.
-  url "https://github.com/NousResearch/hermes-agent/releases/download/v2026.3.30/hermes_agent-0.6.0.tar.gz"
-  sha256 "<replace-with-release-asset-sha256>"
+  url "https://github.com/NousResearch/hermes-agent/archive/refs/tags/v2026.5.16.tar.gz"
+  sha256 "c0a554050a50ee9a62f3fa5cd288a167ba5640c42d647d100cdea084b7294143"
   license "MIT"
 
   depends_on "certifi" => :no_linkage
@@ -24,7 +22,7 @@ class HermesAgent < Formula
     venv.pip_install resources
     venv.pip_install buildpath
 
-    pkgshare.install "skills", "optional-skills"
+    pkgshare.install "skills", "optional-skills", "ui-tui"
 
     %w[hermes hermes-agent hermes-acp].each do |exe|
       next unless (libexec/"bin"/exe).exist?
@@ -33,6 +31,7 @@ class HermesAgent < Formula
         libexec/"bin"/exe,
         HERMES_BUNDLED_SKILLS: pkgshare/"skills",
         HERMES_OPTIONAL_SKILLS: pkgshare/"optional-skills",
+        HERMES_TUI_DIR: pkgshare/"ui-tui",
         HERMES_MANAGED: "homebrew"
       )
     end

@@ -2,6 +2,22 @@ import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
+// ATX heading that is directly preceded by a non-blank, non-heading line.
+// LLMs (especially MiniMax-M3, DeepSeek, Qwen) frequently emit headings
+// glued to the preceding paragraph/table/list, e.g.:
+//   `## 标题| 项 | 状态 |`   or   `paragraph text\n## Next Heading`
+// CommonMark and GFM both require a blank line before an ATX heading for
+// it to be recognized as a heading (not lazy continuation). Streamdown's
+// micromark parser enforces this strictly, so the heading renders as raw
+// text. The fix inserts the missing blank line.
+// Negative lookbehind: don't add a second blank line if one already exists.
+const HEADING_NEEDS_BLANK_RE = /([^\n])\n(#{1,6} )/g
+// ATX heading whose body is glued to a table row on the same line, e.g.:
+//   `## 当前状态| 项 | 状态 |`  →  `## 当前状态\n\n| 项 | 状态 |`
+// Only triggers when the remainder contains ≥2 pipes (reliable table signal),
+// so headings with a single `|` in their text (e.g. `## Item | Details`) are
+// not falsely split.
+const HEADING_GLUED_TABLE_RE = /^(#{1,6} [^\n]+?)\s*\|(?=[^|\n]*\|)/gm
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
@@ -308,18 +324,114 @@ function normalizeFenceBlocks(text: string): string {
 // Models often emit `\(...\)` for inline math and `\[...\]` for display
 // math (the standard LaTeX convention) instead of `$...$` / `$$...$$`.
 // remark-math only natively recognizes the dollar form, so we rewrite at
-// preprocess time. Done with simple non-greedy matches keyed on the
-// escaped-bracket sequences — these are rare enough in non-math content
-// (you'd have to write a literal `\(` followed eventually by a literal
-// `\)` with NO interleaving newline-paragraph-break) that false positives
-// are extremely unlikely.
+// preprocess time.
+//
+// IMPORTANT: The rewrite is gated on `isLikelyLatexMath` so that prose
+// which incidentally contains `\(...\)` (e.g. code discussion, English
+// words inside escaped parens, prose like `\( inline LaTeX \) syntax`)
+// is NOT rewritten into `$...$`. Without this gate, remark-math with
+// `singleDollarTextMath: true` greedily pairs the resulting `$` tokens
+// with neighbouring currency amounts / dollar signs and consumes entire
+// paragraphs of markdown, destroying list/heading/table structure.
+//
+// [peyton.lu 2026-06-09] See PR description for full bug analysis.
 const LATEX_INLINE_RE = /\\\(([^\n]+?)\\\)/g
 const LATEX_DISPLAY_RE = /\\\[([\s\S]+?)\\\]/g
 
+/**
+ * Heuristic: does the body between `\(...\)` (or `\[...\]`) look like an
+ * actual LaTeX math expression, or is it just prose that happens to live
+ * inside escaped parens?
+ *
+ * True positives (real LaTeX): contains a LaTeX command (`\frac`,
+ * `\alpha`, ...), a math operator (`=`, `^`, `_`, Greek letters, ...),
+ * or balanced curly braces.
+ *
+ * True negatives (prose): plain English words, punctuation, spaces only.
+ * Anything matching `^[A-Za-z][A-Za-z0-9 ,.;:!?'"()\-]*$` is treated as
+ * prose and left alone.
+ */
+// Common LaTeX command names. Matched against the body of `\(...\)` /
+// `\[...\]` to decide whether the brackets wrap actual math or just
+// prose that happens to contain escaped parens (e.g. Windows paths,
+// code-discussion fragments). Using a whitelist avoids the false
+// positive where `C:\Users\test` was treated as a LaTeX expression
+// because `\test` matched a generic `\[a-zA-Z]+` pattern.
+const LATEX_COMMANDS = new Set([
+  // Greek letters (lowercase + uppercase)
+  'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'varepsilon', 'zeta', 'eta',
+  'theta', 'vartheta', 'iota', 'kappa', 'lambda', 'mu', 'nu', 'xi', 'pi',
+  'varpi', 'rho', 'varrho', 'sigma', 'varsigma', 'tau', 'upsilon', 'phi',
+  'varphi', 'chi', 'psi', 'omega',
+  'Gamma', 'Delta', 'Theta', 'Lambda', 'Xi', 'Pi', 'Sigma', 'Upsilon',
+  'Phi', 'Psi', 'Omega',
+  // Big operators
+  'sum', 'prod', 'coprod', 'int', 'oint', 'iint', 'iiint', 'iiiint',
+  'bigcup', 'bigcap', 'bigoplus', 'bigotimes', 'bigvee', 'bigwedge',
+  // Binary relations / operators
+  'pm', 'mp', 'times', 'div', 'cdot', 'ast', 'star', 'circ', 'bullet',
+  'leq', 'le', 'geq', 'ge', 'neq', 'ne', 'equiv', 'approx', 'sim', 'simeq',
+  'cong', 'propto', 'prec', 'succ',
+  // Set theory / logic
+  'in', 'notin', 'ni', 'subset', 'supset', 'subseteq', 'supseteq',
+  'cup', 'cap', 'emptyset', 'varnothing', 'setminus',
+  'forall', 'exists', 'nexists', 'neg', 'land', 'wedge', 'lor', 'vee',
+  // Arrows
+  'rightarrow', 'leftarrow', 'leftrightarrow',
+  'Rightarrow', 'Leftarrow', 'Leftrightarrow',
+  'mapsto', 'to', 'gets', 'uparrow', 'downarrow',
+  // Calculus / analysis
+  'partial', 'nabla', 'infty', 'int', 'iint', 'oint',
+  'lim', 'liminf', 'limsup', 'sup', 'inf', 'max', 'min',
+  // Misc math symbols
+  'hbar', 'ell', 'Re', 'Im', 'wp', 'angle', 'triangle', 'square',
+  // Decorations / accents
+  'bar', 'hat', 'tilde', 'vec', 'dot', 'ddot', 'acute', 'grave',
+  'check', 'breve', 'overline', 'underline', 'cancel', 'widehat', 'widetilde',
+  // Styles / formatting
+  'mathbb', 'mathrm', 'mathcal', 'mathfrak', 'mathsf', 'mathbf',
+  'mathit', 'text', 'textbf', 'textit', 'textrm', 'textsf', 'texttt',
+  // Fractions / roots
+  'frac', 'dfrac', 'tfrac', 'sqrt', 'cfrac',
+  // Environments (\begin{...} / \end{...})
+  'begin', 'end',
+])
+
+function isLikelyLatexMath(body: string): boolean {
+  const trimmed = body.trim()
+  if (!trimmed) return false
+
+  // Curly braces suggest macro args (\frac{a}{b})
+  if (/\{[^}]*\}/.test(trimmed)) return true
+
+  // Common math operators / symbols (ASCII + Unicode)
+  if (/[=^_\xb1\u2264\u2265\u221e\u2192\u2190\u2194\u222b\u2211\u220f\u221a\u2202\u2207\u2208\u2209\u222a\u2229\u2282\u2283]/.test(trimmed)) return true
+
+  // Greek letters (common math usage)
+  if (/[\u03b1-\u03c9\u0391-\u03a9]/.test(trimmed)) return true
+
+  // LaTeX command: \foo, but ONLY when 'foo' is a known command.
+  // Avoids mis-identifying prose that contains backslashes (Windows
+  // paths, escape sequences, file names) as math.
+  const cmdMatch = trimmed.match(/^\\([a-zA-Z]+)/)
+  if (cmdMatch && LATEX_COMMANDS.has(cmdMatch[1])) return true
+
+  // Plain prose heuristic: English word(s) with optional punctuation,
+  // digits, and backslashes/colons/slashes (covers paths, URLs, code).
+  if (/^[A-Za-z0-9][A-Za-z0-9 ,.;:!?'"()\-\\\\:\/]*$/.test(trimmed)) return false
+
+  // Default: assume math-like (preserves prior behavior for ambiguous cases)
+  return true
+}
+
 function rewriteLatexBracketDelimiters(text: string): string {
   return text
-    .replace(LATEX_INLINE_RE, (_, body: string) => `$${body}$`)
-    .replace(LATEX_DISPLAY_RE, (_, body: string) => `$$${body}$$`)
+    .replace(LATEX_INLINE_RE, (_, body: string) =>
+      isLikelyLatexMath(body) ? `$${body}$` : `\\(${body}\\)`
+    )
+    .replace(LATEX_DISPLAY_RE, (_, body: string) =>
+      isLikelyLatexMath(body) ? `$$${body}$$` : `\\[${body}\\]`
+    )
 }
 
 // Escape `$<digit>` patterns so they don't get eaten as math delimiters.
@@ -340,7 +452,14 @@ function escapeCurrencyDollars(text: string): string {
 }
 
 export function preprocessMarkdown(text: string): string {
-  const cleaned = text.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
+  const cleaned = text
+    .replace(REASONING_BLOCK_RE, '')
+    .replace(PREVIEW_MARKER_RE, '')
+    // Fix headings glued to table rows on the same line BEFORE fixing
+    // missing blank lines, so the split produces two separate lines first.
+    .replace(HEADING_GLUED_TABLE_RE, '$1\n\n|')
+    // Insert blank line before ATX headings that lack one (GFM requires it).
+    .replace(HEADING_NEEDS_BLANK_RE, '$1\n\n$2')
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)

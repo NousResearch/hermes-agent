@@ -201,4 +201,52 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
+
+  it('inserts blank line before ATX heading glued to preceding paragraph', () => {
+    const input = 'paragraph text\n## Next Heading\nsome content'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('paragraph text\n\n## Next Heading')
+    expect(output).toContain('some content')
+  })
+
+  it('splits heading glued to table row on same line', () => {
+    const input = '## 当前状态| 项 | 状态 |\n| --- | --- |\n| A | ✅ |'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('## 当前状态\n\n| 项 | 状态 |')
+    expect(output).toContain('| --- | --- |')
+  })
+
+  it('does NOT split heading with legitimate single pipe in text', () => {
+    const input = '## Item | Details\nSome text'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('## Item | Details')
+    expect(output).not.toContain('## Item\n\n')
+  })
+
+  it('handles full real-world broken message with multiple glued headings', () => {
+    const input = [
+      '## 当前 SST Quote MCP 状态| 项 | 状态 |',
+      '| --- | --- |',
+      '| 工具 | ✅ |',
+      '',
+      '## 下一步（窄选项）| 选项 | 描述 |',
+      '| --- | --- |'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    // Both headings should be separated from their tables
+    expect(output).toContain('## 当前 SST Quote MCP 状态\n\n| 项 | 状态 |')
+    expect(output).toContain('## 下一步（窄选项）\n\n| 选项 | 描述 |')
+  })
+
+  it('does not modify already-correct markdown with blank lines', () => {
+    const input = ['## 正常标题', '', '| 名称 | 状态 |', '| --- | --- |', '| A | ✅ |'].join('\n')
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+  })
 })

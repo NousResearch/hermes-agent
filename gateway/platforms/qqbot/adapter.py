@@ -2460,24 +2460,45 @@ class QQAdapter(BasePlatformAdapter):
             reply_to = None
         return last_result
 
+    @staticmethod
+    def _is_msg_id_expired(error: str) -> bool:
+        """Check if an error indicates the reply msg_id has expired.
+
+        QQ Bot returns a 400 with a Chinese message when the msg_id used for
+        threading/reply has expired.  Retrying with the same msg_id will always
+        fail, so callers should fall back to a standalone send.
+        """
+        err = error.lower()
+        return "msg_id" in err and any(
+            k in err for k in ("expired", "expire", "过期")
+        )
+
     async def _send_chunk(
             self,
             chat_id: str,
             content: str,
             reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Send a single chunk with retry + exponential backoff."""
+        """Send a single chunk with retry + exponential backoff.
+
+        If the initial reply fails because the original msg_id has expired
+        (common when the agent takes >5 minutes to respond in group chats),
+        automatically falls back to sending as a standalone message so the
+        response still reaches the chat.  See #43467.
+        """
         last_exc: Optional[Exception] = None
         chat_type = self._guess_chat_type(chat_id)
+        active_reply_to = reply_to
+        msg_id_fallback_done = False
 
         for attempt in range(3):
             try:
                 if chat_type == "c2c":
-                    return await self._send_c2c_text(chat_id, content, reply_to)
+                    return await self._send_c2c_text(chat_id, content, active_reply_to)
                 elif chat_type == "group":
-                    return await self._send_group_text(chat_id, content, reply_to)
+                    return await self._send_group_text(chat_id, content, active_reply_to)
                 elif chat_type == "guild":
-                    return await self._send_guild_text(chat_id, content, reply_to)
+                    return await self._send_guild_text(chat_id, content, active_reply_to)
                 else:
                     return SendResult(
                         success=False, error=f"Unknown chat type for {chat_id}"
@@ -2485,6 +2506,22 @@ class QQAdapter(BasePlatformAdapter):
             except Exception as exc:
                 last_exc = exc
                 err = str(exc).lower()
+
+                # msg_id expired → drop reply_to and retry as standalone
+                if (
+                    active_reply_to
+                    and not msg_id_fallback_done
+                    and self._is_msg_id_expired(err)
+                ):
+                    logger.warning(
+                        "[%s] msg_id %s expired — falling back to standalone send",
+                        self._log_tag,
+                        active_reply_to,
+                    )
+                    active_reply_to = None
+                    msg_id_fallback_done = True
+                    continue
+
                 # Permanent errors — don't retry
                 if any(
                         k in err

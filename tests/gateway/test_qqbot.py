@@ -2220,3 +2220,118 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+# ---------------------------------------------------------------------------
+# msg_id expiry fallback (#43467)
+# ---------------------------------------------------------------------------
+
+
+class TestMsgIdExpiryFallback:
+    """When a reply_to msg_id has expired, _send_chunk should fall back to
+    sending as a standalone message instead of retrying the same expired
+    msg_id 3 times and dropping the response."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_is_msg_id_expired_chinese(self):
+        adapter = self._make_adapter()
+        assert adapter._is_msg_id_expired(
+            "QQ Bot API error [400] /v2/groups/g/messages: 回复消息msg_id已过期"
+        )
+
+    def test_is_msg_id_expired_english(self):
+        adapter = self._make_adapter()
+        assert adapter._is_msg_id_expired(
+            "msg_id has expired, please use a valid msg_id"
+        )
+
+    def test_is_msg_id_expired_not_expired(self):
+        adapter = self._make_adapter()
+        assert not adapter._is_msg_id_expired(
+            "QQ Bot API error [400] invalid request body"
+        )
+        assert not adapter._is_msg_id_expired(
+            "QQ Bot API error [403] forbidden"
+        )
+
+    def test_send_chunk_falls_back_to_standalone_on_expired_msg_id(self):
+        adapter = self._make_adapter()
+        adapter._guess_chat_type = mock.MagicMock(return_value="group")
+
+        call_log = []
+
+        async def fake_group_text(chat_id, content, reply_to=None, keyboard=None):
+            call_log.append({"chat_id": chat_id, "reply_to": reply_to})
+            if reply_to:
+                raise RuntimeError(
+                    "QQ Bot API error [400] /v2/groups/g/messages: "
+                    "回复消息msg_id已过期"
+                )
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="new_msg")
+
+        adapter._send_group_text = fake_group_text
+        adapter._next_msg_seq = mock.MagicMock(return_value=1)
+
+        result = asyncio.run(
+            adapter._send_chunk("group_123", "hello", reply_to="expired_msg_id")
+        )
+
+        assert result.success is True
+        assert len(call_log) == 2
+        # First attempt: with reply_to → fails
+        assert call_log[0]["reply_to"] == "expired_msg_id"
+        # Second attempt: standalone (no reply_to) → succeeds
+        assert call_log[1]["reply_to"] is None
+
+    def test_send_chunk_no_fallback_without_reply_to(self):
+        """When there's no reply_to, msg_id expiry detection is irrelevant."""
+        adapter = self._make_adapter()
+        adapter._guess_chat_type = mock.MagicMock(return_value="group")
+
+        async def fake_group_text(chat_id, content, reply_to=None, keyboard=None):
+            raise RuntimeError(
+                "QQ Bot API error [400] /v2/groups/g/messages: "
+                "回复消息msg_id已过期"
+            )
+
+        adapter._send_group_text = fake_group_text
+        adapter._next_msg_seq = mock.MagicMock(return_value=1)
+
+        result = asyncio.run(
+            adapter._send_chunk("group_123", "hello", reply_to=None)
+        )
+
+        # Should fail — no fallback possible without reply_to
+        assert result.success is False
+
+    def test_send_chunk_fallback_only_once(self):
+        """The fallback to standalone should only happen once, not loop."""
+        adapter = self._make_adapter()
+        adapter._guess_chat_type = mock.MagicMock(return_value="group")
+
+        attempt_count = 0
+
+        async def fake_group_text(chat_id, content, reply_to=None, keyboard=None):
+            nonlocal attempt_count
+            attempt_count += 1
+            raise RuntimeError(
+                "QQ Bot API error [400] /v2/groups/g/messages: "
+                "回复消息msg_id已过期"
+            )
+
+        adapter._send_group_text = fake_group_text
+        adapter._next_msg_seq = mock.MagicMock(return_value=1)
+
+        result = asyncio.run(
+            adapter._send_chunk("group_123", "hello", reply_to="expired_msg_id")
+        )
+
+        # First attempt with reply_to, second without (both fail),
+        # then the loop continues with remaining retries (also fail)
+        assert result.success is False
+        # Should be 3 total attempts (not infinite loop)
+        assert attempt_count == 3

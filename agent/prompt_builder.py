@@ -1132,6 +1132,15 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    # Fingerprint of the on-disk SKILL.md manifest (mtime + size per file).
+    # Without this, external edits to skill files (manual edits, git pull,
+    # sync tools, parallel sessions) would be invisible to the in-process
+    # LRU cache — Layer 1 would keep returning stale results and Layer 2
+    # (disk snapshot) would never be consulted.  See #43282.
+    _manifest = _build_skills_manifest(skills_dir)
+    _manifest_fp = hash(tuple(
+        (k, tuple(v)) for k, v in sorted(_manifest.items())
+    ))
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1139,6 +1148,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        _manifest_fp,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)

@@ -427,6 +427,45 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         assert "backend-skill" in result
 
+    def test_cache_invalidates_on_skill_file_content_change(
+        self, monkeypatch, tmp_path
+    ):
+        """Cache must miss when a SKILL.md is modified on disk (#43282)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "research" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Original description\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "Original description" in first
+
+        # Simulate external edit (git pull, sync tool, parallel session)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Updated description\n---\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "Updated description" in second
+        assert "Original description" not in second
+
+    def test_cache_hits_when_no_skill_files_changed(
+        self, monkeypatch, tmp_path
+    ):
+        """Cache should hit when no SKILL.md files changed on disk."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "research" / "stable-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: stable-skill\ndescription: Stable\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        second = build_skills_system_prompt()
+        # Same content — cache hit expected (no stale data)
+        assert first == second
+
 
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):

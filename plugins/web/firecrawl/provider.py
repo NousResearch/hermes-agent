@@ -258,7 +258,19 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            # Pass timeout (ms) to Firecrawl so the server-side deadline
+            # matches our asyncio deadline. Without this the API uses its
+            # 30 s default, causing SCRAPE_TIMEOUT before our 60 s
+            # client-side wait expires. See #43272.
+            scrape_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _get_firecrawl_client().scrape,
+                    url=url,
+                    formats=formats,
+                    timeout=60_000,
+                ),
+                timeout=60,
+            )
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)
@@ -325,6 +337,7 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             {"url": url, "error": "Interrupted", "title": ""} if _is_interrupted() else await _scrape_one(url, formats, format)
             for url in urls
         ]
+
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return setup_schema(

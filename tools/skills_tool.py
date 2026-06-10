@@ -1112,6 +1112,17 @@ def skill_view(
             _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
         except Exception:
             pass
+        # Also trust the global ~/.hermes/skills/ directory so symlinks from
+        # user-specific HERMES_HOME/skills/ to the global dir don't trigger
+        # false-positive security warnings (issue #43551).
+        try:
+            _global_skills = Path.home() / ".hermes" / "skills"
+            if _global_skills.is_dir():
+                _global_skills_resolved = _global_skills.resolve()
+                if _global_skills_resolved not in _trusted_dirs:
+                    _trusted_dirs.append(_global_skills_resolved)
+        except Exception:
+            pass
         for _td in _trusted_dirs:
             try:
                 skill_md.resolve().relative_to(_td)

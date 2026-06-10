@@ -5538,6 +5538,51 @@ async def async_call_llm(
                 "(fallback_chain + main agent model). Raising original error.",
                 task or "call", reason, resolved_provider,
             )
+        # ── Model-unsupported fallback (mirrors sync call_llm) ────────
+        # Provider rejected the *model* (not credentials, not quota): the
+        # user's main chat model was forwarded to a provider whose aux-task
+        # catalog differs from its chat catalog. Recovery: swap to the
+        # provider's registered default aux model. Auto users skip this —
+        # their chosen model IS the aux model, so retrying would be a no-op.
+        # See the sync block in call_llm for the full rationale.
+        if is_model_unsupported_error(first_err) and not is_auto:
+            _aux_default = _get_aux_model_for_provider(resolved_provider)
+            if _aux_default and _aux_default != final_model:
+                logger.info(
+                    "Auxiliary %s (async): %s rejected model %s, falling back "
+                    "to provider default aux model %s",
+                    task or "call", resolved_provider, final_model, _aux_default,
+                )
+                _fb_client, _fb_model = _get_cached_client(
+                    resolved_provider, _aux_default,
+                    async_mode=True,
+                    api_key=resolved_api_key or "",
+                    api_mode=resolved_api_mode or "",
+                )
+                if _fb_client is not None:
+                    _fb_kwargs = _build_call_kwargs(
+                        resolved_provider, _fb_model or _aux_default, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(_fb_client, "base_url", "") or ""))
+                    try:
+                        return _validate_llm_response(
+                            await _fb_client.chat.completions.create(**_fb_kwargs),
+                            task)
+                    except Exception as fb_err:
+                        logger.warning(
+                            "Auxiliary %s (async): provider default aux model %s "
+                            "also failed (%s). Raising original "
+                            "model-unsupported error.",
+                            task or "call", _aux_default, fb_err,
+                        )
+                else:
+                    logger.warning(
+                        "Auxiliary %s (async): could not resolve client for "
+                        "provider default aux model %s. Raising original error.",
+                        task or "call", _aux_default,
+                    )
         # Mirror the sync path: drop poisoned clients on connection/timeout
         # so the next aux call rebuilds.  See issue #23432.
         if _is_connection_error(first_err):

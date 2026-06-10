@@ -12,11 +12,13 @@ Two surfaces:
     (``_get_aux_model_for_provider``) is tried before re-raising. Pure
     auth errors (401 without model wording) continue to follow the
     existing auth-refresh / credential-pool chain.
+  * ``async_call_llm`` fallback (integration): same recovery on the async
+    path, with the fallback client requested in async mode.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -204,3 +206,56 @@ def test_call_llm_auto_user_skips_aux_model_fallback():
 
         # No default-aux fallback for auto users
         gaux.assert_not_called()
+
+
+# ── async_call_llm fallback parity ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_async_call_llm_falls_back_to_provider_default_aux_model():
+    """``async_call_llm`` mirrors the sync model-unsupported fallback: when
+    the main model is rejected, the provider's default aux model is tried
+    (with the fallback client requested in async mode) instead of re-raising."""
+    from agent import auxiliary_client as ac
+
+    rejected_model = "mimo-v2.5"
+    aux_default = "gemini-3-flash"
+    provider = "opencode-zen"
+
+    fallback_response = MagicMock()
+    fallback_response.choices = [MagicMock()]
+    fallback_response.choices[0].message.content = "ok via aux default"
+
+    primary_client = MagicMock()
+    primary_client.base_url = "https://opencode.ai/zen/go/v1"
+    primary_client.chat.completions.create = AsyncMock(
+        side_effect=_make_unsupported_exc())
+
+    fallback_client = MagicMock()
+    fallback_client.base_url = "https://opencode.ai/zen/go/v1"
+    fallback_client.chat.completions.create = AsyncMock(
+        return_value=fallback_response)
+
+    with patch.object(ac, "_get_cached_client",
+                      side_effect=[(primary_client, rejected_model),
+                                   (fallback_client, aux_default)]) as gcc, \
+         patch.object(ac, "_get_aux_model_for_provider",
+                      return_value=aux_default) as gaux, \
+         patch.object(ac, "_resolve_task_provider_model",
+                      return_value=(provider, rejected_model, "", "", "")), \
+         patch.object(ac, "_get_task_extra_body", return_value={}):
+        result = await ac.async_call_llm(
+            task="title_generation",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    # Detector was consulted
+    gaux.assert_called_once_with(provider)
+    # The SECOND _get_cached_client call must have used the aux default model
+    # and requested an async client.
+    assert gcc.call_count == 2
+    _, model_arg = gcc.call_args_list[1][0][:2]
+    assert model_arg == aux_default
+    assert gcc.call_args_list[1][1].get("async_mode") is True
+
+    # The result was validated from the fallback client
+    assert result.choices[0].message.content == "ok via aux default"

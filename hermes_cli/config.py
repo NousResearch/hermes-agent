@@ -1653,6 +1653,18 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Write gate for the memory tool (add/replace/remove), applied to BOTH
+        # foreground agent turns and the background self-improvement review fork
+        # (the source of unprompted "wrong assumption" saves users reported):
+        #   on      — write freely (default, current behaviour)
+        #   off     — never write; the memory tool returns a clean disabled result
+        #   approve — foreground writes block on an inline approve/deny prompt
+        #             (entries are small enough to review in a chat bubble);
+        #             background-review writes are staged for review instead of
+        #             committed (a daemon thread cannot block on a prompt).
+        #             Pending entries: /memory pending, /memory approve <id>,
+        #             /memory reject <id>.
+        "write_mode": "on",
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
@@ -1757,6 +1769,17 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Write gate for skill_manage (create/edit/patch/write_file/delete/
+        # remove_file), applied to BOTH foreground agent turns and the
+        # background self-improvement review fork:
+        #   on      — write freely (default, current behaviour)
+        #   off     — never write; skill_manage returns a clean disabled result
+        #   approve — stage the write for review instead of committing.
+        #             Pending skills are listed with /skills pending, reviewed
+        #             with /skills diff <id> (full diff — CLI/dashboard/file,
+        #             never crammed into a chat bubble), and applied with
+        #             /skills approve <id> or dropped with /skills reject <id>.
+        "write_mode": "on",
     },
 
     # Curator — background skill maintenance.

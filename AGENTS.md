@@ -36,7 +36,8 @@ main checkout).
   there are no user actions, say `Action Items For You: None`. Keep the
   durable action item in Linear when it is a real task; use
   `docs/operator/ACTION_ITEMS.md` as a short side-panel index that links to the
-  Linear issue.
+  Linear issue. Label user-owned asks with `User Action` so they appear in the
+  shared Linear view `Hermes - Action Items For Jesse`.
 - Do not design a new subsystem until you have reported the reuse scan. Before
   implementing new behavior, search existing Hermes mechanisms, nearby tests,
   and docs; then state what is reused, what new code/config is necessary, and

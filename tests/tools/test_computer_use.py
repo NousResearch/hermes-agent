@@ -109,11 +109,16 @@ class TestRegistration:
         assert entry.toolset == "computer_use"
         assert entry.schema["name"] == "computer_use"
 
-    def test_check_fn_is_false_on_linux(self):
+    def test_check_fn_gates_on_platform_backend(self):
+        """check_fn is False wherever no backend exists (e.g. Linux); on
+        Windows it mirrors windows_backend_available()."""
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
         entry = registry._tools["computer_use"]
-        if sys.platform != "darwin":
+        if sys.platform == "win32":
+            from tools.computer_use.windows_backend import windows_backend_available
+            assert entry.check_fn() is windows_backend_available()
+        elif sys.platform != "darwin":
             assert entry.check_fn() is False
 
 

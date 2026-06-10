@@ -8,22 +8,37 @@ models that were trained on them (e.g. Claude's computer-use RL).
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict
 
+
+# Platform-specific tail for the tool description. macOS (cua-driver) injects
+# input into background windows; Windows (UIA + SendInput) cannot, so actions
+# briefly foreground the target window there.
+if sys.platform == "win32":
+    _PLATFORM_NOTE = (
+        "Windows: mouse/keyboard actions briefly bring the target window to "
+        "the foreground (background injection is not supported); set_value "
+        "works without focus via UI Automation. 'cmd' in key combos maps to "
+        "Ctrl; use 'win' for the Windows key."
+    )
+else:
+    _PLATFORM_NOTE = (
+        "Works on any window — hidden, minimized, on another Space, or "
+        "behind another app. macOS only; requires cua-driver to be installed."
+    )
 
 # One consolidated tool with an `action` discriminator. Keeps the schema
 # compact and the per-turn token cost low.
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the macOS desktop in the background — screenshots, mouse, "
-        "keyboard, scroll, drag — without stealing the user's cursor, "
-        "keyboard focus, or Space. Preferred workflow: call with "
+        "Drive the desktop — screenshots, mouse, keyboard, scroll, drag. "
+        "Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Works on any window — "
-        "hidden, minimized, on another Space, or behind another app. "
-        "macOS only; requires cua-driver to be installed."
+        "are supported for models trained on them. "
+        + _PLATFORM_NOTE
     ),
     "parameters": {
         "type": "object",

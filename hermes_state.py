@@ -1551,6 +1551,67 @@ class SessionDB:
                 self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
+    def prune_empty_orphan_sessions(
+        self,
+        *,
+        sources: Optional[Tuple[str, ...]] = ("telegram", "discord", "slack"),
+        older_than_seconds: int = 3600,
+    ) -> int:
+        """Remove empty session rows created for events that never invoked the LLM.
+
+        Background: gateway platforms call ``ensure_session``/``get_or_create_session``
+        for every inbound event (group observation, callback query, edited message,
+        reaction, etc.). When the handler bails before invoking the agent, a session
+        row is left with ``model=NULL``, ``message_count=0``, and ``ended_at=NULL``
+        (or sometimes SET but never associated with a real conversation).
+
+        These ghost rows pollute ``hermes insights`` (showing as an "unknown" model
+        bucket) and inflate session counts in the daily report. The TUI equivalent
+        was handled by ``prune_empty_ghost_sessions``; this covers the same class of
+        bug for messaging platforms.
+
+        Args:
+            sources: platform source names to scan. Default covers the three with
+                inbound-event over-generation in production. Add more as needed.
+            older_than_seconds: only prune rows older than this. Default 1h — long
+                enough that a slow but legit session has time to populate, short
+                enough that bursts of orphans from a single event are caught within
+                one insights window (cron runs at 11:00 AEST).
+
+        Returns:
+            Number of session rows deleted.
+        """
+        cutoff = time.time() - older_than_seconds
+        if not sources:
+            return 0
+
+        def _do(conn):
+            placeholders = ",".join("?" * len(sources))
+            # An "orphan" is a row that was never bound to an LLM call AND has no
+            # transcript messages. Either condition alone (NULL model OR 0 msgs)
+            # is a strong signal; both together is conclusive. We also require
+            # started_at < cutoff so a session that's still actively filling
+            # (e.g. just-created before its first message lands) is not touched.
+            rows = conn.execute(
+                f"""
+                DELETE FROM sessions
+                WHERE source IN ({placeholders})
+                  AND (model IS NULL OR model = '')
+                  AND message_count = 0
+                  AND tool_call_count = 0
+                  AND input_tokens = 0
+                  AND output_tokens = 0
+                  AND started_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages m WHERE m.session_id = sessions.id
+                  )
+                """,
+                (*sources, cutoff),
+            )
+            return rows.rowcount
+
+        return self._execute_write(_do) or 0
+
     def finalize_orphaned_compression_sessions(self) -> int:
         """Mark orphaned compression continuation sessions as ended.
 

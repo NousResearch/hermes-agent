@@ -1527,6 +1527,126 @@ class TestPruneSessions:
             assert db.get_session(sid) is None
 
 
+class TestPruneEmptyOrphanSessions:
+    """``prune_empty_orphan_sessions`` — clean up rows that were created for
+    inbound platform events that never invoked the LLM.
+
+    Background: gateway platforms call ``ensure_session`` for every event
+    (group observation, callback query, edited message, reaction, etc.).
+    When the handler bails before invoking the agent, a session row is
+    left with ``model=NULL``, ``message_count=0``, and ``ended_at=NULL``.
+    These ghost rows pollute ``hermes insights`` ("unknown" model bucket)
+    and inflate session counts. See hermes-agent #43XXX for the production
+    observation that drove this regression test.
+    """
+
+    def test_prunes_old_telegram_orphan(self, db):
+        import time as _t
+        old = _t.time() - 7200  # 2h ago
+        db.create_session(session_id="orphan-old", source="telegram", user_id="u1")
+        # Force started_at to be old
+        db._execute_write(
+            lambda c: c.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?", (old, "orphan-old")
+            )
+        )
+        pruned = db.prune_empty_orphan_sessions()
+        assert pruned == 1
+        assert db.get_session("orphan-old") is None
+
+    def test_preserves_recent_orphan_until_grace(self, db):
+        """Sessions younger than the cutoff must be left alone, even if
+        they're empty — the event might still be filling in."""
+        db.create_session(session_id="orphan-recent", source="telegram", user_id="u1")
+        pruned = db.prune_empty_orphan_sessions(older_than_seconds=3600)
+        assert pruned == 0
+        assert db.get_session("orphan-recent") is not None
+
+    def test_preserves_real_session_with_messages(self, db):
+        """A telegram session that has been bound to an LLM (model set,
+        message_count > 0) must NEVER be pruned even if other criteria
+        look like an orphan."""
+        import time as _t
+        old = _t.time() - 86400  # 1 day ago
+        db.create_session(
+            session_id="real-telegram",
+            source="telegram",
+            user_id="u1",
+            model="MiniMax-M3",
+        )
+        db._execute_write(
+            lambda c: c.execute(
+                "UPDATE sessions SET started_at = ?, message_count = 1, "
+                "input_tokens = 500 WHERE id = ?",
+                (old, "real-telegram"),
+            )
+        )
+        pruned = db.prune_empty_orphan_sessions(older_than_seconds=60)
+        assert pruned == 0
+        assert db.get_session("real-telegram") is not None
+
+    def test_preserves_session_with_messages_even_if_model_null(self, db):
+        """Some legitimate cron / LLM-driven sessions transiently have
+        model=NULL while the model is being resolved. If messages have
+        been recorded, the row is in active use and must not be pruned."""
+        import time as _t
+        old = _t.time() - 86400
+        db.create_session(session_id="legit-no-model-yet", source="telegram", user_id="u1")
+        db._execute_write(
+            lambda c: c.execute(
+                "UPDATE sessions SET started_at = ?, message_count = 3 WHERE id = ?",
+                (old, "legit-no-model-yet"),
+            )
+        )
+        pruned = db.prune_empty_orphan_sessions(older_than_seconds=60)
+        assert pruned == 0
+        assert db.get_session("legit-no-model-yet") is not None
+
+    def test_does_not_touch_non_target_sources(self, db):
+        """``prune_empty_orphan_sessions`` only operates on the sources in
+        its ``sources`` tuple. tui and cli orphans must survive untouched."""
+        import time as _t
+        old = _t.time() - 86400
+        for source, sid in [("tui", "tui-orphan"), ("cli", "cli-orphan")]:
+            db.create_session(session_id=sid, source=source)
+            db._execute_write(
+                lambda c, s=sid, t=old: c.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?", (t, s)
+                )
+            )
+        pruned = db.prune_empty_orphan_sessions()  # default: telegram/discord/slack
+        assert pruned == 0
+        assert db.get_session("tui-orphan") is not None
+        assert db.get_session("cli-orphan") is not None
+
+    def test_covers_all_default_sources(self, db):
+        """Verify the default source list covers the platforms that
+        showed orphan pollution in production: telegram, discord, slack."""
+        import time as _t
+        old = _t.time() - 7200
+        for source, sid in [
+            ("telegram", "tg-orphan"),
+            ("discord", "dc-orphan"),
+            ("slack", "sl-orphan"),
+        ]:
+            db.create_session(session_id=sid, source=source, user_id="u1")
+            db._execute_write(
+                lambda c, s=sid, t=old: c.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?", (t, s)
+                )
+            )
+        pruned = db.prune_empty_orphan_sessions()
+        assert pruned == 3
+        for sid in ("tg-orphan", "dc-orphan", "sl-orphan"):
+            assert db.get_session(sid) is None
+
+    def test_empty_sources_is_noop(self, db):
+        """Passing an empty sources tuple must be a safe no-op, not a
+        SQL syntax error from an empty IN clause."""
+        pruned = db.prune_empty_orphan_sessions(sources=())
+        assert pruned == 0
+
+
 class TestDeleteSessionOrphansChildren:
     def test_delete_orphans_children(self, db):
         """Deleting a parent session orphans its children."""

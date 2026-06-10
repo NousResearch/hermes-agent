@@ -7646,6 +7646,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_snippet = event.reply_to_text[:500]
             message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
+        # Inject forwarded-message context when the adapter detected a
+        # platform-native forward (e.g. Telegram forward_origin).
+        _fwd = getattr(event, "forward_origin", None)
+        if isinstance(_fwd, dict) and _fwd.get("type"):
+            _fwd_type = _fwd["type"]
+            _fwd_parts = ["[Forwarded message]"]
+            if _fwd.get("sender_name"):
+                _fwd_parts.append(f"From: {_fwd['sender_name']}")
+            elif _fwd_type == "hidden_user":
+                _fwd_parts.append("From: hidden sender")
+            if _fwd.get("chat_name"):
+                _fwd_parts.append(f"Chat: {_fwd['chat_name']}")
+            if _fwd.get("date"):
+                _fwd_parts.append(f"Date: {_fwd['date']}")
+            message_text = f'{" | ".join(_fwd_parts)}\n\n{message_text}'
+
         if "@" in message_text:
             try:
                 from agent.context_references import preprocess_context_references_async

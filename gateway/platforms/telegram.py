@@ -6085,6 +6085,47 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
+        # Extract forwarded-message metadata from Telegram's forward_origin.
+        # PTB 21+ exposes ``message.forward_origin`` as a MessageOrigin
+        # subclass (User, HiddenUser, Chat, or Channel).  Normalise into a
+        # plain dict so downstream rendering is platform-neutral.
+        _forward_origin = None
+        _fwd = getattr(message, "forward_origin", None)
+        if _fwd is not None:
+            _fwd_type = getattr(_fwd, "type", "")
+            _fwd_entry: dict[str, str] = {"type": str(_fwd_type).lower()}
+            # MessageOriginUser → sender_user (User obj)
+            _sender_user = getattr(_fwd, "sender_user", None)
+            if _sender_user is not None:
+                _fwd_entry["sender_name"] = getattr(_sender_user, "full_name", "") or ""
+                _fwd_entry["sender_id"] = str(_sender_user.id)
+            # MessageOriginHiddenUser → sender_user_name (str)
+            _hidden_name = getattr(_fwd, "sender_user_name", None)
+            if _hidden_name:
+                _fwd_entry["sender_name"] = _hidden_name
+            # MessageOriginChat → sender_chat (Chat obj)
+            _sender_chat = getattr(_fwd, "sender_chat", None)
+            if _sender_chat is not None:
+                _fwd_entry["chat_name"] = (
+                    getattr(_sender_chat, "title", None)
+                    or getattr(_sender_chat, "full_name", "")
+                    or ""
+                )
+                _fwd_entry["sender_id"] = str(_sender_chat.id)
+            # MessageOriginChannel → chat (Chat obj) + message_id
+            _origin_chat = getattr(_fwd, "chat", None)
+            if _origin_chat is not None:
+                _fwd_entry["chat_name"] = (
+                    getattr(_origin_chat, "title", None)
+                    or getattr(_origin_chat, "full_name", "")
+                    or ""
+                )
+                _fwd_entry["sender_id"] = str(_origin_chat.id)
+            _fwd_date = getattr(_fwd, "date", None)
+            if _fwd_date is not None:
+                _fwd_entry["date"] = _fwd_date.isoformat()
+            _forward_origin = _fwd_entry
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
@@ -6094,6 +6135,7 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            forward_origin=_forward_origin,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

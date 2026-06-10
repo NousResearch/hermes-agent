@@ -1459,6 +1459,17 @@ class MessageEvent:
     # trigger message alone, then prepend this context afterward.
     channel_context: Optional[str] = None
     
+    # Forwarded-message metadata.  When non-None, the message was forwarded
+    # from another source rather than typed directly by the sender.  Adapters
+    # populate this from platform-native forwarding signals (e.g. Telegram's
+    # ``Message.forward_origin``).  Keys:
+    #   type   — "user" | "hidden_user" | "chat" | "channel"
+    #   sender_name — display name of the original sender (when available)
+    #   sender_id   — platform user/chat id of the original sender
+    #   chat_name   — original chat/channel name (for channel/chat forwards)
+    #   date        — original message date (ISO string)
+    forward_origin: Optional[Dict[str, str]] = None
+
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False

@@ -18,6 +18,13 @@ permissions:
 
 env:
   IMAGE_REPOSITORY: hermes-agent
+  # Lista de tags Git a ignorar, separados por espacios.
+  # Puede configurarse como variable de repositorio en:
+  #   Settings -> Secrets and variables -> Actions -> Variables -> IGNORED_TAGS
+  # Si la variable de repositorio no está definida, se usa el valor aquí indicado (vacío por defecto).
+  # Ejemplo de valor: "v1.0.0 v1.0.1 v2.0.0-beta"
+  # NOTA: usar vars.* en lugar de secrets.* para que el valor sea visible en los logs.
+  IGNORED_TAGS: ${{ vars.IGNORED_TAGS || '' }}
 
 jobs:
   docker:
@@ -633,9 +640,28 @@ jobs:
 
           section "Calculando tags publicables"
 
+          read -r -a IGNORED_TAGS_ARRAY <<< "${IGNORED_TAGS:-}"
+          log_debug "Tags ignorados configurados: ${#IGNORED_TAGS_ARRAY[@]} -> ${IGNORED_TAGS_ARRAY[*]:-ninguno}"
+
+          is_ignored_tag() {
+            local tag="$1"
+            local ignored
+            for ignored in "${IGNORED_TAGS_ARRAY[@]:-}"; do
+              if [ "${tag}" = "${ignored}" ]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
           for TAG in "${TAGS[@]}"; do
             COMMIT="$(git rev-list -n 1 "${TAG}")"
             log_debug "Evaluando publicabilidad: tag=${TAG} commit=${COMMIT}"
+
+            if is_ignored_tag "${TAG}"; then
+              add_skip "${TAG}" "tag en la lista IGNORED_TAGS, se omite"
+              continue
+            fi
 
             if ! is_valid_docker_tag "${TAG}"; then
               add_skip "${TAG}" "el tag Git no es válido como tag Docker"

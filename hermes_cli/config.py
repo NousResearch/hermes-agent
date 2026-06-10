@@ -2004,6 +2004,8 @@ DEFAULT_CONFIG = {
             # (AGENTS.md, CLAUDE.md, etc.). Chat platforms can opt out to
             # keep short message turns from carrying repo-sized prompts.
             "skip_context_files": False,
+            # Optional per-platform overrides, e.g.
+            # platforms.telegram.skip_context_files or platforms.telegram.max_turns.
             "platforms": {},
         },
         # When false (default), any file path the agent emits is delivered

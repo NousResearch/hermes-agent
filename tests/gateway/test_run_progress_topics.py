@@ -348,6 +348,106 @@ async def test_run_agent_platform_can_skip_context_files(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_agent_platform_can_override_max_turns(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    monkeypatch.setenv("HERMES_MAX_ITERATIONS", "90")
+
+    CaptureKwargsAgent.last_kwargs = None
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = CaptureKwargsAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "gateway": {
+                "agent": {
+                    "platforms": {
+                        "telegram": {"max_turns": 12},
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-max-turns-platform",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert CaptureKwargsAgent.last_kwargs["max_iterations"] == 12
+
+
+@pytest.mark.asyncio
+async def test_run_agent_uses_global_max_turns_without_platform_override(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    monkeypatch.setenv("HERMES_MAX_ITERATIONS", "90")
+
+    CaptureKwargsAgent.last_kwargs = None
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = CaptureKwargsAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "gateway": {
+                "agent": {
+                    "platforms": {
+                        "telegram": {"skip_context_files": True},
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-max-turns-default",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert CaptureKwargsAgent.last_kwargs["max_iterations"] == 90
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 

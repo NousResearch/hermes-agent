@@ -16005,6 +16005,44 @@ class GatewayRunner:
             )
         )
 
+    @staticmethod
+    def _resolve_agent_max_iterations(user_config: dict, platform_key: str) -> int:
+        """Return the max tool-calling iterations for a gateway-created agent."""
+        try:
+            default_max = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+        except (TypeError, ValueError):
+            default_max = 90
+
+        platform_override = cfg_get(
+            user_config,
+            "gateway",
+            "agent",
+            "platforms",
+            platform_key,
+            "max_turns",
+            default=None,
+        )
+        if platform_override is None:
+            return default_max
+
+        try:
+            max_turns = int(platform_override)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid gateway.agent.platforms.%s.max_turns=%r",
+                platform_key,
+                platform_override,
+            )
+            return default_max
+        if max_turns <= 0:
+            logger.warning(
+                "Ignoring non-positive gateway.agent.platforms.%s.max_turns=%r",
+                platform_key,
+                platform_override,
+            )
+            return default_max
+        return max_turns
+
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
     ) -> tuple:
@@ -17383,9 +17421,6 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
@@ -17403,6 +17438,7 @@ class GatewayRunner:
             # keys may change without restart). Keep config.yaml authoritative for
             # runtime budget settings bridged into env vars.
             _reload_runtime_env_preserving_config_authority()
+            max_iterations = self._resolve_agent_max_iterations(user_config, platform_key)
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(

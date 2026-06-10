@@ -1130,7 +1130,7 @@ export const en: Translations = {
     ],
     startVoice: 'Start voice conversation',
     queueMessage: 'Queue message',
-    steer: 'Steer the current run (⌘⏎)',
+    steer: 'Steer the current run',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',
@@ -1471,6 +1471,8 @@ export const en: Translations = {
       branch: branch => `branch ${branch}`,
       closeCommandCenter: 'Close Command Center',
       openCommandCenter: 'Open Command Center',
+      showTerminal: 'Show terminal',
+      hideTerminal: 'Hide terminal',
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
@@ -1526,8 +1528,7 @@ export const en: Translations = {
     tryAgain: 'Try again',
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
-    terminalFocus: 'Focus terminal view',
-    terminalSplit: 'Return to split view',
+    terminalHide: 'Hide terminal',
     addToChat: 'Add to chat'
   },
 

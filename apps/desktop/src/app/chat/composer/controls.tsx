@@ -4,6 +4,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, Layers3, Loader2, Square, SteeringWheel } from '@/lib/icons'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
@@ -62,6 +63,7 @@ export function ComposerControls({
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const steerLabel = `${c.steer} (${formatCombo('mod+enter')})`
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -73,9 +75,9 @@ export function ComposerControls({
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       {canSteer && (
-        <Tip label={c.steer}>
+        <Tip label={steerLabel}>
           <Button
-            aria-label={c.steer}
+            aria-label={steerLabel}
             className={GHOST_ICON_BTN}
             disabled={disabled}
             onClick={onSteer}

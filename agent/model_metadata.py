@@ -142,10 +142,10 @@ MINIMUM_CONTEXT_LENGTH = 64_000
 # delta-vs-measured band to roughly +-5% across 170k-280k turns. Tunable via
 # env HERMES_COMPOSITION_CHARS_PER_TOKEN without a code change; clamped to a
 # sane 2.0-8.0 range so a typo can't make the estimate absurd. This only
-# affects the displayed composition estimate -- never billing, the provider's
-# real prompt_tokens (Measured occupancy), or compression pressure decisions
-# (those use estimate_request_tokens_rough, still /4, deliberately
-# conservative so Hermes compresses before a provider rejects the payload).
+# affects the displayed composition estimate -- never billing or the provider's
+# real prompt_tokens (Measured occupancy). As of the divisor-unification work
+# every char-based estimator (display, rough/compression, 413/stale-call) reads
+# this same constant, so 3.5 is the single tunable knob across all of them.
 def _composition_chars_per_token() -> float:
     raw = os.environ.get("HERMES_COMPOSITION_CHARS_PER_TOKEN", "").strip()
     if raw:
@@ -159,6 +159,30 @@ def _composition_chars_per_token() -> float:
 
 
 COMPOSITION_CHARS_PER_TOKEN = _composition_chars_per_token()
+
+
+# Per-message wire-framing overhead, in tokens. Every chat message carries
+# structural scaffolding the char-based estimators don't see: role tokens,
+# message delimiters, and (for tool turns) tool-call id wrappers. The content
+# char-count misses all of it, which is a large part of why the displayed
+# Estimated request size runs under the provider's Measured occupancy on
+# many-message sessions. A flat per-message constant absorbs most of that gap
+# without tokenizing. ~4 tok/message is a conservative empirical fit across
+# Anthropic + OpenAI-wire requests. Tunable via env (clamped 0-20; 0 disables).
+# Display-only: never affects billing, Measured occupancy, or compression.
+def _per_message_framing_tokens() -> int:
+    raw = os.environ.get("HERMES_PER_MESSAGE_FRAMING_TOKENS", "").strip()
+    if raw:
+        try:
+            val = int(raw)
+            if 0 <= val <= 20:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return 4
+
+
+PER_MESSAGE_FRAMING_TOKENS = _per_message_framing_tokens()
 
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
@@ -1959,6 +1983,7 @@ def compose_request_breakdown(
     messages: List[Dict[str, Any]],
     *,
     system_prompt: str = "",
+    skills_prompt: str = "",
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, int]:
     """Decompose an outgoing request into fixed vs non-fixed token buckets.
@@ -1972,8 +1997,16 @@ def compose_request_breakdown(
     default 3.5; tunable via env HERMES_COMPOSITION_CHARS_PER_TOKEN):
       Fixed (stable cacheable prefix):
         sys_tokens, tool_schema_tokens
+        - sys_tokens splits into identity_tokens + skills_tokens, where
+          skills_tokens is the skill-index catalog embedded in the system
+          prompt (passed separately as skills_prompt; it is a substring of
+          system_prompt, so identity_tokens = sys_tokens - skills_tokens).
       Non-fixed (grows with the conversation):
-        history_tokens, tool_result_tokens, tool_arg_tokens
+        history_tokens, tool_result_tokens, tool_arg_tokens, framing_tokens
+        - framing_tokens is a flat per-message wire-overhead estimate
+          (PER_MESSAGE_FRAMING_TOKENS * message_count): role tokens, message
+          delimiters, tool-call id wrappers that the char walk never sees.
+          It scales with message count, so it lives in non-fixed.
 
     Image parts count at the flat per-image cost (matching
     estimate_messages_tokens_rough). The system message inside messages is
@@ -1984,6 +2017,10 @@ def compose_request_breakdown(
     """
     IMG_COST = 1500
     sys_chars = len(system_prompt or "")
+    skills_chars = len(skills_prompt or "")
+    # The skills catalog is a substring of the system prompt; never let it
+    # exceed the whole prompt (defensive against a stale/mismatched stash).
+    skills_chars = min(skills_chars, sys_chars)
     tool_schema_chars = len(str(tools)) if tools else 0
     history_chars = 0
     tool_result_chars = 0
@@ -2024,19 +2061,36 @@ def compose_request_breakdown(
         return _ceil_chars_to_tokens(chars)
 
     sys_tokens = _t(sys_chars)
+    # Split the fixed system prompt into the skill-index catalog vs everything
+    # else (identity/rules/guidance). skills_tokens is derived from the same
+    # char->token rule; identity is the remainder so the two always sum to
+    # sys_tokens exactly (no double-count, invariant preserved).
+    skills_tokens = _t(skills_chars)
+    skills_tokens = min(skills_tokens, sys_tokens)
+    identity_tokens = sys_tokens - skills_tokens
     tool_schema_tokens = _t(tool_schema_chars)
+    # Per-message wire framing: flat constant * message count. Counts every
+    # message on the wire (including the system message) since each carries
+    # role/delimiter overhead. Scales with the conversation -> non-fixed.
+    framing_tokens = PER_MESSAGE_FRAMING_TOKENS * len(messages or [])
     history_tokens = _t(history_chars) + image_tokens
     tool_result_tokens = _t(tool_result_chars)
     tool_arg_tokens = _t(tool_arg_chars)
     fixed_tokens = sys_tokens + tool_schema_tokens
-    nonfixed_tokens = history_tokens + tool_result_tokens + tool_arg_tokens
+    nonfixed_tokens = (
+        history_tokens + tool_result_tokens + tool_arg_tokens + framing_tokens
+    )
+
     return {
         "sys_tokens": sys_tokens,
+        "identity_tokens": identity_tokens,
+        "skills_tokens": skills_tokens,
         "tool_schema_tokens": tool_schema_tokens,
         "history_tokens": history_tokens,
         "tool_result_tokens": tool_result_tokens,
         "tool_arg_tokens": tool_arg_tokens,
         "tool_result_count": tool_result_count,
+        "framing_tokens": framing_tokens,
         "fixed_tokens": fixed_tokens,
         "nonfixed_tokens": nonfixed_tokens,
         "total_tokens": fixed_tokens + nonfixed_tokens,

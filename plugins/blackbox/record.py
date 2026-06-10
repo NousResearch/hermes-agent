@@ -51,6 +51,11 @@ class TurnRecord:
     comp_tool_result_tokens: Optional[int] = None
     comp_tool_arg_tokens: Optional[int] = None
     comp_tool_result_count: Optional[int] = None
+    # System-prompt sub-split (identity/rules vs skill-index catalog) and the
+    # per-message wire-framing estimate. comp_skills_tokens is a subset of
+    # comp_sys_tokens; comp_framing_tokens is part of the non-fixed subtotal.
+    comp_skills_tokens: Optional[int] = None
+    comp_framing_tokens: Optional[int] = None
     # Per-call composition history JSON (list of breakdown dicts) for forensics.
     comp_calls_json: Optional[str] = None
     cost_usd: Optional[float] = None

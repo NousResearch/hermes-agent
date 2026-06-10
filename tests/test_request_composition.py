@@ -33,7 +33,8 @@ def test_buckets_sum_exactly_to_total():
     # No scaling: fixed + nonfixed == total, and each subtotal is its parts.
     assert comp["fixed_tokens"] == comp["sys_tokens"] + comp["tool_schema_tokens"]
     assert comp["nonfixed_tokens"] == (
-        comp["history_tokens"] + comp["tool_result_tokens"] + comp["tool_arg_tokens"]
+        comp["history_tokens"] + comp["tool_result_tokens"]
+        + comp["tool_arg_tokens"] + comp["framing_tokens"]
     )
     assert comp["total_tokens"] == comp["fixed_tokens"] + comp["nonfixed_tokens"]
     assert comp["tool_result_count"] == 1
@@ -49,6 +50,73 @@ def test_system_message_in_list_is_not_double_counted():
     # already accounted via system_prompt.
     assert a["history_tokens"] == b["history_tokens"]
     assert a["sys_tokens"] == b["sys_tokens"]
+
+
+def test_skills_split_sums_to_sys_tokens():
+    # skills_prompt is a substring of the system prompt; identity + skills must
+    # equal sys_tokens exactly (no double-count, invariant preserved).
+    skills = "K" * 14000
+    sys_prompt = ("S" * 26000) + skills
+    comp = compose_request_breakdown(
+        [{"role": "user", "content": "hi"}],
+        system_prompt=sys_prompt,
+        skills_prompt=skills,
+    )
+    assert comp["skills_tokens"] > 0
+    assert comp["identity_tokens"] + comp["skills_tokens"] == comp["sys_tokens"]
+    assert comp["skills_tokens"] <= comp["sys_tokens"]
+
+
+def test_skills_absent_yields_zero_skills_tokens():
+    comp = compose_request_breakdown(
+        [{"role": "user", "content": "hi"}], system_prompt="S" * 4000
+    )
+    assert comp["skills_tokens"] == 0
+    assert comp["identity_tokens"] == comp["sys_tokens"]
+
+
+def test_skills_prompt_longer_than_system_is_clamped():
+    # Defensive: a stale/mismatched skills stash longer than the system prompt
+    # must never make skills_tokens exceed sys_tokens (no negative identity).
+    comp = compose_request_breakdown(
+        [{"role": "user", "content": "hi"}],
+        system_prompt="S" * 1000,
+        skills_prompt="K" * 9000,
+    )
+    assert comp["skills_tokens"] <= comp["sys_tokens"]
+    assert comp["identity_tokens"] >= 0
+    assert comp["identity_tokens"] + comp["skills_tokens"] == comp["sys_tokens"]
+
+
+def test_framing_tokens_scale_with_message_count():
+    from agent.model_metadata import PER_MESSAGE_FRAMING_TOKENS
+
+    msgs = [{"role": "user", "content": "x"}] * 7
+    comp = compose_request_breakdown(msgs, system_prompt="s")
+    assert comp["framing_tokens"] == PER_MESSAGE_FRAMING_TOKENS * 7
+    # framing is part of non-fixed and the total invariant still holds.
+    assert comp["framing_tokens"] <= comp["nonfixed_tokens"]
+    assert comp["total_tokens"] == comp["fixed_tokens"] + comp["nonfixed_tokens"]
+
+
+def test_framing_zero_for_empty_messages():
+    comp = compose_request_breakdown([], system_prompt="s")
+    assert comp["framing_tokens"] == 0
+
+
+def test_framing_env_override(monkeypatch):
+    # The constant is import-time; re-evaluate the helper directly to confirm
+    # the env override + clamp behavior without reloading the module.
+    import agent.model_metadata as mm
+
+    monkeypatch.setenv("HERMES_PER_MESSAGE_FRAMING_TOKENS", "6")
+    assert mm._per_message_framing_tokens() == 6
+    monkeypatch.setenv("HERMES_PER_MESSAGE_FRAMING_TOKENS", "0")
+    assert mm._per_message_framing_tokens() == 0  # 0 disables
+    monkeypatch.setenv("HERMES_PER_MESSAGE_FRAMING_TOKENS", "999")
+    assert mm._per_message_framing_tokens() == 4  # out of range -> default
+    monkeypatch.setenv("HERMES_PER_MESSAGE_FRAMING_TOKENS", "junk")
+    assert mm._per_message_framing_tokens() == 4  # non-numeric -> default
 
 
 def test_tool_args_counted_separately_from_history():
@@ -165,6 +233,7 @@ def _record(**over):
         comp_sys_tokens=1200, comp_tool_schema_tokens=1800,
         comp_history_tokens=300, comp_tool_result_tokens=1400,
         comp_tool_arg_tokens=200, comp_tool_result_count=4,
+        comp_skills_tokens=600, comp_framing_tokens=720,
         comp_calls_json=json.dumps([{"fixed_tokens": 3000}]),
     )
     base.update(over)
@@ -181,6 +250,8 @@ def test_comp_columns_round_trip(bb_store):
     assert got["comp_tool_result_tokens"] == 1400
     assert got["comp_tool_arg_tokens"] == 200
     assert got["comp_tool_result_count"] == 4
+    assert got["comp_skills_tokens"] == 600
+    assert got["comp_framing_tokens"] == 720
     assert json.loads(got["comp_calls_json"]) == [{"fixed_tokens": 3000}]
 
 
@@ -214,7 +285,8 @@ def test_migration_adds_comp_columns_to_legacy_db(bb_store, tmp_path):
         cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
     for c in ("comp_sys_tokens", "comp_tool_schema_tokens", "comp_history_tokens",
               "comp_tool_result_tokens", "comp_tool_arg_tokens",
-              "comp_tool_result_count", "comp_calls_json"):
+              "comp_tool_result_count", "comp_skills_tokens",
+              "comp_framing_tokens", "comp_calls_json"):
         assert c in cols, f"migration missed {c}"
 
 

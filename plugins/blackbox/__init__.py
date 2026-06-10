@@ -272,6 +272,8 @@ def _build_record(
         comp_tool_result_tokens=_comp_get(usage, "tool_result_tokens"),
         comp_tool_arg_tokens=_comp_get(usage, "tool_arg_tokens"),
         comp_tool_result_count=_comp_get(usage, "tool_result_count"),
+        comp_skills_tokens=_comp_get(usage, "skills_tokens"),
+        comp_framing_tokens=_comp_get(usage, "framing_tokens"),
         comp_calls_json=_comp_calls_json(usage),
         cost_usd=cost_usd,
         cost_status=cost_status,

@@ -193,6 +193,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         skills_prompt = ""
     if skills_prompt:
         stable_parts.append(skills_prompt)
+    # Stash the skills-index substring on the agent so the request-composition
+    # telemetry (compose_request_breakdown) can split System prompt into
+    # identity/rules vs skill catalog. Display-only; never affects the prompt
+    # bytes actually sent. Cleared to "" when no skills block is present.
+    try:
+        agent._skills_prompt_text = skills_prompt or ""
+    except Exception:
+        pass
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

@@ -73,6 +73,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             comp_tool_result_tokens INT,
             comp_tool_arg_tokens INT,
             comp_tool_result_count INT,
+            comp_skills_tokens INT,
+            comp_framing_tokens INT,
             comp_calls_json TEXT,
             cost_usd REAL,
             cost_status TEXT,
@@ -127,6 +129,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     for _col in (
         "comp_sys_tokens", "comp_tool_schema_tokens", "comp_history_tokens",
         "comp_tool_result_tokens", "comp_tool_arg_tokens", "comp_tool_result_count",
+        "comp_skills_tokens", "comp_framing_tokens",
     ):
         if _col not in _existing:
             try:
@@ -210,10 +213,11 @@ def insert_turn(record: TurnRecord) -> None:
                     last_cache_read, last_cache_write, last_uncached,
                     comp_sys_tokens, comp_tool_schema_tokens, comp_history_tokens,
                     comp_tool_result_tokens, comp_tool_arg_tokens, comp_tool_result_count,
+                    comp_skills_tokens, comp_framing_tokens,
                     comp_calls_json,
                     cost_usd, cost_status, interrupted, alerted, user_text,
                     final_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.turn_id,
@@ -245,6 +249,8 @@ def insert_turn(record: TurnRecord) -> None:
                     _int_or_none(record.comp_tool_result_tokens),
                     _int_or_none(record.comp_tool_arg_tokens),
                     _int_or_none(record.comp_tool_result_count),
+                    _int_or_none(record.comp_skills_tokens),
+                    _int_or_none(record.comp_framing_tokens),
                     record.comp_calls_json,
                     _cost_float(record.cost_usd),
                     record.cost_status or "unknown",

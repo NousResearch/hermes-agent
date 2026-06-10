@@ -1104,6 +1104,7 @@ def run_conversation(
             _call_composition = compose_request_breakdown(
                 api_messages,
                 system_prompt=effective_system or "",
+                skills_prompt=getattr(agent, "_skills_prompt_text", "") or "",
                 tools=agent.tools or None,
             )
         except Exception:

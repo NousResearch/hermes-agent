@@ -31,6 +31,8 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        BusinessConnectionHandler,
+        BusinessMessagesDeletedHandler,
         ContextTypes,
         filters,
     )
@@ -48,6 +50,8 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    BusinessConnectionHandler = Any
+    BusinessMessagesDeletedHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -119,6 +123,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global BusinessConnectionHandler, BusinessMessagesDeletedHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -138,6 +143,8 @@ def check_telegram_requirements() -> bool:
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
+            BusinessConnectionHandler as _BCH,
+            BusinessMessagesDeletedHandler as _BMDH,
             ContextTypes as _CT, filters as _filters,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
@@ -154,6 +161,8 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    BusinessConnectionHandler = _BCH
+    BusinessMessagesDeletedHandler = _BMDH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -494,6 +503,64 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Telegram Secretary Mode / Business Connections.  Keyed by
+        # BusinessConnection.id; values are small JSON-serializable dicts with
+        # owner id/name, user_chat_id and can_reply.  Persisted best-effort so a
+        # gateway restart can still route business_message replies before
+        # Telegram sends the next business_connection update.
+        self._business_connections: Dict[str, Dict[str, Any]] = {}
+        try:
+            from hermes_constants import get_hermes_home
+            self._business_connections_path = str(get_hermes_home() / "telegram_business_connections.json")
+        except Exception:
+            self._business_connections_path = os.path.expanduser(
+                "~/.hermes/telegram_business_connections.json"
+            )
+        self._load_business_connections()
+
+    def _load_business_connections(self) -> None:
+        try:
+            with open(self._business_connections_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._business_connections = {
+                    str(k): v for k, v in data.items() if isinstance(v, dict)
+                }
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.debug("[%s] Failed to load Telegram business connections: %s", self.name, exc)
+
+    def _save_business_connections(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._business_connections_path), exist_ok=True)
+            tmp = self._business_connections_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._business_connections, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, self._business_connections_path)
+        except Exception as exc:
+            logger.debug("[%s] Failed to save Telegram business connections: %s", self.name, exc)
+
+    def _default_business_owner_id(self) -> Optional[str]:
+        """Fallback owner id for business messages before connection cache is warm."""
+        explicit = os.getenv("TELEGRAM_BUSINESS_OWNER_ID", "").strip()
+        if explicit:
+            return explicit
+        allowed = [
+            part.strip()
+            for part in os.getenv("TELEGRAM_ALLOWED_USERS", "").split(",")
+            if part.strip() and part.strip() != "*"
+        ]
+        return allowed[0] if len(allowed) == 1 else None
+
+    @staticmethod
+    def _business_kwargs_from_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not metadata:
+            return {}
+        business_connection_id = metadata.get("business_connection_id") or metadata.get("telegram_business_connection_id")
+        if business_connection_id:
+            return {"business_connection_id": str(business_connection_id)}
+        return {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1611,6 +1678,17 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            # Telegram Secretary Mode / Chat Automation arrives as
+            # business_connection + business_message updates.  PTB's normal
+            # MessageHandler filters already match business_message via
+            # update.effective_message, but we still need the connection handler
+            # to learn owner/can_reply metadata and the deleted handler for
+            # observability.
+            try:
+                self._app.add_handler(BusinessConnectionHandler(self._handle_business_connection))
+                self._app.add_handler(BusinessMessagesDeletedHandler(self._handle_business_messages_deleted))
+            except Exception as exc:
+                logger.warning("[%s] Telegram business handlers not available: %s", self.name, exc)
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -1945,6 +2023,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_kwargs = dict(thread_kwargs)
                     thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
+                business_kwargs = self._business_kwargs_from_metadata(metadata)
 
                 msg = None
                 for _send_attempt in range(3):
@@ -1957,6 +2036,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
+                                **business_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
@@ -1971,6 +2051,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
+                                    **business_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )
@@ -4292,6 +4373,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=int(chat_id),
                     action="typing",
                     message_thread_id=message_thread_id,
+                    **self._business_kwargs_from_metadata(metadata),
                 )
             except Exception as e:
                 # For DM topic lanes, Telegram may reject message_thread_id.
@@ -4302,6 +4384,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._bot.send_chat_action(
                             chat_id=int(chat_id),
                             action="typing",
+                            **self._business_kwargs_from_metadata(metadata),
                         )
                         return
                     except Exception:
@@ -5104,6 +5187,32 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        business_connection_id = str(getattr(message, "business_connection_id", "") or "")
+        if business_connection_id:
+            chat = getattr(message, "chat", None)
+            user = getattr(message, "from_user", None)
+            bot_id = str(getattr(self._bot, "id", "") or "")
+            chat_id = str(getattr(chat, "id", "") or "")
+            user_id = str(getattr(user, "id", "") or "")
+            business_info = self._business_connections.get(business_connection_id, {})
+            owner_id = str(business_info.get("owner_user_id") or self._default_business_owner_id() or "")
+            if owner_id and user_id == owner_id:
+                logger.info(
+                    "[%s] Ignoring Telegram business message authored by owner chat=%s user=%s",
+                    self.name,
+                    chat_id,
+                    user_id,
+                )
+                return False
+            if (bot_id and (chat_id == bot_id or user_id == bot_id)) or bool(getattr(user, "is_bot", False)):
+                logger.info(
+                    "[%s] Ignoring Telegram business message from bot/self chat=%s user=%s",
+                    self.name,
+                    chat_id,
+                    user_id,
+                )
+                return False
+
         if not self._is_group_chat(message):
             return True
 
@@ -5194,6 +5303,52 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def _handle_business_connection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Cache Telegram Secretary Mode / BusinessConnection metadata."""
+        connection = getattr(update, "business_connection", None)
+        if not connection:
+            return
+        connection_id = str(getattr(connection, "id", "") or "")
+        if not connection_id:
+            return
+        user = getattr(connection, "user", None)
+        rights = getattr(connection, "rights", None)
+        can_reply = bool(getattr(rights, "can_reply", False)) if rights is not None else False
+        is_enabled = bool(getattr(connection, "is_enabled", False))
+        if is_enabled:
+            self._business_connections[connection_id] = {
+                "id": connection_id,
+                "owner_user_id": str(getattr(user, "id", "") or ""),
+                "owner_user_name": getattr(user, "full_name", None) or getattr(user, "username", None),
+                "user_chat_id": str(getattr(connection, "user_chat_id", "") or ""),
+                "can_reply": can_reply,
+                "is_enabled": is_enabled,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            logger.info(
+                "[%s] Telegram business connection enabled id=%s owner=%s can_reply=%s",
+                self.name,
+                connection_id,
+                self._business_connections[connection_id].get("owner_user_id"),
+                can_reply,
+            )
+        else:
+            self._business_connections.pop(connection_id, None)
+            logger.info("[%s] Telegram business connection disabled id=%s", self.name, connection_id)
+        self._save_business_connections()
+
+    async def _handle_business_messages_deleted(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        deleted = getattr(update, "deleted_business_messages", None)
+        if not deleted:
+            return
+        logger.info(
+            "[%s] Telegram business messages deleted connection=%s chat=%s ids=%s",
+            self.name,
+            getattr(deleted, "business_connection_id", None),
+            getattr(getattr(deleted, "chat", None), "id", None),
+            getattr(deleted, "message_ids", None),
+        )
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
@@ -5946,29 +6101,61 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                     break
 
-        # Build source
+        # Build source.  Telegram Secretary Mode / Business messages are
+        # authored by the external chat participant, but authorization should be
+        # checked against the business account owner who connected the bot.  Keep
+        # the external participant as user_id_alt and route replies using the
+        # business_connection_id stored as dynamic source metadata.
+        business_connection_id = str(getattr(message, "business_connection_id", "") or "")
+        business_info = self._business_connections.get(business_connection_id, {}) if business_connection_id else {}
+        business_owner_id = business_info.get("owner_user_id") or self._default_business_owner_id()
+        business_owner_name = business_info.get("owner_user_name")
+        is_business_message = bool(business_connection_id)
+
         source = self.build_source(
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
             user_id=(
-                str(user.id)
-                if user
-                else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+                str(business_owner_id)
+                if is_business_message and business_owner_id
+                else (
+                    str(user.id)
+                    if user
+                    else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+                )
             ),
             user_name=(
-                user.full_name
-                if user
+                business_owner_name
+                if is_business_message and business_owner_name
                 else (
-                    chat.full_name
-                    if hasattr(chat, "full_name") and chat_type == "dm"
-                    else (chat.title if chat_type == "channel" else None)
+                    user.full_name
+                    if user
+                    else (
+                        chat.full_name
+                        if hasattr(chat, "full_name") and chat_type == "dm"
+                        else (chat.title if chat_type == "channel" else None)
+                    )
                 )
             ),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
             message_id=str(message.message_id),
         )
+        if is_business_message:
+            source.user_id_alt = str(user.id) if user else None
+            source.telegram_business_connection_id = business_connection_id
+            source.telegram_business_can_reply = bool(business_info.get("can_reply", True))
+            source.telegram_business_sender_id = str(user.id) if user else None
+            source.telegram_business_sender_name = getattr(user, "full_name", None) if user else None
+            logger.info(
+                "[%s] Telegram business message connection=%s owner=%s sender=%s chat=%s",
+                self.name,
+                business_connection_id,
+                source.user_id,
+                source.user_id_alt,
+                source.chat_id,
+            )
         
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)

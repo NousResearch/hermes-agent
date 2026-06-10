@@ -52,7 +52,7 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
-    """Build platform-aware thread metadata for adapter sends.
+    """Build platform-aware thread/business metadata for adapter sends.
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
     value. Telegram private-chat topics created through Hermes' DM-topic helper
@@ -60,12 +60,26 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     user-message replies route with ``message_thread_id`` + ``reply_to_message_id``;
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
     ``direct_messages_topic_id`` when the Bot API supports it.
+
+    Telegram Chat Automation / Business Messages are not threads, but they also
+    require metadata: every outbound Bot API call must carry the incoming
+    ``business_connection_id`` or Telegram treats it as a normal bot DM and
+    rejects it with "bot can't initiate conversation with a user".
     """
     thread_id = getattr(source, "thread_id", None)
-    if thread_id is None:
+    business_connection_id = getattr(source, "telegram_business_connection_id", None)
+    if thread_id is None and not business_connection_id:
         return None
-    metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+
+    metadata = {}
+    if thread_id is not None:
+        metadata["thread_id"] = thread_id
+
+    if business_connection_id:
+        metadata["telegram_business_connection_id"] = str(business_connection_id)
+        metadata["business_connection_id"] = str(business_connection_id)
+
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm" and thread_id is not None:
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:

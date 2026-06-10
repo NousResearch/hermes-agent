@@ -1198,6 +1198,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    _thread_metadata_for_source as _base_thread_metadata_for_source,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -10726,13 +10727,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
-            getattr(source, "platform", None),
-            getattr(source, "chat_id", None),
-            getattr(source, "thread_id", None),
-            chat_type=getattr(source, "chat_type", None),
-            reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
-        )
+        return _base_thread_metadata_for_source(source, reply_to_message_id=reply_to_message_id)
 
     def _thread_metadata_for_target(
         self,

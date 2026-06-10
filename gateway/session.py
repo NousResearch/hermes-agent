@@ -91,6 +91,10 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    telegram_business_connection_id: Optional[str] = None  # Telegram Business/Secretary Mode reply routing
+    telegram_business_can_reply: Optional[bool] = None
+    telegram_business_sender_id: Optional[str] = None
+    telegram_business_sender_name: Optional[str] = None
     
     @property
     def description(self) -> str:
@@ -134,6 +138,14 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.telegram_business_connection_id:
+            d["telegram_business_connection_id"] = self.telegram_business_connection_id
+        if self.telegram_business_can_reply is not None:
+            d["telegram_business_can_reply"] = self.telegram_business_can_reply
+        if self.telegram_business_sender_id:
+            d["telegram_business_sender_id"] = self.telegram_business_sender_id
+        if self.telegram_business_sender_name:
+            d["telegram_business_sender_name"] = self.telegram_business_sender_name
         return d
 
     @classmethod
@@ -152,6 +164,10 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            telegram_business_connection_id=data.get("telegram_business_connection_id"),
+            telegram_business_can_reply=data.get("telegram_business_can_reply"),
+            telegram_business_sender_id=data.get("telegram_business_sender_id"),
+            telegram_business_sender_name=data.get("telegram_business_sender_name"),
         )
     
 
@@ -372,6 +388,18 @@ def build_session_context_prompt(
             "You CAN send private (DM) messages via the send_message tool. "
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
+        )
+
+    if getattr(context.source, "telegram_business_connection_id", None):
+        lines.append("")
+        lines.append(
+            "**Telegram Business / Chat Automation instructions:** You are Anton's autoresponder. "
+            "Reply briefly, in Russian, and neutrally. Do not say that you are Hermes Agent. "
+            "Do not promise meetings, money, purchases, or decisions. "
+            "If the question is important or requires Anton personally, say exactly: "
+            "'Антон увидит и ответит позже'. "
+            "Do not answer messages written by Anton himself; those are ignored by the gateway, "
+            "but if one appears in context, do not reply to it."
         )
 
     # Connected platforms

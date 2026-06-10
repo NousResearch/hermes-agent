@@ -64,6 +64,38 @@ function canImportHermesCli(pythonPath) {
   }
 }
 
+/** Commands permitted for login-shell PATH probes (prevents shell injection). */
+const LOGIN_SHELL_COMMAND_ALLOWLIST = new Set(['hermes'])
+
+/**
+ * Resolve a command via the user's login shell PATH.
+ *
+ * Electron apps on Linux (especially NixOS) often inherit a stripped PATH
+ * that omits profile/nix-shell entries where `hermes` is installed. A login
+ * shell probe matches what `hermes setup` users get in their terminal.
+ *
+ * @param {string} command
+ * @returns {string|null}
+ */
+function findCommandOnLoginShell(command) {
+  if (!command || IS_WINDOWS || !LOGIN_SHELL_COMMAND_ALLOWLIST.has(command)) return null
+  try {
+    const stdout = execFileSync('sh', ['-lc', `command -v ${command}`], {
+      encoding: 'utf8',
+      timeout: PROBE_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    const resolved = String(stdout || '')
+      .trim()
+      .split('\n')
+      .pop()
+      ?.trim()
+    return resolved || null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Return true iff `<hermesCommand> --version` exits 0.
  *
@@ -85,35 +117,6 @@ function canImportHermesCli(pythonPath) {
  *   in resolveHermesBackend.
  * @returns {boolean}
  */
-/**
- * Resolve a command via the user's login shell PATH.
- *
- * Electron apps on Linux (especially NixOS) often inherit a stripped PATH
- * that omits profile/nix-shell entries where `hermes` is installed. A login
- * shell probe matches what `hermes setup` users get in their terminal.
- *
- * @param {string} command
- * @returns {string|null}
- */
-function findCommandOnLoginShell(command) {
-  if (!command || IS_WINDOWS) return null
-  try {
-    const stdout = execFileSync('sh', ['-lc', `command -v ${command}`], {
-      encoding: 'utf8',
-      timeout: PROBE_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'ignore']
-    })
-    const resolved = String(stdout || '')
-      .trim()
-      .split('\n')
-      .pop()
-      ?.trim()
-    return resolved || null
-  } catch {
-    return null
-  }
-}
-
 function verifyHermesCli(hermesCommand, opts = {}) {
   if (!hermesCommand) return false
   try {

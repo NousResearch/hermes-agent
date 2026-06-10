@@ -86,13 +86,16 @@ test('findCommandOnLoginShell returns null for falsy command', () => {
   assert.equal(findCommandOnLoginShell(null), null)
 })
 
-test('findCommandOnLoginShell resolves sh on POSIX hosts', () => {
-  if (process.platform === 'win32') {
-    assert.equal(findCommandOnLoginShell('sh'), null)
+test('findCommandOnLoginShell rejects commands outside allowlist', () => {
+  assert.equal(findCommandOnLoginShell('sh'), null)
+  assert.equal(findCommandOnLoginShell('python'), null)
+  assert.equal(findCommandOnLoginShell('hermes; rm -rf /'), null)
+})
+
+test('findCommandOnLoginShell is a no-op on Windows', () => {
+  if (process.platform !== 'win32') {
     return
   }
 
-  const resolved = findCommandOnLoginShell('sh')
-  assert.ok(resolved)
-  assert.match(resolved, /sh$/)
+  assert.equal(findCommandOnLoginShell('hermes'), null)
 })

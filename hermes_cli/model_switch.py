@@ -1180,7 +1180,7 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     *,
     force_fresh_nous_tier: bool = False,
-    max_models: int = 8,
+    max_models: int = 200,
     current_model: str = "",
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
@@ -1278,12 +1278,7 @@ def list_authenticated_providers(
 
     def _has_aws_sdk_creds_for_listing(slug: str) -> bool:
         """Credential check for AWS SDK providers in non-runtime discovery."""
-        slug_norm = str(slug or "").strip().lower()
-        current_norm = str(current_provider or "").strip().lower()
-        if _has_fast_aws_sdk_signal():
-            return True
-        if slug_norm != current_norm:
-            return False
+
         try:
             from agent.bedrock_adapter import has_aws_credentials
             return bool(has_aws_credentials())

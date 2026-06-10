@@ -19,7 +19,6 @@ import {
   $messages,
   $sessions,
   $yoloActive,
-  getRememberedWorkspaceCwd,
   workspaceCwdForNewSession,
   sessionPinId,
   setActiveSessionId,
@@ -211,14 +210,16 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
 }
 
-function applyRuntimeInfo(
-  info: SessionCreateResponse['info'] | undefined
-): Partial<Pick<ClientSessionState, 'branch' | 'cwd'>> | null {
+function applyRuntimeInfo(info: SessionCreateResponse['info'] | undefined): Partial<
+  Pick<ClientSessionState, 'branch' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'>
+> | null {
   if (!info) {
     return null
   }
 
-  const sessionState: Partial<Pick<ClientSessionState, 'branch' | 'cwd'>> = {}
+  const sessionState: Partial<
+    Pick<ClientSessionState, 'branch' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'>
+  > = {}
 
   reportBackendContract(info.desktop_contract)
 
@@ -228,10 +229,12 @@ function applyRuntimeInfo(
 
   if (info.model) {
     setCurrentModel(info.model)
+    sessionState.model = info.model
   }
 
   if (info.provider) {
     setCurrentProvider(info.provider)
+    sessionState.provider = info.provider
   }
 
   if (info.cwd) {
@@ -250,18 +253,22 @@ function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort === 'string') {
     setCurrentReasoningEffort(info.reasoning_effort)
+    sessionState.reasoningEffort = info.reasoning_effort
   }
 
   if (typeof info.service_tier === 'string') {
     setCurrentServiceTier(info.service_tier)
+    sessionState.serviceTier = info.service_tier
   }
 
   if (typeof info.fast === 'boolean') {
     setCurrentFastMode(info.fast)
+    sessionState.fast = info.fast
   }
 
   if (typeof info.yolo === 'boolean') {
     setYoloActive(info.yolo)
+    sessionState.yolo = info.yolo
   }
 
   if (info.usage) {
@@ -314,6 +321,12 @@ export function useSessionActions({
       setTurnStartedAt(null)
       // New chats start in the configured default project dir when set,
       // otherwise the sticky last-used workspace (PR #37586).
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+      setCurrentServiceTier('')
+      setCurrentFastMode(false)
+      setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
       clearComposerDraft()

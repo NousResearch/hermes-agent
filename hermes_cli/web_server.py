@@ -131,6 +131,25 @@ async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
 
+    # Dashboard-hosted chat sessions run on this process's in-memory
+    # tui_gateway (the chat PTY attaches via HERMES_TUI_GATEWAY_URL instead
+    # of spawning its own gateway), so tui_gateway.entry's startup MCP
+    # discovery never runs here.  Without this, configured ``mcp_servers``
+    # contribute zero tools to dashboard/desktop sessions until a manual
+    # ``/reload-mcp`` — the enabled-toolset list includes the server names,
+    # but the registry has nothing to hand out, so they're silently dropped.
+    # Backgrounded + config-gated by the shared helper, so dashboards with
+    # no MCP servers configured pay neither the import nor a thread.
+    try:
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+        start_background_mcp_discovery(
+            logger=_log,
+            thread_name="dashboard-mcp-discovery",
+        )
+    except Exception:
+        _log.debug("MCP tool discovery failed at dashboard startup", exc_info=True)
+
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.

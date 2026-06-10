@@ -2825,10 +2825,23 @@ def _make_agent(
     # for in-flight discovery to land before building — bounded, so a slow/dead
     # server still can't block.  No-op once discovery has finished (every build
     # after the first during a slow startup).
+    #
+    # Two possible owners for that thread: the standalone PTY gateway starts
+    # it in tui_gateway.entry; a dashboard-hosted in-memory gateway starts it
+    # via hermes_cli.mcp_startup in the web server's lifespan.  Join whichever
+    # exists — each wait is a no-op when its thread was never started.
     try:
         from tui_gateway.entry import wait_for_mcp_discovery
 
         wait_for_mcp_discovery()
+    except Exception:
+        pass
+    try:
+        from hermes_cli.mcp_startup import (
+            wait_for_mcp_discovery as _wait_shared_mcp_discovery,
+        )
+
+        _wait_shared_mcp_discovery()
     except Exception:
         pass
 

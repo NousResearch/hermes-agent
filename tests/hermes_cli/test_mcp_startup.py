@@ -140,6 +140,59 @@ def test_cli_get_tool_definitions_briefly_waits_for_fast_mcp_thread(monkeypatch)
     assert not thread.is_alive()
 
 
+def test_web_server_lifespan_starts_background_mcp_discovery(monkeypatch):
+    """Dashboard startup must kick off MCP discovery for in-memory gateway
+    sessions — without it, configured MCP servers contribute zero tools to
+    dashboard/desktop chats until a manual /reload-mcp."""
+    discovered = threading.Event()
+
+    monkeypatch.setattr(
+        mcp_startup,
+        "_has_configured_mcp_servers",
+        lambda: True,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=discovered.set),
+    )
+
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import web_server
+
+    with TestClient(web_server.app):
+        assert discovered.wait(timeout=2.0)
+        assert mcp_startup._mcp_discovery_started is True
+
+
+def test_web_server_lifespan_skips_mcp_discovery_without_servers(monkeypatch):
+    calls = {"mcp": 0}
+
+    monkeypatch.setattr(
+        mcp_startup,
+        "_has_configured_mcp_servers",
+        lambda: False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1)
+        ),
+    )
+
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import web_server
+
+    with TestClient(web_server.app):
+        pass
+
+    assert calls["mcp"] == 0
+    assert mcp_startup._mcp_discovery_thread is None
+
+
 def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     waited = {"done": False}
 

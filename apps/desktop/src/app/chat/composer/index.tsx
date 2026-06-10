@@ -24,7 +24,14 @@ import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
+import {
+  $composerAttachments,
+  clearComposerAttachments,
+  clearPersistedComposerDraft,
+  type ComposerAttachment,
+  readPersistedComposerDraft,
+  writePersistedComposerDraft
+} from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -160,6 +167,7 @@ export function ChatBar({
   const scrolledUp = useStore($threadScrolledUp)
   const sessionMessages = useStore($messages)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const draftPersistenceScope = activeQueueSessionKey || null
 
   const queuedPrompts = useMemo(
     () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
@@ -171,6 +179,7 @@ export function ChatBar({
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
+  const skipNextDraftPersistScopeRef = useRef<string | null>(null)
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -1097,6 +1106,22 @@ export function ChatBar({
     }
   }
 
+  useEffect(() => {
+    const persisted = readPersistedComposerDraft(draftPersistenceScope)
+    skipNextDraftPersistScopeRef.current = draftPersistenceScope
+    loadIntoComposer(persisted, [])
+  }, [draftPersistenceScope]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (skipNextDraftPersistScopeRef.current === draftPersistenceScope) {
+      skipNextDraftPersistScopeRef.current = null
+
+      return
+    }
+
+    writePersistedComposerDraft(draftPersistenceScope, draft)
+  }, [draft, draftPersistenceScope])
+
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
       return
@@ -1323,8 +1348,10 @@ export function ChatBar({
     // input event; refresh it from the editor once more to also cover an
     // in-flight keystroke that hasn't fired its input event yet.
     const editor = editorRef.current
+
     if (editor) {
       const domText = composerPlainText(editor)
+
       if (domText !== draftRef.current) {
         draftRef.current = domText
         aui.composer().setText(domText)
@@ -1348,7 +1375,17 @@ export function ChatBar({
         const submitted = text
         triggerHaptic('submit')
         clearDraft()
-        void onSubmit(submitted)
+        void Promise.resolve(onSubmit(submitted)).then(accepted => {
+          if (accepted === false) {
+            loadIntoComposer(submitted, [])
+            writePersistedComposerDraft(draftPersistenceScope, submitted)
+          } else {
+            clearPersistedComposerDraft(draftPersistenceScope)
+          }
+        }).catch(() => {
+          loadIntoComposer(submitted, [])
+          writePersistedComposerDraft(draftPersistenceScope, submitted)
+        })
       } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
@@ -1361,11 +1398,22 @@ export function ChatBar({
       void drainNextQueued()
     } else if (payloadPresent) {
       const submitted = text
+      const submittedAttachments = cloneAttachments(attachments)
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
-      void onSubmit(submitted, { attachments })
+      void Promise.resolve(onSubmit(submitted, { attachments: submittedAttachments })).then(accepted => {
+        if (accepted === false) {
+          loadIntoComposer(submitted, submittedAttachments)
+          writePersistedComposerDraft(draftPersistenceScope, submitted)
+        } else {
+          clearPersistedComposerDraft(draftPersistenceScope)
+        }
+      }).catch(() => {
+        loadIntoComposer(submitted, submittedAttachments)
+        writePersistedComposerDraft(draftPersistenceScope, submitted)
+      })
     }
 
     focusInput()

@@ -5,6 +5,7 @@ Handles: hermes honcho setup | status | sessions | map | peer
 
 from __future__ import annotations
 
+from collections import defaultdict
 import json
 import os
 import sys
@@ -859,6 +860,64 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     return results
 
 
+def _all_profile_effective_configs() -> list[tuple[str, object]]:
+    """Return ``(profile_name, HonchoClientConfig)`` for every known profile."""
+    from plugins.memory.honcho.client import HonchoClientConfig
+
+    config_path = _config_path()
+    resolved = []
+    for profile_name, host_key, _block in _all_profile_host_configs():
+        resolved.append((
+            profile_name,
+            HonchoClientConfig.from_global_config(host=host_key, config_path=config_path),
+        ))
+    return resolved
+
+
+def _format_namespace_summary(profile: str, hcfg, all_cfgs: list[tuple[str, object]]) -> list[str]:
+    """Summarize how the active profile's memory namespace relates to others."""
+    same_workspace = [
+        (name, cfg) for name, cfg in all_cfgs
+        if name != profile and cfg.workspace_id == hcfg.workspace_id
+    ]
+    same_user_namespace = [
+        (name, cfg) for name, cfg in same_workspace
+        if (cfg.peer_name or "") == (hcfg.peer_name or "")
+    ]
+
+    if same_user_namespace:
+        peers = ", ".join(
+            f"{name}:{cfg.ai_peer}" for name, cfg in [(profile, hcfg), *same_user_namespace]
+        )
+        lines = [
+            "  Namespace:      shared user memory namespace",
+            f"  Shared with:    {', '.join(name for name, _cfg in same_user_namespace)}",
+            f"  AI peers:       {peers}",
+        ]
+        ai_peers = {cfg.ai_peer for _name, cfg in [(profile, hcfg), *same_user_namespace]}
+        if len(ai_peers) > 1:
+            lines.append(
+                "  Warning:        gateway session keys are AI-peer agnostic today; "
+                "shared workspace+user-peer setups can still collide across profiles."
+            )
+        return lines
+
+    if same_workspace:
+        return [
+            "  Namespace:      shared workspace, distinct user peers",
+            f"  Shared with:    {', '.join(name for name, _cfg in same_workspace)}",
+        ]
+
+    return ["  Namespace:      strict profile-isolated workspace"]
+
+
+def _namespace_groups(all_cfgs: list[tuple[str, object]]) -> list[tuple[tuple[str, str], list[tuple[str, object]]]]:
+    groups: dict[tuple[str, str], list[tuple[str, object]]] = defaultdict(list)
+    for profile_name, hcfg in all_cfgs:
+        groups[(hcfg.workspace_id, hcfg.peer_name or "")].append((profile_name, hcfg))
+    return sorted(groups.items(), key=lambda item: (item[0][0], item[0][1]))
+
+
 def cmd_status(args) -> None:
     """Show current Honcho config and connection status."""
     show_all = getattr(args, "all", False)
@@ -898,6 +957,7 @@ def cmd_status(args) -> None:
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
         hcfg = HonchoClientConfig.from_global_config(host=_host_key())
+        all_cfgs = _all_profile_effective_configs()
     except Exception as e:
         print(f"  Config error: {e}\n")
         return
@@ -940,6 +1000,8 @@ def cmd_status(args) -> None:
     print(f"  Reasoning:      base={hcfg.dialectic_reasoning_level}, cap={reasoning_cap}, heuristic={heuristic_on}")
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
     print(f"  Write freq:     {hcfg.write_frequency}")
+    for line in _format_namespace_summary(profile, hcfg, all_cfgs):
+        print(line)
 
     if hcfg.enabled and (hcfg.api_key or hcfg.base_url):
         print("\n  Connection... ", end="", flush=True)
@@ -997,6 +1059,7 @@ def _cmd_status_all() -> None:
     """Show Honcho config overview across all profiles."""
     rows = _all_profile_host_configs()
     cfg = _read_config()
+    all_cfgs = {name: hcfg for name, hcfg in _all_profile_effective_configs()}
     active = _active_profile_name()
 
     print(f"\nHoncho profiles ({len(rows)})\n" + "─" * 55)
@@ -1004,17 +1067,49 @@ def _cmd_status_all() -> None:
     print(f"  {'─' * 14} {'─' * 22} {'─' * 9} {'─' * 9} {'─' * 9}")
 
     for name, host, block in rows:
-        enabled = block.get("enabled", cfg.get("enabled"))
-        if enabled is None:
-            has_creds = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
-            enabled = has_creds if block else False
-        enabled_str = "yes" if enabled else "no"
-
-        recall = block.get("recallMode") or cfg.get("recallMode", "hybrid")
-        write = block.get("writeFrequency") or cfg.get("writeFrequency", "async")
+        hcfg = all_cfgs.get(name)
+        if hcfg is not None:
+            enabled_str = "yes" if hcfg.enabled else "no"
+            recall = hcfg.recall_mode
+            write = hcfg.write_frequency
+        else:
+            enabled = block.get("enabled", cfg.get("enabled"))
+            if enabled is None:
+                has_creds = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
+                enabled = has_creds if block else False
+            enabled_str = "yes" if enabled else "no"
+            recall = block.get("recallMode") or cfg.get("recallMode", "hybrid")
+            write = block.get("writeFrequency") or cfg.get("writeFrequency", "async")
 
         marker = " *" if name == active else ""
         print(f"  {name + marker:<14} {host:<22} {enabled_str:<9} {recall:<9} {write}")
+
+    groups = _namespace_groups(list(all_cfgs.items()))
+    shared_user_groups = [(key, members) for key, members in groups if len(members) > 1]
+    workspace_groups: dict[str, list[tuple[str, object]]] = defaultdict(list)
+    for profile_name, hcfg in all_cfgs.items():
+        workspace_groups[hcfg.workspace_id].append((profile_name, hcfg))
+    shared_workspace_groups = [
+        (workspace, members)
+        for workspace, members in sorted(workspace_groups.items())
+        if len(members) > 1
+    ]
+
+    print("\n  Namespace diagnostics")
+    if shared_user_groups:
+        for (workspace, user_peer), members in shared_user_groups:
+            ai_peers = ", ".join(f"{name}:{cfg.ai_peer}" for name, cfg in members)
+            user_label = user_peer or "(not set)"
+            print(f"    shared user memory — workspace={workspace}, user={user_label}, profiles={', '.join(name for name, _cfg in members)}")
+            print(f"      ai peers: {ai_peers}")
+            if len({cfg.ai_peer for _name, cfg in members}) > 1:
+                print("      warning: gateway session keys are AI-peer agnostic today; this layout can collide across profiles.")
+    elif shared_workspace_groups:
+        for workspace, members in shared_workspace_groups:
+            desc = ", ".join(f"{name}:{cfg.peer_name or '(not set)'}" for name, cfg in members)
+            print(f"    shared workspace, distinct user peers — workspace={workspace}, profiles={desc}")
+    else:
+        print("    strict profile isolation — every profile resolves to its own workspace/user namespace")
 
     print(f"\n  * active profile\n")
 

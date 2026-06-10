@@ -215,7 +215,7 @@ class TestCmdStatus:
         monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
         monkeypatch.setattr(
             "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-            lambda host=None: FakeConfig(),
+            lambda host=None, config_path=None: FakeConfig(),
         )
         monkeypatch.setattr(
             "plugins.memory.honcho.client.get_honcho_client",
@@ -233,6 +233,92 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+    def test_reports_shared_namespace_warning_for_multi_profile_layout(self, monkeypatch, capsys, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{}")
+
+        class FakeConfig:
+            enabled = False
+            api_key = ""
+            base_url = None
+            workspace_id = "personal"
+            host = "hermes.reviewer"
+            ai_peer = "reviewer"
+            peer_name = "user"
+            recall_mode = "hybrid"
+            user_observe_me = True
+            user_observe_others = False
+            ai_observe_me = False
+            ai_observe_others = True
+            write_frequency = "async"
+            session_strategy = "per-directory"
+            context_tokens = 800
+            dialectic_reasoning_level = "low"
+            reasoning_level_cap = "high"
+            reasoning_heuristic = True
+            raw = {}
+
+            def resolve_session_name(self):
+                return "repo"
+
+        other = SimpleNamespace(workspace_id="personal", ai_peer="hermes", peer_name="user")
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {"enabled": False})
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "reviewer")
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes.reviewer")
+        monkeypatch.setattr(honcho_cli, "_all_profile_effective_configs", lambda: [
+            ("default", other),
+            ("reviewer", FakeConfig()),
+        ])
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None, config_path=None: FakeConfig(),
+        )
+        monkeypatch.setitem(__import__("sys").modules, "honcho", SimpleNamespace())
+
+        honcho_cli.cmd_status(SimpleNamespace(all=False))
+
+        out = capsys.readouterr().out
+        assert "Namespace:      shared user memory namespace" in out
+        assert "Shared with:    default" in out
+        assert "Warning:        gateway session keys are AI-peer agnostic today" in out
+
+    def test_status_all_reports_shared_workspace_groups(self, monkeypatch, capsys):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {})
+        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
+        monkeypatch.setattr(honcho_cli, "_all_profile_host_configs", lambda: [
+            ("default", "hermes", {}),
+            ("reviewer", "hermes.reviewer", {}),
+            ("solo", "hermes.solo", {}),
+        ])
+        monkeypatch.setattr(honcho_cli, "_all_profile_effective_configs", lambda: [
+            ("default", SimpleNamespace(
+                enabled=True, recall_mode="hybrid", write_frequency="async",
+                workspace_id="shared", peer_name="user", ai_peer="hermes",
+            )),
+            ("reviewer", SimpleNamespace(
+                enabled=True, recall_mode="hybrid", write_frequency="async",
+                workspace_id="shared", peer_name="user", ai_peer="reviewer",
+            )),
+            ("solo", SimpleNamespace(
+                enabled=True, recall_mode="hybrid", write_frequency="async",
+                workspace_id="solo", peer_name="solo-user", ai_peer="solo",
+            )),
+        ])
+
+        honcho_cli._cmd_status_all()
+
+        out = capsys.readouterr().out
+        assert "Namespace diagnostics" in out
+        assert "shared user memory — workspace=shared, user=user, profiles=default, reviewer" in out
+        assert "warning: gateway session keys are AI-peer agnostic today" in out
 
 
 class TestCloneHonchoForProfile:

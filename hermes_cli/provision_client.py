@@ -60,9 +60,12 @@ PROXY_KEY_VAR = "CLAUDE_PROXY_KEY"
 PROXY_KEYS_RELPATH = ("proxy", "keys.json")
 
 # A claude-proxy provider in a profile's config.yaml is recognized by its
-# loopback base_url on the proxy port. The gateway honors `api_key_env`/`key_env`
-# on a provider entry (gateway/run.py, agent/*), so pointing it at the per-profile
-# CLAUDE_PROXY_KEY makes each bot authenticate as its own tenant automatically.
+# loopback base_url on the proxy port. We wire the tenant key INLINE as
+# ``api_key`` — the only spelling the runtime honors across every provider
+# config style (bare ``model:`` block, ``providers:``/``custom_providers:``
+# entries, and the fallback chain; ``key_env`` is ignored in the bare model
+# block — see hermes_cli/runtime_provider.py). The key is loopback-only and
+# lives on the same 0600-protected volume as the bot tokens.
 PROXY_BASE_URL_MARKER = ":11435"
 
 
@@ -109,11 +112,11 @@ def ensure_proxy_key(
     return key, True
 
 
-def _ensure_keyref(obj: Any, key_env: str, marker: str) -> int:
-    """Recursively set ``api_key_env`` on every provider-like dict whose
+def _ensure_proxy_api_key(obj: Any, key: str, marker: str) -> int:
+    """Recursively set ``api_key`` on every provider-like dict whose
     ``base_url`` targets the proxy and that has no key configured yet. Returns
     the number of entries changed. Never clobbers an explicit ``api_key`` or an
-    existing ``api_key_env``/``key_env`` (operator intent wins)."""
+    existing ``key_env``/``api_key_env`` (operator intent wins)."""
     changed = 0
     if isinstance(obj, dict):
         base_url = obj.get("base_url")
@@ -121,27 +124,31 @@ def _ensure_keyref(obj: Any, key_env: str, marker: str) -> int:
             has_key = bool(str(obj.get("api_key") or "").strip())
             has_keyenv = bool(str(obj.get("api_key_env") or obj.get("key_env") or "").strip())
             if not has_key and not has_keyenv:
-                obj["api_key_env"] = key_env
+                obj["api_key"] = key
                 changed += 1
         for value in obj.values():
-            changed += _ensure_keyref(value, key_env, marker)
+            changed += _ensure_proxy_api_key(value, key, marker)
     elif isinstance(obj, list):
         for value in obj:
-            changed += _ensure_keyref(value, key_env, marker)
+            changed += _ensure_proxy_api_key(value, key, marker)
     return changed
 
 
-def wire_proxy_provider_keyref(
+def wire_proxy_provider_key(
     config_path: Path,
-    key_env: str = PROXY_KEY_VAR,
+    key: str,
     marker: str = PROXY_BASE_URL_MARKER,
 ) -> bool:
-    """Make the profile's claude-proxy provider resolve its bearer key from
-    ``$CLAUDE_PROXY_KEY`` (``api_key_env``), so the per-profile gateway sends its
-    own tenant key with no manual step. Idempotent and best-effort: returns True
-    only when the file was actually changed; a missing file, no proxy provider
-    block, an already-wired block, or any parse/write error is a no-op (the .env
-    key is still written, so a manual one-line wire remains possible)."""
+    """Wire the tenant's proxy key into the profile's claude-proxy provider
+    block(s) as inline ``api_key`` — the one spelling honored by every runtime
+    resolution path — so the gateway sends it with no manual step. Idempotent
+    and best-effort: returns True only when the file was actually changed; a
+    missing file, no proxy provider block, an already-keyed block, or any
+    parse/write error is a no-op (the .env copy of the key is still written, so
+    a manual one-line wire remains possible). File mode is preserved restrictive
+    (0600) since the config now carries a (loopback-only) secret."""
+    if not key:
+        return False
     try:
         import yaml  # PyYAML — already a project dependency
     except Exception:
@@ -152,13 +159,14 @@ def wire_proxy_provider_keyref(
         cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         if not isinstance(cfg, (dict, list)):
             return False
-        if _ensure_keyref(cfg, key_env, marker) == 0:
+        if _ensure_proxy_api_key(cfg, key, marker) == 0:
             return False
         tmp = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp.write_text(
             yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
             encoding="utf-8",
         )
+        os.chmod(tmp, 0o600)
         os.replace(tmp, config_path)
         return True
     except Exception:
@@ -295,8 +303,8 @@ def provision_client(
         )
         print(
             f"  (the claude-proxy provider is auto-wired below; if your config "
-            f"has no proxy provider block, add api_key_env: {PROXY_KEY_VAR} to it "
-            f"so requests are attributed to tenant '{name}')",
+            f"has no proxy provider block, set its api_key to the value of "
+            f"{PROXY_KEY_VAR} so requests are attributed to tenant '{name}')",
             file=out,
         )
     else:
@@ -325,12 +333,12 @@ def provision_client(
         print(f"  profile '{name}' already created — reconciling", file=out)
 
     # 3b. Auto-wire the proxy provider to authenticate as this tenant. config.yaml
-    #     exists once the profile is created; point its claude-proxy provider at
-    #     $CLAUDE_PROXY_KEY (written above) so the gateway sends its own key with
-    #     no manual step. Takes effect on the next gateway (re)start below.
-    if wire_proxy_provider_keyref(pdir / "config.yaml"):
+    #     exists once the profile is created; set its claude-proxy provider's
+    #     inline api_key to this client's key so the gateway sends it with no
+    #     manual step. Takes effect on the next gateway (re)start below.
+    if wire_proxy_provider_key(pdir / "config.yaml", proxy_key):
         print(
-            f"  wired claude-proxy provider to api_key_env={PROXY_KEY_VAR} "
+            f"  wired claude-proxy provider api_key for tenant '{name}' "
             f"in {pdir / 'config.yaml'}",
             file=out,
         )

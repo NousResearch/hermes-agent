@@ -1,30 +1,28 @@
-# Production override — STAGED, not yet wired into the deploy.
+# Production override — locks the :11435 Claude proxy to the Hermes bot.
 #
-# When you're ready to enforce per-tenant proxy auth, add this file to the
-# Contabo deploy's compose command (.github/workflows/deploy-contabo.yml):
+# Applied CONDITIONALLY by the Contabo deploy (deploy-contabo.yml): the deploy
+# first runs an idempotent in-container bootstrap that mints a "hermes" key
+# into /opt/data/proxy/keys.json, wires it inline (api_key) into the :11435
+# provider block(s) of /opt/data/config.yaml, and verifies the gateway's own
+# runtime resolution picks it up. Only when that verification passes does the
+# deploy layer this file on:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
-# Until then the proxy stays anon-on and every bot keeps working untouched.
-# Prerequisite before flipping: re-run `hermes-provision-client <name>` once per
-# existing client so each bot's gateway sends its CLAUDE_PROXY_KEY (mint + wire
-# are idempotent); otherwise a keyless bot will get 401 once this is active.
+# If verification fails, the deploy proceeds WITHOUT this file (anon-on, all
+# bots unaffected) and warns loudly — Hermes can never lose Claude to a
+# half-applied cutover. After the flip, the deploy's proxy-lock gate asserts
+# keyless → 401 and the hermes key authenticates, or the deploy goes red.
 #
 # Why this is a separate file (and NOT baked into docker-compose.yml):
 # docker-compose.yml is the PUBLIC default that single-user / hobbyist setups
-# run. Those have no keys.json, so flipping the proxy to fail-closed there would
-# 401 their only bot. This override flips fail-closed for the MULTI-TENANT prod
-# deployment only, where every client bot is provisioned with its own key.
-#
-# Prerequisite before this is safe: every live bot's gateway must already send
-# its CLAUDE_PROXY_KEY (provisioned into the profile .env + auto-wired as the
-# proxy provider's api_key_env). Until then a keyless bot will get 401 from the
-# proxy. Re-running `hermes-provision-client` for each existing client reconciles
-# the key + wiring idempotently.
+# run. Those have no keys.json, so flipping the proxy to fail-closed there
+# would 401 their only bot.
 services:
   gateway:
     environment:
-      # Enforce per-tenant proxy auth: a missing/invalid bearer key → 401,
-      # instead of being served as the shared "anon" tenant (which would share
-      # one cache namespace, one daily budget, and one meter bucket).
+      # Fail-closed proxy auth: a missing/invalid bearer key → 401. Only the
+      # Hermes bot (whose key is wired by the deploy bootstrap) can spend the
+      # Claude subscription; client bots are DeepSeek-direct and never touch
+      # the proxy.
       - CLAUDE_PROXY_ALLOW_ANON=0

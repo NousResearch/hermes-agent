@@ -73,13 +73,149 @@ jobs:
             echo "proxy-migration: no volume claude-proxy to retire (already image-baked)"
           fi
 
-          # NOTE: per-tenant proxy auth (CLAUDE_PROXY_ALLOW_ANON=0) is STAGED,
-          # not active. The proxy still serves keyless requests as the shared
-          # "anon" tenant, so every bot keeps working with no key wiring needed.
-          # To enforce fail-closed later (after each live bot has its key — see
-          # docker-compose.prod.yml), add `-f /opt/hermes/app/docker-compose.prod.yml`
-          # to the line below.
-          docker compose -f /opt/hermes/docker-compose.yml up -d
+          # ---- Lock the Claude proxy to the Hermes bot (self-gating) ----
+          # Only Hermes may use the Claude subscription; client bots are
+          # DeepSeek-direct and never touch :11435. Bootstrap (idempotent, in
+          # the RUNNING container so it works regardless of image version):
+          #   1. mint a "hermes" key into /opt/data/proxy/keys.json (0600)
+          #   2. wire it INLINE as api_key into every :11435 provider block in
+          #      /opt/data/config.yaml (the one spelling every runtime
+          #      resolution path honors; never clobbers an existing key)
+          #   3. write CLAUDE_PROXY_KEY into /opt/data/.env for ops visibility
+          #   4. VERIFY: resolve the provider exactly the way the gateway does
+          #      and confirm the key is attached
+          # The fail-closed flip (docker-compose.prod.yml, ALLOW_ANON=0) is
+          # applied ONLY when verification prints WIRED_OK. Any other outcome
+          # deploys exactly as before (anon-on, bots unaffected) with a loud
+          # warning — Hermes can never lose Claude to a half-applied cutover.
+          WIRE_RESULT=$(docker exec -i -e HERMES_HOME=/opt/data -e HOME=/opt/data \
+            hermes /command/s6-setuidgid hermes /opt/hermes/.venv/bin/python - <<'PYEOF' 2>&1 || true
+          import json, os, secrets, sys
+          import yaml
+
+          ROOT = "/opt/data"
+          MARKER = ":11435"
+          keys_path = os.path.join(ROOT, "proxy", "keys.json")
+          cfg_path = os.path.join(ROOT, "config.yaml")
+          env_path = os.path.join(ROOT, ".env")
+
+          def fail(reason):
+              print(f"WIRED_FAIL {reason}")
+              sys.exit(0)
+
+          # 1. Mint (or reuse) the hermes tenant key.
+          mapping = {}
+          if os.path.isfile(keys_path):
+              try:
+                  data = json.loads(open(keys_path, encoding="utf-8").read())
+                  if isinstance(data, dict):
+                      mapping = {str(k): str(v) for k, v in data.items()}
+              except Exception as e:
+                  fail(f"keys-json-unreadable: {e}")
+          key = next((k for k, v in mapping.items() if v == "hermes"), None)
+          if key is None:
+              key = "hk-" + secrets.token_urlsafe(32)
+              mapping[key] = "hermes"
+              os.makedirs(os.path.dirname(keys_path), exist_ok=True)
+              tmp = keys_path + ".tmp"
+              with open(tmp, "w", encoding="utf-8") as f:
+                  f.write(json.dumps(mapping, indent=2, sort_keys=True) + "\n")
+              os.chmod(tmp, 0o600)
+              os.replace(tmp, keys_path)
+              os.chmod(keys_path, 0o600)
+
+          # 2. Wire the key inline into every :11435 provider block.
+          if not os.path.isfile(cfg_path):
+              fail("no-config-yaml")
+          try:
+              cfg = yaml.safe_load(open(cfg_path, encoding="utf-8").read())
+          except Exception as e:
+              fail(f"config-unparseable: {e}")
+          if not isinstance(cfg, (dict, list)):
+              fail("config-not-a-mapping")
+
+          blocks = []
+          def walk(o):
+              if isinstance(o, dict):
+                  bu = o.get("base_url")
+                  if isinstance(bu, str) and MARKER in bu:
+                      blocks.append(o)
+                  for v in o.values():
+                      walk(v)
+              elif isinstance(o, list):
+                  for v in o:
+                      walk(v)
+          walk(cfg)
+          if not blocks:
+              fail("no-proxy-provider-block-in-config")
+
+          changed = 0
+          for b in blocks:
+              has_key = bool(str(b.get("api_key") or "").strip())
+              has_env = bool(str(b.get("key_env") or b.get("api_key_env") or "").strip())
+              if not has_key and not has_env:
+                  b["api_key"] = key
+                  changed += 1
+          if changed:
+              tmp = cfg_path + ".tmp"
+              with open(tmp, "w", encoding="utf-8") as f:
+                  f.write(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+              os.chmod(tmp, 0o600)
+              os.replace(tmp, cfg_path)
+
+          # 3. CLAUDE_PROXY_KEY into .env (ops visibility; preserves other lines).
+          lines, found = [], False
+          if os.path.isfile(env_path):
+              for line in open(env_path, encoding="utf-8").read().splitlines():
+                  if line.strip().startswith("CLAUDE_PROXY_KEY="):
+                      lines.append(f"CLAUDE_PROXY_KEY={key}"); found = True
+                  else:
+                      lines.append(line)
+          if not found:
+              lines.append(f"CLAUDE_PROXY_KEY={key}")
+          with open(env_path, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          os.chmod(env_path, 0o600)
+
+          # 4. Verify every block now carries a usable key, then resolve the
+          #    provider the way the gateway does and confirm the key sticks.
+          for b in blocks:
+              if not (str(b.get("api_key") or "").strip()
+                      or str(b.get("key_env") or b.get("api_key_env") or "").strip()):
+                  fail("block-still-unkeyed")
+          try:
+              sys.path.insert(0, "/opt/hermes")
+              from hermes_cli.runtime_provider import resolve_runtime_provider
+              rt = resolve_runtime_provider()
+              if MARKER in str(rt.get("base_url") or ""):
+                  rk = str(rt.get("api_key") or "")
+                  if not rk or rk == "no-key-required":
+                      fail("runtime-resolution-dropped-key")
+                  if rk not in mapping:
+                      fail("runtime-resolved-unknown-key")
+              # Primary not on :11435 → proxy is in the fallback chain, whose
+              # inline api_key path is exercised by the repo test suite.
+          except SystemExit:
+              raise
+          except Exception as e:
+              fail(f"runtime-resolution-error: {type(e).__name__}: {e}")
+
+          print(f"wired={changed} blocks={len(blocks)}")
+          print("WIRED_OK")
+          PYEOF
+          )
+          echo "$WIRE_RESULT"
+          COMPOSE_FILES="-f /opt/hermes/docker-compose.yml"
+          PROXY_LOCKED=""
+          if printf '%s' "$WIRE_RESULT" | grep -q '^WIRED_OK$'; then
+            echo "proxy-lock: hermes key wired + verified -- enforcing fail-closed (ALLOW_ANON=0)"
+            COMPOSE_FILES="$COMPOSE_FILES -f /opt/hermes/app/docker-compose.prod.yml"
+            PROXY_LOCKED=1
+          else
+            echo "proxy-lock: WARN wiring not verified -- deploying with anon-on (bots unaffected)."
+            echo "proxy-lock: WARN fix the cause above; the lock will engage on the next deploy."
+          fi
+          docker compose $COMPOSE_FILES up -d
 
           # ---- Post-deploy health gate ---------------------------------
           # A successful `up -d` only means the container was *created*, not
@@ -157,6 +293,76 @@ jobs:
             echo "--- /run/service (what actually got seeded) ---"
             docker exec hermes sh -c 'ls -1 /run/service 2>&1' 2>&1 || true
             exit 1
+          fi
+
+          # ---- Proxy lock gate (only when the fail-closed flip applied) --
+          # Proves enforcement end-to-end without spending tokens:
+          #   * /health reports allow_anon=false and >=1 key loaded
+          #   * a keyless completion request gets 401
+          #   * a keyed request with an empty body gets 400 ("No messages"),
+          #     i.e. it passed auth — proving the hermes key authenticates
+          # Failure = red deploy. Note Hermes itself keeps answering either
+          # way: its gateway has the key wired (verified pre-flip), and even a
+          # misconfigured proxy only pushes it onto the DeepSeek fallback.
+          if [ -n "$PROXY_LOCKED" ]; then
+            LOCK_CHECK=$(docker exec hermes python3 - <<'PYEOF' 2>&1 || true
+          import json, urllib.request, urllib.error
+
+          BASE = "http://127.0.0.1:11435"
+
+          def fail(reason):
+              print(f"LOCK_FAIL {reason}")
+              raise SystemExit(0)
+
+          try:
+              health = json.loads(urllib.request.urlopen(BASE + "/health", timeout=5).read())
+          except Exception as e:
+              fail(f"health-unreachable: {e}")
+          auth = health.get("auth", {})
+          if auth.get("allow_anon") is not False:
+              fail(f"allow_anon-still-on: {auth}")
+          if int(auth.get("keys_loaded") or 0) < 1:
+              fail(f"no-keys-loaded: {auth}")
+
+          key = None
+          try:
+              data = json.loads(open("/opt/data/proxy/keys.json", encoding="utf-8").read())
+              key = next((k for k, v in data.items() if v == "hermes"), None)
+          except Exception as e:
+              fail(f"keys-json-unreadable: {e}")
+          if not key:
+              fail("no-hermes-key-in-keys-json")
+
+          body = json.dumps({"messages": []}).encode()
+          def post(headers):
+              req = urllib.request.Request(
+                  BASE + "/v1/chat/completions", data=body,
+                  headers={"Content-Type": "application/json", **headers}, method="POST")
+              try:
+                  return urllib.request.urlopen(req, timeout=5).status
+              except urllib.error.HTTPError as e:
+                  return e.code
+
+          anon_status = post({})
+          if anon_status != 401:
+              fail(f"keyless-request-not-401: got {anon_status}")
+          keyed_status = post({"Authorization": f"Bearer {key}"})
+          if keyed_status == 401:
+              fail("hermes-key-rejected-401")
+          if keyed_status != 400:
+              fail(f"keyed-empty-body-expected-400: got {keyed_status}")
+          print("LOCK_OK")
+          PYEOF
+          )
+            echo "$LOCK_CHECK"
+            if printf '%s' "$LOCK_CHECK" | grep -q '^LOCK_OK$'; then
+              echo "proxy-lock: ENFORCED -- only the Hermes key can use the Claude proxy"
+            else
+              echo "proxy-lock: FAILED -- enforcement not verified (see LOCK_FAIL above)."
+              echo "proxy-lock: Hermes still answers (key wired pre-flip; DeepSeek fallback as backstop)."
+              docker exec hermes sh -c 'curl -fsS -m 5 http://127.0.0.1:11435/health 2>&1 || true'
+              exit 1
+            fi
           fi
 
           # ---- Registry match gate (Phase 2) ---------------------------

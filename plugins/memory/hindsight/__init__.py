@@ -4,6 +4,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy
 retrieval. Supports cloud (API key) and local modes.
 
 Configurable request timeout via HINDSIGHT_TIMEOUT env var or config.json.
+Configurable reflect timeout via HINDSIGHT_REFLECT_TIMEOUT env var or config.json.
 Configurable embedded daemon idle timeout via HINDSIGHT_IDLE_TIMEOUT env var
 or config.json idle_timeout.
 
@@ -16,6 +17,7 @@ Config via environment variables:
   HINDSIGHT_API_URL                — API endpoint
   HINDSIGHT_MODE                   — cloud or local (default: cloud)
   HINDSIGHT_TIMEOUT                — API request timeout in seconds (default: 120)
+  HINDSIGHT_REFLECT_TIMEOUT        — reflect request timeout in seconds (default: 180)
   HINDSIGHT_IDLE_TIMEOUT           — embedded daemon idle timeout seconds; 0 disables shutdown (default: 300)
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
@@ -34,6 +36,8 @@ import importlib
 import json
 import logging
 import os
+import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import queue
 import threading
 
@@ -51,6 +55,7 @@ _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
+_DEFAULT_REFLECT_TIMEOUT = 180  # seconds — reflect can cold-start a local LLM
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
@@ -324,6 +329,13 @@ def _load_config() -> dict:
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
         "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
         "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
+        "reflect_timeout": _parse_int_setting(
+            os.environ.get("HINDSIGHT_REFLECT_TIMEOUT"),
+            max(
+                _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
+                _DEFAULT_REFLECT_TIMEOUT,
+            ),
+        ),
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
@@ -544,6 +556,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
+        self._reflect_timeout = _DEFAULT_REFLECT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -786,6 +799,14 @@ class HindsightMemoryProvider(MemoryProvider):
         timeout_val = existing_timeout if existing_timeout is not None else _DEFAULT_TIMEOUT
         provider_config["timeout"] = timeout_val
         env_writes["HINDSIGHT_TIMEOUT"] = str(timeout_val)
+        existing_reflect_timeout = provider_config.get("reflect_timeout")
+        reflect_timeout_val = (
+            existing_reflect_timeout
+            if existing_reflect_timeout is not None
+            else max(_parse_int_setting(timeout_val, _DEFAULT_TIMEOUT), _DEFAULT_REFLECT_TIMEOUT)
+        )
+        provider_config["reflect_timeout"] = reflect_timeout_val
+        env_writes["HINDSIGHT_REFLECT_TIMEOUT"] = str(reflect_timeout_val)
         if mode == "local_embedded":
             existing_idle_timeout = provider_config.get("idle_timeout")
             idle_timeout_val = existing_idle_timeout if existing_idle_timeout is not None else _DEFAULT_IDLE_TIMEOUT
@@ -880,6 +901,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
+            {"key": "reflect_timeout", "description": "Reflect API request timeout in seconds", "default": _DEFAULT_REFLECT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
         ]
 
@@ -935,9 +957,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = Hindsight(**kwargs)
         return self._client
 
-    def _run_sync(self, coro):
+    def _run_sync(self, coro, *, timeout: float | None = None):
         """Schedule *coro* on the shared loop using the configured timeout."""
-        return _run_sync(coro, timeout=self._timeout)
+        return _run_sync(coro, timeout=timeout if timeout is not None else self._timeout)
 
     def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
         """Return True for stale embedded-daemon connection failures."""
@@ -1021,11 +1043,11 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
-    def _run_hindsight_operation(self, operation):
+    def _run_hindsight_operation(self, operation, *, timeout: float | None = None):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
         client = self._get_client()
         try:
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), timeout=timeout)
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
@@ -1036,7 +1058,98 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = None
             client = self._get_client()
             self._client = client
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), timeout=timeout)
+
+    @staticmethod
+    def _extract_operation_id(exc: Exception) -> str:
+        """Best-effort extraction of a Hindsight server operation/request id."""
+        for attr in ("operation_id", "operationId", "request_id", "requestId", "trace_id"):
+            value = getattr(exc, attr, None)
+            if value:
+                return str(value)
+        for arg in getattr(exc, "args", ()):
+            if isinstance(arg, dict):
+                for key in ("operation_id", "operationId", "request_id", "requestId", "trace_id"):
+                    value = arg.get(key)
+                    if value:
+                        return str(value)
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                data = response.json()
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                for key in ("operation_id", "operationId", "request_id", "requestId", "trace_id"):
+                    value = data.get(key)
+                    if value:
+                        return str(value)
+        return ""
+
+    def _describe_reflect_error(self, exc: Exception, *, elapsed: float) -> str:
+        """Return an operator-facing reflect failure summary with timing context."""
+        lines = [
+            f"Reflect error type: {type(exc).__name__}",
+            f"Reflect elapsed: {elapsed:.1f}s",
+            f"Reflect timeout: {self._reflect_timeout}s",
+        ]
+        message = str(exc).strip()
+        if message:
+            lines.insert(1, f"Reflect error message: {message}")
+        operation_id = self._extract_operation_id(exc)
+        if operation_id:
+            lines.append(f"Hindsight operation id: {operation_id}")
+        if isinstance(exc, FutureTimeoutError):
+            lines.append(
+                "Reflect timed out on the Hermes client; the Hindsight server "
+                "may still complete the operation. Check Hindsight operations "
+                "or logs for server-side progress."
+            )
+        return "\n".join(lines)
+
+    def _build_recall_kwargs(self, query: str) -> Dict[str, Any]:
+        """Build the shared kwargs for Hindsight recall calls."""
+        recall_kwargs: Dict[str, Any] = {
+            "bank_id": self._bank_id,
+            "query": query,
+            "budget": self._budget,
+            "max_tokens": self._recall_max_tokens,
+        }
+        if self._recall_tags:
+            recall_kwargs["tags"] = self._recall_tags
+            recall_kwargs["tags_match"] = self._recall_tags_match
+        if self._recall_types:
+            recall_kwargs["types"] = self._recall_types
+        return recall_kwargs
+
+    @staticmethod
+    def _format_recall_results(resp, *, bullet: bool = False) -> str:
+        """Format a Hindsight recall response for context/tool output."""
+        if not getattr(resp, "results", None):
+            return ""
+        if bullet:
+            return "\n".join(
+                f"- {r.text}" for r in resp.results if getattr(r, "text", "")
+            )
+        return "\n".join(
+            f"{i}. {r.text}"
+            for i, r in enumerate(resp.results, 1)
+            if getattr(r, "text", "")
+        )
+
+    def _recall_text(self, query: str, *, bullet: bool = False) -> str:
+        """Run recall and return formatted text, or an empty string when no results."""
+        recall_kwargs = self._build_recall_kwargs(query)
+        logger.debug(
+            "Hindsight recall: bank=%s, query_len=%d, budget=%s",
+            self._bank_id,
+            len(query),
+            self._budget,
+        )
+        resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+        num_results = len(resp.results) if resp.results else 0
+        logger.debug("Hindsight recall: %d results", num_results)
+        return self._format_recall_results(resp, bullet=bullet)
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
@@ -1131,6 +1244,12 @@ class HindsightMemoryProvider(MemoryProvider):
         self._timeout = _parse_int_setting(
             self._config.get("timeout") if self._config.get("timeout") is not None else os.environ.get("HINDSIGHT_TIMEOUT"),
             _DEFAULT_TIMEOUT,
+        )
+        self._reflect_timeout = _parse_int_setting(
+            self._config.get("reflect_timeout")
+            if self._config.get("reflect_timeout") is not None
+            else os.environ.get("HINDSIGHT_REFLECT_TIMEOUT"),
+            max(self._timeout, _DEFAULT_REFLECT_TIMEOUT),
         )
         self._idle_timeout = _parse_int_setting(
             self._config.get("idle_timeout") if self._config.get("idle_timeout") is not None else os.environ.get("HINDSIGHT_IDLE_TIMEOUT"),
@@ -1341,24 +1460,21 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
-                    text = resp.text or ""
+                    try:
+                        resp = self._run_hindsight_operation(
+                            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget),
+                            timeout=self._reflect_timeout,
+                        )
+                        text = resp.text or ""
+                    except Exception as reflect_exc:
+                        logger.debug(
+                            "Hindsight reflect prefetch failed; falling back to recall: %s",
+                            self._describe_reflect_error(reflect_exc, elapsed=0.0),
+                            exc_info=True,
+                        )
+                        text = self._recall_text(query, bullet=True)
                 else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
-                    logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = self._recall_text(query, bullet=True)
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1566,24 +1682,10 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
-                }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
-                logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
+                text = self._recall_text(query)
+                if not text:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                return json.dumps({"result": text})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")
@@ -1595,16 +1697,46 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(
-                    lambda client: client.areflect(
-                        bank_id=self._bank_id, query=query, budget=self._budget
+                started = time.monotonic()
+                try:
+                    resp = self._run_hindsight_operation(
+                        lambda client: client.areflect(
+                            bank_id=self._bank_id, query=query, budget=self._budget
+                        ),
+                        timeout=self._reflect_timeout,
                     )
-                )
-                logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
-                return json.dumps({"result": resp.text or "No relevant memories found."})
+                    elapsed = time.monotonic() - started
+                    logger.debug(
+                        "Tool hindsight_reflect: response_len=%d elapsed=%.1fs",
+                        len(resp.text or ""),
+                        elapsed,
+                    )
+                    return json.dumps({"result": resp.text or "No relevant memories found."})
+                except Exception as reflect_exc:
+                    elapsed = time.monotonic() - started
+                    logger.warning(
+                        "hindsight_reflect failed; falling back to recall: %s",
+                        reflect_exc,
+                        exc_info=True,
+                    )
+                    detail = self._describe_reflect_error(reflect_exc, elapsed=elapsed)
+                    text = self._recall_text(query)
+                    if text:
+                        return json.dumps({
+                            "result": (
+                                "Hindsight reflection failed; showing raw recall results instead.\n"
+                                f"{detail}\n\n{text}"
+                            )
+                        })
+                    return json.dumps({
+                        "result": (
+                            "Hindsight reflection failed and recall found no relevant memories.\n"
+                            f"{detail}"
+                        )
+                    })
             except Exception as e:
-                logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to reflect: {e}")
+                logger.warning("hindsight_reflect fallback recall failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to reflect or search memory: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
 

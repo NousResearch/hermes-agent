@@ -89,6 +89,10 @@ dependencies = [
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
+  # Dashboard Kanban attachment endpoints use FastAPI File/Form params;
+  # without python-multipart the plugin import fails and /api/plugins/kanban/*
+  # never mounts (dashboard shows "Failed to load Kanban board: 404").
+  "python-multipart==0.0.32",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
 ]

@@ -310,11 +310,16 @@ class TestOpenRouterProfile:
 
     def test_mandatory_anthropic_effort_routes_to_verbosity(self):
         """effort set + reasoning enabled → top-level verbosity == effort,
-        and NO reasoning field in extra_body."""
+        and NO reasoning field in extra_body.
+
+        Covers the full real config range produced by
+        ``hermes_constants.parse_reasoning_effort`` —
+        ``VALID_REASONING_EFFORTS = (minimal, low, medium, high, xhigh)``.
+        """
         p = get_provider_profile("openrouter")
         model = "anthropic/claude-fable-5"
         assert self._is_mandatory(model)  # fixture really is mandatory
-        for effort in ("low", "medium", "high", "xhigh", "max"):
+        for effort in ("minimal", "low", "medium", "high", "xhigh"):
             eb, tl = p.build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
                 supports_reasoning=True,
@@ -335,10 +340,14 @@ class TestOpenRouterProfile:
         assert tl["verbosity"] == "xhigh"
         assert "reasoning" not in eb
 
-    def test_mandatory_anthropic_xhigh_max_not_clamped(self):
-        """xhigh/max pass through verbatim — the OpenAI SDK type only literals
-        low|medium|high but OpenRouter accepts the extended scale for Claude
-        (proven live in #43432)."""
+    def test_mandatory_anthropic_verbosity_is_value_agnostic_passthrough(self):
+        """The mapping passes the effort value through verbatim — it must NOT
+        clamp or whitelist. ``xhigh`` is a real config value; ``max`` is not
+        producible by ``parse_reasoning_effort`` today but OpenRouter accepts it
+        for Claude (live-proven in #43432), so a forward value must survive
+        rather than be silently dropped. The OpenAI SDK type only literals
+        ``low|medium|high`` but it's a TypedDict (no runtime validation), so the
+        extended scale reaches the wire untouched."""
         p = get_provider_profile("openrouter")
         for effort in ("xhigh", "max"):
             _, tl = p.build_api_kwargs_extras(

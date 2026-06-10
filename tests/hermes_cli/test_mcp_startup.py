@@ -164,3 +164,60 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def test_wait_for_mcp_discovery_uses_longer_timeout_for_kanban_workers(monkeypatch):
+    """Kanban workers (HERMES_KANBAN_TASK set) must wait up to 60s for MCP."""
+    from unittest.mock import MagicMock
+
+    joined_with = {"timeout": None}
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+
+    def _capture_join(timeout=None):
+        joined_with["timeout"] = timeout
+
+    fake_thread.join.side_effect = _capture_join
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", fake_thread)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+
+    mcp_startup.wait_for_mcp_discovery(timeout=0.75)
+    assert joined_with["timeout"] == 60.0
+
+
+def test_wait_for_mcp_discovery_preserves_explicit_timeout_for_kanban_workers(monkeypatch):
+    """If caller passes a timeout > 60s for kanban workers, it is preserved."""
+    from unittest.mock import MagicMock
+
+    joined_with = {"timeout": None}
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+
+    def _capture_join(timeout=None):
+        joined_with["timeout"] = timeout
+
+    fake_thread.join.side_effect = _capture_join
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", fake_thread)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+
+    mcp_startup.wait_for_mcp_discovery(timeout=120.0)
+    assert joined_with["timeout"] == 120.0
+
+
+def test_wait_for_mcp_discovery_uses_default_timeout_for_non_kanban(monkeypatch):
+    """Non-kanban sessions use the caller-provided timeout unchanged."""
+    from unittest.mock import MagicMock
+
+    joined_with = {"timeout": None}
+    fake_thread = MagicMock()
+    fake_thread.is_alive.return_value = True
+
+    def _capture_join(timeout=None):
+        joined_with["timeout"] = timeout
+
+    fake_thread.join.side_effect = _capture_join
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", fake_thread)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    mcp_startup.wait_for_mcp_discovery(timeout=0.75)
+    assert joined_with["timeout"] == 0.75

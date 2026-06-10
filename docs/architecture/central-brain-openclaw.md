@@ -394,6 +394,324 @@ Phase 5:    multi-runtime orchestration
 
 ---
 
+### Phase 5 — design detail *(จาก scoping fan-out, 2026-06-10 — ยังไม่ implement)*
+
+**แกนของ design: `AgentTaskRegistry` เดียว keyed ด้วย `task_id`** — รวม `_active_subagents` (delegate_tool, in-process) + spawn-tree files (TUI-assembled snapshots) + `_TASK_RESULTS` (idempotency ของ task.submit) เข้า model เดียวที่ Orchestration Core query/command ผ่าน contract เดิม (`ExecutionTask`/`ExecutionResult`)
+
+#### สถานะปัจจุบัน (grounded)
+## State locations, locks, and mechanics — grounded
+
+### 1. Live subagent registry (in-process, ephemeral)
+
+File: `/tmp/hermes-wt-sites/tools/delegate_tool.py`
+
+- `_active_subagents: Dict[str, Dict[str, Any]]` at line 157 — module-level dict, keyed by `subagent_id` (format `sa-{index}-{8hex}`, generated at line 954).
+- Guard: `_active_subagents_lock = threading.Lock()` at line 154. Both are process-global, spanning every `delegate_task` call in the process.
+- Registration: `_register_subagent(record)` at line 177, called inside `_run_single_child` at line 1502, just before `_heartbeat_thread.start()`.
+- Each record contains: `{subagent_id, parent_id, depth, goal, model, started_at, status, tool_count, agent}` — the `agent` key holds the live `AIAgent` reference (stripped before external exposure in `list_active_subagents()` at line 213).
+- Unregistration: `_unregister_subagent` at line 185, called in the `finally` block of `_run_single_child` at line 1906 — guaranteed even on exception/timeout.
+- Lifetime: **purely in-process**. The registry is empty at process start and has no relation to `state.db` or the spawn-tree files.
+
+### 2. Spawn/pause flag
+
+- `_spawn_paused: bool = False` at line 152, guarded by `_spawn_pause_lock` at line 151.
+- Read by `delegate_task` at line 2001 (fast-fail before any spawn).
+- Written via `set_spawn_paused()` at line 160.
+- RPC bridge: `delegation.pause` at server.py line 4458 calls `set_spawn_paused`.
+- No persistence; reset to `False` on every process restart.
+
+### 3. Gateway RPC surface for delegation/spawn-tree
+
+All in `/tmp/hermes-wt-sites/tui_gateway/server.py`:
+
+- `delegation.status` (line 4438): returns `list_active_subagents()`, `is_spawn_paused()`, `_get_max_spawn_depth()`, `_get_max_concurrent_children()`. Read-only, zero side effects.
+- `delegation.pause` (line 4458): calls `set_spawn_paused(bool)`.
+- `subagent.interrupt` (line 4466): calls `interrupt_subagent(subagent_id)` in delegate_tool. That function reads `_active_subagents` under lock, gets the `agent` reference, and calls `agent.interrupt(...)`.
+- `spawn_tree.save` (line 4539): TUI-written snapshot. Accepts `{session_id, subagents[], started_at, finished_at, label}` — writes a JSON file to `$HERMES_HOME/spawn-trees/<session_id>/<timestamp>.json` and appends a lightweight entry to `_index.jsonl` for O(1) list.
+- `spawn_tree.list` (line 4582): reads `_index.jsonl`; falls back to directory scan for pre-index sessions. Accepts `cross_session` flag. Returns metadata entries (no full payload).
+- `spawn_tree.load` (line 4633): returns the full JSON payload of a single snapshot, path-validated against `_spawn_trees_root()`.
+
+### 4. On-disk spawn-tree persistence
+
+- Root: `get_hermes_home() / "spawn-trees"` — constructed in `_spawn_trees_root()` at server.py line 4486.
+- One subdirectory per session (alphanumeric-sanitized session_id).
+- One JSON file per completed turn, named `<YYYYmmddTHHMMSS>.json`.
+- Append-only index: `_index.jsonl` per session directory.
+- **Completely separate from `state.db`** (confirmed: `hermes_state.py` has no `spawn_tree`, `subagent`, or `delegation` tables — only `sessions`, `messages`, `state_meta`, `compression_locks`).
+- The TUI is the source of truth for what goes into spawn-tree files; the gateway merely writes what it is handed. The active-registry in `delegate_tool` is NOT persisted here — these files record completed-turn snapshots for replay/diff, not live state.
+
+### 5. Subagent spawning mechanics (delegate_tool.py)
+
+- Entry: `delegate_task(tasks, ...)` at line ~1985. Guards: `is_spawn_paused()` (line 2001), depth check against `_get_max_spawn_depth()` (line 2014), count check against `_get_max_concurrent_children()` (line 2054).
+- Child construction: `_build_child_agent(...)` at line 904, called on the main thread (thread-safe). Creates a full `AIAgent` at line 1140. Assigns `child._subagent_id`, `child._parent_subagent_id`, `child._delegate_depth`, `child._delegate_role`.
+- child is appended to `parent_agent._active_children` (list initialized in `agent/agent_init.py` line 466, guarded by `_active_children_lock` at line 467) — this is the per-AIAgent tree used for recursive `agent.interrupt()` propagation.
+- Execution: single task runs `_run_single_child` directly; batch tasks run in `ThreadPoolExecutor(max_workers=max_children)` at line 2154. Each worker thread runs inside a nested `ThreadPoolExecutor(max_workers=1)` with a hard timeout (line 1544).
+- `child_task_id` at line 1534 = `_subagent_id` (reuses the same key so `file_state`, `_active_subagents`, and TUI events share one identifier).
+- `child.run_conversation(user_message=goal, task_id=child_task_id)` at line 1559.
+
+### 6. Interrupt propagation tree
+
+- `AIAgent.interrupt()` at run_agent.py line 2278: sets `self._interrupt_requested = True`, propagates to all `_active_children` recursively (line 2336-2340).
+- `_active_children`: list on `AIAgent`, guarded by `_active_children_lock`, initialized in `agent/agent_init.py:466-467`.
+- Two registries track the same running children: `_active_subagents` in delegate_tool (module-level, keyed by `subagent_id`, TUI-facing) and `parent._active_children` (per-AIAgent list, interrupt-propagation). They are populated/cleared independently with no shared synchronization.
+
+### 7. task.submit pilot (Phase 4)
+
+- `task.submit` at server.py line 8507. Only `intent="slash"` is accepted.
+- Idempotency: in-process dict `_TASK_RESULTS` at line 8482, keyed by `idempotency_key`, TTL 600s, cap 1024. Not persisted to state.db.
+- Execution: delegates to `_slash_exec_core` at line 8539, which builds an `ExecutionResult` via adapters and returns `result_to_wire_rich(result)`.
+- The `task_id` supplied by the caller (or auto-generated uuid4) is echoed in the rich result. It is passed to the adapter but NOT written to any persistent store — it is a request-scoped identifier only.
+- No `task.cancel`, `task.status`, or `task.list` RPC exists yet.
+
+### 8. ExecutionTask/ExecutionResult contract (action_runtime/)
+
+- `action_runtime/contract.py`: `ExecutionTask` (task_id, idempotency_key, intent, goal, inputs, constraints, success_criteria, context_ref, trace_id) and `ExecutionResult` (task_id, status, outputs, error, side_effects, needs_input, trace_id).
+- `action_runtime/adapters.py`: per-handler adapters (shell, cli, plugin, slash) map native shapes to `ExecutionResult` and back to wire-identical dicts.
+- Current users: `shell.exec`, `cli.exec`, `slash.exec`, `task.submit`. The delegation/spawn-tree surface has **no adapter** and is not routed through `ExecutionResult`.
+
+### 9. Gap — the two registries are disconnected
+
+`delegation.*` and `spawn_tree.*` operate on completely separate state from `task.submit`/`ExecutionResult`:
+
+| Dimension | delegation/spawn-tree world | task.submit / Action Runtime world |
+|---|---|---|
+| State location | `_active_subagents` dict in delegate_tool module + JSON files in spawn-trees/ | `_TASK_RESULTS` in-process dict in server.py |
+| Key | `subagent_id` (`sa-{i}-{8hex}`) | `task_id` (uuid4 or caller-supplied) |
+| Identity overlap | `child_task_id = _subagent_id` (line 1534) — same value used for file_state and `run_conversation` | task_id echoed in rich result wire only |
+| Persistence | Spawn-tree JSON files (post-turn snapshots only, no live state) | None (in-process TTL dict) |
+| Lifecycle | Registered at thread-start, unregistered in finally block | Stored after execution, expired by TTL |
+| Interrupt mechanism | `interrupt_subagent(subagent_id)` → `agent.interrupt()` | No cancel/interrupt RPC |
+| Pause mechanism | `_spawn_paused` module global | None |
+| Core visibility | TUI polls via `delegation.status` | Caller reads rich result |
+
+#### ข้อเสนอ
+## Unified multi-runtime state model for Phase 5
+
+### Core idea
+
+Replace the two disconnected tracking structures with a single **`AgentTaskRegistry`** keyed uniformly by `task_id`, where every live subagent is represented as an `ExecutionTask` (in-flight) and completed ones produce a persistent `ExecutionResult`. The Orchestration Core interacts with any number of Action Runtime instances through the same contract it already uses in Phase 4.
+
+---
+
+### Proposed data model
+
+**`AgentTaskRecord`** (new, in `action_runtime/task_registry.py` or `tools/delegate_tool.py`):
+
+```python
+@dataclass
+class AgentTaskRecord:
+    task_id: str                  # = current subagent_id (sa-{i}-{8hex}) — no rename needed
+    parent_task_id: Optional[str]
+    depth: int                    # 0 = root parent; 1 = first-level child; etc.
+    goal: str
+    model: Optional[str]
+    started_at: float
+    status: Status                # RUNNING (new enum value) | SUCCEEDED | FAILED | PARTIAL | BLOCKED | NEEDS_INPUT
+    agent_ref: Optional[Any]      # weakref to AIAgent — excluded from serialization
+    tool_count: int
+    last_tool: Optional[str]
+    result: Optional[ExecutionResult]  # set on completion
+    idempotency_key: Optional[str]
+```
+
+**`Status`** in `contract.py` gains one value: `RUNNING = "running"` (in-flight; not a terminal state). The existing terminal states cover all exit cases: `SUCCEEDED`, `FAILED`, `PARTIAL`, `BLOCKED`, `NEEDS_INPUT`. Interrupted subagents map to `FAILED` with `ErrorType.TRANSPORT` (retryable=False, message="interrupted").
+
+---
+
+### Single registry
+
+**`AgentTaskRegistry`** — a module-level singleton (or held by `BrainHost` when that is adopted):
+
+```
+_registry: Dict[str, AgentTaskRecord]
+_registry_lock: threading.Lock
+```
+
+- `register(record: AgentTaskRecord)` — called at the same point as today's `_register_subagent`.
+- `complete(task_id, result: ExecutionResult)` — transitions to terminal status, stores `ExecutionResult`, removes `agent_ref`.
+- `interrupt(task_id) -> bool` — looks up `agent_ref`, calls `agent.interrupt()` (same mechanic as today's `interrupt_subagent`).
+- `list_active() -> List[AgentTaskRecord]` — all records where `status == RUNNING`.
+- `get(task_id) -> Optional[AgentTaskRecord]` — used by Core to query any task.
+- `pause_spawns(bool)` — replaces the module-global `_spawn_paused` / `_spawn_pause_lock`.
+
+Existing `_active_subagents` and `_spawn_paused` become thin wrappers (or are removed) delegating to this registry.
+
+---
+
+### Persistence: spawn-tree files fold into a registry-backed EventLog
+
+Today's spawn-tree files are post-turn snapshots assembled by the TUI. In Phase 5, the registry writes them instead, keyed by task_id:
+
+- **Hot path**: registry remains in-process (same as today).
+- **Persistence**: on `complete()`, append one line to `$HERMES_HOME/spawn-trees/<session_id>/_tasks.jsonl` — a minimal `AgentTaskRecord` snapshot (no `agent_ref`). This replaces the TUI-assembled `spawn_tree.save` flow (the TUI can still call `spawn_tree.save` for UI-assembled rich snapshots; the registry is additive).
+- **`state.db` vs spawn-tree files**: do NOT move to state.db. Spawn-tree data has no FK relationship to the `sessions` table that wouldn't require schema changes and a migration. Keep files. If state.db integration is ever needed (search, joins), a future phase can import the JSONL into a `subagent_tasks` table.
+- **Idempotency store** (`_TASK_RESULTS` in server.py): fold it into the registry. When `complete()` is called with a record that has an `idempotency_key`, the registry stores the `ExecutionResult` and services replay. TTL eviction stays.
+
+---
+
+### How interrupt and pause map to the contract
+
+| Current mechanism | Phase 5 equivalent |
+|---|---|
+| `interrupt_subagent(subagent_id)` → `agent.interrupt()` | `registry.interrupt(task_id)` → same `agent.interrupt()` on the stored `agent_ref` |
+| `_spawn_paused` global flag, checked in `delegate_task` | `registry.pause_spawns(bool)`, same check point |
+| `agent._active_children` list for recursive interrupt | unchanged — this is within `AIAgent`; registry does not replace it |
+| TUI `subagent.interrupt` RPC | calls `registry.interrupt(task_id)` instead of `interrupt_subagent` |
+| No cancellation for `task.submit` tasks | new `task.cancel` RPC: calls `registry.interrupt(task_id)` if record exists and is RUNNING |
+
+---
+
+### How Core commands multiple runtimes
+
+Phase 5 makes the Orchestration Core runtime-agnostic by routing all task creation through `task.submit`:
+
+1. Core calls `task.submit` with `intent="delegate"` (new intent, extending the Phase 4 pilot).
+2. Gateway handler extracts the task list from `inputs.tasks`, creates an `ExecutionTask` per subagent, and calls `delegate_task` (the existing engine).
+3. Each spawned child agent gets a `task_id` = its `subagent_id` (already the case at delegate_tool.py:1534).
+4. Registry records every child as a live `AgentTaskRecord`.
+5. Core can poll `task.status` (new RPC) or receive push events; on failure, the `ExecutionResult.error.retryable` flag tells it whether to retry.
+
+This means Core issues one `task.submit` RPC and observes N `ExecutionResult` objects — the same contract shape it uses for single-task intents. It never calls `delegation.status` or `spawn_tree.*` directly; those remain as lower-level TUI observability tools backed by the same registry.
+
+---
+
+### What does NOT change
+
+- `delegate_task`'s internal engine (ThreadPoolExecutor, child AIAgent construction, heartbeat, timeout) is untouched.
+- The `_active_children` list on `AIAgent` (interrupt propagation) is untouched.
+- Wire shape of `delegation.status`, `spawn_tree.*`, `subagent.interrupt` responses — all stay byte-identical (registry is the new backing, same data).
+- `state.db` schema — no new tables.
+- The `task.submit` idempotency protocol — generalized to also cover delegated tasks.
+
+#### Migration steps
+## Migration steps — incremental, additive-first, each verifiable
+
+### Step 1 — Introduce `AgentTaskRegistry` alongside existing code (additive, zero behavior change)
+
+Files: new `action_runtime/task_registry.py` (or `tools/agent_task_registry.py`).
+
+- Define `AgentTaskRecord` dataclass and `AgentTaskRegistry` class with `register`, `complete`, `interrupt`, `list_active`, `pause_spawns`, `get`.
+- Add `Status.RUNNING` to `action_runtime/contract.py`.
+- Write unit tests: register/complete/interrupt round-trip, pause flag, TTL eviction for idempotency keys.
+- **Verify**: tests green; no handler touched; grep confirms `_active_subagents` still used in production path.
+
+### Step 2 — Dual-write: `delegate_tool` registers into both old dict and new registry
+
+File: `tools/delegate_tool.py`.
+
+- In `_run_single_child`, after the existing `_register_subagent(...)` call (line 1502), also call `registry.register(AgentTaskRecord(...))`.
+- In the `finally` block (line 1906), after `_unregister_subagent`, call `registry.complete(task_id, result=None)` for timeout/interrupt paths or `registry.complete(task_id, result=make_result(entry))` for normal exits.
+- `make_result(entry)` builds an `ExecutionResult` from the existing `entry` dict (status/summary/error → Status/ExecError).
+- **Verify**: `delegation.status` still returns same data (still reads `_active_subagents`); new registry has matching entries; no functional change to TUI.
+
+### Step 3 — Route `subagent.interrupt` and `delegation.pause` through the registry
+
+File: `tui_gateway/server.py`.
+
+- `subagent.interrupt` (line 4466): change from `interrupt_subagent(subagent_id)` to `registry.interrupt(subagent_id)` — internally still calls `agent.interrupt()`.
+- `delegation.pause` (line 4458): change from `set_spawn_paused` to `registry.pause_spawns`.
+- Keep `_spawn_paused` and `_active_subagents` populated (still dual-write from Step 2).
+- **Verify**: TUI pause/interrupt still works; existing protocol tests green.
+
+### Step 4 — Add `task.status` and `task.cancel` RPCs backed by the registry
+
+File: `tui_gateway/server.py`.
+
+- `task.status`: looks up `registry.get(task_id)`, returns `AgentTaskRecord` serialized (status, goal, depth, started_at, model, tool_count, result if terminal).
+- `task.cancel`: calls `registry.interrupt(task_id)`, returns `{found, task_id}` — same shape as `subagent.interrupt`.
+- Add to `_DISPATCH_LIST` (line 186 area).
+- Write protocol tests (round-trip, cancel of non-existent task returns `found: false`).
+- **Verify**: new RPCs work; no existing RPC changed.
+
+### Step 5 — Extend `task.submit` to accept `intent="delegate"`
+
+File: `tui_gateway/server.py`.
+
+- In `task.submit` handler (line 8507), allow `intent="delegate"` (currently rejected with 4030).
+- Extract `inputs.tasks` list, call `delegate_task` (same engine), wrap aggregate result as `ExecutionResult(status=SUCCEEDED|FAILED|PARTIAL, outputs={"results": [...]}, ...)`.
+- Use the caller-supplied `task_id` as the parent task_id; each child gets its `subagent_id` as its own `task_id` in the registry.
+- Fold `_TASK_RESULTS` idempotency into registry (registry stores `ExecutionResult` on `complete()`; `task.submit` checks `registry.get(idempotency_key)` first).
+- **Verify**: `intent="delegate"` returns rich `ExecutionResult`; `intent="slash"` still returns same output (no regression); existing idempotency replay tests green.
+
+### Step 6 — Registry-backed spawn-tree persistence (replace TUI-assembled saves as additive path)
+
+File: `action_runtime/task_registry.py`, `tui_gateway/server.py`.
+
+- On `registry.complete()`, append a `AgentTaskRecord` snapshot (no `agent_ref`) to `$HERMES_HOME/spawn-trees/<session_id>/_tasks.jsonl`.
+- `spawn_tree.list` reads both `_index.jsonl` (legacy) and `_tasks.jsonl` (new), merges, deduplicates by path/task_id.
+- `spawn_tree.save` (TUI path) continues to work unchanged — the TUI's rich assembled payload overwrites nothing; the two files coexist.
+- **Verify**: `spawn_tree.list` returns entries from both sources; `spawn_tree.load` still works on legacy snapshot files; new `_tasks.jsonl` entries appear after subagent runs.
+
+### Step 7 — Remove old module-globals (cutover, after Step 6 is stable)
+
+File: `tools/delegate_tool.py`.
+
+- Remove `_active_subagents`, `_active_subagents_lock`, `_spawn_paused`, `_spawn_pause_lock`, `_register_subagent`, `_unregister_subagent`, `set_spawn_paused`, `is_spawn_paused`.
+- `list_active_subagents()` becomes a thin wrapper over `registry.list_active()`.
+- `interrupt_subagent()` becomes a thin wrapper over `registry.interrupt()`.
+- `delegation.status` in server.py calls `registry.*` directly.
+- **Verify**: all existing protocol tests green; `delegation.status` / `subagent.interrupt` / `delegation.pause` RPCs produce identical output.
+
+#### Risks
+## Risks with file:line
+
+### R1 — Dual-registry desync during Steps 2-6
+
+During the dual-write window (Steps 2-6), `_active_subagents` and the new registry are populated by two separate code paths with no shared transaction. A crash or exception between the two writes could leave one registry populated and the other not. The existing `finally` block at delegate_tool.py:1894 guarantees `_unregister_subagent` runs; the new `registry.complete()` call must be placed in the same `finally` block to guarantee symmetric cleanup.
+
+### R2 — `_active_children` vs `_active_subagents` — two separate interrupt trees
+
+`AIAgent._active_children` (agent_init.py:466) and `_active_subagents` (delegate_tool.py:157) both track running children but are populated/cleared independently with no shared lock. If the new registry replaces one without the other, `agent.interrupt()` recursive propagation (run_agent.py:2336) will break silently. Phase 5 must NOT touch `_active_children` — it serves the AIAgent-internal interrupt chain. The registry replaces only the TUI-visible `_active_subagents`.
+
+### R3 — `child_task_id` vs `subagent_id` dual identity
+
+`delegate_tool.py:1534` sets `child_task_id = _subagent_id or uuid4(...)`. The `task_id` field in `ExecutionTask` is the Core-facing key; `subagent_id` is the TUI-facing key. They share the same value today, but the two namespaces drift if callers ever supply a `task_id` on `task.submit` that differs from the generated `subagent_id`. The unified registry must enforce that these are the same key — or explicitly track both with a cross-reference field.
+
+### R4 — Spawn-tree file race: concurrent sessions writing `_tasks.jsonl`
+
+`spawn_tree.save` already appends to `_index.jsonl` without a file lock (server.py:4509-4516, noted "cache — losing a line just means list() falls back to a directory scan"). Extending this with concurrent `registry.complete()` calls writing `_tasks.jsonl` from worker threads will produce the same no-lock append. This is safe for JSONL if each `json.dumps(...)` is a single write call (atomic on most FS for < 4 KB), but must be validated; the existing comment acknowledges the trade-off.
+
+### R5 — `_TASK_RESULTS` idempotency dict is process-local
+
+server.py:8482 stores idempotency results in `_TASK_RESULTS` (in-process, TTL 600s). If the gateway process restarts (e.g., after a crash during a long delegate run), all in-flight idempotency keys are lost. Moving this into the registry does not fix the persistence gap — the registry is also in-process. Folding into `_tasks.jsonl` would make replay durable across restarts, but requires reading the file on every `task.submit` with an `idempotency_key`, adding an I/O call to a hot path. Decision required before Step 5.
+
+### R6 — `intent="delegate"` turns `task.submit` into a long-blocking call
+
+Current `task.submit` with `intent="slash"` is milliseconds. With `intent="delegate"`, it can block for minutes (full subagent run). The gateway handles all RPC methods synchronously in server.py. Existing turns already call `delegate_task` synchronously, so this is not a new problem, but it means the caller cannot cancel via `task.cancel` once `task.submit` is in-flight (the cancel RPC would have to reach the gateway on a different socket connection). This is the same constraint as today's `subagent.interrupt` (works because it arrives on a separate RPC call). Document this explicitly.
+
+### R7 — `Status.RUNNING` adds a non-terminal value to the enum shared with stateless exec handlers
+
+`action_runtime/contract.py` `Status` is currently only used on completed results. Adding `RUNNING` means consumers of `ExecutionResult` must guard against a non-terminal status where today they assume all results are terminal. Adapters in `adapters.py` never produce `RUNNING`; the risk is that a future adapter forgets the guard. Consider whether `RUNNING` belongs on `AgentTaskRecord.status` (a separate field type) rather than in the `ExecutionResult.Status` enum. The two have different invariants: an `ExecutionResult` is always a final answer; an `AgentTaskRecord` represents live state.
+
+#### คำถามเปิด (ต้องให้ maintainer ตัดสินก่อนเริ่ม)
+## Open questions — only a maintainer can decide
+
+### Q1 — Registry singleton location: standalone module or folded into BrainHost?
+
+`BrainHost` (`agent/brain_host.py`, flag-gated `HERMES_BRAIN_HOST=1`) is the planned singleton factory for AIAgent construction. The `AgentTaskRegistry` is a natural tenant for BrainHost (it needs process-global scope, one instance per process). But BrainHost is still feature-flagged and off by default. Should `AgentTaskRegistry` live there (accepting the `HERMES_BRAIN_HOST` dependency), or in a standalone module that both BrainHost and the current path can import? The answer affects Step 1 and all subsequent steps.
+
+### Q2 — Persist idempotency keys across gateway restarts?
+
+R5 above: should `_TASK_RESULTS` / idempotency replay be durable (written to `_tasks.jsonl` or state.db) or stay ephemeral (current behavior)? Durable replay means subagent runs that survived a gateway restart can be replayed without re-execution. Ephemeral is simpler and avoids the I/O cost on every `task.submit`. The answer determines Step 5 design and whether `state.db` needs a new table.
+
+### Q3 — Should `Status.RUNNING` be part of `ExecutionResult.Status` or live only on `AgentTaskRecord`?
+
+R7 above: adding `RUNNING` to the contract enum changes the invariant that every `ExecutionResult` is a terminal answer. The cleaner option is a separate `TaskStatus` enum on `AgentTaskRecord` that includes `RUNNING`, while `ExecutionResult.Status` stays terminal-only. This is a design decision for `contract.py` that affects how the Core interprets results from `task.status`.
+
+### Q4 — What does `intent="delegate"` return for a partially-interrupted batch?
+
+If the parent is interrupted mid-batch (some children succeeded, some did not), delegate_tool.py:2177-2210 already collects whatever finished and marks the rest as "interrupted". Should `task.submit` with `intent="delegate"` return `Status.PARTIAL` for this case (matching the existing `Status.PARTIAL` in the contract)? Or always `Status.FAILED`? The answer ties to how the Core is expected to re-plan.
+
+### Q5 — Does the TUI's `spawn_tree.save` RPC survive long-term or get deprecated?
+
+Today the TUI assembles the subagent tree payload from the event stream and calls `spawn_tree.save` on turn-complete (server.py:4478-4479 comment). In Phase 5, the registry writes `_tasks.jsonl` directly. Should `spawn_tree.save` remain as the canonical rich-snapshot path (TUI-assembled, richer than the registry's record), or should the registry's write be the canonical source and `spawn_tree.save` be deprecated? The answer determines whether the two files (`_index.jsonl` + `_tasks.jsonl`) need merging logic in `spawn_tree.list` indefinitely.
+
+### Q6 — Cross-process / multi-gateway support in scope for Phase 5?
+
+The current registry is in-process. If two gateway processes serve the same `HERMES_HOME` (e.g., desktop + TUI connected simultaneously), each has its own `_active_subagents`. Phase 5 design as written does not change this. Is cross-process observability (one process seeing the other's subagents) in scope? If yes, the registry needs to be backed by `state.db` or a shared file from the start, which significantly changes Step 1.
+
+---
+
 ## 12. หลักการข้ามทุก phase (Cross-cutting)
 
 1. **Additive-first compatibility** — ห้ามทำ client 3 ตัว (TUI/web/desktop) พัง: เพิ่ม field ใหม่ข้างของเดิม → migrate client → ค่อยลบของเก่า (โค้ดเตือนเองที่ `server.py:7511`)
@@ -410,6 +728,7 @@ Phase 5:    multi-runtime orchestration
 | 2026-06-09 | สร้างเอกสาร v1 — สำรวจโค้ด, เสนอโมเดล Central Brain + OpenClaw |
 | 2026-06-10 | **v2**: §10-Q1 = **(ข)** native Action Runtime, ยืมแค่ OpenClaw messaging-bridge compatibility · ล็อกศัพท์ **Orchestration Core** / **Action Runtime**; "OpenClaw" = reference/compat เท่านั้น · ล็อกลำดับ phase (0→1a→2/1b→3→4→5) · Phase 0 = doc-only, ไม่สร้างโฟลเดอร์เปล่า · เพิ่ม cross-cutting (compat/test-first/observability/idempotency) + acceptance criteria ต่อ phase |
 | 2026-06-10 | **Phase 3 design delivered (ยังไม่ implement).** Scoping fan-out 3 agents → `SessionState` dataclass (lock เป็น field) + MutableMapping-shim incremental adoption (Step1 = zero handler churn) + `BrainHost` (`agent/brain_host.py`, flag-gated `HERMES_BRAIN_HOST`, additive) + map 20 AIAgent sites (first=`_make_agent`) + documented dual-path + parity test. เก็บใน §11 "Phase 3 — design detail". **Implementation ถือไว้เป็น cycle เฉพาะ** — decompose live session-state + locks ที่ 74 handlers + concurrency model พึ่ง (gap #1, เสี่ยงสุดในแผน) ไม่ควรรีบท้าย session |
+| 2026-06-10 | **BrainHost sites #2-3 + Phase 5 design (Sonnet sub-agents).** gateway/run.py `_run_agent` LRU-miss site (intent="gateway-run") + api_server `_create_agent` (intent="api-server") gate ผ่าน `HERMES_BRAIN_HOST` แบบเดียวกับ `_make_agent` (+7 gate tests; 114 api_server failures ยืนยัน pre-existing ผ่าน stash round-trip). Phase 5 design ลงเอกสารแล้ว (§11 "Phase 5 — design detail"): `AgentTaskRegistry` + dual-write migration 6 steps + risks R1-R7 (สำคัญ: R2 — ห้ามแตะ `_active_children` interrupt chain) + open questions Q1-Q6. หมายเหตุ: live install ถูกอัปเดตไป main แล้ว — งาน dev ทำใน worktrees จาก branch refs |
 | 2026-06-10 | **Phase 3 Step 3 + BrainHost seam landed (branch `feat/phase3-step3-brainhost`).** Step 3: 107 subscript sites → typed attributes (กฎ: square-bracket เท่านั้น, `.get/setdefault/pop` คงเดิมเพราะ absent-key semantics ต่าง, non-session dicts ข้าม) + wrap test dicts เป็น SessionState. BrainHost: `agent/brain_host.py` (AgentSpec + singleton + parity-tested `build_agent`) gate ใน `_make_agent` ด้วย `HERMES_BRAIN_HOST=1` default-off (zero import cost พิสูจน์ผ่าน sys.modules). ทำโดย Sonnet sub-agents ใน dedicated worktrees. suites: 156 + 278 green. **คงเหลือ:** Step 4 (ทิ้ง subscript duality), migrate ~20 AIAgent sites เข้า BrainHost ทีละ site, Phase 5 multi-runtime (design ก่อน) |
 | 2026-06-10 | **Phase 3 Step 2 landed — turn-lifecycle lock dances absorbed into SessionState.** 5 methods (`snapshot_history`/`commit_compaction`/`begin_turn`/`end_turn`/`build_once`) เป็น verbatim lift ของ block เดิม; 5 gateway sites migrate, sites ที่ critical section พ่วงงานอื่น (prompt.submit busy-gate+truncate, poller gates, mid-turn CAS ที่ log ใต้ lock) **คง inline โดยตั้งใจ** พร้อม note เหตุผล atomicity. 9 unit tests pin contract. suites: tui_gateway 165 + server 208 + combined 278 green |
 | 2026-06-10 | **Phase 4 landed (pilot).** (1) `task.submit` RPC — intent="slash" เท่านั้นตามแผน pilot (reversible), intent อื่น → 4030; slash.exec core ถูก extract เป็น `_slash_exec_core` ใช้ร่วมกัน (legacy wire เดิม byte-identical / rich wire ใหม่). (2) **Idempotency**: in-process store (TTL 10 นาที, cap 1024) — re-submit key เดิมคืนผลเดิม + `replayed:true` ไม่รันซ้ำ. (3) `result_to_wire_rich` ครบ contract (`status`/`error.retryable`/`side_effects`/`task_id`). (4) `task_id` echo บน slash.exec แบบ additive. (5) **Desktop race fix**: in-flight token — stale switch ไม่ commit/ไม่ rollback (เก็บ error toast), race tests 2 ตัว. acceptance ครบทั้ง 3 ข้อของ §11 Phase 4 |

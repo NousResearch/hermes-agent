@@ -143,7 +143,12 @@ def test_detaching_one_client_keeps_the_session_live_for_others(server):
     assert t1.event_types() == []
 
 
-def test_detaching_the_last_client_reverts_to_stdio(server):
+def test_detaching_the_last_client_parks_on_the_drop_sentinel(server):
+    """Last client gone → the session parks on _detached_ws_transport, NOT real
+    stdio: the desktop's in-process gateway has no stdio reader, so stale frames
+    would leak into its logs (#38591), and the WS-orphan reaper recognizes the
+    sentinel as "detached, safe to grace-reap". A quick reattach still works —
+    _attach_session_transport treats the sentinel like an empty slot."""
     t1 = RecordingTransport("desktop-a")
     t2 = RecordingTransport("desktop-b")
     session = _live_session(server, "chan5", t1)
@@ -152,8 +157,14 @@ def test_detaching_the_last_client_reverts_to_stdio(server):
     server._detach_transport_from_sessions(t1)
     server._detach_transport_from_sessions(t2)
 
-    assert session["transport"] is server._stdio_transport
+    assert session["transport"] is server._detached_ws_transport
     assert not server._session_has_live_transport(session)
+
+    # Reattach replaces the sentinel outright (no fanout wrapping).
+    t3 = RecordingTransport("desktop-c")
+    server._attach_session_transport(session, t3)
+    assert session["transport"] is t3
+    assert server._session_has_live_transport(session)
 
 
 def test_dead_client_is_pruned_without_breaking_the_rest(server):

@@ -128,6 +128,7 @@ export interface UiState {
   pasteCollapseChars: number
 
   sections: SectionVisibility
+  sessionTitle: string
   showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle

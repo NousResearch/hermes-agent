@@ -628,10 +628,7 @@ export function ChatSidebar({
     for (const session of messagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
-      // Pinning MOVES a row to the Pinned section (matching how recents
-      // disappear from Sessions when pinned) — don't render it here too. A
-      // platform whose every row is pinned simply drops its section.
-      if (!sourceId || pinnedRealIdSet.has(session.id)) {
+      if (!sourceId) {
         continue
       }
 
@@ -643,6 +640,12 @@ export function ChatSidebar({
     return [...bySource.entries()]
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
+        // Pinning MOVES a row to the Pinned section (matching how recents
+        // disappear from Sessions when pinned) — don't render it here too.
+        // Pinned rows still count as LOADED for the load-more math: they're
+        // platform conversations already in memory, just housed elsewhere, so
+        // hiding them must not make the pager think more remain on disk.
+        const rows = ordered.filter(s => !pinnedRealIdSet.has(s.id))
         const known = messagingPlatformTotals[sourceId]
         const total = Math.max(ordered.length, known ?? 0)
 
@@ -652,12 +655,20 @@ export function ChatSidebar({
           // resolves the count.
           hasMore: known != null ? known > ordered.length : messagingTruncated,
           label: sessionSourceLabel(sourceId) ?? sourceId,
-          sessions: ordered,
+          // Section recency comes from every loaded row (pinned included) so a
+          // platform doesn't reshuffle when its newest thread gets pinned.
+          latestActivity: sessionTime(ordered[0]),
+          loadedCount: ordered.length,
+          sessions: rows,
           sourceId,
           total
         }
       })
-      .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
+      // A platform whose every loaded row is pinned (and with nothing more on
+      // disk) has nothing left to show — drop the empty shell. Kept when more
+      // rows exist so its pager stays reachable.
+      .filter(group => group.sessions.length > 0 || group.hasMore)
+      .sort((a, b) => b.latestActivity - a.latestActivity)
   }, [messagingSessions, messagingPlatformTotals, messagingTruncated, pinnedRealIdSet])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
@@ -725,7 +736,19 @@ export function ChatSidebar({
   const hasMoreSessions = knownSessionTotal > loadedSessionCount
   const remainingSessionCount = Math.max(0, knownSessionTotal - loadedSessionCount)
 
-  const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
+  // The server total counts every listable local conversation — including ones
+  // currently pinned, which this section deliberately doesn't render. Pinned
+  // rows are always loaded (the refresh keep-set preserves them), so drop them
+  // from the label's BOTH sides; otherwise pinning one row leaves the count
+  // stuck at "17/18" forever, advertising a page that can never arrive.
+  const pinnedFromRecentsCount = useMemo(
+    () => visibleSessions.reduce((count, s) => (pinnedRealIdSet.has(s.id) ? count + 1 : count), 0),
+    [visibleSessions, pinnedRealIdSet]
+  )
+
+  const agentKnownTotal = Math.max(knownSessionTotal - pinnedFromRecentsCount, agentSessions.length)
+
+  const recentsMeta = countLabel(agentSessions.length, agentKnownTotal)
   const archiveAllDisabled = sessionsLoading || agentSessions.length === 0 || archiveAllSubmitting
 
   const handleArchiveAll = async () => {
@@ -1074,7 +1097,7 @@ export function ChatSidebar({
                   <SidebarLoadMoreRow
                     loading={Boolean(messagingLoadMorePending[group.sourceId])}
                     onClick={() => loadMoreForMessaging(group.sourceId)}
-                    step={Math.max(0, group.total - group.sessions.length)}
+                    step={Math.max(0, group.total - group.loadedCount)}
                   />
                 ) : null
               }
@@ -1087,7 +1110,7 @@ export function ChatSidebar({
                   platformName={group.label}
                 />
               }
-              labelMeta={countLabel(group.sessions.length, group.total)}
+              labelMeta={countLabel(group.loadedCount, group.total)}
               onArchiveSession={onArchiveSession}
               onDeleteSession={onDeleteSession}
               onResumeSession={onResumeSession}
@@ -1261,7 +1284,13 @@ interface SidebarSessionGroup {
 interface MessagingSection {
   sourceId: string
   label: string
+  /** Rows this section renders (pinned rows excluded — they live in Pinned). */
   sessions: SessionInfo[]
+  /** Loaded conversations for this platform, pinned included — the honest
+   * "loaded" side of the count label and load-more math. */
+  loadedCount: number
+  /** Latest activity across every loaded row (pinned included). */
+  latestActivity: number
   total: number
   hasMore: boolean
 }

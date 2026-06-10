@@ -71,6 +71,9 @@ export type GatewayEventPayload = {
   // session.participants (channels Phase 3: who's viewing this session, deduped
   // by device name with a live-client count). Shape mirrors SessionParticipant.
   participants?: { device: string; count: number }[]
+  // terminal.read.request (GUI agent reading the in-app terminal pane)
+  start?: number
+  count?: number
 }
 
 export function textPart(text: string): ChatMessagePart {

@@ -2684,6 +2684,102 @@ class AIAgent:
         # which already surfaces its own message) — don't second-guess.
         return ""
 
+    _STATUS_PROOF_LINE_RE = re.compile(
+        r"(?im)^\s*status=(verified|partial|blocked|attempted|written|done)\s+proof=\S+\s*$"
+    )
+
+    def _understanding_gate_mode(self) -> str:
+        """Return the configured final-response understanding-gate mode.
+
+        Config path: ``agent.understanding_gate``.  Accepted shapes:
+        ``false``/missing/``{"mode": "off"}`` -> ``off``;
+        ``true`` -> ``enforced``; string modes ``off|advisory|enforced``;
+        or a dict with a ``mode`` field.
+
+        The default is off so normal Hermes behavior is unchanged unless a
+        profile explicitly opts in.  This is a final-surface closure gate, not
+        evidence of subjective understanding.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            cfg = _load_config() or {}
+            agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+            gate_cfg = None
+            if isinstance(agent_cfg, dict):
+                gate_cfg = agent_cfg.get("understanding_gate")
+            if gate_cfg is True:
+                return "enforced"
+            if gate_cfg is False or gate_cfg is None:
+                return "off"
+            if isinstance(gate_cfg, str):
+                mode = gate_cfg.strip().lower()
+            elif isinstance(gate_cfg, dict):
+                mode = str(gate_cfg.get("mode") or "off").strip().lower()
+            else:
+                mode = "off"
+            if mode in {"on", "true", "yes"}:
+                return "enforced"
+            if mode in {"advisory", "enforced"}:
+                return mode
+        except Exception:
+            pass
+        return "off"
+
+    def _understanding_gate_enabled(self) -> bool:
+        return self._understanding_gate_mode() in {"advisory", "enforced"}
+
+    @classmethod
+    def _has_status_proof_line(cls, response: str) -> bool:
+        return bool(response and cls._STATUS_PROOF_LINE_RE.search(response))
+
+    @classmethod
+    def _format_understanding_gate_footer(cls, response: str) -> str:
+        """Render the status/proof footer when the final response lacks one."""
+        if cls._has_status_proof_line(response or ""):
+            return ""
+        return (
+            "⚠️ Understanding gate: this final response did not contain a "
+            "parseable `status=... proof=...` line. Treat the completion as "
+            "partial until proof is named and checked.\n"
+            "status=partial proof=understanding_gate_missing_status_proof"
+        )
+
+    @staticmethod
+    def _sync_latest_assistant_content(messages: List[Dict[str, Any]], content: str) -> bool:
+        """Replace the latest non-tool-call assistant message content in-place."""
+        if not isinstance(messages, list):
+            return False
+        for msg in reversed(messages):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+                msg["content"] = content
+                return True
+        return False
+
+    def _apply_understanding_gate_footer(
+        self,
+        final_response: str,
+        messages: List[Dict[str, Any]],
+        turn_exit_reason: str = "",
+    ) -> str:
+        """Append a closure footer when the enabled gate sees no status/proof.
+
+        The helper also synchronizes the latest assistant message so session
+        persistence and downstream hooks see the same text returned to the
+        caller.
+        """
+        if not final_response or not self._understanding_gate_enabled():
+            return final_response
+        footer = self._format_understanding_gate_footer(final_response)
+        if not footer:
+            self._sync_latest_assistant_content(messages, final_response)
+            return final_response
+        gated = final_response.rstrip() + "\n\n" + footer
+        self._sync_latest_assistant_content(messages, gated)
+        return gated
+
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Forwarder — see ``agent.agent_runtime_helpers.apply_pending_steer_to_tool_results``."""
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results

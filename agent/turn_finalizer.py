@@ -135,12 +135,11 @@ def finalize_turn(
     # Clean up VM and browser for this task after conversation completes
     agent._cleanup_task_resources(effective_task_id)
 
-    # Persist session to both JSON log and SQLite only after private retry
-    # scaffolding has been removed. Otherwise a later user "continue" turn
-    # can replay assistant("(empty)") / recovery nudges and fall into the
-    # same empty-response loop again.
+    # Remove private retry scaffolding before any diagnostics, hooks, or
+    # persistence. Otherwise a later user "continue" turn can replay
+    # assistant("(empty)") / recovery nudges and fall into the same
+    # empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
-    agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -283,6 +282,28 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # Understanding gate.
+    # Optional final-surface guard used by Peter-style profiles that want
+    # explicit closure discipline: if the assistant's final text lacks a
+    # parseable `status=... proof=...` line, append a partial-status footer.
+    # Keep this after other built-in footers and output transforms so the
+    # status/proof check sees the actual text returned to the user.
+    if final_response and not interrupted:
+        try:
+            final_response = agent._apply_understanding_gate_footer(
+                final_response,
+                messages,
+                turn_exit_reason=_turn_exit_reason,
+            )
+        except Exception as _ug_err:
+            logger.debug("understanding gate footer failed: %s", _ug_err)
+
+    # Persist session to both JSON log and SQLite after final-response
+    # footers have had a chance to synchronize the latest assistant message.
+    # This makes the optional understanding gate affect both the user-facing
+    # response and the durable transcript when enabled.
+    agent._persist_session(messages, conversation_history)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

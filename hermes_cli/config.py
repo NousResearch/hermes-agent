@@ -853,6 +853,13 @@ DEFAULT_CONFIG = {
         # plausible-looking output when a real path is blocked.  Costs ~80
         # tokens in the cached system prompt.  Set False to disable globally.
         "task_completion_guidance": True,
+        # Final-response understanding gate. Disabled by default; set
+        # agent.understanding_gate.mode to "enforced" in a profile config to
+        # append a compact status/proof footer whenever the model's final
+        # answer lacks a parseable `status=... proof=...` line. This is a
+        # runtime final-surface guard against false completion, not evidence
+        # of subjective understanding.
+        "understanding_gate": {"mode": "off"},
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

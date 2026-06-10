@@ -177,13 +177,6 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
         argv = [candidates[0], *_chrome_debug_args(port)]
         return subprocess.list2cmdline(argv) if system == "Windows" else shlex.join(argv)
 
-    if system == "Darwin":
-        data_dir = chrome_debug_data_dir()
-        return (
-            f'open -a "Google Chrome" --args --remote-debugging-port={port} '
-            f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
-        )
-
     return None
 
 

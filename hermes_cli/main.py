@@ -7976,6 +7976,44 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+
+def _run_customization_backup() -> None:
+    """Snapshot Josh-owned Hermes overlays before update mutations.
+
+    This is deliberately separate from rollback/snapshot logic: code updates
+    should still proceed, but plugins/scripts/hooks/skills/cron jobs should
+    have an easy restore point if an update or cleanup routine deletes them.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        script = get_hermes_home() / "scripts" / "hermes-customization-backup.py"
+    except Exception:
+        return
+
+    if not script.is_file():
+        return
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception as exc:
+        print(f"◆ Customization backup: skipped ({exc})")
+        return
+
+    out = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    if result.returncode == 0:
+        if out:
+            print(f"◆ {out}")
+    else:
+        detail = err.splitlines()[0] if err else f"exit {result.returncode}"
+        print(f"◆ Customization backup failed ({detail}); continuing update.")
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -8140,6 +8178,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
+
+
+    # Josh overlay protection: independently snapshot user-owned Hermes
+    # customizations before the code update. This does NOT roll back updates;
+    # it preserves plugins/scripts/hooks/skills/cron data so a bad cleanup,
+    # reset, or restore cannot silently delete local automations.
+    _run_customization_backup()
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)

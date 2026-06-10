@@ -494,6 +494,17 @@ _QUICK_STATE_FILES = (
     "gateway_state.json",
     "channel_directory.json",
     "processes.json",
+    # User-owned customizations. These live under HERMES_HOME rather than the
+    # hermes-agent git repo, so updates should never delete them. Snapshot them
+    # anyway so a bad update, cleanup routine, or accidental restore cannot
+    # silently erase Josh's plugins/scripts/hooks/automations.
+    "plugins",
+    "scripts",
+    "hooks",
+    "skills",
+    "cron",
+    "custom-assets",
+    "desktop-overrides",
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
     "platforms/pairing",                # new location (gateway/pairing.py)

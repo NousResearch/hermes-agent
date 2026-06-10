@@ -1363,7 +1363,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if db is None:
             return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
 
-        limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=500)
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)

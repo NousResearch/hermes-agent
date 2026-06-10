@@ -2002,6 +2002,23 @@ def list_picker_providers(
     )
 
     filtered: List[dict] = []
+
+    # Josh customization: honour model_picker.allowed_providers here too so
+    # the /model inline picker (Telegram etc.) matches the GUI picker. The
+    # current provider always survives. Reapplied after updates by
+    # ~/.hermes/scripts/reapply-hermes-custom-update-protection.py.
+    try:
+        from hermes_cli.config import load_config as _lc
+        _allowed = ((_lc().get("model_picker") or {}).get("allowed_providers") or [])
+        if isinstance(_allowed, list) and _allowed:
+            _ok = {str(s).strip().lower() for s in _allowed if str(s).strip()}
+            _cur = (current_provider or "").strip().lower()
+            if _cur:
+                _ok.add(_cur)
+            providers = [p for p in providers if str(p.get("slug", "")).lower() in _ok]
+    except Exception:
+        pass
+
     for p in providers:
         slug = str(p.get("slug", "")).lower()
         if slug == "openrouter":

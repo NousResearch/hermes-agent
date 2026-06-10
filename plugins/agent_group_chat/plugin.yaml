@@ -1,0 +1,7 @@
+name: agent_group_chat
+version: 0.1.0
+description: Harness-agnostic multi-profile group chat router. Routes @profile mentions in group chats to Hermes profiles and posts their replies back into the same room.
+author: Vera
+kind: standalone
+provides_hooks:
+  - pre_gateway_dispatch

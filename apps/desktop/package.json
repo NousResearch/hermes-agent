@@ -37,6 +37,7 @@
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
     "test:desktop:platforms": "node --test electron/bootstrap-platform.test.cjs electron/hardening.test.cjs electron/backend-probes.test.cjs electron/bootstrap-runner.test.cjs electron/connection-config.test.cjs electron/gateway-ws-probe.test.cjs electron/oauth-net-request.test.cjs electron/desktop-uninstall.test.cjs electron/session-windows.test.cjs electron/workspace-cwd.test.cjs electron/windows-child-process.test.cjs",
     "typecheck": "tsc -p . --noEmit",
+    "type-check": "npm run typecheck",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.{js,cjs}' 'vite.config.ts'",

@@ -157,6 +157,25 @@ def build_models_payload(
         max_models=max_models,
     )
 
+
+    # Josh customization: optional picker allowlist. When
+    # ``model_picker.allowed_providers`` is a non-empty list in config.yaml,
+    # only those provider slugs survive into any picker payload. Slugs match
+    # case-insensitively; the current provider always survives so the UI can
+    # never show an empty/orphaned selection. Reapplied after updates by
+    # ~/.hermes/scripts/reapply-hermes-custom-update-protection.py.
+    try:
+        from hermes_cli.config import load_config as _lc
+        _allowed = ((_lc().get("model_picker") or {}).get("allowed_providers") or [])
+        if isinstance(_allowed, list) and _allowed:
+            _ok = {str(s).strip().lower() for s in _allowed if str(s).strip()}
+            _cur = (ctx.current_provider or "").strip().lower()
+            if _cur:
+                _ok.add(_cur)
+            rows = [r for r in rows if str(r.get("slug", "")).lower() in _ok]
+    except Exception:
+        pass
+
     if include_unconfigured:
         rows = list(rows) + _append_unconfigured_rows(rows, ctx)
     if picker_hints:

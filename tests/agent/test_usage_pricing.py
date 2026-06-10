@@ -1,7 +1,9 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
     CanonicalUsage,
+    PricingEntry,
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
@@ -250,3 +252,65 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+def test_pricing_entry_has_1h_cache_write_field():
+    """PricingEntry must support cache_write_cost_per_million_1h for Anthropic tiered pricing."""
+    entry = PricingEntry(
+        cache_write_cost_per_million=Decimal("6.25"),
+        cache_write_cost_per_million_1h=Decimal("10.00"),
+    )
+    assert entry.cache_write_cost_per_million_1h == Decimal("10.00")
+
+
+def test_anthropic_opus_4_8_has_1h_cache_write_pricing():
+    """Anthropic Claude Opus 4.8 must have both 5m and 1h cache write pricing."""
+    entry = get_pricing_entry("claude-opus-4-8", provider="anthropic")
+    assert entry is not None
+    assert entry.cache_write_cost_per_million == Decimal("6.25")
+    assert entry.cache_write_cost_per_million_1h == Decimal("10.00")
+
+
+def test_anthropic_sonnet_4_6_has_1h_cache_write_pricing():
+    """Anthropic Claude Sonnet 4.6 must have both 5m and 1h cache write pricing."""
+    entry = get_pricing_entry("claude-sonnet-4-6", provider="anthropic")
+    assert entry is not None
+    assert entry.cache_write_cost_per_million == Decimal("3.75")
+    assert entry.cache_write_cost_per_million_1h == Decimal("6.00")
+
+
+def test_anthropic_haiku_4_5_has_1h_cache_write_pricing():
+    """Anthropic Claude Haiku 4.5 must have both 5m and 1h cache write pricing."""
+    entry = get_pricing_entry("claude-haiku-4-5", provider="anthropic")
+    assert entry is not None
+    assert entry.cache_write_cost_per_million == Decimal("1.25")
+    assert entry.cache_write_cost_per_million_1h == Decimal("2.00")
+
+
+def test_non_anthropic_models_have_no_1h_cache_write_pricing():
+    """Non-Anthropic models should not have 1h cache write pricing."""
+    entry = get_pricing_entry("gpt-4o", provider="openai")
+    assert entry is not None
+    assert entry.cache_write_cost_per_million_1h is None
+
+
+def test_estimate_cost_uses_5m_cache_write_not_1h():
+    """Cost estimation must use the 5-minute cache write rate by default.
+
+    The API usage payload does not expose cache TTL, so we cannot determine
+    whether a 5-minute or 1-hour tier applies.  The 1h field is for data
+    completeness only.
+    """
+    result = estimate_usage_cost(
+        "claude-opus-4-8",
+        CanonicalUsage(
+            input_tokens=0,
+            output_tokens=0,
+            cache_write_tokens=1000000,
+        ),
+        provider="anthropic",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M cache_write × $6.25/M (5m rate) = $6.25
+    assert float(result.amount_usd) == 6.25

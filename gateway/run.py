@@ -6473,6 +6473,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _tool_approval_live = False
         if _pending_confirm and not _tool_approval_live:
             _raw_reply = (event.text or "").strip()
+            # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim.
+            # Slack/Matrix instruction text shows the `!` prefix (typed `/`
+            # is blocked in Slack threads), but the adapters only rewrite
+            # `!<known-command>` — `always`/`cancel` are confirm keywords,
+            # not registered commands, so the `!` survives to here.
+            _norm_reply = _raw_reply.lstrip("!/").lower()
             _cmd_reply = event.get_command()
             _confirm_choice = None
             if _cmd_reply in {"approve", "yes", "ok", "confirm"}:
@@ -6481,11 +6487,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _confirm_choice = "always"
             elif _cmd_reply in {"cancel", "no", "deny", "nevermind"}:
                 _confirm_choice = "cancel"
-            elif _raw_reply.lower() in {"approve", "approve once", "once"}:
+            elif _norm_reply in {"approve", "approve once", "once"}:
                 _confirm_choice = "once"
-            elif _raw_reply.lower() in {"always", "always approve"}:
+            elif _norm_reply in {"always", "always approve"}:
                 _confirm_choice = "always"
-            elif _raw_reply.lower() in {"cancel", "nevermind", "no"}:
+            elif _norm_reply in {"cancel", "nevermind", "no"}:
                 _confirm_choice = "cancel"
             if _confirm_choice is not None:
                 _resolved = await _slash_confirm_mod.resolve(
@@ -10628,6 +10634,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return result
             return result
 
+        _p = self._typed_command_prefix_for(event.source.platform)
         prompt_message = (
             f"⚠️ **Confirm /{command}**\n\n"
             f"{detail}\n\n"
@@ -10635,7 +10642,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "• **Approve Once** — proceed this time only\n"
             "• **Always Approve** — proceed and silence this prompt permanently\n"
             "• **Cancel** — keep current conversation\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
         )
         return await self._request_slash_confirm(
             event=event,
@@ -11030,11 +11037,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 logger.debug("Button-based update prompt failed: %s", btn_err)
                         if not sent_buttons:
                             default_hint = f" (default: {default})" if default else ""
+                            _p = getattr(adapter, "typed_command_prefix", "/")
                             await adapter.send(
                                 chat_id,
                                 f"⚕ **Update needs your input:**\n\n"
                                 f"{prompt_text}{default_hint}\n\n"
-                                f"Reply `/approve` (yes) or `/deny` (no), "
+                                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), "
                                 f"or type your answer directly.",
                                 metadata=metadata,
                             )
@@ -14101,14 +14109,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Button-based approval failed, falling back to text: %s", _e
                         )
 
-                # Fallback: plain text approval prompt
+                # Fallback: plain text approval prompt.  Use the adapter's
+                # typed prefix so Slack/Matrix users are told the form they
+                # can actually type (`!approve`) — typed "/" is blocked in
+                # Slack threads and reserved by Matrix clients.
+                _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
+                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

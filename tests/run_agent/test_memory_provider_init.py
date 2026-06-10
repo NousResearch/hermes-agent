@@ -132,3 +132,71 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
+
+
+
+class McpSchemaProvider:
+    """Provider that returns tool schemas in MCP format (inputSchema instead of parameters)."""
+
+    name = "mcp-schema"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def get_tool_schemas(self):
+        return [
+            {
+                "name": "brain_query",
+                "description": "Query the knowledge base",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string", "description": "query"}},
+                    "required": ["q"],
+                },
+            }
+        ]
+
+
+def test_mcp_input_schema_normalized_to_parameters():
+    """Memory-provider schemas using MCP inputSchema key must be normalized
+    to OpenAI parameters key before wrapping (#43403)."""
+    provider = McpSchemaProvider()
+    cfg = {"memory": {"provider": "mcp-schema"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+        )
+
+    # Find the brain_query tool in agent.tools
+    brain_tool = None
+    for t in agent.tools:
+        if isinstance(t, dict) and t.get("function", {}).get("name") == "brain_query":
+            brain_tool = t
+            break
+    assert brain_tool is not None, "brain_query tool not found in agent.tools"
+    fn = brain_tool["function"]
+    # inputSchema must have been converted to parameters
+    assert "parameters" in fn, f"Expected 'parameters' key, got: {list(fn.keys())}"
+    assert "inputSchema" not in fn, "inputSchema should have been removed after normalization"
+    assert fn["parameters"]["type"] == "object"
+    assert "q" in fn["parameters"]["properties"]

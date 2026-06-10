@@ -1220,6 +1220,10 @@ def init_agent(
             _tname = _schema.get("name", "")
             if _tname and _tname in _existing_tool_names:
                 continue  # already registered via plugin path
+            # Normalize MCP-style schemas (inputSchema → parameters) so
+            # providers like LiteLLM that expect the OpenAI key don't 400.
+            if "inputSchema" in _schema and "parameters" not in _schema:
+                _schema["parameters"] = _schema.pop("inputSchema")
             _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
             if _tname:

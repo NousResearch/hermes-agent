@@ -168,3 +168,46 @@ def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
     assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")
+
+
+def test_get_env_config_ignores_bad_docker_json_for_local_backend(monkeypatch):
+    """Docker-only JSON env vars must not break the default local backend."""
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "None")
+    monkeypatch.setenv("TERMINAL_DOCKER_ENV", "not-json")
+    monkeypatch.setenv("TERMINAL_DOCKER_FORWARD_ENV", "not-json")
+    monkeypatch.setenv("TERMINAL_DOCKER_EXTRA_ARGS", "not-json")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "local"
+    assert config["docker_volumes"] == []
+    assert config["docker_env"] == {}
+    assert config["docker_forward_env"] == []
+    assert config["docker_extra_args"] == []
+
+
+def test_get_env_config_ignores_bad_docker_json_for_ssh_backend(monkeypatch):
+    """Non-container remote backends should also ignore Docker-only JSON."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "None")
+    monkeypatch.setenv("TERMINAL_DOCKER_ENV", "not-json")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "ssh"
+    assert config["docker_volumes"] == []
+    assert config["docker_env"] == {}
+
+
+def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeypatch):
+    """Selecting Docker should keep the existing actionable config error."""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "None")
+
+    try:
+        terminal_tool._get_env_config()
+    except ValueError as exc:
+        assert "TERMINAL_DOCKER_VOLUMES" in str(exc)
+    else:
+        raise AssertionError("Docker backend must validate TERMINAL_DOCKER_VOLUMES")

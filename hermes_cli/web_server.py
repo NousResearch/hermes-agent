@@ -8967,9 +8967,27 @@ async def get_plugins_hub(request: Request):
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
 
 
+def _is_public_insecure_dashboard(request: Request) -> bool:
+    """True when the dashboard is publicly bound with the auth gate disabled."""
+    bound_host = getattr(request.app.state, "bound_host", None)
+    return (
+        bool(bound_host)
+        and bound_host not in _LOOPBACK_HOST_VALUES
+        and not getattr(request.app.state, "auth_required", False)
+    )
+
+
 @app.post("/api/dashboard/agent-plugins/install")
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
+    if _is_public_insecure_dashboard(request):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Agent plugin install is disabled on public --insecure dashboards. "
+                "Install plugins from the local CLI after auditing the source."
+            ),
+        )
     from hermes_cli.plugins_cmd import dashboard_install_plugin
 
     result = dashboard_install_plugin(

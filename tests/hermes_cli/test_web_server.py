@@ -1176,6 +1176,47 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/dashboard/plugins/rescan")
         assert resp.status_code == 200
 
+    def test_public_insecure_dashboard_rejects_agent_plugin_install(self, monkeypatch):
+        """Public --insecure dashboards must not clone third-party plugin code.
+
+        In loopback mode the SPA token protects this endpoint. On a public
+        --insecure bind, the same token is visible to any browser that can
+        reach the dashboard, so accepting plugin installs there turns the
+        dashboard into a remote arbitrary-git-clone trigger.
+        """
+        from hermes_cli import web_server as ws
+
+        old_auth_required = getattr(ws.app.state, "auth_required", None)
+        old_bound_host = getattr(ws.app.state, "bound_host", None)
+        ws.app.state.auth_required = False
+        ws.app.state.bound_host = "0.0.0.0"
+
+        def fail_install(*args, **kwargs):  # pragma: no cover - must not be called
+            raise AssertionError("dashboard_install_plugin must not run")
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins_cmd.dashboard_install_plugin",
+            fail_install,
+        )
+
+        try:
+            resp = self.client.post(
+                "/api/dashboard/agent-plugins/install",
+                json={"identifier": "jellyfinuser/csnl", "force": False, "enable": True},
+            )
+        finally:
+            if old_auth_required is None:
+                delattr(ws.app.state, "auth_required")
+            else:
+                ws.app.state.auth_required = old_auth_required
+            if old_bound_host is None:
+                delattr(ws.app.state, "bound_host")
+            else:
+                ws.app.state.bound_host = old_bound_host
+
+        assert resp.status_code == 403
+        assert "disabled on public --insecure dashboards" in resp.json()["detail"]
+
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
         # %2e%2e = ..

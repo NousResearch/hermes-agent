@@ -960,6 +960,7 @@ export function DesktopController() {
     <Pane
       defaultOpen
       disabled={!terminalSidebarOpen}
+      divider
       id="terminal-sidebar"
       key="terminal-sidebar"
       maxWidth="80vw"

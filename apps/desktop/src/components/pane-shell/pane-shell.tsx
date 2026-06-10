@@ -30,6 +30,8 @@ export interface PaneProps {
   children?: ReactNode
   className?: string
   defaultOpen?: boolean
+  /** Paints a persistent hairline on the resize edge (not just the hover sash) so the pane boundary is always visible. */
+  divider?: boolean
   /** Forces the pane closed (track→0, aria-hidden) without writing to the store — for transient route gates. */
   disabled?: boolean
   /** Like disabled, but keeps hoverReveal alive — collapses the track without writing to the store (e.g. narrow window). */
@@ -233,6 +235,7 @@ export function Pane({
   children,
   className,
   defaultOpen = true,
+  divider = false,
   disabled = false,
   hoverReveal = false,
   id,
@@ -425,6 +428,7 @@ export function Pane({
           role="separator"
           tabIndex={0}
         >
+          {divider && <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-(--ui-stroke-secondary)" />}
           <span className="absolute inset-y-0 left-1/2 w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2 bg-(--ui-sash-hover-border) opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-visible:opacity-100" />
         </div>
       )}

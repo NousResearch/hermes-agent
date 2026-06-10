@@ -1819,6 +1819,8 @@ async def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                include_children=True,
+                project_compression_tips=False,
             )
             total = db.session_count(
                 source=source or None,
@@ -1826,7 +1828,7 @@ async def get_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
-                exclude_children=True,
+                exclude_children=False,
             )
             now = time.time()
             for s in sessions:
@@ -1925,6 +1927,8 @@ async def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                include_children=True,
+                project_compression_tips=False,
             )
             profile_total = db.session_count(
                 source=source_filter,
@@ -1932,7 +1936,7 @@ async def get_profiles_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
-                exclude_children=True,
+                exclude_children=False,
             )
             total += profile_total
             profile_totals[name] = profile_total

@@ -3479,9 +3479,21 @@ def _(rid, params: dict) -> dict:
         # short; the compression-tip projection in ``list_sessions_rich``
         # can also merge rows.
         fetch_limit = max(limit * 2, 200)
+        # The Desktop/TUI session picker should expose every stored
+        # conversation row, including compression continuations and empty
+        # shells. The default list_sessions_rich() view intentionally collapses
+        # compression chains into one logical conversation, which can make
+        # restored sessions look like they disappeared even though state.db
+        # still has them. For the picker, show raw stored rows and let resume
+        # handle the selected id directly.
         rows = [
             s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
+            for s in db.list_sessions_rich(
+                source=None,
+                limit=fetch_limit,
+                include_children=True,
+                project_compression_tips=False,
+            )
             if (s.get("source") or "").strip().lower() not in deny
         ][:limit]
         return _ok(

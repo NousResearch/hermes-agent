@@ -894,6 +894,57 @@ os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
 
+
+def _resolve_gateway_notify_interval() -> Optional[float]:
+    """Return the long-running notification interval in seconds.
+
+    ``None`` disables notifications.  The default is one minute so long
+    WhatsApp/gateway turns provide regular stateful progress without needing
+    the user to infer meaning from a stale typing indicator.
+    """
+    raw = float(os.getenv("HERMES_AGENT_NOTIFY_INTERVAL", 60))
+    return raw if raw > 0 else None
+
+
+def _format_steer_delivery_progress(preview: str | None = None) -> str:
+    """Return a safe user-facing progress line for delivered steer/internal events.
+
+    The preview may contain full internal payloads (background command output,
+    credentials in shell commands, etc.). Never echo those raw details to chat
+    progress; the model receives the payload through steer, while the user sees
+    that steer actually reached the LLM.
+    """
+    text = str(preview or "")
+    if "Background process" in text or text.startswith("[SYSTEM:"):
+        return "⚙️ Background process steer passed to LLM"
+    if text:
+        return f"🕹️ /steer passed to LLM: \"{text}\""
+    return "🕹️ /steer passed to LLM"
+
+
+def _build_long_running_status_message(agent_ref: Any, *, elapsed_seconds: float) -> str:
+    """Build the periodic still-working message with latest activity detail."""
+    elapsed_mins = int(elapsed_seconds // 60)
+    status_detail = ""
+    if agent_ref and hasattr(agent_ref, "get_activity_summary"):
+        try:
+            activity = agent_ref.get_activity_summary()
+            parts = [
+                f"iteration {activity.get('api_call_count', 0)}/{activity.get('max_iterations', 0)}"
+            ]
+            if activity.get("current_tool"):
+                parts.append(f"running: {activity['current_tool']}")
+            else:
+                desc = str(activity.get("last_activity_desc") or "waiting for model response")
+                parts.append(desc)
+            status_detail = " — " + ", ".join(part for part in parts if part)
+        except Exception:
+            status_detail = " — waiting for activity details"
+    else:
+        status_detail = " — waiting for agent startup"
+
+    return f"⏳ Still working... ({elapsed_mins} min elapsed{status_detail})"
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -3568,6 +3619,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _install_default_busy_session_handler(self, adapter: BasePlatformAdapter) -> None:
+        """Install the appropriate active-session handler for an adapter."""
+        policy = str(getattr(adapter, "_busy_text_policy", "") or "").strip().lower()
+        if getattr(adapter, "platform", None) == Platform.WHATSAPP and policy in {
+            "upsert_steer",
+            "explicit_steer",
+            "reply_aware_steer",
+        }:
+            adapter.set_busy_session_handler(self._handle_active_session_upsert_steer)
+            return
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+
+    async def _handle_active_session_upsert_steer(self, event: MessageEvent, session_key: str) -> bool:
+        """WhatsApp busy handler: upsert related text into the running agent.
+
+        This is runner-owned (not adapter-recursive): if a real running agent
+        exists, text is delivered through ``agent.steer(...)``; if not, return
+        False so the adapter's normal insert/queue path can handle it.
+        """
+        if self._draining:
+            return await self._handle_active_session_busy_message(event, session_key)
+
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter:
+            return False
+
+        policy = str(getattr(adapter, "_busy_text_policy", "upsert_steer") or "upsert_steer").strip().lower()
+        cmd = event.get_command()
+
+        should_steer = False
+        if cmd == "steer":
+            should_steer = True
+            payload = event.get_command_args().strip()
+        elif cmd:
+            # A leading slash means the user was trying to invoke a command.
+            # Do not feed mistyped/unknown slash commands into the running
+            # agent as a /steer payload; that turns UI mistakes into hidden
+            # steering instructions. Recognized gateway commands already
+            # bypass this handler in BasePlatformAdapter.handle_message(), and
+            # WhatsApp's adapter-level /sessions command is handled before the
+            # base active-session path reaches us.
+            logger.warning(
+                "Unrecognized WhatsApp slash command /%s during active session %s — "
+                "replying with command guidance instead of steering",
+                cmd,
+                session_key,
+            )
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            await adapter.send(
+                event.source.chat_id,
+                f"Unknown command `/{cmd}`. Type /commands to see what's available, "
+                f"or resend without the leading slash to send as a regular message.",
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
+            return True
+        else:
+            payload = (event.text or "").strip()
+            if event.media_urls or not payload:
+                return False
+            if policy == "upsert_steer":
+                should_steer = True
+            elif policy == "reply_aware_steer" and getattr(event, "reply_to_message_id", None):
+                should_steer = True
+            elif policy == "explicit_steer":
+                should_steer = False
+
+        if not should_steer:
+            return False
+
+        running_agent = self._running_agents.get(session_key)
+        if not running_agent or running_agent is _AGENT_PENDING_SENTINEL or not hasattr(running_agent, "steer"):
+            return False
+
+        if getattr(event, "reply_to_text", None) and getattr(event, "reply_to_message_id", None):
+            reply_snippet = str(event.reply_to_text)[:500]
+            payload = f'[Replying to: "{reply_snippet}"]\n\n{payload}'
+
+        try:
+            accepted = running_agent.steer(payload)
+        except Exception as exc:
+            logger.warning("Upsert steer failed for session %s: %s", session_key, exc)
+            accepted = False
+
+        if not accepted:
+            return False
+
+        preview = payload.replace("\n", " ")[:80]
+        if len(payload) > 80:
+            preview += "..."
+        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        try:
+            await adapter.send(
+                event.source.chat_id,
+                f"🕹️ /steer queued into the current session: '{preview}'",
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
+        except Exception as exc:
+            logger.debug("Failed to send upsert-steer ack: %s", exc)
+        return True
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -4750,7 +4903,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            self._install_default_busy_session_handler(adapter)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
             
@@ -5486,7 +5639,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
-                    adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    self._install_default_busy_session_handler(adapter)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
 
@@ -5741,17 +5894,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # existing ``.restart_failure_counts`` stuck-loop counter
                 # (incremented below, threshold 3), which sets
                 # ``suspended=True`` and overrides resume_pending.
-                #
-                # Iterate self._running_agents (current) rather than the
-                # drain-start ``active_agents`` snapshot — the snapshot
-                # may include sessions that finished gracefully during
-                # the drain window, and marking those falsely would give
-                # them a stray restart-interruption system note on their
-                # next turn even though their previous turn completed
-                # cleanly.  Skip pending sentinels for the same reason
-                # _interrupt_running_agents() does: their agent hasn't
-                # started yet, there's nothing to interrupt, and the
-                # session shouldn't carry a misleading resume flag.
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
@@ -11838,6 +11980,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             break
                     if adapter and source.chat_id:
                         try:
+                            send_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                            status_text = (
+                                f"⚙️ Background process {session_id} completed; passing result to the session."
+                                if session.exit_code in (0, None)
+                                else f"⚙️ Background process {session_id} finished with exit code {session.exit_code}; passing result to the session."
+                            )
+                            await adapter.send(source.chat_id, status_text, metadata=send_meta)
+                        except Exception as e:
+                            logger.error("Agent notify status delivery error: %s", e)
+                        try:
                             synth_event = MessageEvent(
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
@@ -13000,6 +13152,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
                 return
+
+            if event_type == "steer.delivered":
+                progress_queue.put(_format_steer_delivery_progress(preview))
+                return
+
 
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -14632,7 +14789,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Periodic "still working" notifications for long-running tasks.
         # Fires every N seconds so the user knows the agent hasn't died.
         # Config: agent.gateway_notify_interval in config.yaml, or
-        # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
+        # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 60s (1 min).
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
@@ -14661,6 +14818,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                if not _run_still_current():
+                    return
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available. Default
                 # heartbeat is terse: elapsed + current tool. Verbose

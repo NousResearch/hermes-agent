@@ -200,6 +200,55 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_notify_on_complete_sends_visible_status_to_original_thread(monkeypatch, tmp_path):
+    """Completion notifications should visibly return to the captured thread/session.
+
+    WhatsApp soft sessions can switch focus while a background process is running.
+    The completion status must use the watcher/source thread_id, not whatever
+    WhatsApp session is focused when the process exits.
+    """
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.WHATSAPP] = adapter
+
+    watcher = {
+        "session_id": "proc_test_internal",
+        "check_interval": 0,
+        "session_key": "agent:main:whatsapp:dm:61417899253:wa-session-original",
+        "platform": "whatsapp",
+        "chat_id": "97032068976862@lid",
+        "thread_id": "wa-session-original",
+        "user_id": "61417899253",
+        "user_name": "Sebastian",
+        "notify_on_complete": True,
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "97032068976862@lid"
+    assert "completed" in adapter.send.await_args.args[1]
+    assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "wa-session-original"}
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.source.thread_id == "wa-session-original"
+
+
+@pytest.mark.asyncio
 async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path):
     """Synthetic completion event should carry user_id and user_name from the watcher."""
     import tools.process_registry as pr_module

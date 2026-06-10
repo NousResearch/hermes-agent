@@ -15,6 +15,29 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.session import SessionSource
 
 
+def test_steer_delivery_progress_hides_internal_background_payload():
+    from gateway.run import _format_steer_delivery_progress
+
+    text = _format_steer_delivery_progress(
+        "[SYSTEM: Background process proc_123 completed (exit code 0).\n"
+        "Command: secret-ish command\n"
+        "Output:\nlong noisy output]"
+    )
+
+    assert text == "⚙️ Background process steer passed to LLM"
+    assert "steer" in text
+    assert "Command:" not in text
+    assert "secret-ish" not in text
+
+
+def test_steer_delivery_progress_labels_user_steer():
+    from gateway.run import _format_steer_delivery_progress
+
+    text = _format_steer_delivery_progress("use the other approach")
+
+    assert text == '🕹️ /steer passed to LLM: "use the other approach"'
+
+
 class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)

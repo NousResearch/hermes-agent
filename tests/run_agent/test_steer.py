@@ -91,6 +91,22 @@ class TestSteerInjection:
         # And pending_steer is consumed.
         assert agent._pending_steer is None
 
+    def test_emits_tool_progress_when_steer_reaches_llm(self):
+        """Tool logs should show the moment a pending /steer is passed through
+        into the next model iteration, not just the initial queued ack."""
+        agent = _bare_agent()
+        calls = []
+        agent.tool_progress_callback = lambda *args, **kwargs: calls.append((args, kwargs))
+        agent.steer("prefer the simpler implementation")
+
+        messages = [{"role": "tool", "content": "tool output", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+
+        assert calls
+        args, kwargs = calls[-1]
+        assert args[:3] == ("steer.delivered", "steer", "prefer the simpler implementation")
+        assert kwargs["chars"] == len("prefer the simpler implementation")
+
     def test_no_op_when_no_steer_pending(self):
         agent = _bare_agent()
         messages = [

@@ -24,6 +24,9 @@ import re
 import shutil
 import signal
 import subprocess
+import time
+import uuid
+from dataclasses import dataclass, replace
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -191,6 +194,25 @@ from gateway.platforms.base import (
 )
 
 
+@dataclass
+class _WhatsAppSession:
+    session_id: str
+    chat_key: str
+    created_at: float
+    last_activity_at: float
+    title: str = ""
+    root_message_id: Optional[str] = None
+    status: str = "idle"
+
+
+@dataclass
+class _WhatsAppSessionRoute:
+    event: MessageEvent
+    session_id: Optional[str] = None
+    created_new: bool = False
+    had_existing_session: bool = False
+
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
@@ -261,6 +283,29 @@ class WhatsAppAdapter(BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        self._busy_text_policy = str(
+            config.extra.get("busy_text_policy")
+            or os.getenv("WHATSAPP_BUSY_TEXT_POLICY", "upsert_steer")
+        ).strip().lower()
+        self._sessions_enabled = self._truthy_config(
+            "enable_sessions", env_name="WHATSAPP_ENABLE_SESSIONS", default=True
+        )
+        session_idle_minutes = config.extra.get(
+            "session_idle_minutes", os.getenv("WHATSAPP_SESSION_IDLE_MINUTES", "1440")
+        )
+        self._session_idle_seconds = max(1, int(float(session_idle_minutes) * 60))
+        self._session_max_live_per_chat = max(
+            1,
+            int(
+                config.extra.get(
+                    "session_max_live_per_chat",
+                    os.getenv("WHATSAPP_SESSION_MAX_LIVE_PER_CHAT", "5"),
+                )
+            ),
+        )
+        self._whatsapp_sessions: Dict[str, _WhatsAppSession] = {}
+        self._whatsapp_message_sessions: Dict[str, str] = {}
+        self._whatsapp_chat_focus: Dict[str, str] = {}
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
@@ -334,6 +379,273 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # Keep enough space for truncate_message's pagination indicator and
         # code-fence repair even if a user configures a very long prefix.
         return max(1024, self.MAX_MESSAGE_LENGTH - prefix_len)
+
+    def _truthy_config(self, key: str, *, env_name: str, default: bool = False) -> bool:
+        raw = self.config.extra.get(key)
+        if raw is None:
+            raw = os.getenv(env_name)
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _session_chat_key(source) -> str:
+        return f"{source.chat_type}:{source.chat_id}" if source else "unknown"
+
+    def _whatsapp_session_is_live(self, session_id: Optional[str], *, now: Optional[float] = None) -> bool:
+        if not session_id:
+            return False
+        session = self._whatsapp_sessions.get(session_id)
+        if session is None or session.status == "expired":
+            return False
+        if now is None:
+            now = time.time()
+        if (now - session.last_activity_at) > self._session_idle_seconds:
+            session.status = "expired"
+            return False
+        return True
+
+    def _create_whatsapp_session(
+        self,
+        chat_key: str,
+        *,
+        root_message_id: Optional[str] = None,
+        title: str = "",
+        now: Optional[float] = None,
+    ) -> str:
+        now = now if now is not None else time.time()
+        session_id = f"wa-session-{uuid.uuid4().hex[:10]}"
+        self._whatsapp_sessions[session_id] = _WhatsAppSession(
+            session_id=session_id,
+            chat_key=chat_key,
+            created_at=now,
+            last_activity_at=now,
+            root_message_id=root_message_id,
+            title=(title or "")[:80],
+        )
+        self._whatsapp_chat_focus[chat_key] = session_id
+        self._prune_whatsapp_sessions(chat_key, now=now)
+        return session_id
+
+    def _touch_whatsapp_session(self, session_id: str, *, now: Optional[float] = None) -> None:
+        session = self._whatsapp_sessions.get(session_id)
+        if session is None:
+            return
+        session.status = "idle"
+        session.last_activity_at = now if now is not None else time.time()
+        self._whatsapp_chat_focus[session.chat_key] = session_id
+
+    def _register_whatsapp_session_message(self, message_id: Optional[str], session_id: Optional[str]) -> None:
+        if message_id and session_id:
+            self._whatsapp_message_sessions[str(message_id)] = session_id
+
+    def _prune_whatsapp_sessions(self, chat_key: str, *, now: Optional[float] = None) -> None:
+        now = now if now is not None else time.time()
+        live_for_chat = [
+            session for session in self._whatsapp_sessions.values()
+            if session.chat_key == chat_key and self._whatsapp_session_is_live(session.session_id, now=now)
+        ]
+        live_for_chat.sort(key=lambda session: session.last_activity_at, reverse=True)
+        for session in live_for_chat[self._session_max_live_per_chat:]:
+            session.status = "expired"
+            for msg_id, mapped_session in list(self._whatsapp_message_sessions.items()):
+                if mapped_session == session.session_id:
+                    self._whatsapp_message_sessions.pop(msg_id, None)
+
+    def _resolve_whatsapp_session(self, event: MessageEvent) -> tuple[str, bool, bool]:
+        """Return ``(session_id, created_new, had_existing_session)`` for an inbound event."""
+        now = time.time()
+        chat_key = self._session_chat_key(event.source)
+        had_existing_session = any(session.chat_key == chat_key for session in self._whatsapp_sessions.values())
+        explicit_session = getattr(event.source, "thread_id", None)
+        if explicit_session and self._whatsapp_session_is_live(explicit_session, now=now):
+            session = self._whatsapp_sessions.get(explicit_session)
+            if session and session.chat_key == chat_key:
+                self._touch_whatsapp_session(explicit_session, now=now)
+                return explicit_session, False, had_existing_session
+        quoted_id = getattr(event, "reply_to_message_id", None)
+        quoted_text = getattr(event, "reply_to_text", None)
+        if quoted_id:
+            known_session = self._whatsapp_message_sessions.get(str(quoted_id))
+            if self._whatsapp_session_is_live(known_session, now=now):
+                session = self._whatsapp_sessions.get(known_session)
+                if session and session.chat_key == chat_key:
+                    self._touch_whatsapp_session(known_session, now=now)
+                    return known_session, False, had_existing_session
+            session_id = self._create_whatsapp_session(
+                chat_key,
+                root_message_id=str(quoted_id),
+                title=str(quoted_text or event.text or "quoted reply"),
+                now=now,
+            )
+            self._register_whatsapp_session_message(str(quoted_id), session_id)
+            return session_id, True, had_existing_session
+
+        focus_session = self._whatsapp_chat_focus.get(chat_key)
+        if self._whatsapp_session_is_live(focus_session, now=now):
+            self._touch_whatsapp_session(focus_session, now=now)
+            return focus_session, False, had_existing_session
+        session_id = self._create_whatsapp_session(chat_key, title=str(event.text or ""), now=now)
+        return session_id, True, had_existing_session
+
+    def _resolve_whatsapp_session_id(self, event: MessageEvent) -> str:
+        session_id, _, _ = self._resolve_whatsapp_session(event)
+        return session_id
+
+    def _live_whatsapp_sessions_for_chat(self, chat_key: str) -> list[_WhatsAppSession]:
+        now = time.time()
+        sessions = [
+            session for session in self._whatsapp_sessions.values()
+            if session.chat_key == chat_key and self._whatsapp_session_is_live(session.session_id, now=now)
+        ]
+        sessions.sort(key=lambda session: session.last_activity_at, reverse=True)
+        return sessions
+
+    def _format_whatsapp_session_list(self, source) -> str:
+        chat_key = self._session_chat_key(source)
+        sessions = self._live_whatsapp_sessions_for_chat(chat_key)
+        if not sessions:
+            return "No active WhatsApp sessions yet. Use /sessions new to start one."
+        focus_session = self._whatsapp_chat_focus.get(chat_key)
+        lines = ["Active WhatsApp sessions:"]
+        for idx, session in enumerate(sessions, start=1):
+            marker = " ← current" if session.session_id == focus_session else ""
+            title = session.title or session.root_message_id or session.session_id
+            lines.append(f"{idx}. {session.session_id} — {title}{marker}")
+        lines.append("Use /sessions new to start a fresh session, or /sessions <number> to switch focus.")
+        return "\n".join(lines)
+
+    async def _handle_whatsapp_session_command(self, event: MessageEvent) -> bool:
+        if not self._sessions_enabled or not event:
+            return False
+        if event.get_command() != "sessions":
+            return False
+        chat_key = self._session_chat_key(event.source)
+        args = event.get_command_args().strip()
+        reply_to = getattr(event, "message_id", None)
+        metadata = {"thread_id": event.source.thread_id} if event.source and event.source.thread_id else None
+
+        if not args:
+            await self.send(
+                event.source.chat_id,
+                self._format_whatsapp_session_list(event.source),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return True
+
+        first, _, rest = args.partition(" ")
+        first_lower = first.lower()
+        if first_lower in {"new", "fresh", "create"}:
+            session_id = self._create_whatsapp_session(
+                chat_key,
+                root_message_id=reply_to,
+                title=(rest or "new session"),
+            )
+            self._register_whatsapp_session_message(reply_to, session_id)
+            if rest.strip():
+                await self._send_whatsapp_session_notice(event, session_id, rest.strip())
+                source = replace(event.source, thread_id=session_id)
+                routed = replace(
+                    event,
+                    text=rest.strip(),
+                    message_type=MessageType.TEXT,
+                    source=source,
+                )
+                await super().handle_message(routed)
+            else:
+                await self.send(
+                    event.source.chat_id,
+                    f"New WhatsApp session created: {session_id}\nYour next unquoted message will use it.",
+                    reply_to=reply_to,
+                    metadata={"thread_id": session_id},
+                )
+            return True
+
+        if first_lower.isdigit():
+            sessions = self._live_whatsapp_sessions_for_chat(chat_key)
+            index = int(first_lower) - 1
+            if 0 <= index < len(sessions):
+                session = sessions[index]
+                self._touch_whatsapp_session(session.session_id)
+                self._register_whatsapp_session_message(reply_to, session.session_id)
+                await self.send(
+                    event.source.chat_id,
+                    f"Switched WhatsApp session to {index + 1}: {session.session_id}\nYour next unquoted message will use it.",
+                    reply_to=reply_to,
+                    metadata={"thread_id": session.session_id},
+                )
+            else:
+                await self.send(
+                    event.source.chat_id,
+                    self._format_whatsapp_session_list(event.source),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            return True
+
+        await self.send(
+            event.source.chat_id,
+            "Usage: /sessions, /sessions new, /sessions new <message>, or /sessions <number>",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        return True
+
+    def _route_event_to_session_info(self, event: MessageEvent) -> _WhatsAppSessionRoute:
+        """Attach WhatsApp soft-thread session metadata and return routing details."""
+        if not self._sessions_enabled or not event or not event.source:
+            return _WhatsAppSessionRoute(event=event)
+        session_id, created_new, had_existing_session = self._resolve_whatsapp_session(event)
+        source = replace(event.source, thread_id=session_id)
+        routed = replace(event, source=source)
+        self._register_whatsapp_session_message(getattr(event, "message_id", None), session_id)
+        return _WhatsAppSessionRoute(
+            event=routed,
+            session_id=session_id,
+            created_new=created_new,
+            had_existing_session=had_existing_session,
+        )
+
+    def _route_event_to_session(self, event: MessageEvent) -> MessageEvent:
+        """Attach WhatsApp soft-thread session metadata before BasePlatformAdapter routing.
+
+        WhatsApp sessions are represented as synthetic ``source.thread_id`` values so
+        the existing session key/session store machinery creates a separate
+        Hermes session for each active WhatsApp session.
+        """
+        return self._route_event_to_session_info(event).event
+
+    def _format_whatsapp_session_notice(self, session_id: str, text: Optional[str]) -> str:
+        preview = (text or "").strip().replace("\n", " ")
+        if len(preview) > 80:
+            preview = preview[:77] + "..."
+        if preview:
+            return f"🧵 New WhatsApp session started: {session_id}\nProcessing separately: '{preview}'"
+        return f"🧵 New WhatsApp session started: {session_id}\nProcessing separately."
+
+    async def _send_whatsapp_session_notice(self, event: MessageEvent, session_id: Optional[str], text: Optional[str]) -> None:
+        if not event or not event.source or not session_id:
+            return
+        try:
+            await self.send(
+                event.source.chat_id,
+                self._format_whatsapp_session_notice(session_id, text),
+                reply_to=getattr(event, "message_id", None),
+                metadata={"thread_id": session_id},
+            )
+        except Exception as exc:
+            logger.debug("[%s] WhatsApp session notice send failed: %s", self.name, exc)
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        if await self._handle_whatsapp_session_command(event):
+            return
+        session_route = self._route_event_to_session_info(event)
+        if session_route.created_new and session_route.had_existing_session and session_route.event.message_type == MessageType.TEXT:
+            await self._send_whatsapp_session_notice(event, session_route.session_id, event.text)
+        await super().handle_message(session_route.event)
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -482,6 +794,78 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return False
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns)
+
+    async def _handle_busy_text_as_steer(self, event: MessageEvent, session_key: str) -> bool:
+        """Busy-session handler: treat inbound text as /steer instead of interrupt/queue.
+
+        Fixes two WhatsApp UX problems:
+        1) Multiple user messages during a running turn used to overwrite
+           ``_pending_messages[session_key]`` so earlier messages were dropped.
+        2) /steer sent during an active session was previously queued/ignored
+           because /steer is not in the bypass-active-session command set.
+
+        When enabled (whatsapp.busy_text_policy: steer), this handler dispatches
+        /steer inline via the gateway runner, so the steer lands after the next
+        tool-call batch without interrupting.
+        """
+        if not self._message_handler:
+            return False
+
+        # Let real commands (other than /steer) fall through to the default
+        # active-session interrupt path and command bypass logic.
+        cmd = event.get_command()
+        if cmd and cmd != "steer":
+            return False
+
+        # Steer only supports text. Media needs the normal queue/interrupt path.
+        # Explicit /steer arrives as MessageType.COMMAND, so accept that one
+        # command inline; otherwise plain busy text must be MessageType.TEXT.
+        if event.media_urls:
+            return False
+        if cmd == "steer":
+            payload = event.get_command_args().strip()
+        elif self._busy_text_policy == "steer" and event.message_type == MessageType.TEXT:
+            payload = (event.text or "").strip()
+        else:
+            return False
+        if not payload:
+            return True  # nothing to do; treat as handled to avoid interrupt spam
+
+        # If the user replied to a specific message, preserve the disambiguation
+        # pointer. (gateway/run.py does this for normal turns, but /steer is an
+        # early-intercept command path, so we embed it here.)
+        if getattr(event, "reply_to_text", None) and getattr(event, "reply_to_message_id", None):
+            reply_snippet = str(event.reply_to_text)[:500]
+            payload = f'[Replying to: "{reply_snippet}"]\n\n{payload}'
+
+        steer_event = MessageEvent(
+            text=f"/steer {payload}",
+            message_type=MessageType.COMMAND,
+            source=event.source,
+            raw_message=event.raw_message,
+            message_id=event.message_id,
+            channel_prompt=event.channel_prompt,
+        )
+
+        try:
+            response = await self._message_handler(steer_event)
+        except Exception as exc:
+            logger.error("[%s] busy /steer dispatch failed: %s", self.name, exc, exc_info=True)
+            response = f"⚠️ Steer failed: {exc}"
+
+        if response:
+            thread_meta = {"thread_id": event.source.thread_id} if event.source and event.source.thread_id else None
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=response,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            except Exception as send_exc:
+                logger.debug("[%s] busy /steer ack send failed: %s", self.name, send_exc)
+
+        return True
 
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:
@@ -686,6 +1070,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 if self._bridge_process.poll() is not None:
                     print(f"[{self.name}] Bridge process died (exit code {self._bridge_process.returncode})")
                     print(f"[{self.name}] Check log: {self._bridge_log}")
+                    self._log_bridge_diagnostics("bridge process died before HTTP ready")
                     self._close_bridge_log()
                     return False
                 try:
@@ -706,6 +1091,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if not http_ready:
                 print(f"[{self.name}] Bridge HTTP server did not start in 15s")
                 print(f"[{self.name}] Check log: {self._bridge_log}")
+                self._log_bridge_diagnostics("HTTP server did not start")
                 self._close_bridge_log()
                 return False
             
@@ -718,6 +1104,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     if self._bridge_process.poll() is not None:
                         print(f"[{self.name}] Bridge process died during connection")
                         print(f"[{self.name}] Check log: {self._bridge_log}")
+                        self._log_bridge_diagnostics("bridge process died during WhatsApp connection")
                         self._close_bridge_log()
                         return False
                     try:
@@ -739,6 +1126,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
+                    self._log_bridge_diagnostics("WhatsApp not connected after startup wait")
             
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
@@ -768,6 +1156,63 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
             self._bridge_log_fh = None
 
+    def _bridge_status_path(self) -> Path:
+        return self._session_path.parent / "bridge-status.json"
+
+    def _bridge_diagnostic_log_path(self) -> Path:
+        return self._session_path.parent / "bridge-diagnostics.jsonl"
+
+    def _read_bridge_status(self) -> Optional[dict]:
+        status_path = self._bridge_status_path()
+        try:
+            if status_path.exists():
+                return json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("[%s] Failed to read WhatsApp bridge status %s: %s", self.name, status_path, exc)
+        return None
+
+    def _log_bridge_diagnostics(self, context: str) -> None:
+        """Emit persisted bridge diagnostics when startup/reconnect fails."""
+        status = self._read_bridge_status()
+        diag_log = self._bridge_diagnostic_log_path()
+        if status:
+            last_disconnect = status.get("lastDisconnect") or {}
+            last_event = status.get("lastEvent") or {}
+            logger.warning(
+                "[%s] WhatsApp bridge diagnostics after %s: status=%s needsPairing=%s "
+                "qrPending=%s reconnectCount=%s socketStartCount=%s lastDisconnect=%s lastEvent=%s "
+                "statusFile=%s diagnosticLog=%s",
+                self.name,
+                context,
+                status.get("status"),
+                status.get("needsPairing"),
+                status.get("qrPending"),
+                status.get("reconnectCount"),
+                status.get("socketStartCount"),
+                last_disconnect,
+                last_event,
+                self._bridge_status_path(),
+                diag_log,
+            )
+            print(f"[{self.name}] Bridge diagnostics: status={status.get('status')} qrPending={status.get('qrPending')} reconnects={status.get('reconnectCount')}")
+            if last_disconnect:
+                print(f"[{self.name}] Last disconnect: {last_disconnect}")
+        else:
+            logger.warning(
+                "[%s] No WhatsApp bridge status available after %s (expected %s)",
+                self.name,
+                context,
+                self._bridge_status_path(),
+            )
+
+        try:
+            if diag_log.exists():
+                lines = diag_log.read_text(encoding="utf-8", errors="replace").splitlines()[-8:]
+                if lines:
+                    logger.warning("[%s] Recent WhatsApp bridge diagnostic events after %s:\n%s", self.name, context, "\n".join(lines))
+        except Exception as exc:
+            logger.warning("[%s] Failed to read WhatsApp bridge diagnostics %s: %s", self.name, diag_log, exc)
+
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         """Return a fatal error message if the managed bridge child exited."""
         if self._bridge_process is None:
@@ -795,6 +1240,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)
+            self._log_bridge_diagnostics("managed bridge exited unexpectedly")
             self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
             self._close_bridge_log()
             await self._notify_fatal_error()
@@ -954,6 +1400,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     if resp.status == 200:
                         data = await resp.json()
                         last_message_id = data.get("messageId")
+                        session_id = (
+                            (metadata or {}).get("thread_id")
+                            if isinstance(metadata, dict)
+                            else None
+                        )
+                        self._register_whatsapp_session_message(last_message_id, session_id)
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
@@ -1374,6 +1826,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            reply_to_message_id = data.get("quotedMessageId") or None
+            reply_to_text = data.get("quotedText") or None
+            if isinstance(reply_to_message_id, str) and not reply_to_message_id.strip():
+                reply_to_message_id = None
+            if isinstance(reply_to_text, str) and not reply_to_text.strip():
+                reply_to_text = None
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1382,6 +1841,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                reply_to_message_id=reply_to_message_id,
+                reply_to_text=reply_to_text,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

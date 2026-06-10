@@ -2430,6 +2430,17 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
+    progress_callback = getattr(agent, "tool_progress_callback", None)
+    if progress_callback:
+        try:
+            progress_callback(
+                "steer.delivered",
+                "steer",
+                steer_text,
+                chars=len(steer_text),
+            )
+        except Exception:
+            _ra().logger.debug("tool_progress_callback failed for delivered steer", exc_info=True)
 
 
 

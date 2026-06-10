@@ -226,6 +226,11 @@ export function DesktopController() {
   } = useOverlayRouting()
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
+  // Skills/messaging/artifacts replace the main pane; overlay routes (settings,
+  // command-center, …) only stack a modal — chat must stay mounted so the
+  // composer draft survives a route change like / → /settings (#43825).
+  const fullPageMainView =
+    currentView === 'skills' || currentView === 'messaging' || currentView === 'artifacts'
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
@@ -1013,9 +1018,10 @@ export function DesktopController() {
         </Pane>
       )}
       <PaneMain>
+        {!fullPageMainView ? chatView : null}
         <Routes>
-          <Route element={chatView} index />
-          <Route element={chatView} path=":sessionId" />
+          <Route element={null} index />
+          <Route element={null} path=":sessionId" />
           <Route
             element={
               <Suspense fallback={null}>
@@ -1040,11 +1046,11 @@ export function DesktopController() {
             }
             path="artifacts"
           />
-          <Route element={chatView} path="cron" />
-          <Route element={chatView} path="profiles" />
-          <Route element={chatView} path="settings" />
-          <Route element={chatView} path="command-center" />
-          <Route element={chatView} path="agents" />
+          <Route element={null} path="cron" />
+          <Route element={null} path="profiles" />
+          <Route element={null} path="settings" />
+          <Route element={null} path="command-center" />
+          <Route element={null} path="agents" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />

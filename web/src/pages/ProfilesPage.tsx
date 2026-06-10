@@ -22,7 +22,6 @@ import {
   X,
 } from "lucide-react";
 import spinners from "unicode-animations";
-import { useNavigate } from "react-router-dom";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
@@ -260,7 +259,6 @@ export default function ProfilesPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
-  const navigate = useNavigate();
 
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render

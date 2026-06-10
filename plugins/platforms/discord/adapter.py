@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -29,6 +30,7 @@ VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
+_DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
@@ -37,6 +39,37 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # every slash command — not just the overflow ones. We keep the desired set
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
+_DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
+    "non_conversational",
+    "non_conversational_history",
+})
+# Upgrade-bridge fallback only. The primary mechanism is the persisted
+# non-conversational message-ID set populated from explicitly marked sends
+# (metadata["non_conversational"]). These regexes exist solely to recognize
+# status bumps emitted by an older gateway version that pre-dates the marking,
+# so they don't partition history after an upgrade. New emitters should set the
+# metadata flag, not rely on a regex here.
+_DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
+    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
+    # Legacy/background-review test doubles used this shorter form before the
+    # self-improvement prefix became the stable emitter contract.
+    re.compile(
+        r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*⏳\s+Working\s+—\s+\d+\s+min(?:\s|$)", re.IGNORECASE),
+    re.compile(
+        r"^\s*\[Background process\s+\S+\s+"
+        r"(?:finished with exit code|is still running~)[\s\S]*\]\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:✅|❌)\s+Hermes update\s+"
+        r"(?:finished|failed|timed out)[\s\S]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
+)
 
 try:
     import discord
@@ -55,7 +88,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -130,6 +162,73 @@ def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[s
     if bundled.is_file():
         return str(bundled)
     return None
+
+
+class _DiscordNonConversationalMessageTracker:
+    """Persistent bounded set of Discord message IDs that are status noise."""
+
+    _MAX_TRACKED = 2000
+
+    def __init__(self, max_tracked: int = _MAX_TRACKED):
+        self._max_tracked = max_tracked
+        self._ids: dict[str, None] = dict.fromkeys(self._load())
+
+    def _state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return (
+            get_hermes_home()
+            / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+            / _DISCORD_NONCONVERSATIONAL_STATE_FILENAME
+        )
+
+    def _load(self) -> list[str]:
+        path = self._state_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(message_id) for message_id in data if str(message_id).strip()]
+        except Exception:
+            logger.debug("[%s] Failed to load non-conversational Discord IDs", "Discord")
+        return []
+
+    def _save(self) -> None:
+        ids = list(self._ids)
+        if len(ids) > self._max_tracked:
+            ids = ids[-self._max_tracked:]
+            self._ids = dict.fromkeys(ids)
+        try:
+            atomic_json_write(self._state_path(), ids, indent=None)
+        except Exception:
+            logger.debug("[%s] Failed to save non-conversational Discord IDs", "Discord", exc_info=True)
+
+    def mark_many(self, message_ids: List[str]) -> None:
+        changed = False
+        for message_id in message_ids:
+            key = str(message_id or "").strip()
+            if key and key not in self._ids:
+                self._ids[key] = None
+                changed = True
+        if changed:
+            self._save()
+
+    def __contains__(self, message_id: str) -> bool:
+        return str(message_id or "") in self._ids
+
+
+def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
+    """Return True when an outbound send was explicitly marked as status-only."""
+    if not isinstance(metadata, dict):
+        return False
+    return any(bool(metadata.get(key)) for key in _DISCORD_NONCONVERSATIONAL_METADATA_KEYS)
+
+
+def _looks_like_nonconversational_history_message(content: str) -> bool:
+    """Fallback recognizer for legacy status bumps missing persisted IDs."""
+    text = content or ""
+    return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -681,6 +780,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Persistent set of bot-authored lifecycle/status message IDs that
+        # should not act as conversational history boundaries after restart.
+        self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -1577,6 +1679,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id = None
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
+            nonconversational = _metadata_marks_nonconversational(metadata)
 
             if thread_id:
                 # Fetch the thread directly — threads are addressed by their own ID.
@@ -1654,7 +1757,10 @@ class DiscordAdapter(BasePlatformAdapter):
             # backfill — avoids a full channel.history() scan on hot paths.
             if message_ids:
                 _target_id = thread_id or chat_id
-                self._last_self_message_id[_target_id] = message_ids[-1]
+                if nonconversational:
+                    self._nonconversational_messages.mark_many(message_ids)
+                elif not _looks_like_nonconversational_history_message(content):
+                    self._last_self_message_id[_target_id] = message_ids[-1]
 
             return SendResult(
                 success=True,
@@ -4203,15 +4309,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 after=_after_obj,
                 oldest_first=False,
             ):
+                # Skip system messages (pins, joins, thread renames, etc.)
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    continue
+
+                content = getattr(msg, "clean_content", msg.content) or ""
+                if (
+                    str(getattr(msg, "id", "")) in self._nonconversational_messages
+                    or _looks_like_nonconversational_history_message(content)
+                ):
+                    continue
+
                 # Stop at our own message — this is the partition point.
                 # Everything before this is already in the session transcript.
                 # (Redundant when _after_obj is set, but needed for cold start.)
                 if msg.author == self._client.user:
                     break
-
-                # Skip system messages (pins, joins, thread renames, etc.)
-                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
-                    continue
 
                 # Respect DISCORD_ALLOW_BOTS for other bots.
                 # For history context, "mentions" is treated as "all" — we are
@@ -4219,7 +4332,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 if getattr(msg.author, "bot", False) and not include_other_bots:
                     continue
 
-                content = getattr(msg, "clean_content", msg.content) or ""
                 if not content and msg.attachments:
                     content = "(attachment)"
                 if not content:
@@ -4693,6 +4805,8 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             msg = await channel.send(embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
+            if _metadata_marks_nonconversational(metadata):
+                self._nonconversational_messages.mark_many([str(msg.id)])
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))

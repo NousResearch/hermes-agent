@@ -11,7 +11,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { canImportHermesCli, findCommandOnLoginShell, verifyHermesCli } = require('./backend-probes.cjs')
 
 // Resolve the host's own Node binary -- guaranteed to be on disk and
 // runnable. We use it as both a stand-in for "a python that doesn't
@@ -79,4 +79,20 @@ test('verifyHermesCli swallows timeouts (does not throw)', () => {
   // (because the binary is missing) returns false rather than
   // propagating. Same code path the timeout case takes.
   assert.equal(verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
+})
+
+test('findCommandOnLoginShell returns null for falsy command', () => {
+  assert.equal(findCommandOnLoginShell(''), null)
+  assert.equal(findCommandOnLoginShell(null), null)
+})
+
+test('findCommandOnLoginShell resolves sh on POSIX hosts', () => {
+  if (process.platform === 'win32') {
+    assert.equal(findCommandOnLoginShell('sh'), null)
+    return
+  }
+
+  const resolved = findCommandOnLoginShell('sh')
+  assert.ok(resolved)
+  assert.match(resolved, /sh$/)
 })

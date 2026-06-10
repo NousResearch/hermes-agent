@@ -264,6 +264,13 @@ class VoiceCallWebhookServer:
                 continue
             await self.process_event(event)
 
+        # Let the provider rewrite the response based on state created while
+        # the events were processed (e.g. Twilio realtime <Connect><Stream>).
+        try:
+            result = self.provider.finalize_response(ctx, result)
+        except Exception:  # noqa: BLE001 — fall back to the parse-time response
+            logger.exception("voice_call webhook: finalize_response failed")
+
         self._replay.put(dedupe_key, result.response_body, result.response_content_type)
         return web.Response(
             text=result.response_body,

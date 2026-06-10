@@ -99,6 +99,10 @@ class TwilioProvider(VoiceCallProvider):
         if not self.auth_token:
             raise ValueError("Twilio auth token is required (TWILIO_AUTH_TOKEN)")
         self.base_url = f"https://{API_HOST}/2010-04-01/Accounts/{self.account_sid}"
+        # Realtime: the bridge stashes a wss stream URL per call id; the next
+        # voice-flow webhook for that call answers with <Connect><Stream>
+        # instead of the keep-alive <Pause>.
+        self.pending_streams: Dict[str, str] = {}
 
     # -- HTTP ---------------------------------------------------------------
 
@@ -159,6 +163,9 @@ class TwilioProvider(VoiceCallProvider):
         # Status callbacks get an empty ack; voice-flow requests (initial
         # answer webhook, Gather actions) get a keep-alive <Pause> so the
         # call stays up while the manager speaks via call update.
+        # finalize_response() upgrades voice-flow responses to
+        # <Connect><Stream> when a realtime stream was registered while the
+        # events were being processed.
         is_status = ctx.query.get("type") == "status"
         body = EMPTY_TWIML if is_status else KEEPALIVE_TWIML
         return WebhookParseResult(
@@ -166,6 +173,41 @@ class TwilioProvider(VoiceCallProvider):
             response_body=body,
             response_content_type="text/xml",
         )
+
+    def register_pending_stream(self, record: CallRecord, stream_url: str) -> None:
+        """Realtime bridge hook: the next voice-flow webhook for this call
+        answers with ``<Connect><Stream>`` instead of the keep-alive."""
+        self.pending_streams[record.call_id] = stream_url
+        if record.provider_call_id:
+            self.pending_streams[record.provider_call_id] = stream_url
+
+    def finalize_response(
+        self, ctx: WebhookContext, result: WebhookParseResult
+    ) -> WebhookParseResult:
+        """Called by the webhook server after events are processed — by then
+        an inbound call's record (and its pending stream) exists."""
+        if ctx.query.get("type") == "status":
+            return result
+        keys = [ctx.query.get("callId")]
+        try:
+            params = dict(parse_qsl(ctx.body.decode("utf-8"), keep_blank_values=True))
+            keys.append(params.get("CallSid"))
+        except UnicodeDecodeError:
+            pass
+        for key in keys:
+            stream_url = self.pending_streams.pop(key, None) if key else None
+            if stream_url:
+                # Drop the twin entry (call_id + CallSid both map to it).
+                for other, url in list(self.pending_streams.items()):
+                    if url == stream_url:
+                        self.pending_streams.pop(other, None)
+                result.response_body = (
+                    '<?xml version="1.0" encoding="UTF-8"?><Response>'
+                    f'<Connect><Stream url="{xml_escape(stream_url)}"/></Connect>'
+                    "</Response>"
+                )
+                break
+        return result
 
     def _normalize_event(
         self, params: Dict[str, str], call_id_override: Optional[str]

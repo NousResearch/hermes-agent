@@ -143,3 +143,12 @@ class VoiceCallProvider(abc.ABC):
         Returns ``{}`` for carriers without media-stream support.
         """
         return {}
+
+    def finalize_response(
+        self, ctx: WebhookContext, result: WebhookParseResult
+    ) -> WebhookParseResult:
+        """Hook called after the webhook's events were processed, letting a
+        provider rewrite the HTTP response based on state created during
+        processing (Twilio uses this to serve ``<Connect><Stream>`` TwiML
+        for freshly-registered realtime calls). Default: unchanged."""
+        return result

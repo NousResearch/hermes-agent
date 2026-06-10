@@ -55,6 +55,9 @@ class CallManager:
         self.store = store
         self.on_final_transcript = on_final_transcript
         self.on_call_ended = on_call_ended
+        # Optional hook invoked before the provider dials/answers — the
+        # realtime bridge uses it to attach stream metadata to the record.
+        self.prepare_call: Optional[Callable[[CallRecord], None]] = None
 
         self.active: Dict[str, CallRecord] = {}
         self._by_provider_id: Dict[str, str] = {}
@@ -131,6 +134,25 @@ class CallManager:
     def call_for_chat(self, chat_id: str) -> Optional[CallRecord]:
         call_id = self._by_chat.get(normalize_e164(chat_id))
         return self.active.get(call_id) if call_id else None
+
+    def append_transcript(self, call_id: str, speaker: str, text: str) -> None:
+        """Record a transcript line from an external source (realtime bridge)."""
+        record = self.active.get(call_id)
+        if record is None:
+            return
+        record.transcript.append(
+            TranscriptEntry(
+                timestamp=time.time(),
+                speaker="bot" if speaker == "bot" else "user",
+                text=text,
+            )
+        )
+        self._persist(record)
+
+    def _realtime_owns_audio(self, record: CallRecord) -> bool:
+        """True when a realtime bridge handles this call's audio — carrier
+        TTS/transcription would talk over the model."""
+        return bool(record.metadata.get("realtime"))
 
     def _register(self, record: CallRecord) -> None:
         self.active[record.call_id] = record
@@ -430,6 +452,11 @@ class CallManager:
         )
         record.session_key = self._session_key(record)
         self._register(record)
+        if self.prepare_call is not None:
+            try:
+                self.prepare_call(record)
+            except Exception:  # noqa: BLE001
+                logger.exception("voice_call: prepare_call hook failed")
         self._persist(record)
         self._arm_timer(
             record.call_id, "max", self.config.timeouts.max_call_s, self._on_max_duration
@@ -454,6 +481,13 @@ class CallManager:
         self._arm_timer(
             record.call_id, "max", self.config.timeouts.max_call_s, self._on_max_duration
         )
+
+        if self._realtime_owns_audio(record):
+            # The realtime bridge speaks the greeting/initial message and
+            # consumes the caller's audio directly; carrier TTS or
+            # transcription here would talk over the model.
+            self._transition(record, CallState.LISTENING)
+            return
 
         if record.direction == "outbound":
             initial = record.metadata.pop("initial_message", None)
@@ -539,6 +573,11 @@ class CallManager:
         if message:
             record.metadata["initial_message"] = message
         self._register(record)
+        if self.prepare_call is not None:
+            try:
+                self.prepare_call(record)
+            except Exception:  # noqa: BLE001
+                logger.exception("voice_call: prepare_call hook failed")
         self._persist(record)
         self._arm_timer(
             record.call_id, "ring", self.config.timeouts.ring_s, self._on_ring_timeout
@@ -576,7 +615,7 @@ class CallManager:
 
     async def continue_call(self, call_id: str, text: str) -> str:
         """Speak ``text`` and wait for the caller's next final utterance."""
-        record = self._require_call(call_id)
+        self._require_call(call_id)
         existing = self._waiters.get(call_id)
         if existing is not None and not existing.done():
             raise RuntimeError(f"already waiting for a reply on {call_id}")

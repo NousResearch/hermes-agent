@@ -239,6 +239,13 @@ def register(ctx) -> None:
     ``register_platform``.
     """
     _register_platform(ctx)
+    # The realtime bridge's agent_consult tool runs host-owned completions
+    # through the plugin LLM facade. Resolved lazily at consult time so
+    # registration never instantiates the facade (and minimal test contexts
+    # without .llm simply yield None).
+    from .realtime.bridge import set_plugin_llm_factory
+
+    set_plugin_llm_factory(lambda: getattr(ctx, "llm", None))
     if hasattr(ctx, "register_tool"):
         from .tool import VOICE_CALL_SCHEMA, tool_check, voice_call_handler
 

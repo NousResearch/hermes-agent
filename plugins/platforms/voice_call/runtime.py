@@ -48,8 +48,9 @@ class VoiceCallRuntime:
         self.provider = None
         self.store: Optional[CallStore] = None
         self.manager: Optional[CallManager] = None
-        self.webhook_server = None  # P3
-        self.tunnel = None          # P5
+        self.webhook_server = None
+        self.tunnel = None
+        self.bridge_manager = None  # realtime only
         self.public_url: Optional[str] = config.public_url
         self._store_dir = store_dir
         self._started = False
@@ -97,6 +98,19 @@ class VoiceCallRuntime:
         except Exception:
             await self.webhook_server.stop()
             raise
+
+        if self.config.realtime.enabled:
+            from .realtime.bridge import RealtimeBridgeManager
+
+            self.bridge_manager = RealtimeBridgeManager(self)
+            self.webhook_server.stream_handler = (
+                self.bridge_manager.handle_stream_request
+            )
+            self.manager.prepare_call = self.bridge_manager.prepare_call
+            logger.info(
+                "voice_call realtime enabled (model provider=%s)",
+                self.config.realtime.provider,
+            )
 
         self._started = True
         logger.info(

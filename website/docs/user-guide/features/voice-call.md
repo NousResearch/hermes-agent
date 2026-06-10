@@ -165,6 +165,44 @@ gateway:
 | `NGROK_AUTHTOKEN`, `NGROK_DOMAIN` | ngrok tunnel |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` | realtime voice models |
 
+## Realtime voice (speech-to-speech)
+
+Turn-based calls use carrier TTS and transcription — reliable, but each
+turn takes a few seconds. Realtime mode instead bridges the call's audio
+directly to a speech-to-speech model (OpenAI Realtime or Gemini Live) for
+natural, low-latency conversation with barge-in (you can interrupt the
+assistant mid-sentence).
+
+```yaml
+gateway:
+  platforms:
+    voice_call:
+      enabled: true
+      extra:
+        provider: telnyx            # realtime works on telnyx and twilio
+        # ... telnyx setup as above ...
+        realtime:
+          enabled: true
+          provider: openai          # openai | gemini
+          model: gpt-realtime       # optional override
+          voice: marin
+```
+
+Add `OPENAI_API_KEY` (or `GEMINI_API_KEY` with `provider: gemini`) to
+`~/.hermes/.env`.
+
+How it works: when a realtime call is dialed or answered, the carrier
+opens a media WebSocket back to Hermes (authenticated with a one-shot
+token), and the plugin pipes audio between the phone line (µ-law 8 kHz)
+and the model (PCM 16/24 kHz). During the call the realtime model can ask
+the full Hermes agent questions through an `agent_consult` tool — "let me
+check that" — so calendar, memory, and live data stay available without
+leaving the audio loop. Transcripts are still recorded to the call
+history.
+
+Conversation-mode calls use the realtime bridge; `notify` calls keep
+plain carrier TTS (cheaper and sufficient for one-shot messages).
+
 ## Security notes
 
 - **Webhook signatures are verified by default** (Telnyx Ed25519, Twilio

@@ -23,12 +23,15 @@ export interface ModelFamily {
 /** Collapse a provider's model list so a base model and its `…-fast` variant
  *  become a single family (one row, one toggle). Order is preserved by the
  *  base model's position. A `…-fast` model with no base stands on its own. */
-export function collapseModelFamilies(models: readonly string[]): ModelFamily[] {
-  const present = new Set(models)
+import { coerceModelId } from '@/lib/model-status-label'
+
+export function collapseModelFamilies(models: readonly unknown[]): ModelFamily[] {
+  const ids = models.map(coerceModelId).filter(Boolean)
+  const present = new Set(ids)
   const families: ModelFamily[] = []
   const consumed = new Set<string>()
 
-  for (const model of models) {
+  for (const model of ids) {
     if (consumed.has(model)) {
       continue
     }

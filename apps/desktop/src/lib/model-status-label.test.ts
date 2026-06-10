@@ -28,4 +28,11 @@ describe('model-status-label', () => {
   it('returns just the placeholder name when there is no model', () => {
     expect(formatModelStatusLabel('')).toBe('No model')
   })
+
+  it('accepts dict-shaped model entries from provider config', () => {
+    expect(displayModelName({ id: 'bge-m3:latest', name: 'bge-m3:latest' } as never)).toBe('Bge M3:Latest')
+    expect(formatModelStatusLabel({ id: 'qwen3.7-plus', name: 'qwen3.7-plus' } as never)).toBe(
+      'Qwen3.7 Plus · Med'
+    )
+  })
 })

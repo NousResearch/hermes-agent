@@ -1,3 +1,24 @@
+/** Coerce API/config model entries (string or {id,name} dict) to a plain id. */
+export function coerceModelId(model: unknown): string {
+  if (typeof model === 'string') {
+    return model.trim()
+  }
+
+  if (model && typeof model === 'object') {
+    const record = model as Record<string, unknown>
+
+    for (const key of ['id', 'name', 'model'] as const) {
+      const value = record[key]
+
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim()
+      }
+    }
+  }
+
+  return model == null ? '' : String(model).trim()
+}
+
 const REASONING_LABELS: Record<string, string> = {
   none: 'Off',
   minimal: 'Min',
@@ -19,7 +40,7 @@ export function reasoningEffortLabel(effort: string): string {
 
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
-  const trimmed = model.trim()
+  const trimmed = coerceModelId(model)
   const slash = trimmed.lastIndexOf('/')
 
   return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
@@ -56,7 +77,8 @@ function prettifyBase(base: string): string {
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
 export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let base = modelBaseId(model)
+  const modelId = coerceModelId(model)
+  let base = modelBaseId(modelId)
   let tag = ''
 
   for (const [pattern, label] of VARIANT_TAGS) {
@@ -68,7 +90,7 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
     }
   }
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag }
+  return { name: prettifyBase(base) || modelId || 'No model', tag }
 }
 
 /** Friendly one-line model name for menus and the status bar. */
@@ -81,9 +103,10 @@ export function formatModelStatusLabel(
   model: string,
   options?: { fastMode?: boolean; reasoningEffort?: string }
 ): string {
-  const name = displayModelName(model)
+  const modelId = coerceModelId(model)
+  const name = displayModelName(modelId)
 
-  if (!model.trim()) {
+  if (!modelId) {
     return name
   }
 
@@ -91,7 +114,7 @@ export function formatModelStatusLabel(
 
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
   // active model is a `…-fast` variant (fast via a separate model id).
-  if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
+  if (options?.fastMode || /-fast$/i.test(modelBaseId(modelId))) {
     parts.push('Fast')
   }
 

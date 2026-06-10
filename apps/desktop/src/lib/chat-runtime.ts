@@ -272,7 +272,8 @@ export function quickModelOptions(
     })
 
     for (const model of models) {
-      add(provider.slug, provider.name, model)
+      const modelId = typeof model === 'string' ? model : String((model as { id?: string }).id ?? model)
+      add(provider.slug, provider.name, modelId)
     }
 
     if (options.length >= 8) {

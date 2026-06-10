@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { coerceModelId } from '@/lib/model-status-label'
 import { persistString, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
@@ -129,7 +130,13 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
-export const setCurrentModel = (next: Updater<string>) => updateAtom($currentModel, next)
+export const setCurrentModel = (next: Updater<string>) => {
+  updateAtom($currentModel, value => {
+    const resolved = typeof next === 'function' ? next(value) : next
+
+    return coerceModelId(resolved)
+  })
+}
 export const setCurrentProvider = (next: Updater<string>) => updateAtom($currentProvider, next)
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)

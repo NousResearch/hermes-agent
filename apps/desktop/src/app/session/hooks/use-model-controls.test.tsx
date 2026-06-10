@@ -73,4 +73,77 @@ describe('useModelControls.selectModel', () => {
     expect($currentProvider.get()).toBe('openai')
     expect($notifications.get()).toHaveLength(0)
   })
+
+  it('does not let slow switch A roll back fast switch B when A fails late', async () => {
+    setCurrentModel('opus-prev')
+    setCurrentProvider('anthropic')
+
+    // Switch A hangs on a manually-resolved promise; switch B resolves clean
+    // immediately. A is then failed AFTER B has fully committed — the exact
+    // race from the review: A's late rollback used to restore the PRE-A model,
+    // clobbering B's success.
+    let resolveA: (value: { error?: string; output?: string }) => void = () => {}
+    const slowA = new Promise<{ error?: string; output?: string }>(resolve => {
+      resolveA = resolve
+    })
+
+    const requestGateway = vi
+      .fn()
+      .mockReturnValueOnce(slowA)
+      .mockResolvedValueOnce({ output: '  ✓ Model switched: model-b' })
+
+    const result = setup(requestGateway)
+
+    const pendingA = result.current.selectModel({ model: 'model-a', provider: 'prov-a', persistGlobal: false })
+    const okB = await result.current.selectModel({ model: 'model-b', provider: 'prov-b', persistGlobal: false })
+
+    expect(okB).toBe(true)
+    expect($currentModel.get()).toBe('model-b')
+    expect($currentProvider.get()).toBe('prov-b')
+
+    resolveA({ error: 'live session sync failed: model switch failed' })
+    const okA = await pendingA
+
+    expect(okA).toBe(false)
+    // A's late failure must NOT roll back to the pre-A model: B owns the state.
+    expect($currentModel.get()).toBe('model-b')
+    expect($currentProvider.get()).toBe('prov-b')
+    // The user still sees A's failure toast — only the store rollback is skipped.
+    const notes = $notifications.get()
+    expect(notes).toHaveLength(1)
+    expect(notes[0]?.kind).toBe('error')
+    expect(notes[0]?.message).toContain('live session sync failed')
+  })
+
+  it('ignores a stale late success without disturbing the newer switch', async () => {
+    setCurrentModel('opus-prev')
+    setCurrentProvider('anthropic')
+
+    let resolveA: (value: { error?: string; output?: string }) => void = () => {}
+    const slowA = new Promise<{ error?: string; output?: string }>(resolve => {
+      resolveA = resolve
+    })
+
+    const requestGateway = vi
+      .fn()
+      .mockReturnValueOnce(slowA)
+      .mockResolvedValueOnce({ output: '  ✓ Model switched: model-b' })
+
+    const result = setup(requestGateway)
+
+    const pendingA = result.current.selectModel({ model: 'model-a', provider: 'prov-a', persistGlobal: false })
+    const okB = await result.current.selectModel({ model: 'model-b', provider: 'prov-b', persistGlobal: false })
+
+    expect(okB).toBe(true)
+
+    resolveA({ output: '  ✓ Model switched: model-a' })
+    const okA = await pendingA
+
+    // A stale success reports false (callers must not chain follow-up edits
+    // onto a selection the UI no longer shows) and leaves B's state intact.
+    expect(okA).toBe(false)
+    expect($currentModel.get()).toBe('model-b')
+    expect($currentProvider.get()).toBe('prov-b')
+    expect($notifications.get()).toHaveLength(0)
+  })
 })

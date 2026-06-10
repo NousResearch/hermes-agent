@@ -1,5 +1,5 @@
 import { type QueryClient } from '@tanstack/react-query'
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { getGlobalModelInfo, setGlobalModel } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -35,9 +35,22 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     [activeSessionId, queryClient]
   )
 
-  const refreshCurrentModel = useCallback(async () => {
+  // Monotonic id per selectModel call. Each call captures its own token; once a
+  // newer switch starts, every older call sees token !== switchSeq.current and
+  // must leave the store/query cache alone — the newest switch owns that state.
+  // Purely client-side: no protocol support needed for correct sequencing.
+  const switchSeq = useRef(0)
+
+  const refreshCurrentModel = useCallback(async (isCurrent: () => boolean = () => true) => {
     try {
       const result = await getGlobalModelInfo()
+
+      // A newer model switch started while this refresh was in flight: the
+      // snapshot may predate that switch, so applying it would clobber the
+      // newer switch's optimistic state. Drop it — the newer call refreshes.
+      if (!isCurrent()) {
+        return
+      }
 
       if (typeof result.model === 'string') {
         setCurrentModel(result.model)
@@ -56,6 +69,11 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   // on the right active model — bail rather than write to the previous one).
   const selectModel = useCallback(
     async (selection: ModelSelection): Promise<boolean> => {
+      // In-flight correlation: a slow switch A must not commit or roll back
+      // after a faster switch B already resolved — B owns the store/cache.
+      // After every await, token !== switchSeq.current marks this call stale.
+      const token = ++switchSeq.current
+      const isCurrent = () => token === switchSeq.current
       const includeGlobal = selection.persistGlobal || !activeSessionId
       // Snapshot for rollback: the switch is applied optimistically, so a
       // failure must restore the prior model/provider (store + query cache)
@@ -71,6 +89,10 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         if (activeSessionId) {
           const result = await requestGateway<{ error?: string }>('slash.exec', {
             session_id: activeSessionId,
+            // Additive correlation id; the gateway will echo it back in a
+            // parallel change. Nothing here depends on the echo — staleness
+            // is decided purely by the client-side token above.
+            task_id: crypto.randomUUID(),
             command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
           })
 
@@ -83,8 +105,16 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
             throw new Error(result.error)
           }
 
+          // Stale success: a newer switch took over while this one was in
+          // flight. Don't touch the store/cache (neither commit nor refresh)
+          // and report failure so callers don't chain follow-up edits onto a
+          // selection the UI no longer shows.
+          if (!isCurrent()) {
+            return false
+          }
+
           if (selection.persistGlobal) {
-            void refreshCurrentModel()
+            void refreshCurrentModel(isCurrent)
           }
 
           void queryClient.invalidateQueries({
@@ -95,14 +125,30 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         }
 
         await setGlobalModel(selection.provider, selection.model)
-        void refreshCurrentModel()
+
+        // Same stale-success policy as the session path above.
+        if (!isCurrent()) {
+          return false
+        }
+
+        void refreshCurrentModel(isCurrent)
         void queryClient.invalidateQueries({ queryKey: ['model-options'] })
 
         return true
       } catch (err) {
-        setCurrentModel(prevModel)
-        setCurrentProvider(prevProvider)
-        updateModelOptionsCache(prevProvider, prevModel, includeGlobal)
+        // Stale failure: skip the rollback — the snapshot predates the newer
+        // switch, so restoring it would clobber that switch's state (the
+        // original race: A's late failure reverting to the pre-A model after
+        // B succeeded). The error toast still fires either way: the user
+        // asked for this switch and deserves to know it failed, and a toast
+        // is fire-and-forget — unlike the store write, it can't corrupt the
+        // newer switch's state.
+        if (isCurrent()) {
+          setCurrentModel(prevModel)
+          setCurrentProvider(prevProvider)
+          updateModelOptionsCache(prevProvider, prevModel, includeGlobal)
+        }
+
         notifyError(err, copy.modelSwitchFailed)
 
         return false

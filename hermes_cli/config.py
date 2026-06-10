@@ -1429,6 +1429,11 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Gateway: render terminal commands as fenced code blocks on
+        # markdown-capable platforms (Discord, Telegram, Slack, …). Set false
+        # (globally or per-platform via display.platforms.<p>) to keep the
+        # compact one-line `terminal: "cmd…"` preview instead.
+        "terminal_code_blocks": True,
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
         # that support message deletion (currently Telegram; other platforms

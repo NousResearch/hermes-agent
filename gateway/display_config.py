@@ -46,6 +46,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # When true, terminal commands render as a fenced code block on
+    # markdown-capable platforms (Discord, Telegram, Slack, …). Set false to
+    # keep the compact one-line `terminal: "cmd…"` preview instead — same info,
+    # far less vertical space. Default on (current behavior).
+    "terminal_code_blocks": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -224,6 +229,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "terminal_code_blocks",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}

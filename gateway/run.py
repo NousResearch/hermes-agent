@@ -12926,6 +12926,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             )
         )
+        # Whether terminal commands render as a fenced code block on
+        # markdown-capable platforms. Default on (current behavior); set
+        # display.terminal_code_blocks: false (or per-platform) to fall back to
+        # the compact one-line `terminal: "cmd…"` preview.
+        terminal_code_blocks_enabled = bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "terminal_code_blocks",
+                True,
+            )
+        )
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -13073,6 +13085,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # at ``tool_preview_length`` (default 40) so a long or multi-line
             # command doesn't render as a huge block — matching the budget the
             # non-terminal preview path already applies (#42634).
+            #
+            # Gated on ``display.terminal_code_blocks`` (default true): set it
+            # false (globally or per-platform) to skip the fence entirely and
+            # keep the compact one-line ``terminal: "cmd…"`` preview, which is
+            # the same info in far less vertical space.
             _code_block_full = None
             _code_block_short = None
             try:
@@ -13080,7 +13097,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 _progress_adapter = None
             if (
-                getattr(_progress_adapter, "supports_code_blocks", False)
+                terminal_code_blocks_enabled
+                and getattr(_progress_adapter, "supports_code_blocks", False)
                 and tool_name == "terminal"
                 and isinstance(args, dict)
                 and isinstance(args.get("command"), str)

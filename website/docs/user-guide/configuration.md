@@ -1246,6 +1246,7 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+  terminal_code_blocks: true  # Gateway: render terminal commands as fenced code blocks on markdown platforms (set false for the compact one-line preview)
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
@@ -1334,6 +1335,8 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`terminal_code_blocks` (gateway-only, default `true`) controls how `terminal` tool calls render on markdown-capable platforms (Discord, Telegram, Slack, …). When `true`, the command is shown in a fenced code block; in verbose mode the full command is shown, while `all`/`new` modes show a single capped line inside the block. Set it to `false` — globally or per platform via `display.platforms.<platform>.terminal_code_blocks` — to fall back to the compact one-line `terminal: "cmd…"` preview, which conveys the same (truncated) info in far less vertical space.
 
 ## Privacy
 

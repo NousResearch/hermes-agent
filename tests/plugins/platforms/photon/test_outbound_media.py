@@ -216,6 +216,35 @@ async def test_send_poll_requires_two_options(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
+async def test_send_effect_hits_effect_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_effect("any;-;+1", "  Celebrate  ", " confetti ")
+
+    assert result.success is True
+    assert result.message_id == "msg-123"
+    assert calls == [
+        (
+            "/send-effect",
+            {"spaceId": "any;-;+1", "text": "Celebrate", "effect": "confetti"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_effect_requires_text_and_effect(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_effect("any;-;+1", "", "confetti")
+
+    assert result.success is False
+    assert "required" in (result.error or "")
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_send_attachment_rejects_unsafe_path(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:

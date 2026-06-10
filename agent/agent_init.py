@@ -68,6 +68,27 @@ def _ra():
     return run_agent
 
 
+def _api_key_required(provider: str, api_key: Any, base_url: str) -> bool:
+    """Return True when the chosen provider genuinely needs a non-empty API key
+    AND the supplied key is empty or missing."""
+    # If a non-empty key is present, no guard needed.
+    if api_key:
+        return False
+    # Azure Foundry Entra ID bearer provider — callable is valid auth
+    if callable(api_key) and not isinstance(api_key, str):
+        return False
+    if isinstance(api_key, str):
+        if api_key in ("aws-sdk", "no-key-required"):
+            return False
+    # Bedrock uses boto3 credential chain, not a literal API key string
+    if provider == "bedrock":
+        return False
+    # OAuth providers (openai-codex, xai-oauth, minimax-oauth, qwen-oauth, google-gemini-cli)
+    # resolve their tokens inside resolve_provider_client; if they return a client,
+    # the empty-string check here is moot.  If they return None, the guard below fires.
+    return True
+
+
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -648,6 +669,16 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+            # Defensive: never hand an empty API key to an SDK client unless the
+            # provider explicitly does not require one.  This prevents confusing
+            # low-level auth exceptions (what users call "panic") and gives a
+            # single, actionable error everywhere.
+            if _api_key_required(agent.provider, effective_key, base_url):
+                _param_status = "param empty" if (api_key is not None and not str(api_key).strip()) else "param missing"
+                _env_status = "env vars unset"
+                raise RuntimeError(
+                    f"no API key ({_param_status}, {_env_status})"
+                )
             agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
             # No OpenAI client needed for Anthropic mode
             agent.client = None
@@ -861,6 +892,17 @@ def init_agent(
 
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)
+        # Defensive: never hand an empty API key to an SDK client unless the
+        # provider explicitly does not require one.  This prevents confusing
+        # low-level auth exceptions (what users call "panic") and gives a
+        # single, actionable error everywhere.
+        _key_to_check = getattr(agent, "api_key", None)
+        if _api_key_required(agent.provider, _key_to_check, agent.base_url):
+            _param_status = "param empty" if (api_key is not None and not str(api_key).strip()) else "param missing"
+            _env_status = "env vars unset"
+            raise RuntimeError(
+                f"no API key ({_param_status}, {_env_status})"
+            )
         try:
             agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
             if not agent.quiet_mode:

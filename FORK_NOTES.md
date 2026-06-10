@@ -22,6 +22,7 @@ This document explains the fork-specific changes on `main` that diverge from ups
 | **P-015** | `pyproject.toml`, `.github/workflows/release-runtime.yml`, `docs/RUNTIME_RELEASES.md`, `uv.lock` | Adds a `cn-desktop` aggregate extra that pre-bakes every backend the frozen runtime exposes (`web`, `anthropic`, `mcp`, `feishu`, `dingtalk`, `wecom`, plus 微信's `aiohttp`/`qrcode`/`cryptography`). The release workflow installs `.[cn-desktop]`, collects the IM SDK submodules + metadata, runs a build-env import smoke test, and asserts each backend's `dist-info` in the frozen output | Desktop report: the 飞书/钉钉/企微/微信 adapters silently degraded to "unavailable" because their SDKs (`lark-oapi`, `dingtalk-stream`, …) were never bundled and the frozen build can't lazy-install. Same root cause as P-014, generalized to all desktop backends | Packaging is CN-specific; not upstreamed (upstream doesn't build these artifacts) |
 | **P-016** | `tools/terminal_tool.py`, `tools/environments/local.py`, `tools/environments/proccess_pwsh.py`, `tools/environments/base.py`, `model_tools.py`, `tests/tools/test_terminal_dynamic_description.py` | PowerShell (pwsh / Windows PowerShell) native execution: on Windows, uses pwsh as the primary local shell with full lifecycle support (spawn, wrap, init_session, cwd tracking); removes Git Bash auto-install and fallback. Adds runtime-adaptive terminal tool description that replaces Linux/bash command references with pwsh cmdlets when the active shell is pwsh; adds shell-fingerprint to tool-definitions cache key. Adds pwsh_transform warning propagation so the LLM is notified when its PowerShell 7.x syntax was down-leveled to 5.1 | Agent on Windows was hardcoded to Git Bash; pwsh is faster (-NoProfile), has better Windows-native path handling, and avoids the POSIX-translation overhead. Git for Windows auto-install and Git Bash fallback have been deleted — the agent now requires pwsh or system PowerShell on Windows. The static `TERMINAL_TOOL_DESCRIPTION` contained Linux-only command references that are misleading under pwsh | Should be upstreamed |
 | **P-017** | `agent/tool_dedup.py`, `agent/agent_init.py`, `agent/conversation_loop.py`, `agent/tool_executor.py` | Adds `ToolDedupTracker` that detects consecutive identical tool calls across API iterations and injects escalating reminders (`<system-reminder>`) at repeat counts 3, 5, and 8 to break infinite loops | Agent on complex tasks can enter infinite loops calling the same tool with the same arguments repeatedly — the existing same-turn dedup (`_deduplicate_tool_calls`) doesn't catch this cross-iteration pattern | Internal — addresses a behavioral robustness gap; the mechanism is generic but integration points are fork-specific |
+| **P-018** | `agent/agent_init.py`, `tests/run_agent/test_init_fallback_on_exhausted_pool.py` | Adds `_api_key_required` helper and empty-key guards before OpenAI / Anthropic SDK client construction. Raises `RuntimeError: no API key (param empty, env vars unset)` instead of letting a low-level SDK auth exception bubble up | Empty key (param empty, env vars unset) previously triggered confusing low-level SDK exceptions that looked like panics, especially in TUI/gateway background threads where stack traces are not surfaced to the user | Should be upstreamed |
 
 > **P-001** (provider dict-vs-list mismatch in `tui_gateway/server.py`) — **dropped from this fork**. Upstream has since fixed it; the line `user_provs = cfg.get("providers")` in `_apply_model_switch` already does the right thing.
 
@@ -374,6 +375,25 @@ opening an upstream PR.
 - Thread safety: `check_and_register()` uses a `threading.Lock()` to protect shared state in the concurrent execution path.
 
 **Should we upstream?** The mechanism is generic, but the integration points (`agent_init.py`, `conversation_loop.py`, `tool_executor.py`) are specific to this fork's agent architecture. Could be proposed as a generalized observability hook.
+
+---
+
+### P-018: Empty API key guard in `agent/agent_init.py`
+
+**Symptom**: When the API key is empty (parameter explicitly ` ""`, environment variables unset), the agent panics with a low-level OpenAI or Anthropic SDK auth exception instead of a clean, actionable error message. In TUI/gateway background threads the stack trace is not surfaced to the user, making the failure look like a silent crash.
+
+**Root cause**: `init_agent()` had no explicit validation that `api_key` is non-empty before handing it to `_create_openai_client()` or `build_anthropic_client()`. Empty strings reached the SDK constructors and produced confusing exceptions.
+
+**What the patch does**:
+- Adds `_api_key_required(provider, api_key, base_url)` helper that returns `False` for providers that genuinely do not need a literal key (Azure Entra ID callable tokens, `"aws-sdk"` / `"no-key-required"`, Bedrock).
+- Inserts a guard in the `anthropic_messages` branch right before `build_anthropic_client()`.
+- Inserts a guard in the `chat_completions` branch right before `_create_openai_client()`.
+- Both guards raise `RuntimeError("no API key (param empty, env vars unset)")` when the key is empty and the provider requires one.
+- Adds two pytest cases covering the `chat_completions` and `anthropic_messages` empty-key paths.
+
+**Side effects**: None for providers that legitimately need no key (local endpoints with `"no-key-required"`, Bedrock, Azure Entra ID). The fallback loop (`fallback_model` / `fallback_providers`) still executes before the guard.
+
+**Should we upstream?** Yes. The change is purely additive, provider-agnostic, and prevents a poor user experience across CLI, TUI, gateway, and direct `AIAgent()` usage.
 
 ---
 

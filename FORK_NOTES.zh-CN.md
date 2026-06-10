@@ -25,6 +25,7 @@
 | **P-015** | `pyproject.toml`, `.github/workflows/release-runtime.yml`, `docs/RUNTIME_RELEASES.md`, `uv.lock` | 新增 `cn-desktop` 聚合 extra，把冻结 runtime 暴露的所有后端预打包（`web`、`anthropic`、`mcp`、`feishu`、`dingtalk`、`wecom`，以及微信用的 `aiohttp`/`qrcode`/`cryptography`）。发布流程改为安装 `.[cn-desktop]`，收集各 IM SDK 子模块与元数据，新增"构建环境 import 冒烟"，并断言每个后端的 `dist-info` 出现在冻结产物中 | 桌面反馈：飞书/钉钉/企微/微信适配器因 SDK（`lark-oapi`、`dingtalk-stream` 等）从未被打包、且冻结环境无法懒安装而静默降级为"不可用"。根因同 P-014，推广到所有桌面后端 | 打包 CN 特有；不上游（上游不构建这些产物） |
 | **P-016** | `tools/terminal_tool.py`, `tools/environments/local.py`, `tools/environments/proccess_pwsh.py`, `tools/environments/base.py`, `model_tools.py`, `tests/tools/test_terminal_dynamic_description.py` | PowerShell (pwsh / Windows PowerShell) 原生执行：Windows 上使用 pwsh 作为主 shell，支持完整生命周期管理（spawn、wrap、init_session、cwd 跟踪）；删除 Git Bash 自动安装与回退逻辑。增加运行时自适应的 terminal 工具描述，当激活 shell 为 pwsh 时自动将 Linux/bash 命令引用替换为 pwsh cmdlet；将 shell 指纹加入工具定义缓存键。增加 pwsh_transform 警告传递，使 LLM 能感知其 PS7 语法被降级为 5.1 | Windows 上 agent 原本硬编码为 Git Bash；pwsh 启动更快（-NoProfile）、Windows 路径处理更原生、无需 POSIX 翻译。Git for Windows 自动安装与 Git Bash 回退已被删除——Windows 平台现在要求使用 pwsh 或系统 PowerShell。静态 `TERMINAL_TOOL_DESCRIPTION` 中包含的 Linux 命令引用（`cat/head/tail`、`grep/rg/find`、`echo/cat heredoc`）在 pwsh 下会产生误导 | 建议上游 |
 | **P-017** | `agent/tool_dedup.py`, `agent/agent_init.py`, `agent/conversation_loop.py`, `agent/tool_executor.py` | 增加 `ToolDedupTracker`，在跨 API 迭代间检测重复的相同工具调用，并在重复次数达到 3、5、8 次时注入逐级升级的 `<system-reminder>` 提示以打破无限循环 | Agent 在处理复杂任务时可能陷入无限循环，反复调用相同工具和参数——现有同轮去重 `_deduplicate_tool_calls` 无法检测跨迭代模式 | 内部机制——解决行为健壮性缺口；机制通用，但集成点与 fork 架构耦合 |
+| **P-018** | `agent/agent_init.py`, `tests/run_agent/test_init_fallback_on_exhausted_pool.py` | 增加 `_api_key_required` 辅助函数，并在 OpenAI / Anthropic SDK 客户端构造前加入空 key 保护；当 api_key 为空且 provider 需要密钥时，抛出 `RuntimeError: no API key (param empty, env vars unset)` | 此前空 key（参数为空且环境变量未设置）会触发底层 SDK 认证异常，在 TUI/gateway 后台线程中表现为 panic 且无堆栈信息 | 建议上游 |
 
 ## 发布和维护支撑
 
@@ -369,6 +370,25 @@
 - 线程安全：`check_and_register()` 使用 `threading.Lock()` 保护并发执行路径中的共享状态。
 
 **是否上游**：机制是通用的，但集成点（`agent_init.py`、`conversation_loop.py`、`tool_executor.py`）与 fork 的 agent 架构高度耦合。可作为通用可观测性钩子提出。
+
+---
+
+### P-018：`agent/agent_init.py` 空 API key 保护
+
+**现象**：当 API key 为空（参数显式传入 `""`，环境变量未设置）时，agent 会以底层 OpenAI 或 Anthropic SDK 认证异常的形式 panic，而不是给出清晰可操作的错误提示。在 TUI/gateway 后台线程中，堆栈信息不会暴露给用户，看起来像静默崩溃。
+
+**根因**：`init_agent()` 在将 `api_key` 交给 `_create_openai_client()` 或 `build_anthropic_client()` 之前，没有显式验证其非空。空字符串流入 SDK 构造函数后产生令人困惑的异常。
+
+**改动内容**：
+- 新增 `_api_key_required(provider, api_key, base_url)` 辅助函数，对真正不需要字面量密钥的 provider（Azure Entra ID callable token、`"aws-sdk"` / `"no-key-required"`、Bedrock）返回 `False`。
+- 在 `anthropic_messages` 分支的 `build_anthropic_client()` 调用前插入保护。
+- 在 `chat_completions` 分支的 `_create_openai_client()` 调用前插入保护。
+- 两个保护都在 key 为空且 provider 需要密钥时抛出 `RuntimeError("no API key (param empty, env vars unset)")`。
+- 新增两个 pytest 用例分别覆盖 `chat_completions` 和 `anthropic_messages` 的空 key 路径。
+
+**风险和约束**：对真正不需要密钥的 provider（本地端点 `"no-key-required"`、Bedrock、Azure Entra ID）无影响。fallback 循环（`fallback_model` / `fallback_providers`）仍在保护之前执行。
+
+**是否上游**：建议上游。改动纯增量、与 provider 无关，能同时改善 CLI、TUI、gateway 和直接 `AIAgent()` 调用的用户体验。
 
 ---
 

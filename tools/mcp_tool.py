@@ -1825,6 +1825,16 @@ class MCPServerTask:
         backoff = 1.0
 
         while True:
+            # If we've previously had a successful connect, reset the
+            # backoff and retry counter so the next reconnect starts from
+            # 1.0s instead of accumulated max.  H-019.2 — the reconnect
+            # main loop now uses the same backoff variable on both path A
+            # (reconnect event) and path B (transport exception); without
+            # this reset, a one-time blip would penalize all future
+            # reconnects with the max backoff.
+            if self._ready.is_set():
+                backoff = 1.0
+                retries = 0
             try:
                 if self._is_http():
                     await self._run_http(config)
@@ -1837,9 +1847,28 @@ class MCPServerTask:
                 #    touch the retry counters — this is not a failure.
                 if self._shutdown_event.is_set():
                     break
+                # Apply exponential backoff before re-entering the transport
+                # so that persistent reconnect failures get breathing room
+                # instead of busy-looping.
+                #
+                # Background (H-019.2 in hermes-agent docs): the reconnect
+                # main loop historically had two diverging code paths.  The
+                # ``except Exception`` branch (path B) already used the
+                # ``backoff`` variable.  The reconnect-event branch below
+                # (path A) re-entered the transport immediately, which causes
+                # a keepalive-failure -> reconnect -> keepalive-failure tight
+                # loop for stdio MCP servers whose subprocess takes seconds
+                # to spin up (npx-fetched packages: 7-15s; gRPC / OAuth hand­
+                # shake: variable).  Honoring the same backoff here collapses
+                # that loop into a benign retry.
+                #
+                # Backoff is reset to 1.0s after a successful spawn further
+                # down in the loop (search for ``backoff = 1.0`` reset).
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
                 logger.info(
                     "MCP server '%s': reconnecting (OAuth recovery or "
-                    "manual refresh)",
+                    "manual refresh) after backoff",
                     self.name,
                 )
                 # Reset the session reference; _run_http/_run_stdio will

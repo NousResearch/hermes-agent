@@ -2910,6 +2910,49 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+    def test_analytics_usage_includes_cache_tokens_in_input(self):
+        """input_tokens in the response must include cache_read + cache_write."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="cache-tok-test",
+                source="cli",
+                model="claude-opus-4-6",
+            )
+            db.update_token_counts(
+                "cache-tok-test",
+                input_tokens=10,
+                output_tokens=50,
+                cache_read_tokens=9000,
+                cache_write_tokens=1000,
+                billing_provider="anthropic",
+                model="claude-opus-4-6",
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Totals: input must be 10 + 9000 + 1000 = 10010
+        assert data["totals"]["total_input"] == 10010
+        assert data["totals"]["total_output"] == 50
+
+        # Daily: find the entry and verify
+        assert len(data["daily"]) == 1
+        day = data["daily"][0]
+        assert day["input_tokens"] == 10010
+        assert day["output_tokens"] == 50
+
+        # By-model: verify the model row
+        assert len(data["by_model"]) == 1
+        model_row = data["by_model"][0]
+        assert model_row["input_tokens"] == 10010
+        assert model_row["output_tokens"] == 50
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 

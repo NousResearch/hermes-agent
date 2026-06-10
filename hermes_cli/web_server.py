@@ -8204,7 +8204,7 @@ async def get_usage_analytics(days: int = 30):
         cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
             SELECT date(started_at, 'unixepoch') as day,
-                   SUM(input_tokens) as input_tokens,
+                   SUM(input_tokens + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
                    SUM(reasoning_tokens) as reasoning_tokens,
@@ -8219,18 +8219,18 @@ async def get_usage_analytics(days: int = 30):
 
         cur2 = db._conn.execute("""
             SELECT model,
-                   SUM(input_tokens) as input_tokens,
+                   SUM(input_tokens + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            GROUP BY model ORDER BY SUM(input_tokens + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) + SUM(output_tokens) DESC
         """, (cutoff,))
         by_model = [dict(r) for r in cur2.fetchall()]
 
         cur3 = db._conn.execute("""
-            SELECT SUM(input_tokens) as total_input,
+            SELECT SUM(input_tokens + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
                    SUM(reasoning_tokens) as total_reasoning,

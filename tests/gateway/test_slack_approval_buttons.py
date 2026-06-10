@@ -305,6 +305,23 @@ class TestSlackInteractiveAuth:
         assert runner.seen_sources[0].chat_id == "C1"
         assert runner.seen_sources[0].chat_type == "group"
 
+    def test_approval_denied_when_no_allowlist_env_set(self, monkeypatch):
+        """Regression test: interactive auth must fail closed when no allowlist env vars are set."""
+        adapter = _make_adapter()
+        # Clear all relevant env vars to test fail-closed default
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        # Without any env vars and no runner auth, should return False
+        result = adapter._is_interactive_user_authorized(
+            "U_ANY_USER",
+            channel_id="C1",
+            user_name="someone",
+        )
+        assert result is False
+
 
 class TestSlackSlashConfirmAction:
     @pytest.mark.asyncio

@@ -3474,18 +3474,6 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return
 
-        # Authorization — reuse the exec-approval allowlist.
-        allowed_csv = ""  # Interactive auth already ran above.
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
-                )
-                return
-
         # Parse session_key|confirm_id back out
         if "|" not in value:
             logger.warning("[Slack] Malformed slash-confirm value: %s", value)
@@ -3592,20 +3580,6 @@ class SlackAdapter(BasePlatformAdapter):
                 user_name, user_id,
             )
             return
-
-        # Only authorized users may click approval buttons.  Button clicks
-        # bypass the normal message auth flow in gateway/run.py, so we must
-        # check here as well.
-        allowed_csv = ""  # Interactive auth already ran above.
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
-                )
-                return
 
         # Map action_id to approval choice
         choice_map = {

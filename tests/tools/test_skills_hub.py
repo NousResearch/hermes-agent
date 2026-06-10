@@ -2201,3 +2201,147 @@ class TestInstallPathSafety:
 
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
+
+
+# ---------------------------------------------------------------------------
+# GitHubSource.fetch — aggregate (multi-skill) repo support
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAggregateRepo:
+    """owner/repo identifiers should scan for skills instead of returning None."""
+
+    def _make_source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Authorization": "token fake"}
+        return GitHubSource(auth=auth)
+
+    def test_fetch_single_skill_at_root(self):
+        """owner/repo with exactly one SKILL.md at root → auto-install."""
+        src = self._make_source()
+        skill_md = "---\nname: my-skill\ndescription: A test.\n---\n\n# Body\n"
+        files = {"SKILL.md": skill_md, "references/api.md": "# API\n"}
+
+        with patch.object(src, "_download_directory", return_value=files):
+            bundle = src.fetch("someuser/somerepo")
+
+        assert bundle is not None
+        assert bundle.name == "somerepo"
+        assert "SKILL.md" in bundle.files
+        assert bundle.source == "github"
+
+    def test_fetch_single_skill_in_subdir(self):
+        """owner/repo with one skill in a sub-dir → auto-install."""
+        src = self._make_source()
+        skill_md = "---\nname: sub-skill\ndescription: Sub.\n---\n\n# Body\n"
+
+        # Root has no SKILL.md; "design" subdir has one.
+        def fake_download(repo, path):
+            if path == "":
+                return None  # no SKILL.md at root
+            if path == "design":
+                return {"SKILL.md": skill_md}
+            return None
+
+        # Contents API returns one dir at root
+        contents_resp = MagicMock()
+        contents_resp.status_code = 200
+        contents_resp.json.return_value = [
+            {"type": "dir", "name": "design"},
+        ]
+
+        with patch.object(src, "_download_directory", side_effect=fake_download), \
+             patch("tools.skills_hub.httpx.get", return_value=contents_resp):
+            bundle = src.fetch("leonxlnx/taste-skill")
+
+        assert bundle is not None
+        assert bundle.name == "design"
+
+    def test_fetch_multiple_skills_returns_none(self):
+        """owner/repo with multiple skills → returns None, sets _last_aggregate_scan."""
+        src = self._make_source()
+
+        # Contents API returns multiple dirs
+        contents_resp = MagicMock()
+        contents_resp.status_code = 200
+        contents_resp.json.return_value = [
+            {"type": "dir", "name": "skill-a"},
+            {"type": "dir", "name": "skill-b"},
+            {"type": "dir", "name": "skill-c"},
+        ]
+
+        with patch.object(src, "_download_directory", return_value=None), \
+             patch("tools.skills_hub.httpx.get", return_value=contents_resp):
+            bundle = src.fetch("ninehills/skills")
+
+        assert bundle is None
+        assert src._last_aggregate_scan is not None
+        repo, paths = src._last_aggregate_scan
+        assert repo == "ninehills/skills"
+        assert "skill-a" in paths
+        assert "skill-b" in paths
+
+    def test_fetch_no_skills_found(self):
+        """owner/repo with no SKILL.md anywhere → returns None."""
+        src = self._make_source()
+
+        contents_resp = MagicMock()
+        contents_resp.status_code = 200
+        contents_resp.json.return_value = [
+            {"type": "file", "name": "README.md"},
+        ]
+
+        with patch.object(src, "_download_directory", return_value=None), \
+             patch("tools.skills_hub.httpx.get", return_value=contents_resp):
+            bundle = src.fetch("someuser/empty-repo")
+
+        assert bundle is None
+        assert src._last_aggregate_scan is None
+
+    def test_fetch_three_part_unchanged(self):
+        """owner/repo/path still works as before."""
+        src = self._make_source()
+        files = {"SKILL.md": "---\nname: x\n---\n\n# X\n"}
+
+        with patch.object(src, "_download_directory", return_value=files):
+            bundle = src.fetch("owner/repo/skills/my-skill")
+
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+        assert bundle.identifier == "owner/repo/skills/my-skill"
+
+
+# ---------------------------------------------------------------------------
+# GitHubSource.inspect — aggregate repo support
+# ---------------------------------------------------------------------------
+
+
+class TestInspectAggregateRepo:
+    """owner/repo identifiers should try root SKILL.md for preview."""
+
+    def _make_source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Authorization": "token fake"}
+        return GitHubSource(auth=auth)
+
+    def test_inspect_root_skill_md(self):
+        """owner/repo with SKILL.md at root → returns SkillMeta."""
+        src = self._make_source()
+        content = "---\nname: root-skill\ndescription: At root.\n---\n\n# Body\n"
+
+        with patch.object(src, "_fetch_file_content", return_value=content):
+            meta = src.inspect("someuser/somerepo")
+
+        assert meta is not None
+        assert meta.name == "root-skill"
+        assert meta.description == "At root."
+        assert meta.path == ""
+
+    def test_inspect_no_root_skill_md(self):
+        """owner/repo without root SKILL.md → returns None."""
+        src = self._make_source()
+
+        with patch.object(src, "_fetch_file_content", return_value=None):
+            meta = src.inspect("someuser/no-skill-repo")
+
+        assert meta is None

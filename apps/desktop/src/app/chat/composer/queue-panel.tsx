@@ -23,7 +23,7 @@ const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
 export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
-  const [collapsed, setCollapsed] = useState(true)
+  const [collapsed, setCollapsed] = useState(false)
 
   if (entries.length === 0) {
     return null

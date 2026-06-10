@@ -668,8 +668,8 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
     c = curator_env["curator"]
     c.save_state({"paused": True})
     parent = c._state_file().parent
-    for p in parent.iterdir():
-        assert not p.name.startswith(".curator_state_"), f"tmp leftover: {p.name}"
+    tmp_files = [p.name for p in parent.iterdir() if p.name.endswith(".tmp")]
+    assert tmp_files == []
 
 
 def test_state_preserves_last_report_path(curator_env):

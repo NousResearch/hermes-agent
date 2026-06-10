@@ -40,19 +40,14 @@ def _patch_managed_uv(request):
         return shutil.which("uv")
 
     def _fake_ensure_uv():
-        path = shutil.which("uv")
-        return (path, False)  # never freshly bootstrapped in tests
+        return shutil.which("uv")
 
     def _fake_update_managed_uv():
         return None  # never actually self-update in tests
 
-    def _fake_rebuild_venv(*args, **kwargs):
-        return True  # no-op in tests
-
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
-         patch("hermes_cli.managed_uv.rebuild_venv", side_effect=_fake_rebuild_venv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
         yield
 
 

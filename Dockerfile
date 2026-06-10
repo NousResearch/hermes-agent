@@ -25,7 +25,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc python3-dev python3-venv libffi-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # ---------- s6-overlay install ----------
@@ -164,10 +164,17 @@ RUN npm install --prefer-offline --no-audit && \
 # image update and recall/retain then fails with
 # `ModuleNotFoundError: No module named 'hindsight_client'` (#38128).
 #
+# The Matrix gateway's deps ([matrix] extra) are baked in because
+# python-olm (transitive via mautrix[encryption]) builds from source on
+# Python/image combinations without usable wheels.  The Docker image is
+# Linux-only, so keeping the native libolm/build-toolchain packages here
+# avoids the cross-platform failures that kept [matrix] out of [all]
+# while still making Matrix work in the published container. Fixes #30399.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -185,13 +192,16 @@ RUN cd web && npm run build && \
 # hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
 # only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
 # not chowned here.
+# /opt/hermes/gateway is runtime-writable: Python may create __pycache__ and
+# gateway state artifacts beneath the package after services drop privileges,
+# especially when the hermes UID is remapped at boot (#27221).
 # The .venv MUST remain hermes-writable so lazy_deps.py can install
 # remaining optional platform packages and future pin bumps at first use.
 # Without this, `uv pip install` fails with EACCES and adapters silently
 # fail to load.  See tools/lazy_deps.py.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
+    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/gateway /opt/hermes/node_modules
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services

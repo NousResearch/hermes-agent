@@ -954,6 +954,120 @@ class TestMediaDeliveryDefaultMode:
         out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
         assert out == [str(notes.resolve())]
 
+    def test_root_home_deliverable_is_accepted(self, tmp_path, monkeypatch):
+        """The motivating bug (#38106): a root-run gateway has ``$HOME=/root``,
+        which is on the system-prefix denylist. A plain deliverable the agent
+        produced in its working dir (``/root/work/proposal.docx``) must still
+        deliver — the home itself is not a credential location.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        workdir = fake_home / "work"
+        workdir.mkdir(parents=True)
+        doc = workdir / "proposal.docx"
+        doc.write_bytes(b"PK\x03\x04")
+        monkeypatch.setenv("HOME", str(fake_home))
+        # $HOME is itself on the denied-prefix list, mirroring /root.
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(str(doc))
+            == str(doc.resolve())
+        )
+
+    def test_root_home_credential_subdir_still_blocked(self, tmp_path, monkeypatch):
+        """The $HOME exception must NOT un-block credential sub-dirs inside
+        home. ``/root/.ssh/id_rsa`` stays denied because ``~/.ssh`` is a
+        separate, more-specific denylist entry — even when $HOME is itself a
+        denied prefix.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        key = ssh_dir / "id_rsa"
+        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(key)) is None
+
+    def test_root_home_hermes_env_still_blocked(self, tmp_path, monkeypatch):
+        """``~/.hermes/.env`` stays blocked under the $HOME exception — it is a
+        more-specific denied path, not reachable just because home is allowed.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        env_file = hermes_dir / ".env"
+        env_file.write_text("OPENROUTER_API_KEY=sk-...")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
+
+    def test_other_users_home_still_blocked_for_nonroot(self, tmp_path, monkeypatch):
+        """The exception only un-blocks the *running user's own* home. A
+        non-root gateway ($HOME=/home/me) must not deliver another user's home
+        (``/root/...``) — that prefix stays denied because it isn't $HOME.
+        """
+        self._patch_roots(monkeypatch)
+
+        my_home = tmp_path / "home" / "me"
+        my_home.mkdir(parents=True)
+        other_home = tmp_path / "root"
+        other_home.mkdir()
+        other_file = other_home / "secret.docx"
+        other_file.write_bytes(b"PK\x03\x04")
+        monkeypatch.setenv("HOME", str(my_home))
+        # Both my home and the other home are denied prefixes; only my home is
+        # the running user's $HOME, so the other home must stay blocked.
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(my_home), str(other_home)),
+        )
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(str(other_file)) is None
+        )
+
+    def test_root_home_workdir_symlink_to_credential_blocked(self, tmp_path, monkeypatch):
+        """A symlink in the workdir pointing at a credential is rejected on its
+        resolved target, even under the $HOME exception.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "root"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        key = ssh_dir / "id_rsa"
+        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        workdir = fake_home / "work"
+        workdir.mkdir()
+        link = workdir / "innocent.pdf"
+        link.symlink_to(key)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(fake_home),),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

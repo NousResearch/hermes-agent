@@ -55,15 +55,31 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
 
       - name: Run tests (slice ${{ matrix.slice }}/6)
         # Per-file isolation via scripts/run_tests_parallel.py: discovers
@@ -161,15 +177,31 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
 
       - name: Packaged-wheel i18n smoke test
         run: |

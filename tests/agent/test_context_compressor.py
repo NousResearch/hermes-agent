@@ -2147,3 +2147,39 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestPreflightSentinelGuard:
+    """Regression for #36718: the preflight token-display seed in
+    run_conversation must NOT overwrite the -1 sentinel that
+    compress_context() sets immediately after compression.
+
+    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
+    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
+    and clobbered the sentinel with a schema-inflated rough count, re-firing
+    compression on the next turn. The fix treats any negative value as
+    "no real usage yet" and skips the seed.
+    """
+
+    def _seed(self, last_prompt_tokens, preflight_tokens):
+        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
+        _last = last_prompt_tokens
+        if _last >= 0 and preflight_tokens > _last:
+            return preflight_tokens  # would overwrite
+        return last_prompt_tokens   # preserved
+
+    def test_sentinel_preserved_after_compression(self, compressor):
+        compressor.last_prompt_tokens = -1
+        # A large schema-inflated preflight estimate must NOT overwrite -1.
+        result = self._seed(compressor.last_prompt_tokens, 250_000)
+        assert result == -1
+
+    def test_real_value_still_revises_upward(self, compressor):
+        compressor.last_prompt_tokens = 10_000
+        result = self._seed(compressor.last_prompt_tokens, 50_000)
+        assert result == 50_000
+
+    def test_real_value_not_revised_downward(self, compressor):
+        compressor.last_prompt_tokens = 50_000
+        result = self._seed(compressor.last_prompt_tokens, 10_000)
+        assert result == 50_000

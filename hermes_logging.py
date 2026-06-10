@@ -27,8 +27,10 @@ Session context:
     that thread will include ``[session_id]`` for filtering/correlation.
 """
 
+import io
 import logging
 import os
+import sys
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -49,6 +51,40 @@ _session_context = threading.local()
 # exist on every LogRecord via _install_session_record_factory() below.
 _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
+
+
+def _safe_stderr():  # type: ignore[return]
+    """Return a stderr stream that tolerates Unicode on all platforms.
+
+    On Windows the console encoding is often a legacy MBCS codec
+    (cp949, cp1252, …) that raises ``UnicodeEncodeError`` for characters
+    like the em-dash (U+2014).  We wrap ``sys.stderr`` in a
+    ``TextIOWrapper`` with ``errors='replace'`` so log lines are never
+    lost — un-encodable characters are replaced with ``?`` instead of
+    crashing the process.
+    """
+    stream = sys.stderr
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    # Already UTF-8 or surrogate-aware — no wrapping needed.
+    if encoding.lower().replace("-", "") in ("utf8", "utf8surrogateescape"):
+        return stream
+    try:
+        buf = getattr(stream, "buffer", None)
+        if buf is not None:
+            wrapped = io.TextIOWrapper(
+                buf,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=True,
+            )
+            # Prevent the wrapper from closing the underlying buffer
+            # when it is garbage-collected.
+            wrapped.close = lambda: None  # type: ignore[assignment]
+            return wrapped
+    except Exception:
+        pass
+    # Best-effort: if wrapping fails, return the original stream.
+    return stream
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
@@ -298,7 +334,7 @@ def setup_verbose_logging() -> None:
             if getattr(h, "_hermes_verbose", False):
                 return
 
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(_safe_stderr())
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
     handler._hermes_verbose = True  # type: ignore[attr-defined]

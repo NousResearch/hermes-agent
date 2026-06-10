@@ -175,6 +175,15 @@ export const zh: Translations = {
       'session.new': '新建会话',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
+      'session.slot.1': '切换到最近会话 1',
+      'session.slot.2': '切换到最近会话 2',
+      'session.slot.3': '切换到最近会话 3',
+      'session.slot.4': '切换到最近会话 4',
+      'session.slot.5': '切换到最近会话 5',
+      'session.slot.6': '切换到最近会话 6',
+      'session.slot.7': '切换到最近会话 7',
+      'session.slot.8': '切换到最近会话 8',
+      'session.slot.9': '切换到最近会话 9',
       'session.focusSearch': '搜索会话',
       'session.togglePin': '固定/取消固定当前会话',
       'composer.focus': '聚焦输入框',
@@ -1262,6 +1271,7 @@ export const zh: Translations = {
       export: '导出',
       rename: '重命名',
       archive: '归档',
+      newWindow: '新窗口',
       copyIdFailed: '无法复制会话 ID',
       actionsFor: title => `${title} 的操作`,
       sessionActions: '会话操作',
@@ -1802,7 +1812,8 @@ export const zh: Translations = {
       restoreCheckpoint: '恢复检查点',
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
-      sendEdited: '发送编辑后的消息'
+      sendEdited: '发送编辑后的消息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',

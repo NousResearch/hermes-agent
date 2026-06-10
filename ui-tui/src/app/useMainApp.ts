@@ -7,7 +7,7 @@ import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
-import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -524,12 +524,22 @@ export function useMainApp(gw: GatewayClient) {
           if (!stopped && result?.sessions) {
             const liveSessionCount = result.sessions.length
 
-            // Only patch when the count actually changed. patchUiState always
+            // Surface the current session's (auto-)title for the terminal
+            // titlebar. The active_list poll already carries it, so no extra
+            // round-trip is needed.
+            const currentSid = getUiState().sid
+
+            const sessionTitle =
+              result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
+
+            // Only patch when something actually changed. patchUiState always
             // produces a new state object, which notifies every $uiState
             // subscriber; patching unconditionally on each 1.5s poll re-renders
             // the whole TUI and causes idle flicker.
-            if (getUiState().liveSessionCount !== liveSessionCount) {
-              patchUiState({ liveSessionCount })
+            const prev = getUiState()
+
+            if (prev.liveSessionCount !== liveSessionCount || prev.sessionTitle !== sessionTitle) {
+              patchUiState({ liveSessionCount, sessionTitle })
             }
           }
         })
@@ -546,13 +556,16 @@ export function useMainApp(gw: GatewayClient) {
   }, [gw, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
+  // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
   const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
 
   const tabCwd = ui.info?.cwd
 
-  useTerminalTitle(model ? `${marker} ${model}${tabCwd ? ` · ${shortCwd(tabCwd, 24)}` : ''}` : 'Hermes')
+  useTerminalTitle(
+    model ? composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '') : 'Hermes'
+  )
 
   useEffect(() => {
     if (!ui.sid || !stdout) {

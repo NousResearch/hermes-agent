@@ -1,14 +1,13 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $sessions, setSessions } from '@/store/session'
-import { $connection } from '@/store/session'
-import type { ComposerAttachment } from '@/store/composer'
+import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
+import { $connection, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { usePromptActions } from './use-prompt-actions'
+import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
@@ -385,6 +384,49 @@ describe('usePromptActions file attachment sync', () => {
     })
   })
 
+  it('passes a path-less @file: ref straight through (no path = nothing to upload)', async () => {
+    // Submit-layer contract: only attachments that carry a `path` are upload
+    // candidates. A path-less ref (an @-mention/context ref or pasted text)
+    // has no bytes to send, so syncAttachments leaves it untouched and the ref
+    // reaches the gateway as-is — correct for workspace-relative refs.
+    //
+    // The MahmoudR drag-drop bug (a Finder PDF that became a local-path text
+    // ref in remote mode) is fixed upstream at the DROP layer: OS drops now
+    // carry a path and route through the upload pipeline instead of becoming a
+    // path-less inline ref. See partitionDroppedFiles in use-composer-actions.
+    $connection.set({ mode: 'remote' } as never)
+    const readFileDataUrl = vi.fn(async () => 'data:application/pdf;base64,JVBERi0=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const pathlessRef: ComposerAttachment = {
+      id: 'file:devis',
+      kind: 'file',
+      label: 'DEVIS_signed.pdf',
+      // NOTE: no `path` field — only the pre-baked local @file: ref.
+      refText: '@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`'
+    }
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const ok = await handle!.submitText('read this file', { attachments: [pathlessRef] })
+
+    expect(ok).toBe(true)
+    // No path → no file.attach, no byte read: the ref passes through unchanged.
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit'])
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    expect(calls[0]?.params?.text).toContain('@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`')
+  })
+
   it('passes the path directly via file.attach in local mode (no byte upload)', async () => {
     $connection.set({ mode: 'local' } as never)
 
@@ -410,6 +452,63 @@ describe('usePromptActions file attachment sync', () => {
       method: 'prompt.submit',
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
     })
+  })
+})
+
+describe('usePromptActions eager-upload races', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+    $composerAttachments.set([])
+  })
+
+  afterEach(() => {
+    cleanup()
+    $composerAttachments.set([])
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('joins an in-flight eager upload at submit instead of staging the file twice', async () => {
+    // Drop-then-immediately-Enter: the drop kicks off an eager file.attach; if
+    // submit doesn't join it, both calls stage the file and leave a duplicate
+    // under .hermes/desktop-attachments/. Submit must await the in-flight upload
+    // and reuse its gateway-side ref.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    let releaseAttach: () => void = () => {}
+    const methods: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+      if (method === 'file.attach') {
+        // Block until released so submit runs while the upload is in flight.
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/doc.pdf', uploaded: true } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    // Drop a file → the eager effect fires file.attach and blocks on it.
+    $composerAttachments.set([{ id: 'file:doc.pdf', kind: 'file', label: 'doc.pdf', path: '/Users/me/doc.pdf' }])
+    await waitFor(() => expect(methods.filter(m => m === 'file.attach').length).toBe(1))
+
+    // Submit reads the store, sees the upload in flight, and joins it.
+    const submitting = handle!.submitText('here you go')
+    releaseAttach()
+
+    expect(await submitting).toBe(true)
+    // Exactly one file.attach (submit reused the eager result), then the send.
+    expect(methods.filter(m => m === 'file.attach').length).toBe(1)
+    expect(methods).toContain('prompt.submit')
   })
 })
 
@@ -515,6 +614,141 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // short-circuits — no resume is attempted and the error surfaces normally.
     expect(await handle!.submitText('message')).toBe(false)
     expect(calls).not.toContain('session.resume')
+  })
+})
+
+describe('usePromptActions eager attachment upload (drop-time)', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $connection.set(null)
+    $composerAttachments.set([])
+  })
+
+  it('uploads a dropped file the moment it lands (active session) and rewrites the chip with the gateway ref', async () => {
+    // A Finder drop adds a chip with a local path but no attachedSessionId. With
+    // a session already open, the hook should stage it right away — so the send
+    // is instant and the card can show a spinner while bytes upload — instead of
+    // waiting for submit.
+    $connection.set({ mode: 'remote' } as never)
+    const readFileDataUrl = vi.fn(async () => 'data:application/pdf;base64,JVBERi0=')
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+
+    const calls: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/DEVIS_signed.pdf', uploaded: true } as never
+      }
+      return {} as never
+    })
+
+    $composerAttachments.set([
+      { id: 'file:devis', kind: 'file', label: 'DEVIS_signed.pdf', path: '/Users/mahmoud/Downloads/DEVIS_signed.pdf' }
+    ])
+
+    render(<Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    await waitFor(() => expect(calls).toContain('file.attach'))
+    await waitFor(() => expect($composerAttachments.get()[0]?.attachedSessionId).toBe(RUNTIME_SESSION_ID))
+
+    const chip = $composerAttachments.get()[0]!
+    expect(chip.refText).toBe('@file:.hermes/desktop-attachments/DEVIS_signed.pdf')
+    expect(chip.uploadState).toBeUndefined()
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/mahmoud/Downloads/DEVIS_signed.pdf')
+  })
+
+  it('flags the chip uploadState=error when the eager upload fails, keeping the path so submit can retry', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        throw new Error('[Errno 13] Permission denied')
+      }
+      return {} as never
+    })
+
+    $composerAttachments.set([{ id: 'file:x', kind: 'file', label: 'x.pdf', path: '/abs/x.pdf' }])
+
+    render(<Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    await waitFor(() => expect($composerAttachments.get()[0]?.uploadState).toBe('error'))
+    expect($composerAttachments.get()[0]?.attachedSessionId).toBeUndefined()
+    expect($composerAttachments.get()[0]?.path).toBe('/abs/x.pdf')
+  })
+
+  it('does not eagerly re-upload a chip already attached to this session', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    $composerAttachments.set([
+      {
+        id: 'file:done',
+        kind: 'file',
+        label: 'done.pdf',
+        path: '/abs/done.pdf',
+        refText: '@file:data/done.pdf',
+        attachedSessionId: RUNTIME_SESSION_ID
+      }
+    ])
+
+    render(<Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    await Promise.resolve()
+    expect(requestGateway).not.toHaveBeenCalledWith('file.attach', expect.anything())
+  })
+})
+
+describe('uploadComposerAttachment remote read failures', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
+    // electron/hardening.cjs rejects the readFileDataUrl IPC with this exact
+    // shape when a file exceeds DATA_URL_READ_MAX_BYTES.
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => {
+          throw new Error('File preview failed: file is too large (20971520 bytes; limit 16777216 bytes).')
+        })
+      }
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'file:big', kind: 'file', label: 'huge.csv', path: '/abs/huge.csv' },
+        { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow('huge.csv is too large to upload to the remote gateway (max 16 MB).')
+
+    // The cap is hit before any gateway round-trip.
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('passes non-cap read errors through unchanged', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => {
+          throw new Error('ENOENT: no such file')
+        })
+      }
+    })
+
+    await expect(
+      uploadComposerAttachment(
+        { id: 'file:gone', kind: 'file', label: 'gone.csv', path: '/abs/gone.csv' },
+        { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
+      )
+    ).rejects.toThrow('ENOENT: no such file')
   })
 })
 

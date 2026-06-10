@@ -1218,6 +1218,7 @@ export const ja = defineLocale({
       export: 'エクスポート',
       rename: '名前を変更',
       archive: 'アーカイブ',
+      newWindow: '新しいウィンドウ',
       copyIdFailed: 'セッション ID をコピーできませんでした',
       actionsFor: title => `${title} のアクション`,
       sessionActions: 'セッションアクション',
@@ -1766,7 +1767,8 @@ export const ja = defineLocale({
       restoreCheckpoint: 'チェックポイントを復元',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
-      sendEdited: '編集済みメッセージを送信'
+      sendEdited: '編集済みメッセージを送信',
+      attachingFile: '添付中…'
     },
     approval: {
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',

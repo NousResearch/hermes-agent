@@ -179,6 +179,15 @@ export const en: Translations = {
       'session.new': 'New session',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
+      'session.slot.1': 'Switch to recent session 1',
+      'session.slot.2': 'Switch to recent session 2',
+      'session.slot.3': 'Switch to recent session 3',
+      'session.slot.4': 'Switch to recent session 4',
+      'session.slot.5': 'Switch to recent session 5',
+      'session.slot.6': 'Switch to recent session 6',
+      'session.slot.7': 'Switch to recent session 7',
+      'session.slot.8': 'Switch to recent session 8',
+      'session.slot.9': 'Switch to recent session 9',
       'session.focusSearch': 'Search sessions',
       'session.togglePin': 'Pin / unpin current session',
       'composer.focus': 'Focus composer',
@@ -1075,6 +1084,7 @@ export const en: Translations = {
       export: 'Export',
       rename: 'Rename',
       archive: 'Archive',
+      newWindow: 'New window',
       copyIdFailed: 'Could not copy session ID',
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',
@@ -1622,7 +1632,8 @@ export const en: Translations = {
       restoreCheckpoint: 'Restore checkpoint',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
-      sendEdited: 'Send edited message'
+      sendEdited: 'Send edited message',
+      attachingFile: 'Attaching…'
     },
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',

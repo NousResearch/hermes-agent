@@ -832,6 +832,7 @@ export interface Translations {
       export: string
       rename: string
       archive: string
+      newWindow: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
@@ -1293,6 +1294,7 @@ export interface Translations {
       restoreNext: string
       goForward: string
       sendEdited: string
+      attachingFile: string
     }
     approval: {
       gatewayDisconnected: string

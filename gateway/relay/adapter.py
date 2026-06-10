@@ -126,3 +126,35 @@ class RelayAdapter(BasePlatformAdapter):
         if self._transport is None:
             return {"name": chat_id, "type": "dm"}
         return await self._transport.get_chat_info(chat_id)
+
+    async def send_follow_up(
+        self,
+        session_key: str,
+        kind: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send via a shared-identity capability bound to a session (A2 outbound).
+
+        The gateway never holds the credential: it names the session it is
+        already in plus the capability ``kind``, and the connector resolves the
+        real value from its vault and egresses (enforcing the tenant match). Used
+        e.g. to post a Discord interaction follow-up as the shared bot without
+        the token ever reaching the gateway. See RelayTransport.send_follow_up.
+        """
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_follow_up(
+            {
+                "op": "follow_up",
+                "session_key": session_key,
+                "kind": kind,
+                "content": content,
+                "metadata": metadata or {},
+            }
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id"),
+            error=result.get("error"),
+        )

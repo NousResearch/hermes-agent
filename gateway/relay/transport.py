@@ -73,3 +73,29 @@ class RelayTransport(Protocol):
         (handled in Task 1.4).
         """
         ...
+
+    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        """Act on a shared-identity capability bound to a session (A2 outbound).
+
+        Some platforms hand the connector a credential that acts on the SHARED
+        bot identity (e.g. a Discord interaction follow-up token, valid ~15min).
+        Under A2 that credential NEVER reaches the gateway — the connector
+        stripped it at the edge and bound it in its capability vault keyed by
+        the session. To use it, the gateway issues a SEMANTIC action against the
+        session it is already in; it never names or holds a token.
+
+        The action dict carries:
+          ``op``          == ``"follow_up"``
+          ``session_key`` the session whose bound capability to wield
+          ``kind``        the capability kind (e.g. ``"discord.interaction_token"``)
+          ``content``     the message content to send via that capability
+          ``metadata?``   optional extras
+
+        The connector resolves the real capability (``resolveOutboundCapability``
+        on its side), enforces the tenant match (tenant B can never wield tenant
+        A's capability), and egresses. Returns ``{success, message_id?, error?}``;
+        ``success`` is False when the capability is absent/expired or the tenant
+        doesn't match — the gateway then has nothing to retry with (by design: a
+        leaked gateway holds zero capability material).
+        """
+        ...

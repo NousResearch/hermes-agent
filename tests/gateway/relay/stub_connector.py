@@ -29,9 +29,14 @@ class StubConnector:
         self.connected = False
         self.sent: List[Dict[str, Any]] = []
         self.interrupts: List[Dict[str, Any]] = []
+        self.follow_ups: List[Dict[str, Any]] = []
         self.chat_info: Dict[str, Dict[str, Any]] = {}
         # Canned result for the next send_outbound (override per-test).
         self.next_send_result: Dict[str, Any] = {"success": True, "message_id": "m1"}
+        # Canned result for the next send_follow_up (override per-test). Default
+        # mimics a resolved capability egress; set success=False to simulate an
+        # absent/expired capability or a tenant mismatch on the connector side.
+        self.next_follow_up_result: Dict[str, Any] = {"success": True, "message_id": "f1"}
 
     async def connect(self) -> bool:
         self.connected = True
@@ -57,6 +62,10 @@ class StubConnector:
 
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
         self.interrupts.append({"session_key": session_key, "reason": reason})
+
+    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        self.follow_ups.append(action)
+        return dict(self.next_follow_up_result)
 
     # ── test driver ──────────────────────────────────────────────────────
     async def push_inbound(self, event: MessageEvent) -> None:

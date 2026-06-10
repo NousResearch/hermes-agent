@@ -42,6 +42,11 @@ const {
 } = require('./desktop-uninstall.cjs')
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
 const {
+  resolveLocalReadPath,
+  resolvePickerDefaultPath,
+  resolvePickerResultForRemoteBackend
+} = require('./wsl-path-bridge.cjs')
+const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -5416,7 +5421,10 @@ ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   let resolvedDefaultPath
   if (options?.defaultPath) {
     try {
-      resolvedDefaultPath = path.resolve(String(options.defaultPath))
+      const bridgedDefault = IS_WINDOWS
+        ? resolvePickerDefaultPath(String(options.defaultPath))
+        : String(options.defaultPath)
+      resolvedDefaultPath = path.resolve(bridgedDefault)
     } catch {
       resolvedDefaultPath = undefined
     }
@@ -5430,7 +5438,12 @@ ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   })
 
   if (result.canceled) return []
-  return result.filePaths
+
+  if (!IS_WINDOWS || !globalRemoteActive()) {
+    return result.filePaths
+  }
+
+  return result.filePaths.map(selected => resolvePickerResultForRemoteBackend(selected))
 })
 
 ipcMain.handle('hermes:writeClipboard', (_event, text) => {
@@ -5767,7 +5780,8 @@ function disposeTerminalSession(id) {
 }
 
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
-  const resolved = path.resolve(String(dirPath || ''))
+  const bridged = IS_WINDOWS ? resolveLocalReadPath(String(dirPath || '')) : String(dirPath || '')
+  const resolved = path.resolve(bridged)
 
   if (!resolved) {
     return { entries: [], error: 'invalid-path' }

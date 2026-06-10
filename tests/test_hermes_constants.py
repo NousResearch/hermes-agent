@@ -298,3 +298,38 @@ class TestSecureParentDir:
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
 
+
+class TestWslPathTranslation:
+    def test_windows_path_to_wsl(self):
+        from hermes_constants import windows_path_to_wsl
+
+        assert windows_path_to_wsl(r"C:\Users\don\projects") == "/mnt/c/Users/don/projects"
+        assert windows_path_to_wsl("D:/work/project") == "/mnt/d/work/project"
+        assert windows_path_to_wsl("/home/user") is None
+
+    def test_wsl_unc_path_to_posix(self):
+        from hermes_constants import wsl_unc_path_to_posix
+
+        assert (
+            wsl_unc_path_to_posix(r"\\wsl.localhost\Ubuntu\home\don\projects")
+            == "/home/don/projects"
+        )
+        assert wsl_unc_path_to_posix(r"\\wsl$\Ubuntu\home\don\projects") == "/home/don/projects"
+        assert wsl_unc_path_to_posix("/home/don/projects") is None
+
+    def test_translate_cwd_for_wsl_backend(self, monkeypatch):
+        from hermes_constants import translate_cwd_for_wsl_backend
+
+        monkeypatch.setattr(hermes_constants, "_wsl_detected", True)
+        assert (
+            translate_cwd_for_wsl_backend(r"C:\Users\don\projects")
+            == "/mnt/c/Users/don/projects"
+        )
+        assert (
+            translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\don\projects")
+            == "/home/don/projects"
+        )
+
+        monkeypatch.setattr(hermes_constants, "_wsl_detected", False)
+        assert translate_cwd_for_wsl_backend(r"C:\Users\don\projects") == r"C:\Users\don\projects"
+

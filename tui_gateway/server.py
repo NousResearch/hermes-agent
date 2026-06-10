@@ -1172,7 +1172,10 @@ def _ensure_session_db_row(session: dict) -> None:
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
-    resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+    from hermes_constants import translate_cwd_for_wsl_backend
+
+    cwd = translate_cwd_for_wsl_backend(str(cwd))
+    resolved = os.path.abspath(os.path.expanduser(cwd))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
     session["cwd"] = resolved

@@ -355,7 +355,14 @@ class CallManager:
 
         record = self._find_call(event)
         if record is None:
-            if event.type == EventType.CALL_INITIATED and event.direction == "inbound":
+            # Carriers differ in the first inbound webhook they send
+            # (Telnyx: call.initiated, Twilio: ringing, Plivo: answered via
+            # StartApp) — auto-register on any of them.
+            if event.direction == "inbound" and event.type in (
+                EventType.CALL_INITIATED,
+                EventType.CALL_RINGING,
+                EventType.CALL_ANSWERED,
+            ):
                 record = await self._create_inbound(event)
             else:
                 # Probably an outbound webhook racing initiate_call().
@@ -363,6 +370,20 @@ class CallManager:
                 return
         if record is None or record.is_terminal:
             return
+
+        # Some carriers swap identifiers mid-call (Plivo: dial returns a
+        # request_uuid, webhooks then carry the real CallUUID). When the
+        # event matched via our call_id, adopt the newer carrier id so call
+        # control (speak/hangup) targets the right resource.
+        if (
+            event.provider_call_id
+            and event.provider_call_id != record.provider_call_id
+        ):
+            if record.provider_call_id:
+                self._by_provider_id.pop(record.provider_call_id, None)
+            record.provider_call_id = event.provider_call_id
+            self._by_provider_id[event.provider_call_id] = record.call_id
+            self._persist(record)
 
         if event.type == EventType.CALL_INITIATED:
             pass  # creation handled above; outbound initiated in initiate_call()

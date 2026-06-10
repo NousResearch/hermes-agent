@@ -47,7 +47,7 @@ ADMIN_PATH = "/voice/admin"
 _PREAUTH_HEADERS = {
     "telnyx": ("telnyx-signature-ed25519", "x-telnyx-signature-v02"),
     "twilio": ("x-twilio-signature",),
-    "plivo": ("x-plivo-signature-v3",),
+    "plivo": ("x-plivo-signature-v3", "x-plivo-signature-v2"),
 }
 
 AdminHandler = Callable[[dict], Awaitable[dict]]
@@ -243,10 +243,17 @@ class VoiceCallWebhookServer:
                 status=result.response_status,
             )
 
-        # 9/10. Inbound policy on new inbound calls, then process.
+        # 9/10. Inbound policy on call-opening inbound events (carriers
+        # differ in which event type announces a new inbound call), then
+        # process.
+        _call_opening = (
+            EventType.CALL_INITIATED,
+            EventType.CALL_RINGING,
+            EventType.CALL_ANSWERED,
+        )
         for event in result.events:
             if (
-                event.type == EventType.CALL_INITIATED
+                event.type in _call_opening
                 and event.direction == "inbound"
                 and not self._inbound_allowed(event.from_number)
             ):

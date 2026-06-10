@@ -204,6 +204,9 @@ Common issues:
   media.
 - **Native polls are supported.** Hermes sends poll content through
   spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
+- **Message effects are supported.** Hermes sends text with native iMessage
+  bubble/screen effects through spectrum-ts' iMessage `effect()` builder
+  via the sidecar's `/send-effect` endpoint.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.

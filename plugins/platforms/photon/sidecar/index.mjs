@@ -33,6 +33,8 @@
 //              "reactionId": "..." | null (restart-recovery fallback)}
 //   - POST /send-poll   -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "title": "...", "options": ["...", "..."]}
+//   - POST /send-effect -> {"ok": true, "messageId": "..."}
+//       body: {"spaceId": "...", "text": "...", "effect": "confetti" | ...}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
@@ -240,7 +242,8 @@ let Spectrum,
   spectrumText,
   spectrumMarkdown,
   spectrumTyping,
-  spectrumPoll;
+  spectrumPoll,
+  imessageEffect;
 try {
   ({
     Spectrum,
@@ -251,7 +254,7 @@ try {
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
   } = await import("spectrum-ts"));
-  ({ imessage } = await import("spectrum-ts/providers/imessage"));
+  ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -268,6 +271,8 @@ const app = await Spectrum({
   options: { flattenGroups: true },
   telemetry,
 });
+
+const MESSAGE_EFFECTS = imessage.effect.message;
 
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
@@ -896,6 +901,22 @@ const server = http.createServer(async (req, res) => {
       }
       const space = await resolveSpace(spaceId);
       const result = await space.send(spectrumPoll(title.trim(), choices));
+      return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/send-effect") {
+      const { spaceId, text, effect } = body || {};
+      const effectName = String(effect || "").trim();
+      const effectId = MESSAGE_EFFECTS[effectName];
+      if (!spaceId || typeof text !== "string" || !text.trim()) {
+        return badRequest(res, "spaceId and text are required");
+      }
+      if (!effectId) {
+        return badRequest(res, "unsupported effect");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(
+        imessageEffect(spectrumText(text.trim()), effectId)
+      );
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/typing") {

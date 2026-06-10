@@ -5,7 +5,20 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking, setTurnStartedAt } from '@/store/session'
+import {
+  $busy,
+  $messages,
+  noteSessionActivity,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier,
+  setSessionAttention,
+  setSessionWorking,
+  setTurnStartedAt,
+  setYoloActive
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -124,6 +137,12 @@ export function useSessionStateCache({
       setMessages(nextMessages)
     }
 
+    setCurrentModel(pending.state.model)
+    setCurrentProvider(pending.state.provider)
+    setCurrentReasoningEffort(pending.state.reasoningEffort)
+    setCurrentServiceTier(pending.state.serviceTier)
+    setCurrentFastMode(pending.state.fast)
+    setYoloActive(pending.state.yolo)
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)

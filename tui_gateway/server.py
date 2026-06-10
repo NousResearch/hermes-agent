@@ -1409,6 +1409,131 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     return model, None
 
 
+def _stored_session_runtime_overrides(row: dict | None) -> dict:
+    """Return runtime fields persisted with a stored session.
+
+    ``session.resume`` is a session-scoped operation: reopening an older chat
+    must restore the model/provider/reasoning state that chat actually used,
+    not whatever global model the user most recently selected in another chat.
+    The durable session row stores the model directly, the billing provider in
+    ``billing_provider``, and richer runtime knobs in JSON ``model_config``.
+    """
+    if not row:
+        return {}
+
+    raw_config = row.get("model_config")
+    model_config: dict = {}
+    if isinstance(raw_config, dict):
+        model_config = raw_config
+    elif isinstance(raw_config, str) and raw_config.strip():
+        try:
+            parsed = json.loads(raw_config)
+            if isinstance(parsed, dict):
+                model_config = parsed
+        except Exception:
+            logger.debug("failed to parse stored session model_config", exc_info=True)
+
+    overrides: dict = {}
+    model = str(row.get("model") or model_config.get("model") or "").strip()
+    provider = str(
+        model_config.get("provider")
+        or model_config.get("billing_provider")
+        or row.get("billing_provider")
+        or ""
+    ).strip()
+    base_url = str(model_config.get("base_url") or "").strip()
+    api_mode = str(model_config.get("api_mode") or "").strip()
+    reasoning_config = model_config.get("reasoning_config")
+    service_tier = str(model_config.get("service_tier") or "").strip()
+
+    if model:
+        # Use the same dict-shaped override that live /model switches use so a
+        # DB-restored session can preserve custom endpoint metadata across both
+        # initial resume and later rebuilds (/new). Deliberately do not persist
+        # or restore raw api_key here; endpoint credentials should continue to
+        # come from config/env/provider resolution rather than the session DB.
+        overrides["model_override"] = {
+            "model": model,
+            "provider": provider or None,
+            "base_url": base_url or None,
+            "api_mode": api_mode or None,
+        }
+    if provider:
+        overrides["provider_override"] = provider
+    if isinstance(reasoning_config, dict):
+        overrides["reasoning_config_override"] = reasoning_config
+    if service_tier:
+        overrides["service_tier_override"] = service_tier
+
+    return overrides
+
+
+def _runtime_model_config(agent, existing: dict | None = None) -> dict:
+    config = dict(existing or {})
+    model = str(getattr(agent, "model", "") or "").strip()
+    provider = str(getattr(agent, "provider", "") or "").strip()
+    base_url = str(getattr(agent, "base_url", "") or "").strip()
+    api_mode = str(getattr(agent, "api_mode", "") or "").strip()
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    service_tier = getattr(agent, "service_tier", None)
+
+    if model:
+        config["model"] = model
+    if provider:
+        config["provider"] = provider
+    if base_url:
+        config["base_url"] = base_url
+    else:
+        config.pop("base_url", None)
+    if api_mode:
+        config["api_mode"] = api_mode
+    else:
+        config.pop("api_mode", None)
+    if isinstance(reasoning_config, dict):
+        config["reasoning_config"] = reasoning_config
+    else:
+        config.pop("reasoning_config", None)
+    if service_tier:
+        config["service_tier"] = service_tier
+    else:
+        config.pop("service_tier", None)
+
+    return config
+
+
+def _persist_live_session_runtime(session: dict | None) -> None:
+    """Persist active session runtime so future resumes restore the same footer."""
+    if not session:
+        return
+    agent = session.get("agent")
+    session_key = str(session.get("session_key") or "").strip()
+    if agent is None or not session_key:
+        return
+
+    db = getattr(agent, "_session_db", None) or _get_db()
+    if db is None:
+        return
+
+    try:
+        row = db.get_session(session_key) or {}
+        raw_config = row.get("model_config")
+        existing_config = {}
+        if isinstance(raw_config, dict):
+            existing_config = raw_config
+        elif isinstance(raw_config, str) and raw_config.strip():
+            parsed = json.loads(raw_config)
+            if isinstance(parsed, dict):
+                existing_config = parsed
+        model_config = _runtime_model_config(agent, existing_config)
+        model = str(getattr(agent, "model", "") or "").strip()
+        if hasattr(db, "update_session_meta"):
+            db.update_session_meta(session_key, json.dumps(model_config), model or None)
+        elif model and hasattr(db, "update_session_model"):
+            db.update_session_model(session_key, model)
+    except Exception:
+        logger.debug("failed to persist live session runtime", exc_info=True)
+
+
 def _write_config_key(key_path: str, value):
     cfg = _load_cfg()
     current = cfg
@@ -1789,6 +1914,7 @@ def _apply_model_switch(
             api_mode=result.api_mode,
         )
         _restart_slash_worker(sid, session)
+        _persist_live_session_runtime(session)
         _emit("session.info", sid, _session_info(agent, session))
 
     # Record the switch as a PER-SESSION override so a later rebuild of THIS
@@ -2104,6 +2230,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "provider": getattr(agent, "provider", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -2891,7 +3018,10 @@ def _make_agent(
     key: str,
     session_id: str | None = None,
     session_db=None,
-    model_override: dict | None = None,
+    model_override: dict | str | None = None,
+    provider_override: str | None = None,
+    reasoning_config_override: dict | None = None,
+    service_tier_override: str | None = None,
 ):
     from run_agent import AIAgent
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -2927,12 +3057,11 @@ def _make_agent(
                 part for part in (system_prompt, skills_prompt) if part
             ).strip()
     # Prefer a per-session model override (set by a prior in-session /model
-    # switch) over global config/env resolution. This keeps a rebuilt session
-    # (/new, resume) on the model the user picked FOR THIS SESSION, without
-    # reading process-global env vars that another session may have changed.
-    if model_override and model_override.get("model"):
+    # switch) over global config/env resolution. Resume-time stored sessions may
+    # also pass scalar model/provider/runtime knobs from the persisted DB row.
+    if isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
-        requested_provider = model_override.get("provider") or None
+        requested_provider = model_override.get("provider") or provider_override or None
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
@@ -2951,6 +3080,10 @@ def _make_agent(
             runtime["api_mode"] = override_api_mode
     else:
         model, requested_provider = _resolve_startup_runtime()
+        if isinstance(model_override, str) and model_override:
+            model = model_override
+        if provider_override:
+            requested_provider = provider_override
         runtime = resolve_runtime_provider(
             requested=requested_provider,
             target_model=model or None,
@@ -2971,8 +3104,16 @@ def _make_agent(
         # display detail).  See cli.py PR (decoupling fix) for the matching
         # change on the classic CLI side.
         verbose_logging=False,
-        reasoning_config=_load_reasoning_config(),
-        service_tier=_load_service_tier(),
+        reasoning_config=(
+            reasoning_config_override
+            if reasoning_config_override is not None
+            else _load_reasoning_config()
+        ),
+        service_tier=(
+            service_tier_override
+            if service_tier_override is not None
+            else _load_service_tier()
+        ),
         enabled_toolsets=_load_enabled_toolsets(),
         platform="tui",
         session_id=session_id or key,
@@ -3660,8 +3801,17 @@ def _(rid, params: dict) -> dict:
         try:
             # Pass the profile's db so the agent persists turns to the right
             # state.db; home override is active here so config/skills/model
-            # resolve to the profile too.
-            agent = _make_agent(sid, target, session_id=target, session_db=db)
+            # resolve to the profile too. Runtime identity is restored from the
+            # stored session row so switching chats does not inherit whatever
+            # global model another chat last selected.
+            stored_runtime_overrides = _stored_session_runtime_overrides(found)
+            agent = _make_agent(
+                sid,
+                target,
+                session_id=target,
+                session_db=db,
+                **stored_runtime_overrides,
+            )
         finally:
             _clear_session_context(tokens)
     except Exception as e:
@@ -3698,6 +3848,10 @@ def _(rid, params: dict) -> dict:
         try:
             _init_session(sid, target, agent, history, cols=cols)
             if sid in _sessions:
+                if stored_runtime_overrides.get("model_override") is not None:
+                    _sessions[sid]["model_override"] = stored_runtime_overrides[
+                        "model_override"
+                    ]
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
                 # Remember the profile home so each turn re-binds HERMES_HOME (the
                 # agent persists to its own db, but mid-turn home reads — memory,
@@ -6309,6 +6463,7 @@ def _(rid, params: dict) -> dict:
             if nv == "fast":
                 current_overrides.update(overrides)
             agent.request_overrides = current_overrides
+            _persist_live_session_runtime(session)
             _emit(
                 "session.info",
                 params.get("session_id", ""),
@@ -6475,6 +6630,12 @@ def _(rid, params: dict) -> dict:
             _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
+                _persist_live_session_runtime(session)
+                _emit(
+                    "session.info",
+                    params.get("session_id", ""),
+                    _session_info(session["agent"], session),
+                )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))

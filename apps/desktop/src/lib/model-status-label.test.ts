@@ -5,6 +5,8 @@ import { displayModelName, formatModelStatusLabel, reasoningEffortLabel } from '
 describe('model-status-label', () => {
   it('formats display names consistently', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
+    expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
+    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
   })
 

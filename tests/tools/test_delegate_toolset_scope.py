@@ -54,6 +54,18 @@ class TestToolsetIntersection:
         assert "memory" not in child
         assert "terminal" in child
 
+    def test_strip_blocked_removes_messaging_and_cronjob(self):
+        """messaging and cronjob must be stripped — children must not have
+        send_message or cronjob access."""
+        child = _strip_blocked_tools(
+            ["terminal", "file", "messaging", "cronjob", "web"]
+        )
+        assert "messaging" not in child
+        assert "cronjob" not in child
+        assert "terminal" in child
+        assert "file" in child
+        assert "web" in child
+
     def test_empty_intersection_yields_empty_toolsets(self):
         """If parent has no overlap with requested, child gets nothing extra."""
         parent = SimpleNamespace(enabled_toolsets=["terminal"])

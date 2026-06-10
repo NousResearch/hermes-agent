@@ -145,7 +145,7 @@ class TestChildSystemPrompt(unittest.TestCase):
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
-        result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
+        result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution", "messaging", "cronjob"])
         self.assertEqual(sorted(result), ["file", "terminal"])
 
     def test_preserves_allowed_toolsets(self):
@@ -155,6 +155,17 @@ class TestStripBlockedTools(unittest.TestCase):
     def test_empty_input(self):
         result = _strip_blocked_tools([])
         self.assertEqual(result, [])
+
+    def test_removes_messaging_and_cronjob(self):
+        """messaging (send_message) and cronjob must be stripped from children."""
+        result = _strip_blocked_tools(
+            ["terminal", "file", "messaging", "cronjob", "web"]
+        )
+        self.assertIn("terminal", result)
+        self.assertIn("file", result)
+        self.assertIn("web", result)
+        self.assertNotIn("messaging", result)
+        self.assertNotIn("cronjob", result)
 
 
 class TestDelegateTask(unittest.TestCase):
@@ -898,7 +909,7 @@ class TestSubagentCostRollup(unittest.TestCase):
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
-        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code", "cronjob"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):

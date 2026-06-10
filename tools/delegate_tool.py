@@ -49,6 +49,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "execute_code",  # children should reason step-by-step, not write scripts
+        "cronjob",  # no persistent scheduled jobs outliving the delegation
     ]
 )
 
@@ -763,6 +764,8 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "clarify",
         "memory",
         "code_execution",
+        "messaging",
+        "cronjob",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 

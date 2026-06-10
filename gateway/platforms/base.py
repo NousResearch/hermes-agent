@@ -33,6 +33,7 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 
 
 def _platform_name(platform) -> str:
@@ -4462,6 +4463,15 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Stop typing before any deferred callback work.  Post-delivery
+            # callbacks may perform platform I/O; a stuck callback must not
+            # leave the typing refresh task running indefinitely.
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
+                pass
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -4489,11 +4499,12 @@ class BasePlatformAdapter(ABC):
                 try:
                     _post_result = _post_cb()
                     if inspect.isawaitable(_post_result):
-                        await _post_result
-                except Exception:
+                        await asyncio.wait_for(
+                            _post_result,
+                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                        )
+                except (asyncio.TimeoutError, Exception):
                     pass
-            # Stop typing indicator
-            await _stop_typing_task()
             # Also cancel any platform-level persistent typing tasks (e.g. Discord)
             # that may have been recreated by _keep_typing after the last stop_typing()
             try:

@@ -76,7 +76,25 @@ class RelayAdapter(BasePlatformAdapter):
         if self._transport is None:
             raise RuntimeError("RelayAdapter has no transport configured")
         self._transport.set_inbound_handler(self._on_inbound)
-        return await self._transport.connect()
+        ok = await self._transport.connect()
+        if not ok:
+            return False
+        # Negotiate the real capability descriptor from the connector and adopt
+        # it — the placeholder passed at construction is replaced by what the
+        # connector advertises for the platform this gateway actually fronts.
+        try:
+            descriptor = await self._transport.handshake()
+        except Exception as exc:  # noqa: BLE001 - a failed handshake = a failed connect
+            logger.warning("relay handshake failed: %s", exc)
+            return False
+        self._apply_descriptor(descriptor)
+        return True
+
+    def _apply_descriptor(self, descriptor: CapabilityDescriptor) -> None:
+        """Adopt a (re)negotiated descriptor into the live capability surface."""
+        self.descriptor = descriptor
+        self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
+        self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
 
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""

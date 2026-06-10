@@ -190,6 +190,8 @@ cd hermes-agent
 ./hermes              # auto-detects the venv, no need to `source` first
 ```
 
+By default, `setup-hermes.sh` aborts if `uv.lock` is missing or `uv sync --locked` fails. Set `HERMES_SETUP_ALLOW_UNVERIFIED_INSTALL=1` only as an explicit break-glass override if you temporarily need an unverified PyPI fallback.
+
 Manual path (equivalent to the above):
 
 ```bash

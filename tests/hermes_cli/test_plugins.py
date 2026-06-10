@@ -1,6 +1,7 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
 import logging
+import os
 import sys
 import types
 from pathlib import Path
@@ -469,6 +470,58 @@ class TestPluginLoading:
         mgr.discover_and_load()
 
         assert "hermes_plugins.ns_plugin" in sys.modules
+
+    def test_symlinked_plugin_dir_outside_root_is_skipped(self, tmp_path, monkeypatch):
+        """Symlinked plugin directories must not escape the configured root."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        plugins_dir.mkdir(parents=True)
+
+        outside_plugin = tmp_path / "outside_plugin"
+        outside_plugin.mkdir()
+        (outside_plugin / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "symlink_dir_escape", "version": "0.1.0"})
+        )
+        (outside_plugin / "__init__.py").write_text(
+            "def register(ctx):\n    raise AssertionError('should not load')\n"
+        )
+        os.symlink(str(outside_plugin), str(plugins_dir / "symlink_dir_escape"))
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["symlink_dir_escape"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "symlink_dir_escape" not in mgr._plugins
+        assert "hermes_plugins.symlink_dir_escape" not in sys.modules
+
+    def test_symlinked_init_outside_plugin_dir_is_skipped(self, tmp_path, monkeypatch):
+        """The loader must reject ``__init__.py`` symlink escapes too."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        plugin_dir = plugins_dir / "symlink_init_escape"
+        plugin_dir.mkdir(parents=True)
+
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "symlink_init_escape", "version": "0.1.0"})
+        )
+        outside_init = tmp_path / "outside_init.py"
+        outside_init.write_text(
+            "def register(ctx):\n    raise AssertionError('should not load')\n"
+        )
+        os.symlink(str(outside_init), str(plugin_dir / "__init__.py"))
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["symlink_init_escape"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "symlink_init_escape" not in mgr._plugins
+        assert "hermes_plugins.symlink_init_escape" not in sys.modules
 
     def test_user_memory_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
         """User-installed memory plugins must NOT be loaded by the general

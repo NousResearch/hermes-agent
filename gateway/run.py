@@ -1177,6 +1177,7 @@ from gateway.config import (
     GatewayConfig,
     HomeChannel,
     PlatformConfig,
+    _quick_command_shell_enabled,
     load_gateway_config,
 )
 from gateway.session import (
@@ -7206,8 +7207,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # has all API keys in os.environ.
                             from tools.environments.local import _sanitize_subprocess_env
                             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
+                            # Default: run without a shell so config-supplied
+                            # commands can't chain extra operators. Users who
+                            # explicitly want a shell can still opt in with
+                            # shell: true.
+                            use_shell = _quick_command_shell_enabled(qcmd.get("shell"))
+                            if use_shell:
+                                exec_args = exec_cmd
+                                exec_fn = asyncio.create_subprocess_shell
+                            else:
+                                exec_args = shlex.split(exec_cmd)
+                                exec_fn = asyncio.create_subprocess_exec
+                            proc = await exec_fn(
+                                *exec_args,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
                                 env=sanitized_env,

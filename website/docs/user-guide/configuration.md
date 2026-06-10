@@ -1478,6 +1478,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
+    shell: true
     command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
   gpu:
     type: exec
@@ -1487,7 +1488,7 @@ quick_commands:
     target: /gateway restart
 ```
 
-Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
+Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target. `exec` entries run as argv by default; add `shell: true` only when you need shell syntax such as `&&`, pipes, redirects, or `cd` chains.
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names

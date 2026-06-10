@@ -204,8 +204,11 @@ if is_termux; then
     fi
     echo -e "${GREEN}✓${NC} Dependencies installed"
 else
-    # Prefer uv sync with lockfile (hash-verified installs) when available,
-    # fall back to pip install for compatibility or when lockfile is stale.
+    # Prefer uv sync with lockfile (hash-verified installs) when available.
+    # Default posture is fail-closed: if the lockfile is missing or the
+    # locked sync fails, abort instead of silently dropping to an
+    # unverified PyPI resolve. Set HERMES_SETUP_ALLOW_UNVERIFIED_INSTALL=1
+    # only as an explicit break-glass override.
     #
     # Multi-tier pip fallback. Goal: ONE compromised PyPI package
     # (mistralai 2.4.6 in May 2026 → quarantined) shouldn't silently demote
@@ -227,6 +230,23 @@ else
         [ "$_skip" = false ] && _SAFE_EXTRAS+=("$_e")
     done
     _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    _allow_unverified_fallback() {
+        case "${HERMES_SETUP_ALLOW_UNVERIFIED_INSTALL:-}" in
+            1|true|TRUE|yes|YES|on|ON)
+                return 0
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+    _refuse_unverified_install() {
+        local _reason="$1"
+        echo -e "${RED}✗${NC} ${_reason}"
+        echo -e "${RED}✗${NC} Refusing to continue with an unverified PyPI install."
+        echo -e "${RED}✗${NC} Fix uv.lock and rerun, or set HERMES_SETUP_ALLOW_UNVERIFIED_INSTALL=1 to break glass temporarily."
+        exit 1
+    }
     _try_install() {
         $UV_CMD pip install -e ".[all]" \
             || $UV_CMD pip install -e "$_SAFE_SPEC" \
@@ -254,15 +274,23 @@ else
         if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
         else
-            echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."
-            echo -e "${YELLOW}⚠${NC} Falling back to PyPI resolve — transitives will NOT be hash-verified."
-            _try_install
-            echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
+            if _allow_unverified_fallback; then
+                echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."
+                echo -e "${YELLOW}⚠${NC} Break-glass override enabled — falling back to PyPI resolve without hash verification."
+                _try_install
+                echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
+            else
+                _refuse_unverified_install "Lockfile sync failed (see uv output above)."
+            fi
         fi
     else
-        echo -e "${YELLOW}⚠${NC} uv.lock not found — installing without hash verification of transitives."
-        _try_install
-        echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
+        if _allow_unverified_fallback; then
+            echo -e "${YELLOW}⚠${NC} uv.lock not found — break-glass override enabled, installing without hash verification of transitives."
+            _try_install
+            echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
+        else
+            _refuse_unverified_install "uv.lock not found."
+        fi
     fi
 fi
 

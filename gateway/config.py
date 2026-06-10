@@ -36,6 +36,15 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+def _quick_command_shell_enabled(value: Any) -> bool:
+    """Return True only for explicit quick-command shell opt-in values."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
 def _coerce_float(value: Any, default: float) -> float:
     """Coerce numeric config values, falling back on malformed input."""
     if value is None:

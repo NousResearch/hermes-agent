@@ -1,7 +1,7 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import os
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from rich.text import Text
 import pytest
 
@@ -38,6 +38,61 @@ class TestCLIQuickCommands:
         cli.console.print.assert_called_once()
         printed = self._printed_plain(cli.console.print.call_args[0][0])
         assert printed == "daily-note"
+
+    def test_exec_command_defaults_to_argv_mode_without_shell(self):
+        cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
+
+        completed = subprocess.CompletedProcess(
+            args=["echo", "daily-note"], returncode=0, stdout="daily-note\n", stderr=""
+        )
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            result = cli.process_command("/dn")
+
+        assert result is True
+        mock_run.assert_called_once_with(
+            ["echo", "daily-note"],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_exec_command_string_false_does_not_enable_shell(self):
+        cli = self._make_cli({"dn": {"type": "exec", "shell": "false", "command": "echo daily-note"}})
+
+        completed = subprocess.CompletedProcess(
+            args=["echo", "daily-note"], returncode=0, stdout="daily-note\n", stderr=""
+        )
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            result = cli.process_command("/dn")
+
+        assert result is True
+        mock_run.assert_called_once_with(
+            ["echo", "daily-note"],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_exec_command_explicit_shell_true_still_works(self):
+        cli = self._make_cli({"dn": {"type": "exec", "shell": True, "command": "echo daily-note"}})
+
+        completed = subprocess.CompletedProcess(
+            args="echo daily-note", returncode=0, stdout="daily-note\n", stderr=""
+        )
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            result = cli.process_command("/dn")
+
+        assert result is True
+        mock_run.assert_called_once_with(
+            "echo daily-note",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
 
     def test_exec_command_uses_chat_console_when_tui_is_live(self):
         cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
@@ -159,6 +214,72 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_defaults_to_argv_mode_without_shell(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        proc = AsyncMock()
+        proc.communicate.return_value = (b"ok\n", b"")
+        event = self._make_event("limits")
+
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)) as mock_exec:
+            result = await runner._handle_message(event)
+
+        assert result == "ok"
+        mock_exec.assert_awaited_once()
+        call_args = mock_exec.await_args
+        assert call_args.args[:2] == ("echo", "ok")
+        assert call_args.kwargs["stdout"] is not None
+        assert call_args.kwargs["stderr"] is not None
+        assert call_args.kwargs["env"] is not None
+
+    @pytest.mark.asyncio
+    async def test_exec_command_string_false_does_not_enable_shell(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"limits": {"type": "exec", "shell": "false", "command": "echo ok"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        proc = AsyncMock()
+        proc.communicate.return_value = (b"ok\n", b"")
+        event = self._make_event("limits")
+
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)) as mock_exec:
+            result = await runner._handle_message(event)
+
+        assert result == "ok"
+        mock_exec.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exec_command_explicit_shell_true_still_works(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"limits": {"type": "exec", "shell": True, "command": "echo ok"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        proc = AsyncMock()
+        proc.communicate.return_value = (b"ok\n", b"")
+        event = self._make_event("limits")
+
+        with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=proc)) as mock_shell:
+            result = await runner._handle_message(event)
+
+        assert result == "ok"
+        mock_shell.assert_awaited_once()
+
 
     @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):

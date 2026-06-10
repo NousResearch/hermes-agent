@@ -170,8 +170,10 @@ hermes claw migrate --overwrite  # 覆盖已有冲突
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 ./setup-hermes.sh     # 安装 uv、创建 venv、安装 .[all]、创建符号链接 ~/.local/bin/hermes
-./hermes              # 自动检测 venv，无需先 source
+./hermes              # 自动检测 venv，无需先 `source`
 ```
+
+默认情况下，`setup-hermes.sh` 会在 `uv.lock` 缺失或 `uv sync --locked` 失败时直接中止。仅在你需要临时使用未校验的 PyPI 回退路径时，才显式设置 `HERMES_SETUP_ALLOW_UNVERIFIED_INSTALL=1`。
 
 手动安装（等效于上述命令）：
 

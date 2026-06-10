@@ -179,6 +179,20 @@ def _env_enabled(name: str) -> bool:
     return env_var_enabled(name)
 
 
+def _path_within_resolved_root(candidate: Path, resolved_root: Path) -> bool:
+    """Return True when *candidate* stays inside *resolved_root*.
+
+    Both paths must already be resolved (or at least absolute) before calling
+    this helper. The loader uses it to reject symlink escapes without changing
+    the existing plugin layout or discovery semantics.
+    """
+    try:
+        candidate.relative_to(resolved_root)
+        return True
+    except ValueError:
+        return False
+
+
 def _get_disabled_plugins() -> set:
     """Read the disabled plugins list from config.yaml.
 
@@ -1244,8 +1258,14 @@ class PluginManager:
         top level (kept for back-compat; the current call sites no longer
         pass it now that categories are first-class).
         """
+        try:
+            root = path.resolve()
+        except (OSError, RuntimeError) as exc:
+            logger.warning("Skipping plugin root %s: %s", path, exc)
+            return []
+
         return self._scan_directory_level(
-            path, source, skip_names=skip_names, prefix="", depth=0
+            path, source, skip_names=skip_names, prefix="", depth=0, root=root
         )
 
     def _scan_directory_level(
@@ -1256,6 +1276,7 @@ class PluginManager:
         skip_names: Optional[Set[str]],
         prefix: str,
         depth: int,
+        root: Path,
     ) -> List[PluginManifest]:
         """Recursive implementation of :meth:`_scan_directory`.
 
@@ -1270,6 +1291,19 @@ class PluginManager:
         for child in sorted(path.iterdir()):
             if not child.is_dir():
                 continue
+            try:
+                child_real = child.resolve()
+            except (OSError, RuntimeError) as exc:
+                logger.warning("Skipping plugin directory %s: %s", child, exc)
+                continue
+            if not _path_within_resolved_root(child_real, root):
+                logger.warning(
+                    "Skipping plugin directory %s (resolved path %s escapes root %s)",
+                    child,
+                    child_real,
+                    root,
+                )
+                continue
             if depth == 0 and skip_names and child.name in skip_names:
                 continue
             manifest_file = child / "plugin.yaml"
@@ -1277,6 +1311,34 @@ class PluginManager:
                 manifest_file = child / "plugin.yml"
 
             if manifest_file.exists():
+                try:
+                    manifest_real = manifest_file.resolve()
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("Skipping manifest %s: %s", manifest_file, exc)
+                    continue
+                if not _path_within_resolved_root(manifest_real, child_real):
+                    logger.warning(
+                        "Skipping manifest %s (resolved path %s escapes plugin dir %s)",
+                        manifest_file,
+                        manifest_real,
+                        child_real,
+                    )
+                    continue
+                init_file = child / "__init__.py"
+                if init_file.exists():
+                    try:
+                        init_real = init_file.resolve()
+                    except (OSError, RuntimeError) as exc:
+                        logger.warning("Skipping plugin directory %s: %s", child, exc)
+                        continue
+                    if not _path_within_resolved_root(init_real, child_real):
+                        logger.warning(
+                            "Skipping plugin directory %s (resolved init %s escapes plugin dir %s)",
+                            child,
+                            init_real,
+                            child_real,
+                        )
+                        continue
                 manifest = self._parse_manifest(
                     manifest_file, child, source, prefix
                 )
@@ -1299,6 +1361,7 @@ class PluginManager:
                     skip_names=None,
                     prefix=sub_prefix,
                     depth=depth + 1,
+                    root=root,
                 )
             )
 
@@ -1523,6 +1586,15 @@ class PluginManager:
         init_file = plugin_dir / "__init__.py"
         if not init_file.exists():
             raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
+        try:
+            plugin_root = plugin_dir.resolve()
+            init_real = init_file.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ImportError(f"Cannot resolve plugin path {plugin_dir}: {exc}") from exc
+        if not _path_within_resolved_root(init_real, plugin_root):
+            raise ImportError(
+                f"Plugin init file {init_file} resolves outside plugin directory {plugin_dir}"
+            )
 
         # Ensure the namespace parent package exists
         if _NS_PARENT not in sys.modules:

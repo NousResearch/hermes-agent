@@ -7467,11 +7467,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
+                            # Default: split the command via shlex and run
+                            # without a shell so config-supplied commands can't
+                            # chain extra operators. Users who explicitly want
+                            # a shell can still opt in with shell: true.
+                            from gateway.config import _quick_command_shell_enabled
+                            import shlex
+                            use_shell = _quick_command_shell_enabled(qcmd.get("shell"))
+                            if use_shell:
+                                run_args = exec_cmd
+                                run_kwargs = {"shell": True}
+                            else:
+                                run_args = shlex.split(exec_cmd)
+                                run_kwargs = {"shell": False}
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
+                                run_args, capture_output=True,
+                                text=True, timeout=30, **run_kwargs
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:

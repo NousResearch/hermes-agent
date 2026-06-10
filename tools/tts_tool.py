@@ -10,6 +10,8 @@ Built-in TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, uses xAI Grok OAuth credentials or XAI_API_KEY
+- StepFun TTS: step-tts-2 (with voice-tag emotion/style) and
+  stepaudio-2.5-tts (natural-language instruction), needs STEPFUN_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
@@ -219,6 +221,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "stepfun": 5000,      # https://platform.stepfun.ai/docs/en/guides/developer/tts (no published per-request cap)
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -365,6 +368,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "stepfun",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1309,6 +1313,318 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: StepFun TTS
+# ===========================================================================
+# Native StepFun TTS provider, exposed under the built-in name ``stepfun``.
+# Replaces the old ``tts.providers.stepfun-tts`` command-type shim (which
+# routed through ``scripts/stepfun_tts.py``).
+#
+# Two models are supported, both served from POST /v1/audio/speech:
+#   - ``step-tts-2``         — supports voice tags via top-level ``emotion``
+#                              and ``style`` fields. The 28-tag catalogue
+#                              (11 emotions, 4 speaking-style pace tags, 13
+#                              delivery-style tags) is documented at
+#                              https://platform.stepfun.ai/docs/en/guides/developer/tts#voice-tags-list
+#                              The docs page shows them under a ``voice_label``
+#                              nesting, but the actual API takes the tags as
+#                              flat ``emotion`` and ``style`` top-level fields
+#                              and accepts BOTH in a single request. The
+#                              ``voice_label.*`` nested form is rejected with
+#                              HTTP 400 ("too many voice label fields") when
+#                              both keys are present.
+#   - ``stepaudio-2.5-tts``  — does NOT support ``emotion``/``style``;
+#                              emotion and style are passed via the
+#                              ``instruction`` string parameter (natural
+#                              language direction).
+#
+# Config (all optional, all under ``tts.stepfun.``)::
+#
+#     stepfun:
+#       model: stepaudio-2.5-tts       # default; step-tts-2 still selectable (PAYG only)
+#       voice: lively-girl             # system voice id (see Voice ID List)
+#       emotion: Happy                 # step-tts-2 only; ignored for stepaudio-2.5-tts
+#       style: Slow                    # step-tts-2 only; ignored for stepaudio-2.5-tts
+#       speed: 1.0                     # 0.5 – 2.0; applied via ``speed`` field
+#       volume: 1.0                    # 0.1 – 2.0; applied via ``volume`` field
+#       instruction: ""                # natural-language emotion/style (stepaudio-2.5-tts only)
+#       response_format: mp3           # mp3 | wav | flac | opus | pcm
+#       base_url: ""                   # override; default https://api.stepfun.ai/step_plan/v1
+#
+# API docs: https://platform.stepfun.ai/docs/en/guides/developer/tts
+#
+# Default is ``stepaudio-2.5-tts`` (the Step Plan model) so users with a
+# Flash-Plus / Flash-Max subscription get their TTS calls billed to the
+# plan's quota rather than pay-as-you-go. ``step-tts-2`` is still
+# supported by setting ``tts.stepfun.model: step-tts-2`` explicitly, but
+# the /v1/audio/speech endpoint for step-tts-2 only exists on the PAYG
+# base URL (``https://api.stepfun.ai/v1``) — not the Step Plan URL
+# (``/step_plan/v1``). See _normalize_stepfun_tts_base_url below.
+DEFAULT_STEPFUN_TTS_MODEL = "stepaudio-2.5-tts"
+DEFAULT_STEPFUN_TTS_VOICE = "lively-girl"
+# Default base URL is the Step Plan tier so subscribers hit plan quota
+# by default; users without a Step Plan can override via
+# tts.stepfun.base_url or STEPFUN_BASE_URL to point at /v1 (PAYG).
+# (Both URLs work for stepaudio-2.5-tts; only /v1 works for step-tts-2.)
+DEFAULT_STEPFUN_TTS_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
+STEPFUN_TTS_MODELS = frozenset({"step-tts-2", "stepaudio-2.5-tts"})
+STEPFUN_TTS_RESPONSE_FORMATS = frozenset({"mp3", "wav", "flac", "opus", "pcm"})
+# step-tts-2 voice tags (https://platform.stepfun.ai/docs/en/guides/developer/tts#voice-tags-list).
+# The docs bucket them into Emotion / Speaking Style / Delivery Style but the
+# API takes them as two flat fields (emotion, style) and each slot accepts
+# any tag from the combined 28-tag catalogue. We keep the docs-faithful
+# groupings as frozensets for validation + operator-facing warnings, but
+# both fields are interchangeable on the wire.
+STEPFUN_TTS_EMOTION_TAGS = frozenset({
+    "Happy", "Very Happy", "Sad", "Angry", "Very Angry", "Coquettish",
+    "Fearful", "Surprised", "Excited", "Admiring", "Confused",
+})
+STEPFUN_TTS_STYLE_TAGS = frozenset({
+    # speaking style (rate)
+    "Slow", "Very Slow", "Fast", "Very Fast",
+    # delivery style
+    "Cold", "Embarrassed", "Frustrated", "Proud", "Tender", "Sweet",
+    "Outgoing", "Serious", "Arrogant", "Elderly", "Shouting",
+    "Sarcastic", "Stuttering",
+})
+STEPFUN_TTS_ALL_TAGS = STEPFUN_TTS_EMOTION_TAGS | STEPFUN_TTS_STYLE_TAGS
+
+
+def _normalize_stepfun_tts_base_url(raw: object, model: str | None = None) -> str:
+    """Return a base URL valid for the requested StepFun TTS model.
+
+    Model / base-URL matrix (verified against the StepFun API):
+
+    - ``stepaudio-2.5-tts``  → works on BOTH ``/v1`` (PAYG) and
+      ``/step_plan/v1`` (Step Plan tier). The Step Plan URL is preferred
+      so Flash-Plus / Flash-Max subscribers consume plan quota, not
+      pay-as-you-go credit.
+    - ``step-tts-2``         → only works on ``/v1`` (PAYG). The model
+      is not in the Step Plan catalogue at all, so any ``/step_plan/v1``
+      request returns 404. If a user picks step-tts-2 we must rewrite
+      ``/step_plan/v1`` → ``/v1`` even if STEPFUN_BASE_URL points at
+      the Step Plan prefix.
+
+    Always anchor on ``/v1`` — the audio endpoints are namespaced under it.
+    Handles ``https://api.stepfun.ai`` → ``https://api.stepfun.ai/v1``
+    and ``https://api.stepfun.ai/v2`` → ``https://api.stepfun.ai/v1``.
+    """
+    base = str(raw or "").strip().rstrip("/") or DEFAULT_STEPFUN_TTS_BASE_URL
+
+    # step-tts-2 is PAYG-only: strip /step_plan if the caller picked it.
+    if model == "step-tts-2" and "step_plan" in base:
+        base = "https://api.stepfun.ai/v1"
+
+    if not base.endswith("/v1"):
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(base)
+        base = urlunparse(parsed._replace(path="/v1"))
+    return base
+
+
+def _resolve_stepfun_tts_response_format(output_path: str, configured: object) -> str:
+    """Pick the StepFun ``response_format`` value.
+
+    Priority:
+      1. explicit ``tts.stepfun.response_format`` (validated)
+      2. output_path extension (mp3/wav/flac/ogg→opus/pcm)
+      3. ``mp3`` default
+    """
+    if isinstance(configured, str):
+        candidate = configured.strip().lower()
+        if candidate in STEPFUN_TTS_RESPONSE_FORMATS:
+            return candidate
+        # Common alias: .ogg file with response_format unset → ask StepFun for opus.
+        if candidate == "ogg":
+            return "opus"
+    ext = os.path.splitext(output_path)[1].lower().lstrip(".")
+    if ext == "ogg":
+        return "opus"
+    if ext in STEPFUN_TTS_RESPONSE_FORMATS:
+        return ext
+    return "mp3"
+
+
+def _generate_stepfun_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using the StepFun TTS API.
+
+    POST ``{base_url}/audio/speech`` with a JSON body that varies by model:
+
+    step-tts-2::
+        {
+          "model": "step-tts-2",
+          "input": "<text>",
+          "voice": "<voice_id>",
+          "emotion": "Happy",                   # optional; any STEPFUN_TTS_ALL_TAGS
+          "style": "Slow",                      # optional; any STEPFUN_TTS_ALL_TAGS
+          "speed": 1.0,                         # optional, 0.5 – 2.0
+          "volume": 1.0,                        # optional, 0.1 – 2.0
+          "response_format": "mp3"              # mp3|wav|flac|opus|pcm
+        }
+
+    stepaudio-2.5-tts::
+        {
+          "model": "stepaudio-2.5-tts",
+          "input": "<text>",
+          "voice": "<voice_id>",
+          "instruction": "Say cheerfully ...",  # optional
+          "speed": 1.0,
+          "volume": 1.0,
+          "response_format": "mp3"
+        }
+
+    ``emotion``/``style`` and ``instruction`` are mutually exclusive by API
+    design; we pick the right shape based on the model and silently drop
+    the wrong field for the other model. Speed/volume and response_format
+    are sent on both models.
+
+    The endpoint returns the audio binary directly with a ``Content-Type``
+    of ``audio/<format>``. We do not request JSON.
+    """
+    import requests
+
+    api_key = (get_env_value("STEPFUN_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "STEPFUN_API_KEY not set. Get one at https://platform.stepfun.ai/"
+        )
+
+    sf_config = tts_config.get("stepfun", {}) if isinstance(tts_config, dict) else {}
+
+    # Model resolution + validation. Unknown model → fall back to the
+    # default rather than raising — easier to roll forward when StepFun
+    # publishes a new TTS model before we ship a code update.
+    model = str(sf_config.get("model") or DEFAULT_STEPFUN_TTS_MODEL).strip() or DEFAULT_STEPFUN_TTS_MODEL
+    if model not in STEPFUN_TTS_MODELS:
+        logger.warning(
+            "StepFun TTS model %r is not in the known set %s; sending it anyway "
+            "and hoping the API accepts it.",
+            model, sorted(STEPFUN_TTS_MODELS),
+        )
+
+    voice = str(sf_config.get("voice") or DEFAULT_STEPFUN_TTS_VOICE).strip() or DEFAULT_STEPFUN_TTS_VOICE
+
+    # Speed / volume: clamp to the documented ranges so a typo can't send
+    # out-of-spec values that the API rejects with 400.
+    try:
+        speed = float(sf_config.get("speed", 1.0))
+    except (TypeError, ValueError):
+        speed = 1.0
+    speed = max(0.5, min(2.0, speed))
+
+    try:
+        volume = float(sf_config.get("volume", 1.0))
+    except (TypeError, ValueError):
+        volume = 1.0
+    volume = max(0.1, min(2.0, volume))
+
+    response_format = _resolve_stepfun_tts_response_format(
+        output_path, sf_config.get("response_format"),
+    )
+
+    base_url = _normalize_stepfun_tts_base_url(
+        sf_config.get("base_url") or get_env_value("STEPFUN_BASE_URL"),
+        model=model,
+    )
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "speed": speed,
+        "volume": volume,
+        "response_format": response_format,
+    }
+
+    if model == "step-tts-2":
+        # step-tts-2 takes emotion and style as FLAT top-level fields, not
+        # nested under voice_label.* (the docs page's nesting is misleading
+        # — the API rejects voice_label with both keys present and only
+        # accepts the flat shape). Both fields can be set in one request.
+        for field_name, allowed_set in (
+            ("emotion", STEPFUN_TTS_EMOTION_TAGS),
+            ("style", STEPFUN_TTS_STYLE_TAGS),
+        ):
+            value = str(sf_config.get(field_name) or "").strip()
+            if not value:
+                continue
+            if value not in STEPFUN_TTS_ALL_TAGS:
+                # Both fields technically accept any tag from the combined
+                # set, but warn so a typo doesn't slip through silently.
+                logger.warning(
+                    "StepFun TTS %s %r is not in the documented step-tts-2 "
+                    "tag set %s; sending it anyway.",
+                    field_name, value, sorted(STEPFUN_TTS_ALL_TAGS),
+                )
+            payload[field_name] = value
+
+        # If the user set ``instruction`` for a stepaudio-2.5-tts model but
+        # is now running step-tts-2, surface the misconfiguration rather
+        # than silently drop it.
+        if sf_config.get("instruction"):
+            logger.info(
+                "StepFun TTS: tts.stepfun.instruction is only honoured for the "
+                "stepaudio-2.5-tts model; ignored for %s.", model,
+            )
+    else:
+        # stepaudio-2.5-tts branch — emotion/style are dropped (with a log)
+        # and ``instruction`` is forwarded as a natural-language direction
+        # string.
+        if sf_config.get("emotion") or sf_config.get("style"):
+            logger.info(
+                "StepFun TTS: emotion/style are only honoured for step-tts-2; "
+                "use tts.stepfun.instruction for stepaudio-2.5-tts. "
+                "Dropped emotion=%r style=%r.",
+                sf_config.get("emotion"), sf_config.get("style"),
+            )
+        instruction = str(sf_config.get("instruction") or "").strip()
+        if instruction:
+            payload["instruction"] = instruction
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        response = requests.post(
+            f"{base_url}/audio/speech",
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+    except requests.RequestException as e:
+        logger.error("StepFun TTS request failed: %s", e, exc_info=True)
+        raise RuntimeError(f"StepFun TTS request failed: {type(e).__name__}: {e}") from e
+
+    # 2xx: write the audio bytes. Non-2xx: raise with the API's error body
+    # so the operator can see what went wrong without trawling the gateway log.
+    if response.status_code >= 400:
+        # StepFun returns errors as JSON like {"error": {"message": ..., "type": ...}}
+        # but also sometimes as plain text. Try JSON first.
+        try:
+            err_body = response.json()
+            err_msg = (
+                err_body.get("error", {}).get("message")
+                if isinstance(err_body.get("error"), dict)
+                else err_body.get("error")
+                or err_body.get("message")
+            )
+        except ValueError:
+            err_msg = response.text[:500] if response.text else "(no body)"
+        raise RuntimeError(
+            f"StepFun TTS API error (HTTP {response.status_code}): {err_msg}"
+        )
+
+    if not response.content:
+        raise RuntimeError("StepFun TTS returned an empty response body")
+
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+
+    return output_path
+
+
+# ===========================================================================
 # Provider: Mistral (Voxtral TTS)
 # ===========================================================================
 def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -1926,7 +2242,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "stepfun"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -2001,6 +2317,10 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
+
+        elif provider == "stepfun":
+            logger.info("Generating speech with StepFun TTS...")
+            _generate_stepfun_tts(text, file_str, tts_config)
 
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
@@ -2114,7 +2434,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini", "stepfun"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -2201,6 +2521,8 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if get_env_value("STEPFUN_API_KEY"):
+        return True
     if _check_neutts_available():
         return True
     if _check_kittentts_available():
@@ -2509,6 +2831,7 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  StepFun:    {'API key set' if get_env_value('STEPFUN_API_KEY') else 'not set (STEPFUN_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")

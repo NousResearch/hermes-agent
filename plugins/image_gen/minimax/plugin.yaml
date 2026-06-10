@@ -1,0 +1,7 @@
+name: minimax
+version: 1.0.0
+description: "MiniMax Text-to-Image backend (image-01 model)."
+author: Ashuaria
+kind: backend
+requires_env:
+  - MINIMAX_API_KEY

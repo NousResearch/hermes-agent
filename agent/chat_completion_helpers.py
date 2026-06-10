@@ -1748,6 +1748,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pool=_conn_cap,
             ),
         }
+        # Work around a httpx brotli streaming bug where some providers
+        # (StepFun, etc.) return brotli-compressed SSE and httpx can hit
+        # `brotli: decoder process called with data when 'can_accept_more_data()' is False`.
+        # Prefer gzip when both are offered; gzip is handled reliably.
+        _hdrs = dict(stream_kwargs.get("extra_headers") or {})
+        if "Accept-Encoding" not in _hdrs:
+            _hdrs["Accept-Encoding"] = "gzip"
+            stream_kwargs["extra_headers"] = _hdrs
         request_client = _set_request_client(
             agent._create_request_openai_client(
                 reason="chat_completion_stream_request",
@@ -2384,11 +2392,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
-                        if _is_stream_unsupported:
+                        _is_brotli_decode_err = (
+                            "brotli" in _err_lower
+                            or "decoder process called with data" in _err_lower
+                            or "can_accept_more_data" in _err_lower
+                        )
+                        if _is_stream_unsupported or _is_brotli_decode_err:
                             agent._disable_streaming = True
                             agent._safe_print(
-                                "\n⚠  Streaming is not supported for this "
-                                "model/provider. Switching to non-streaming.\n"
+                                "\n⚠  Streaming is not supported or the brotli "
+                                "decoder failed for this provider. Switching to "
+                                "non-streaming.\n"
+                                "   To avoid this delay, set display.streaming: false "
+                                "in config.yaml\n"
+                                if _is_stream_unsupported
+                                else
+                                "\n⚠  Brotli streaming decode failed. Switching to "
+                                "non-streaming.\n"
                                 "   To avoid this delay, set display.streaming: false "
                                 "in config.yaml\n"
                             )

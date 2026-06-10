@@ -2384,6 +2384,7 @@ def _is_payment_error(exc: Exception) -> bool:
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
             "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
+            "usage limit exceeded",  # MiniMax 5-hour plan cap (e.g. "usage limit exceeded, 5-hour usage limit reached")
         )):
             return True
     return False
@@ -3086,7 +3087,15 @@ def _try_configured_fallback_chain(
         try:
             fb_client = _resolve_single_provider(
                 fb_provider, fb_model, fb_base_url, fb_api_key)
-        except Exception:
+        except Exception as exc:
+            # Log at warning so misconfiguration surfaces in the operator's
+            # log instead of appearing as an empty chain.  Previously this
+            # was a bare ``except Exception: fb_client = None`` that masked
+            # TypeError bugs (wrong kwarg names in _resolve_single_provider).
+            logger.warning(
+                "Auxiliary %s: configured fallback entry %s (%s) raised %s: %s",
+                task, label, fb_model or "default", type(exc).__name__, exc,
+            )
             fb_client = None
 
         if fb_client is not None:
@@ -3115,12 +3124,18 @@ def _resolve_single_provider(
 
     Uses the existing provider resolution infrastructure where possible.
     """
-    # Reuse resolve_provider_client which handles provider→client mapping
+    # Reuse resolve_provider_client which handles provider→client mapping.
+    # IMPORTANT: resolve_provider_client accepts ``explicit_base_url`` and
+    # ``explicit_api_key`` (not ``base_url``/``api_key``).  Earlier revisions
+    # of this helper used the wrong kwarg names, which caused every chain
+    # entry that supplied a custom base_url or api_key to raise TypeError.
+    # That TypeError was swallowed at the call site, making the entire
+    # configured fallback_chain silently appear empty.
     client, resolved_model = resolve_provider_client(
         provider=provider,
         model=model,
-        base_url=base_url,
-        api_key=api_key,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
     )
     return client
 

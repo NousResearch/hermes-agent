@@ -3791,3 +3791,192 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestConfiguredFallbackChainResolvesClient:
+    """Regression: _try_configured_fallback_chain must produce a working client
+    when the chain entry has an explicit ``base_url`` and ``api_key``.
+
+    The pre-fix bug: ``_resolve_single_provider`` forwarded ``base_url=`` and
+    ``api_key=`` to ``resolve_provider_client``, whose real signature uses
+    ``explicit_base_url=`` and ``explicit_api_key=``.  Every call raised
+    TypeError, which the surrounding ``except Exception`` swallowed, so the
+    chain silently appeared empty even when the user's config.yaml was
+    perfectly valid.  See issue surfaced when user added a fallback_chain to
+    auxiliary vision/web_extract/etc. for the MiniMax → StepFun path.
+    """
+
+    def test_chain_with_explicit_base_url_and_api_key_resolves(self, monkeypatch):
+        """The chain must return a real client (not None) when base_url +
+        api_key are supplied as chain entry fields."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+        from agent.auxiliary_client import _resolve_single_provider
+
+        fake_client = MagicMock()
+        fake_client.base_url = "https://api.example.com/v1"
+
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "fallback_chain": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-4o-mini",
+                            "base_url": "https://api.example.com/v1",
+                            "api_key": "sk-test-key",
+                        }
+                    ]
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch(
+                 "agent.auxiliary_client.resolve_provider_client",
+                 return_value=(fake_client, "gpt-4o-mini"),
+             ) as mock_rpc:
+            fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                task="vision", failed_provider="minimax", reason="test")
+
+        # The chain must surface a working client + the configured model
+        assert fb_client is fake_client
+        assert fb_model == "gpt-4o-mini"
+        assert "fallback_chain" in fb_label
+
+        # Critically: resolve_provider_client must be called with the
+        # *correct* kwarg names.  Calling it with the old (broken) names
+        # would raise TypeError and the chain would silently return None.
+        kwargs = mock_rpc.call_args.kwargs
+        assert "explicit_base_url" in kwargs, (
+            "resolve_provider_client must be called with explicit_base_url "
+            "(not base_url) — see _resolve_single_provider regression"
+        )
+        assert "explicit_api_key" in kwargs, (
+            "resolve_provider_client must be called with explicit_api_key "
+            "(not api_key) — see _resolve_single_provider regression"
+        )
+        assert kwargs["explicit_base_url"] == "https://api.example.com/v1"
+        assert kwargs["explicit_api_key"] == "sk-test-key"
+        assert kwargs["provider"] == "openai"
+        assert kwargs["model"] == "gpt-4o-mini"
+
+    def test_resolve_single_provider_uses_explicit_kwargs(self):
+        """Direct unit test of the helper that was the root cause of the bug.
+
+        Pins the kwarg names so any future refactor that re-introduces the
+        wrong names fails this test loudly.
+        """
+        from agent.auxiliary_client import _resolve_single_provider
+
+        fake_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fake_client, "m"),
+        ) as mock_rpc:
+            result = _resolve_single_provider(
+                provider="openai",
+                model="m",
+                base_url="https://x.test/v1",
+                api_key="k",
+            )
+        assert result is fake_client
+        kwargs = mock_rpc.call_args.kwargs
+        assert kwargs.get("explicit_base_url") == "https://x.test/v1"
+        assert kwargs.get("explicit_api_key") == "k"
+        # Sanity: the broken names must NOT appear as kwargs
+        assert "base_url" not in kwargs
+        assert "api_key" not in kwargs
+
+    def test_chain_logs_warning_on_internal_failure(self, monkeypatch, caplog):
+        """When _resolve_single_provider raises (not a chain-empty case,
+        but a real internal error), the operator must see a warning in the
+        log instead of silent swallow."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        config = {
+            "auxiliary": {
+                "compression": {
+                    "fallback_chain": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-4o-mini",
+                            "base_url": "https://api.example.com/v1",
+                            "api_key": "sk-test",
+                        }
+                    ]
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch(
+                 "agent.auxiliary_client._resolve_single_provider",
+                 side_effect=TypeError(
+                     "resolve_provider_client() got an unexpected "
+                     "keyword argument 'base_url'"
+                 ),
+             ), \
+             caplog.at_level("WARNING", logger="agent.auxiliary_client"):
+            fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                task="compression", failed_provider="minimax", reason="test")
+
+        # Internal error → chain returns None
+        assert fb_client is None
+        # But the operator sees what went wrong
+        assert any(
+            "resolve_provider_client()" in r.message
+            and "TypeError" in r.message
+            for r in caplog.records
+        ), (
+            "Configured fallback chain must log a warning when an entry "
+            "raises, not silently swallow. Got: "
+            f"{[r.message for r in caplog.records]}"
+        )
+
+    def test_chain_skips_entry_matching_failed_provider(self, monkeypatch):
+        """A fallback entry that points at the same provider that just
+        failed must be skipped (looping same backend is pointless)."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "fallback_chain": [
+                        {
+                            "provider": "minimax",  # same as failed_provider
+                            "model": "MiniMax-M3",
+                            "base_url": "https://api.minimax.io/anthropic",
+                            "api_key": "",
+                        }
+                    ]
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch(
+                 "agent.auxiliary_client.resolve_provider_client"
+             ) as mock_rpc:
+            fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                task="vision", failed_provider="minimax", reason="test")
+
+        # The matching entry was skipped — chain exhausted
+        assert fb_client is None
+        # resolve_provider_client must NOT have been called for the
+        # matching entry (that would loop the same backend)
+        mock_rpc.assert_not_called()
+
+    def test_chain_returns_none_for_empty_config(self, monkeypatch):
+        """Sanity: an auxiliary task with no fallback_chain returns None
+        cleanly (used by the auto path in call_llm)."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        config = {"auxiliary": {"vision": {"provider": "minimax"}}}
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                task="vision", failed_provider="minimax", reason="test")
+
+        assert fb_client is None
+        assert fb_model is None
+        assert fb_label == ""

@@ -294,6 +294,23 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "mistral",
             },
+            # StepFun TTS — native built-in (no command-type shim). Two
+            # models under one provider: step-tts-2 (flat ``emotion`` and
+            # ``style`` top-level voice-tag fields) and stepaudio-2.5-tts
+            # (natural-language direction via ``instruction``). The docs
+            # page shows a nested voice_label shape, but the actual API
+            # takes the tags as flat ``emotion``/``style`` fields and
+            # accepts both in a single request. Docs:
+            # https://platform.stepfun.ai/docs/en/guides/developer/tts
+            {
+                "name": "StepFun TTS",
+                "badge": "paid",
+                "tag": "step-tts-2 (emotion/style tags) + stepaudio-2.5-tts (instruction)",
+                "env_vars": [
+                    {"key": "STEPFUN_API_KEY", "prompt": "StepFun API key", "url": "https://platform.stepfun.ai/"},
+                ],
+                "tts_provider": "stepfun",
+            },
             {
                 "name": "Google Gemini TTS",
                 "badge": "preview",
@@ -302,6 +319,18 @@ TOOL_CATEGORIES = {
                     {"key": "GEMINI_API_KEY", "prompt": "Gemini API key", "url": "https://aistudio.google.com/app/apikey"},
                 ],
                 "tts_provider": "gemini",
+            },
+            # MiniMax TTS — model field accepts speech-2.8-hd / speech-2.8-turbo
+            # (Plus plan) plus the older speech-02-hd / speech-01-* family.  See
+            # https://platform.minimax.io/docs/api-reference/speech-t2a-http
+            {
+                "name": "MiniMax TTS",
+                "badge": "paid",
+                "tag": "Speech 2.8 HD / Turbo — 32 languages, voice cloning",
+                "env_vars": [
+                    {"key": "MINIMAX_API_KEY", "prompt": "MiniMax API key", "url": "https://platform.minimax.io/user-center/basic-information/interface-key"},
+                ],
+                "tts_provider": "minimax",
             },
             {
                 "name": "KittenTTS",

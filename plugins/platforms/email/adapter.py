@@ -701,9 +701,10 @@ class EmailAdapter(BasePlatformAdapter):
                     len(self._seen_uids),
                 )
             else:
-                # First connect (or no snapshot): mark all existing messages as
-                # seen so we only process new ones.
-                status, data = imap.uid("search", None, "ALL")
+                # First connect (or no snapshot): pre-populate seen UIDs with
+                # already-read (SEEN) messages only, so UNSEEN messages that
+                # arrived before startup are picked up on the first poll.
+                status, data = imap.uid("search", None, "SEEN")
                 if status == "OK" and data and data[0]:
                     for uid in data[0].split():
                         self._seen_uids.add(uid)

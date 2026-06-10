@@ -127,6 +127,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   }
 
   if ((status.behind ?? 0) <= 0) {
+    dismissNotification(UPDATE_TOAST_ID)
     return
   }
 

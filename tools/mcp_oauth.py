@@ -194,6 +194,41 @@ def _reserve_callback_port() -> int:
     return port
 
 
+def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
+    """Return the loopback callback port from cached client registration.
+
+    OAuth providers bind a dynamically-registered ``client_id`` to the exact
+    redirect URI that was registered with it. If Hermes restarts and chooses a
+    new random callback port while reusing the stored ``client_id``, providers
+    such as Summ reject the authorization request with ``redirect_uri does not
+    match any registered URIs``. Reusing the cached redirect port keeps the
+    authorization request consistent with the stored client registration.
+    """
+    if storage is None:
+        return None
+
+    try:
+        data = _read_json(storage._client_info_path())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not data:
+        return None
+
+    for uri in data.get("redirect_uris") or []:
+        try:
+            parsed = urlparse(str(uri))
+        except (TypeError, ValueError):
+            continue
+        if (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost"}
+            and parsed.path == "/callback"
+            and parsed.port is not None
+        ):
+            return int(parsed.port)
+    return None
+
+
 def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
     if not _oauth_interactive_enabled.get():
@@ -915,12 +950,20 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> int:
+def _configure_callback_port(
+    cfg: dict,
+    storage: "HermesTokenStorage | None" = None,
+) -> int:
     """Pick or validate the OAuth callback port.
 
     Stores the resolved port into ``cfg['_resolved_port']`` so sibling
     helpers (and the manager) can read it from the same dict. Returns the
     resolved port.
+
+    Port choice precedence:
+    1. explicit ``oauth.redirect_port`` config
+    2. cached client registration redirect URI port
+    3. newly allocated free port
 
     NOTE: also sets the legacy module-level ``_oauth_port`` so existing
     calls to ``_wait_for_callback`` keep working. The legacy global is
@@ -930,10 +973,15 @@ def _configure_callback_port(cfg: dict) -> int:
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    # Ephemeral selection reserves the bound socket until _wait_for_callback
-    # adopts it, closing the select→bind TOCTOU race (#22161). An explicit
-    # user-pinned port is used as-is.
-    port = _reserve_callback_port() if requested == 0 else requested
+    # Precedence: explicit config port → cached client-registration port →
+    # fresh ephemeral port. The cached port keeps re-auth consistent with the
+    # redirect URI pinned at dynamic client registration (providers reject a
+    # mismatched URI). Only a truly fresh ephemeral pick goes through
+    # _reserve_callback_port(), which keeps the socket bound until
+    # _wait_for_callback adopts it — closing the select→bind TOCTOU race
+    # (#22161). Explicit and cached ports are fixed, known values and bind
+    # via the reuse_address path instead.
+    port = requested or _cached_redirect_port(storage) or _reserve_callback_port()
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
     return port
@@ -1064,7 +1112,7 @@ def build_oauth_auth(
             "initial authorization, then cached tokens will be reused."
         )
 
-    _configure_callback_port(cfg)
+    _configure_callback_port(cfg, storage)
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 

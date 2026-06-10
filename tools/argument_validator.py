@@ -24,6 +24,8 @@ _PLACEHOLDER_PATTERNS = [
     r"\bCHANGE_ME\b",
 ]
 
+_PATH_LIKE_KEYS = {"path", "file", "target", "location", "output", "dest", "destination"}
+
 _PATH_READ_CHECK_TOOLS = {"read_file"}
 _PATH_EXISTENCE_TOOLS = {"read_file", "write_file", "patch", "search_files"}  # write_file/patch: path logged but not blocked
 
@@ -35,6 +37,11 @@ def _looks_like_placeholder(value: str) -> bool:
         if re.search(pattern, value, re.IGNORECASE):
             return True
     return False
+
+
+def _is_path_like(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in _PATH_LIKE_KEYS)
 
 
 def _get_required_fields(schema: dict[str, Any]) -> list[str]:
@@ -113,17 +120,21 @@ def validate_tool_arguments(
                 break
 
     for key, value in args.items():
-        if isinstance(value, str) and _looks_like_placeholder(value):
-            logger.debug(
-                "argument_validator: placeholder detected in %s.%s",
-                tool_name,
-                key,
-            )
-            return (
-                False,
-                f"Parameter '{key}' looks like a placeholder value. "
-                "Provide a concrete value.",
-            )
+        if isinstance(value, str) and _is_path_like(key):
+            expanded = os.path.expanduser(value.strip())
+            if os.path.exists(expanded):
+                continue  # real path — skip both placeholder and type checks
+            if _looks_like_placeholder(value):
+                logger.debug(
+                    "argument_validator: placeholder detected in %s.%s",
+                    tool_name,
+                    key,
+                )
+                return (
+                    False,
+                    f"Parameter '{key}' looks like a placeholder value. "
+                    "Provide a concrete value.",
+                )
 
         if properties and key in properties:
             type_error = _check_type_and_enum(value, properties[key])

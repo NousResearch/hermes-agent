@@ -2627,7 +2627,7 @@ class TestConcurrentToolExecution:
 
     def test_clarify_forces_sequential(self, agent):
         """Batch containing clarify should use sequential path."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c1")
         tc2 = _mock_tool_call(name="clarify", arguments='{"question":"ok?"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
@@ -2639,7 +2639,7 @@ class TestConcurrentToolExecution:
 
     def test_multiple_tools_uses_concurrent_path(self, agent):
         """Multiple read-only tools should use concurrent path."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c1")
         tc2 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
@@ -2651,7 +2651,7 @@ class TestConcurrentToolExecution:
 
     def test_terminal_batch_forces_sequential(self, agent):
         """Stateful tools should not share the concurrent execution path."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c1")
         tc2 = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
@@ -2715,7 +2715,7 @@ class TestConcurrentToolExecution:
 
     def test_malformed_json_args_forces_sequential(self, agent):
         """Unparseable tool arguments should fall back to sequential."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="NOT JSON {{{", call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
@@ -2741,7 +2741,7 @@ class TestConcurrentToolExecution:
 
     def test_non_dict_args_forces_sequential(self, agent):
         """Tool arguments that parse to a non-dict type should fall back to sequential."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='"just a string"', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
@@ -2769,9 +2769,9 @@ class TestConcurrentToolExecution:
 
     def test_concurrent_executes_all_tools(self, agent):
         """Concurrent path should execute all tools and append results in order."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
-        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"beta"}', call_id="c2")
-        tc3 = _mock_tool_call(name="web_search", arguments='{"q":"gamma"}', call_id="c3")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"beta"}', call_id="c2")
+        tc3 = _mock_tool_call(name="web_search", arguments='{"query":"gamma"}', call_id="c3")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2, tc3])
         messages = []
 
@@ -2779,7 +2779,7 @@ class TestConcurrentToolExecution:
 
         def fake_handle(name, args, task_id, **kwargs):
             call_log.append(name)
-            return json.dumps({"result": args.get("q", "")})
+            return json.dumps({"result": args.get("query", "")})
 
         with patch("run_agent.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
@@ -2823,16 +2823,16 @@ class TestConcurrentToolExecution:
         """Even if tools finish in different order, messages should be in original order."""
         import time as _time
 
-        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"slow"}', call_id="c1")
-        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"fast"}', call_id="c2")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"slow"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"fast"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
 
         def fake_handle(name, args, task_id, **kwargs):
-            q = args.get("q", "")
-            if q == "slow":
+            query = args.get("query", "")
+            if query == "slow":
                 _time.sleep(0.1)  # Slow tool
-            return f"result_{q}"
+            return f"result_{query}"
 
         with patch("run_agent.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
@@ -2851,13 +2851,13 @@ class TestConcurrentToolExecution:
         # scheduling c2 could be invoked first, take the "first call raises"
         # branch, and the error would land in messages[1] instead of
         # messages[0]. Keying on args makes the assertion deterministic.
-        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "boom"}', call_id="c1")
-        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "ok"}', call_id="c2")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query": "boom"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query": "ok"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
 
         def fake_handle(name, args, task_id, **kwargs):
-            if args.get("q") == "boom":
+            if args.get("query") == "boom":
                 raise RuntimeError("boom")
             return "success"
 
@@ -2987,8 +2987,8 @@ class TestConcurrentToolExecution:
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
-        tc2 = _mock_tool_call(name="read_file", arguments='{}', call_id="c2")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c1")
+        tc2 = _mock_tool_call(name="read_file", arguments='{"query":""}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
 
@@ -3004,8 +3004,8 @@ class TestConcurrentToolExecution:
         """Concurrent path should save oversized results to file."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
-        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
-        tc2 = _mock_tool_call(name="web_search", arguments='{}', call_id="c2")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":""}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
         big_result = "x" * 150_000
@@ -3021,9 +3021,9 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
         with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
-            result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+            result = agent._invoke_tool("web_search", {"query": "test"}, "task-1")
             mock_hfc.assert_called_once_with(
-                "web_search", {"q": "test"}, "task-1",
+                "web_search", {"query": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
                 turn_id="",
@@ -3172,7 +3172,7 @@ class TestConcurrentToolExecution:
             lambda *args, **kwargs: "Blocked",
         )
         with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
-            result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+            result = agent._invoke_tool("web_search", {"query": "test"}, "task-1")
 
         assert json.loads(result) == {"error": "Blocked"}
 

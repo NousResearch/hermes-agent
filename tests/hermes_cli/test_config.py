@@ -292,6 +292,25 @@ class TestSaveEnvValueSecure:
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
 
+    def test_save_env_value_preserves_existing_file_mode_on_posix(self, tmp_path):
+        """Regression for #31518: pre-existing .env mode (e.g. 0640 for a
+        Docker bind-mount that the operator chose) survives subsequent
+        writes. Previously _secure_file ran unconditionally after the
+        mode-restore branch and re-tightened to 0600.
+        """
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING=value\n")
+        os.chmod(env_path, 0o640)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+
+        env_mode = env_path.stat().st_mode & 0o777
+        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):

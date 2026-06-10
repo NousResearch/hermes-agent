@@ -411,3 +411,126 @@ def test_aggregator_providers_constant_removed():
         "treating aggregators specially. If you re-added it, the main-first "
         "policy may have regressed."
     )
+
+
+# ── Fallback providers — per-task fallback_providers config ─────────────────
+
+
+class TestGetTaskFallbackProviders:
+    """_get_task_fallback_providers() reads and validates auxiliary.<task>.fallback_providers."""
+
+    def test_no_task_returns_empty(self):
+        from agent.auxiliary_client import _get_task_fallback_providers
+        assert _get_task_fallback_providers("") == []
+
+    def test_empty_when_not_configured(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda t: {},
+        )
+        from agent.auxiliary_client import _get_task_fallback_providers
+        assert _get_task_fallback_providers("compression") == []
+
+    def test_returns_valid_entries(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda t: {
+                "fallback_providers": [
+                    {"provider": "openrouter", "model": "gpt-4o"},
+                    {"provider": "nous"},
+                ]
+            },
+        )
+        from agent.auxiliary_client import _get_task_fallback_providers
+        result = _get_task_fallback_providers("compression")
+        assert len(result) == 2
+        assert result[0]["provider"] == "openrouter"
+        assert result[0]["model"] == "gpt-4o"
+        assert result[1]["provider"] == "nous"
+
+    def test_filters_malformed_entries(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda t: {
+                "fallback_providers": [
+                    {"provider": "openrouter"},
+                    {},                  # missing provider
+                    "not a dict",         # not a dict
+                    {"provider": "nous", "model": "haiku"},
+                ]
+            },
+        )
+        from agent.auxiliary_client import _get_task_fallback_providers
+        result = _get_task_fallback_providers("compression")
+        assert len(result) == 2
+        assert result[0]["provider"] == "openrouter"
+        assert result[1]["provider"] == "nous"
+
+
+class TestIsRetryableError:
+    """_is_retryable_error correctly classifies API errors."""
+
+    def test_rate_limit_is_retryable(self):
+        import openai
+        from agent.auxiliary_client import _is_retryable_error
+        err = openai.RateLimitError("rate limited", response=MagicMock(), body={})
+        assert _is_retryable_error(err) is True
+
+    def test_auth_error_is_retryable(self):
+        import openai
+        from agent.auxiliary_client import _is_retryable_error
+        err = openai.AuthenticationError("bad key", response=MagicMock(), body={})
+        assert _is_retryable_error(err) is True
+
+    def test_500_is_retryable(self):
+        import openai
+        from agent.auxiliary_client import _is_retryable_error
+        response = MagicMock()
+        response.status_code = 500
+        err = openai.APIStatusError("server error", response=response, body={})
+        assert _is_retryable_error(err) is True
+
+    def test_400_is_not_retryable(self):
+        import openai
+        from agent.auxiliary_client import _is_retryable_error
+        response = MagicMock()
+        response.status_code = 400
+        err = openai.APIStatusError("bad request", response=response, body={})
+        assert _is_retryable_error(err) is False
+
+
+class TestModelContextLimit:
+    """_get_model_context_limit returns expected values."""
+
+    def test_known_model(self):
+        from agent.auxiliary_client import _get_model_context_limit
+        assert _get_model_context_limit("gpt-4o") == 128_000
+
+    def test_unknown_model_returns_large_default(self):
+        from agent.auxiliary_client import _get_model_context_limit
+        assert _get_model_context_limit("fictional-model-v99") == 2_000_000
+
+
+class TestWrapWithFailover:
+    """_wrap_with_failover wraps clients only when fallbacks are configured."""
+
+    def test_no_fallbacks_returns_unchanged(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_task_fallback_providers",
+            lambda t: [],
+        )
+        from agent.auxiliary_client import _wrap_with_failover
+        client = MagicMock()
+        result_client, result_model = _wrap_with_failover(client, "gpt-4o", "compression")
+        assert result_client is client  # unchanged
+
+    def test_with_fallbacks_wraps(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_task_fallback_providers",
+            lambda t: [{"provider": "openrouter", "model": "gpt-4o-mini"}],
+        )
+        from agent.auxiliary_client import _wrap_with_failover, _FailoverAuxiliaryClient
+        client = MagicMock()
+        result_client, result_model = _wrap_with_failover(client, "gpt-4o", "compression")
+        assert isinstance(result_client, _FailoverAuxiliaryClient)
+        assert result_model == "gpt-4o"

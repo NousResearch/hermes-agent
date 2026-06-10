@@ -411,3 +411,43 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |
 | Cron jobs | Per-job provider override only (no automatic fallback) | Per-job `provider` / `model` |
+
+## Per-Task Runtime Fallback Providers
+
+In addition to the capacity-error fallback chain above, you can configure a **runtime fallback list** that kicks in on *any* retryable API error — not just capacity errors, but also rate limits (429), server errors (5xx), authentication failures (401), and connection timeouts.
+
+This is configured via `fallback_providers` per auxiliary task, mirroring the top-level `model.fallback_providers` format:
+
+```yaml
+auxiliary:
+  compression:
+    provider: opencode-go
+    model: deepseek-v4-flash
+    fallback_providers:
+      - provider: openrouter
+        model: google/gemini-3-flash-preview
+      - provider: custom
+        base_url: "http://localhost:8080/v1"
+        model: qwen3.5-9b
+
+  vision:
+    provider: auto
+    fallback_providers:
+      - provider: openrouter
+        model: google/gemini-3-flash-preview
+```
+
+Each entry must have at least a `provider`; `model`, `base_url`, and `api_key` are optional and follow the same rules as the task's top-level config.
+
+### How it works
+
+When the primary provider fails with a retryable error (429 rate limit, 5xx server error, 401 auth failure, connection timeout), Hermes wraps the API call in a transparent failover client that walks the `fallback_providers` list in order. If a fallback succeeds, the caller sees a normal response — no error is raised.
+
+If all fallbacks are exhausted, the original error is re-raised.
+
+### When to use this vs `fallback_chain`
+
+- **`fallback_chain`** — fires only on *capacity* errors (quota exhaustion, payment errors). Best for when you want a different model to handle overflow from your primary provider.
+- **`fallback_providers`** — fires on *any* retryable API error. Best for when you want resilience against transient failures (rate limits, server downtime, auth token expiry).
+
+You can use both — `fallback_chain` handles capacity errors, `fallback_providers` handles runtime errors. They don't conflict.

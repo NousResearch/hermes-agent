@@ -1441,11 +1441,23 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         or row.get("billing_provider")
         or ""
     ).strip()
+    base_url = str(model_config.get("base_url") or "").strip()
+    api_mode = str(model_config.get("api_mode") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
 
     if model:
-        overrides["model_override"] = model
+        # Use the same dict-shaped override that live /model switches use so a
+        # DB-restored session can preserve custom endpoint metadata across both
+        # initial resume and later rebuilds (/new). Deliberately do not persist
+        # or restore raw api_key here; endpoint credentials should continue to
+        # come from config/env/provider resolution rather than the session DB.
+        overrides["model_override"] = {
+            "model": model,
+            "provider": provider or None,
+            "base_url": base_url or None,
+            "api_mode": api_mode or None,
+        }
     if provider:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
@@ -1458,12 +1470,25 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
 
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     config = dict(existing or {})
+    model = str(getattr(agent, "model", "") or "").strip()
     provider = str(getattr(agent, "provider", "") or "").strip()
+    base_url = str(getattr(agent, "base_url", "") or "").strip()
+    api_mode = str(getattr(agent, "api_mode", "") or "").strip()
     reasoning_config = getattr(agent, "reasoning_config", None)
     service_tier = getattr(agent, "service_tier", None)
 
+    if model:
+        config["model"] = model
     if provider:
         config["provider"] = provider
+    if base_url:
+        config["base_url"] = base_url
+    else:
+        config.pop("base_url", None)
+    if api_mode:
+        config["api_mode"] = api_mode
+    else:
+        config.pop("api_mode", None)
     if isinstance(reasoning_config, dict):
         config["reasoning_config"] = reasoning_config
     else:
@@ -1501,10 +1526,10 @@ def _persist_live_session_runtime(session: dict | None) -> None:
                 existing_config = parsed
         model_config = _runtime_model_config(agent, existing_config)
         model = str(getattr(agent, "model", "") or "").strip()
-        if model and hasattr(db, "update_session_model"):
-            db.update_session_model(session_key, model)
         if hasattr(db, "update_session_meta"):
-            db.update_session_meta(session_key, json.dumps(model_config), None)
+            db.update_session_meta(session_key, json.dumps(model_config), model or None)
+        elif model and hasattr(db, "update_session_model"):
+            db.update_session_model(session_key, model)
     except Exception:
         logger.debug("failed to persist live session runtime", exc_info=True)
 
@@ -3779,12 +3804,13 @@ def _(rid, params: dict) -> dict:
             # resolve to the profile too. Runtime identity is restored from the
             # stored session row so switching chats does not inherit whatever
             # global model another chat last selected.
+            stored_runtime_overrides = _stored_session_runtime_overrides(found)
             agent = _make_agent(
                 sid,
                 target,
                 session_id=target,
                 session_db=db,
-                **_stored_session_runtime_overrides(found),
+                **stored_runtime_overrides,
             )
         finally:
             _clear_session_context(tokens)
@@ -3822,6 +3848,10 @@ def _(rid, params: dict) -> dict:
         try:
             _init_session(sid, target, agent, history, cols=cols)
             if sid in _sessions:
+                if stored_runtime_overrides.get("model_override") is not None:
+                    _sessions[sid]["model_override"] = stored_runtime_overrides[
+                        "model_override"
+                    ]
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
                 # Remember the profile home so each turn re-binds HERMES_HOME (the
                 # agent persists to its own db, but mid-turn home reads — memory,

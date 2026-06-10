@@ -239,7 +239,7 @@ class TestCloneHonchoForProfile:
     """Identity-key carryover during profile cloning.
 
     The host-scoped identity-mapping keys (``userPeerAliases``,
-    ``runtimePeerPrefix``, ``pinPeerName``) must survive a clone; otherwise
+    ``runtimePeerPrefix``, ``pinUserPeer``) must survive a clone; otherwise
     the new profile silently fragments memory by resolving gateway users to
     raw runtime IDs instead of operator-declared peers.
     """
@@ -290,7 +290,7 @@ class TestCloneHonchoForProfile:
         new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["runtimePeerPrefix"] == "telegram_"
 
-    def test_pin_peer_name_carries_into_cloned_profile(self, monkeypatch, tmp_path):
+    def test_legacy_pin_peer_name_migrates_to_canonical_on_clone(self, monkeypatch, tmp_path):
         cfg = {
             "apiKey": "***",
             "hosts": {
@@ -304,7 +304,8 @@ class TestCloneHonchoForProfile:
         ok = honcho_cli.clone_honcho_for_profile("coder")
         assert ok is True
         new_block = written["cfg"]["hosts"]["hermes_coder"]
-        assert new_block["pinPeerName"] is True
+        assert new_block["pinUserPeer"] is True
+        assert "pinPeerName" not in new_block
 
     def test_unset_identity_keys_do_not_appear_in_cloned_profile(self, monkeypatch, tmp_path):
         cfg = {
@@ -317,6 +318,7 @@ class TestCloneHonchoForProfile:
         new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert "userPeerAliases" not in new_block
         assert "runtimePeerPrefix" not in new_block
+        assert "pinUserPeer" not in new_block
         assert "pinPeerName" not in new_block
 
 
@@ -409,7 +411,7 @@ class TestSetupWizardDeploymentShape:
             }},
         }
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is True
+        assert host["pinUserPeer"] is True
         assert "userPeerAliases" not in host
         assert "runtimePeerPrefix" not in host
 
@@ -424,7 +426,7 @@ class TestSetupWizardDeploymentShape:
             "telegram_",       # runtime peer prefix
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers)
-        assert host["pinPeerName"] is False
+        assert host["pinUserPeer"] is False
         # Multi must NOT auto-write ``userPeerAliases: {}``: an empty host
         # map would silently override a root-level baseline.  Absence is
         # the correct "no host opinion" signal.
@@ -446,7 +448,7 @@ class TestSetupWizardDeploymentShape:
             "",                # runtime peer prefix (skip)
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers)
-        assert host["pinPeerName"] is False
+        assert host["pinUserPeer"] is False
         assert host["userPeerAliases"] == {
             "86701400": "eri",
             "491827364": "eri",
@@ -454,6 +456,8 @@ class TestSetupWizardDeploymentShape:
         assert "runtimePeerPrefix" not in host
 
     def test_skip_shape_preserves_existing_identity_config(self, monkeypatch, tmp_path):
+        # Seeds the legacy ``pinPeerName``: skip must leave the mapping intact
+        # except for the on-load migration onto the canonical key.
         initial_cfg = {
             "apiKey": "***",
             "hosts": {"hermes": {
@@ -466,7 +470,8 @@ class TestSetupWizardDeploymentShape:
             "cloud", "", "eri", "hermetika", "hermes", "skip",
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is True
+        assert host["pinUserPeer"] is True
+        assert "pinPeerName" not in host
         assert host["userPeerAliases"] == {"keep": "me"}
         assert host["runtimePeerPrefix"] == "keep_"
 
@@ -494,7 +499,7 @@ class TestSetupWizardDeploymentShape:
             "",                # runtime prefix (skip)
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is False
+        assert host["pinUserPeer"] is False
         assert host["userPeerAliases"] == {"86701400": "eri"}
 
     def test_single_to_multi_yes_override_keeps_multi(self, monkeypatch, tmp_path):
@@ -512,7 +517,7 @@ class TestSetupWizardDeploymentShape:
             "telegram_",       # runtime peer prefix
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is False
+        assert host["pinUserPeer"] is False
         # See test_multi_shape_leaves_pin_false_and_accepts_prefix.
         assert "userPeerAliases" not in host
         assert host["runtimePeerPrefix"] == "telegram_"
@@ -535,10 +540,9 @@ class TestSetupWizardDeploymentShape:
         # exercise that fallthrough — the mock returns it literally.
         answers = ["cloud", "", "eri", "hermetika", "hermes"]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        # Scrub-then-write normalises onto pinPeerName and drops the alias
-        # so resolver precedence can't reintroduce ambiguity.
-        assert host["pinPeerName"] is True
-        assert "pinUserPeer" not in host
+        # Scrub-then-write normalises onto the canonical pinUserPeer.
+        assert host["pinUserPeer"] is True
+        assert "pinPeerName" not in host
 
     def test_host_pin_user_peer_false_overrides_root_pin_peer_name(
         self, monkeypatch, tmp_path
@@ -558,8 +562,8 @@ class TestSetupWizardDeploymentShape:
         }
         answers = ["cloud", "", "eri", "hermetika", "hermes"]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is False
-        assert "pinUserPeer" not in host
+        assert host["pinUserPeer"] is False
+        assert "pinPeerName" not in host
 
     def test_root_user_peer_aliases_detected_as_hybrid(self, monkeypatch, tmp_path):
         """Root-level ``userPeerAliases`` must classify as ``hybrid`` even
@@ -572,7 +576,7 @@ class TestSetupWizardDeploymentShape:
         }
         answers = ["cloud", "", "eri", "hermetika", "hermes"]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is False
+        assert host["pinUserPeer"] is False
         # Hybrid materialises the root aliases into the host so subsequent
         # operator edits live on the host block they're inspecting.
         assert host["userPeerAliases"] == {"86701400": "eri"}
@@ -584,7 +588,7 @@ class TestSetupWizardDeploymentShape:
         Picking ``multi`` here is an active choice — detection would have
         defaulted to ``hybrid`` because root aliases exist — so the
         operator's intent is to drop the alias mapping for this host.
-        We honor that by writing ``pinPeerName: false`` only, and rely
+        We honor that by writing ``pinUserPeer: false`` only, and rely
         on the host's absence of ``userPeerAliases`` to inherit root.
         That inheritance is intentional: a true wipe would require the
         operator to delete the root key explicitly.
@@ -599,14 +603,12 @@ class TestSetupWizardDeploymentShape:
             "multi",           # explicit multi override of detected hybrid
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is False
+        assert host["pinUserPeer"] is False
         assert "userPeerAliases" not in host
 
     def test_single_scrubs_stale_pin_user_peer_false(self, monkeypatch, tmp_path):
-        """Choosing ``single`` must drop any host-level ``pinUserPeer``,
-        otherwise an existing ``pinUserPeer: false`` would outrank the
-        freshly written ``pinPeerName: true`` and leave the profile
-        effectively unpinned (the P1 latent-precedence regression).
+        """Choosing ``single`` must overwrite a stale ``pinUserPeer: false``
+        with ``pinUserPeer: true`` so the profile ends up genuinely pinned.
         """
         initial_cfg = {
             "apiKey": "***",
@@ -620,8 +622,7 @@ class TestSetupWizardDeploymentShape:
             "single",
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinPeerName"] is True
-        assert "pinUserPeer" not in host
+        assert host["pinUserPeer"] is True
 
 
 class TestCloneCarriesPinUserPeer:
@@ -653,3 +654,27 @@ class TestCloneCarriesPinUserPeer:
         assert ok is True
         new_block = written["cfg"]["hosts"]["hermes_partner"]
         assert new_block["pinUserPeer"] is True
+
+
+class TestMigratePinKey:
+    """``_migrate_pin_key`` rewrites the legacy ``pinPeerName`` onto the
+    canonical ``pinUserPeer`` in place, without clobbering an existing
+    canonical value."""
+
+    def test_legacy_key_renamed_to_canonical(self):
+        import plugins.memory.honcho.cli as honcho_cli
+        block = {"pinPeerName": True}
+        assert honcho_cli._migrate_pin_key(block) is True
+        assert block == {"pinUserPeer": True}
+
+    def test_canonical_key_wins_when_both_present(self):
+        import plugins.memory.honcho.cli as honcho_cli
+        block = {"pinPeerName": True, "pinUserPeer": False}
+        assert honcho_cli._migrate_pin_key(block) is True
+        assert block == {"pinUserPeer": False}
+
+    def test_noop_when_no_legacy_key(self):
+        import plugins.memory.honcho.cli as honcho_cli
+        block = {"pinUserPeer": True}
+        assert honcho_cli._migrate_pin_key(block) is False
+        assert block == {"pinUserPeer": True}

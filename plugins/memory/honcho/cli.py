@@ -41,22 +41,20 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
         return False  # already exists
 
     # Clone settings from default block, override identity fields.
-    # Identity-mapping keys (pinPeerName/pinUserPeer, userPeerAliases,
-    # runtimePeerPrefix) carry the operator's runtime-to-peer routing
-    # intent from #27371.  Both pin keys are inherited because
-    # HonchoClientConfig prefers pinUserPeer over pinPeerName — leaving
-    # the canonical key off this allowlist silently drops the pin on
-    # cloned profiles when the default uses the newer name.
+    # Identity-mapping keys (pinUserPeer, userPeerAliases, runtimePeerPrefix)
+    # carry the operator's runtime-to-peer routing intent from #27371.
     new_block = {}
     for key in ("recallMode", "writeFrequency", "sessionStrategy",
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
                 "dialecticMaxInputChars", "saveMessages", "observation",
-                "pinPeerName", "pinUserPeer", "userPeerAliases",
-                "runtimePeerPrefix"):
+                "pinUserPeer", "userPeerAliases", "runtimePeerPrefix"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val
+    # Carry a legacy default-block pinPeerName forward under the canonical key.
+    if "pinUserPeer" not in new_block and default_block.get("pinPeerName") is not None:
+        new_block["pinUserPeer"] = default_block["pinPeerName"]
 
     # Inherit peer name from default
     peer_name = default_block.get("peerName") or cfg.get("peerName")
@@ -371,13 +369,26 @@ def _resolve_effective_identity_mapping(
 def _scrub_identity_mapping(hermes_host: dict) -> None:
     """Drop every peer-mapping key from the host block.
 
-    Called before the wizard writes a chosen shape so latent precedence
-    conflicts can't survive — e.g. a stray host ``pinUserPeer: false``
-    that would silently outrank a freshly written ``pinPeerName: true``
-    (host ``pinUserPeer`` is first in the resolver ladder).
+    Called before the wizard writes a chosen shape so a stale alias, prefix,
+    or pin from an earlier run can't bleed into the new mapping.
     """
     for key in _IDENTITY_MAPPING_KEYS:
         hermes_host.pop(key, None)
+
+
+def _migrate_pin_key(block: dict) -> bool:
+    """Rewrite a legacy ``pinPeerName`` to canonical ``pinUserPeer`` in place.
+
+    ``pinUserPeer`` wins over ``pinPeerName`` in the resolver, so setup writes
+    only the canonical form and migrates on touch to stop configs carrying
+    both.  Returns True if the block changed.
+    """
+    if "pinPeerName" not in block:
+        return False
+    legacy = block.pop("pinPeerName")
+    if "pinUserPeer" not in block:
+        block["pinUserPeer"] = legacy
+    return True
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
@@ -445,6 +456,10 @@ def cmd_setup(args) -> None:
 
     hosts = cfg.setdefault("hosts", {})
     hermes_host = hosts.setdefault(_host_key(), {})
+
+    # Canonicalize any legacy pinPeerName before detection/writes.
+    _migrate_pin_key(cfg)
+    _migrate_pin_key(hermes_host)
 
     # --- 1. Cloud or local? ---
     print("  Deployment:")
@@ -599,12 +614,11 @@ def cmd_setup(args) -> None:
             new_shape = "skip"
 
     # Each shape branch scrubs every peer-mapping key before writing its own,
-    # so a stale ``pinUserPeer`` left behind by an earlier setup run can't
-    # outrank the freshly written ``pinPeerName`` via host-level precedence.
+    # so a stale alias/prefix/pin from an earlier run starts clean.
     if new_shape == "single":
         _scrub_identity_mapping(hermes_host)
-        hermes_host["pinPeerName"] = True
-        print(f"  pinPeerName=true → all gateway users route to '{hermes_host.get('peerName', '?')}'.")
+        hermes_host["pinUserPeer"] = True
+        print(f"  pinUserPeer=true → all gateway users route to '{hermes_host.get('peerName', '?')}'.")
     elif new_shape == "multi":
         # Preserve operator-curated, host-level aliases so multi → multi
         # re-runs don't drop them.  Root-sourced aliases are left to
@@ -615,7 +629,7 @@ def cmd_setup(args) -> None:
             else {}
         )
         _scrub_identity_mapping(hermes_host)
-        hermes_host["pinPeerName"] = False
+        hermes_host["pinUserPeer"] = False
         # Do NOT auto-write ``userPeerAliases: {}``: an empty host map
         # would override any root-level ``userPeerAliases`` the operator
         # set as a cross-host baseline, silently disabling those aliases.
@@ -642,7 +656,7 @@ def cmd_setup(args) -> None:
         # the mapping".
         existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
         _scrub_identity_mapping(hermes_host)
-        hermes_host["pinPeerName"] = False
+        hermes_host["pinUserPeer"] = False
         peer_target = hermes_host.get("peerName") or current_peer or "user"
         print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
         print("  Leave blank to skip a platform.  Existing aliases are preserved.")

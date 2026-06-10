@@ -102,3 +102,50 @@ async def test_failed_voice_with_caption_preserves_caption_without_prompt_error(
     assert sent
     assert "couldn't transcribe" in sent[0]
     assert "429" not in result
+
+
+@pytest.mark.asyncio
+async def test_voice_on_keeps_telegram_text_reply_first_regression():
+    adapter = SimpleNamespace(
+        _auto_tts_disabled_chats=set(),
+        _auto_tts_enabled_chats=set(),
+    )
+    runner = _runner(adapter)
+    runner._voice_mode = {}
+    runner._voice_provider_mode = {}
+    runner._save_voice_modes = lambda: None
+    runner._save_voice_provider_modes = lambda: None
+
+    event = SimpleNamespace(
+        source=_source(),
+        get_command_args=lambda: "on",
+    )
+    result = await GatewayRunner._handle_voice_command(runner, event)
+
+    assert runner._voice_mode["telegram:12345"] == "voice_only"
+    assert "12345" not in adapter._auto_tts_enabled_chats
+    assert "12345" not in adapter._auto_tts_disabled_chats
+    assert result
+
+
+@pytest.mark.asyncio
+async def test_voice_tts_is_explicit_audio_reply_opt_in():
+    adapter = SimpleNamespace(
+        _auto_tts_disabled_chats=set(),
+        _auto_tts_enabled_chats=set(),
+    )
+    runner = _runner(adapter)
+    runner._voice_mode = {}
+    runner._voice_provider_mode = {}
+    runner._save_voice_modes = lambda: None
+    runner._save_voice_provider_modes = lambda: None
+
+    event = SimpleNamespace(
+        source=_source(),
+        get_command_args=lambda: "tts",
+    )
+    result = await GatewayRunner._handle_voice_command(runner, event)
+
+    assert runner._voice_mode["telegram:12345"] == "all"
+    assert "12345" in adapter._auto_tts_enabled_chats
+    assert result

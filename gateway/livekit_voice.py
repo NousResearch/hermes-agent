@@ -29,7 +29,14 @@ DEFAULT_HERMES_BRAIN_URL = "http://127.0.0.1:8646/v1/chat/completions"
 DEFAULT_HERMES_BRAIN_MODEL = "voice"
 DEFAULT_HERMES_BRAIN_TIMEOUT_SECONDS = 8.0
 DEFAULT_HERMES_BRAIN_MAX_TOKENS = 450
-DEFAULT_REALTIME_PROVIDER = "openai"
+DEFAULT_PIPELINE_MODE = "realtime"
+DEFAULT_MODULAR_STT_PROVIDER = "deepgram"
+DEFAULT_MODULAR_TTS_PROVIDER = "cartesia"
+DEFAULT_DEEPGRAM_MODEL = "nova-3"
+DEFAULT_DEEPGRAM_LANGUAGE = "multi"
+DEFAULT_CARTESIA_MODEL = "sonic-2"
+DEFAULT_CARTESIA_VOICE = "bf0a246a-8642-498a-9950-80c35e9276b5"
+DEFAULT_REALTIME_PROVIDER = "gemini"
 DEFAULT_REALTIME_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "coral"
 DEFAULT_GEMINI_REALTIME_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
@@ -69,13 +76,24 @@ class LiveKitVoiceConfig:
     hermes_brain_allow_remote: bool = False
     hermes_brain_allowed_hosts: tuple[str, ...] = ()
     realtime_enabled: bool = False
+    pipeline_mode: str = DEFAULT_PIPELINE_MODE
     realtime_provider: str = DEFAULT_REALTIME_PROVIDER
     realtime_model: str = DEFAULT_REALTIME_MODEL
     realtime_voice: str = DEFAULT_REALTIME_VOICE
     realtime_instructions: str = DEFAULT_REALTIME_INSTRUCTIONS
+    stt_provider: str = DEFAULT_MODULAR_STT_PROVIDER
+    tts_provider: str = DEFAULT_MODULAR_TTS_PROVIDER
+    deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
+    deepgram_language: str = DEFAULT_DEEPGRAM_LANGUAGE
+    cartesia_model: str = DEFAULT_CARTESIA_MODEL
+    cartesia_voice: str = DEFAULT_CARTESIA_VOICE
     openai_api_key: str = ""
     google_api_key: str = ""
     xai_api_key: str = ""
+    groq_api_key: str = ""
+    deepgram_api_key: str = ""
+    cartesia_api_key: str = ""
+    elevenlabs_api_key: str = ""
 
     @property
     def has_credentials(self) -> bool:
@@ -88,6 +106,10 @@ class LiveKitVoiceConfig:
         return bool(self.phone_number and _E164_RE.match(self.phone_number))
 
     @property
+    def uses_modular_pipeline(self) -> bool:
+        return self.pipeline_mode == "modular"
+
+    @property
     def has_realtime_credentials(self) -> bool:
         if self.realtime_provider == "openai":
             return bool(self.openai_api_key)
@@ -96,6 +118,28 @@ class LiveKitVoiceConfig:
         if self.realtime_provider == "xai":
             return bool(self.xai_api_key)
         return False
+
+    @property
+    def has_modular_stt_credentials(self) -> bool:
+        if self.stt_provider == "deepgram":
+            return bool(self.deepgram_api_key)
+        if self.stt_provider == "groq":
+            return bool(self.groq_api_key)
+        if self.stt_provider == "openai":
+            return bool(self.openai_api_key)
+        return False
+
+    @property
+    def has_modular_tts_credentials(self) -> bool:
+        if self.tts_provider == "cartesia":
+            return bool(self.cartesia_api_key)
+        if self.tts_provider == "elevenlabs":
+            return bool(self.elevenlabs_api_key)
+        return False
+
+    @property
+    def has_modular_credentials(self) -> bool:
+        return self.has_modular_stt_credentials and self.has_modular_tts_credentials
 
     @property
     def has_brain_credentials(self) -> bool:
@@ -125,12 +169,23 @@ class LiveKitVoiceConfig:
             if self.hermes_brain_allowed_hosts
             else "none",
             "realtime_enabled": "true" if self.realtime_enabled else "false",
+            "pipeline_mode": self.pipeline_mode,
             "realtime_provider": self.realtime_provider,
             "realtime_model": self.realtime_model,
             "realtime_voice": self.realtime_voice,
+            "stt_provider": self.stt_provider,
+            "tts_provider": self.tts_provider,
+            "deepgram_model": self.deepgram_model,
+            "deepgram_language": self.deepgram_language,
+            "cartesia_model": self.cartesia_model,
+            "cartesia_voice": self.cartesia_voice,
             "openai_api_key": "set" if self.openai_api_key else "missing",
             "google_api_key": "set" if self.google_api_key else "missing",
             "xai_api_key": "set" if self.xai_api_key else "missing",
+            "groq_api_key": "set" if self.groq_api_key else "missing",
+            "deepgram_api_key": "set" if self.deepgram_api_key else "missing",
+            "cartesia_api_key": "set" if self.cartesia_api_key else "missing",
+            "elevenlabs_api_key": "set" if self.elevenlabs_api_key else "missing",
         }
 
 
@@ -235,6 +290,9 @@ def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceCon
             source, "HERMES_LIVEKIT_HERMES_ALLOWED_HOSTS"
         ),
         realtime_enabled=_env_bool(source, "HERMES_LIVEKIT_REALTIME_ENABLED", False),
+        pipeline_mode=_env_get(
+            source, "HERMES_LIVEKIT_PIPELINE_MODE", DEFAULT_PIPELINE_MODE
+        ).lower(),
         realtime_provider=_env_get(
             source, "HERMES_LIVEKIT_REALTIME_PROVIDER", DEFAULT_REALTIME_PROVIDER
         ).lower(),
@@ -245,10 +303,32 @@ def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceCon
             "HERMES_LIVEKIT_REALTIME_INSTRUCTIONS",
             DEFAULT_REALTIME_INSTRUCTIONS,
         ),
+        stt_provider=_env_get(
+            source, "HERMES_LIVEKIT_STT_PROVIDER", DEFAULT_MODULAR_STT_PROVIDER
+        ).lower(),
+        tts_provider=_env_get(
+            source, "HERMES_LIVEKIT_TTS_PROVIDER", DEFAULT_MODULAR_TTS_PROVIDER
+        ).lower(),
+        deepgram_model=_env_get(
+            source, "HERMES_LIVEKIT_DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL
+        ),
+        deepgram_language=_env_get(
+            source, "HERMES_LIVEKIT_DEEPGRAM_LANGUAGE", DEFAULT_DEEPGRAM_LANGUAGE
+        ),
+        cartesia_model=_env_get(
+            source, "HERMES_LIVEKIT_CARTESIA_MODEL", DEFAULT_CARTESIA_MODEL
+        ),
+        cartesia_voice=_env_get(
+            source, "HERMES_LIVEKIT_CARTESIA_VOICE", DEFAULT_CARTESIA_VOICE
+        ),
         openai_api_key=_env_get(source, "OPENAI_API_KEY"),
         google_api_key=_env_get(source, "GOOGLE_API_KEY")
         or _env_get(source, "GEMINI_API_KEY"),
         xai_api_key=_env_get(source, "XAI_API_KEY"),
+        groq_api_key=_env_get(source, "GROQ_API_KEY"),
+        deepgram_api_key=_env_get(source, "DEEPGRAM_API_KEY"),
+        cartesia_api_key=_env_get(source, "CARTESIA_API_KEY"),
+        elevenlabs_api_key=_env_get(source, "ELEVENLABS_API_KEY"),
     )
 
 
@@ -355,6 +435,12 @@ def build_livekit_preflight(
         })
 
     if include_realtime:
+        if cfg.pipeline_mode not in {"realtime", "modular"}:
+            issues.append({
+                "severity": "error",
+                "code": "unsupported_pipeline_mode",
+                "message": "HERMES_LIVEKIT_PIPELINE_MODE must be realtime or modular.",
+            })
         if cfg.realtime_provider not in {"openai", "gemini", "xai"}:
             issues.append({
                 "severity": "error",
@@ -379,6 +465,29 @@ def build_livekit_preflight(
                 "code": "missing_xai_api_key",
                 "message": "Set XAI_API_KEY before starting the Grok Voice worker.",
             })
+        if cfg.pipeline_mode == "modular":
+            if cfg.stt_provider not in {"deepgram", "groq", "openai"}:
+                issues.append({
+                    "severity": "error",
+                    "code": "unsupported_modular_stt_provider",
+                    "message": "HERMES_LIVEKIT_STT_PROVIDER must be deepgram, groq, or openai.",
+                })
+            if cfg.tts_provider not in {"cartesia", "elevenlabs"}:
+                issues.append({
+                    "severity": "error",
+                    "code": "unsupported_modular_tts_provider",
+                    "message": "HERMES_LIVEKIT_TTS_PROVIDER must be cartesia or elevenlabs.",
+                })
+            if cfg.stt_provider == "deepgram" and not cfg.deepgram_api_key:
+                issues.append({"severity": "error", "code": "missing_deepgram_api_key", "message": "Set DEEPGRAM_API_KEY for modular Deepgram STT."})
+            if cfg.stt_provider == "groq" and not cfg.groq_api_key:
+                issues.append({"severity": "error", "code": "missing_groq_api_key", "message": "Set GROQ_API_KEY for modular Groq STT."})
+            if cfg.stt_provider == "openai" and not cfg.openai_api_key:
+                issues.append({"severity": "error", "code": "missing_openai_api_key", "message": "Set OPENAI_API_KEY for modular OpenAI STT."})
+            if cfg.tts_provider == "cartesia" and not cfg.cartesia_api_key:
+                issues.append({"severity": "error", "code": "missing_cartesia_api_key", "message": "Set CARTESIA_API_KEY for modular Cartesia TTS."})
+            if cfg.tts_provider == "elevenlabs" and not cfg.elevenlabs_api_key:
+                issues.append({"severity": "error", "code": "missing_elevenlabs_api_key", "message": "Set ELEVENLABS_API_KEY for modular ElevenLabs TTS."})
         if not cfg.realtime_enabled:
             issues.append({
                 "severity": "warn",
@@ -398,7 +507,7 @@ def build_livekit_preflight(
         }
         for issue in issues
     )
-    realtime_ready = web_ready and cfg.has_realtime_credentials
+    realtime_ready = web_ready and (cfg.has_modular_credentials if cfg.uses_modular_pipeline else cfg.has_realtime_credentials)
     sip_ready = web_ready and cfg.has_phone_number
     ok = not any(issue["severity"] == "error" for issue in issues)
 
@@ -430,9 +539,16 @@ def build_realtime_worker_status(
         "agent_name": cfg.agent_name,
         "mode": "manual",
         "enabled": cfg.realtime_enabled,
+        "pipeline_mode": cfg.pipeline_mode,
         "provider": cfg.realtime_provider,
+        "stt_provider": cfg.stt_provider,
+        "tts_provider": cfg.tts_provider,
         "model": cfg.realtime_model,
         "voice": cfg.realtime_voice,
+        "deepgram_model": cfg.deepgram_model,
+        "deepgram_language": cfg.deepgram_language,
+        "cartesia_model": cfg.cartesia_model,
+        "cartesia_voice": cfg.cartesia_voice,
         "version": DEFAULT_REALTIME_VERSION,
         "run": ".venv/bin/python -m gateway.livekit_realtime_agent dev",
         "start": ".venv/bin/python -m gateway.livekit_realtime_agent start",
@@ -451,7 +567,10 @@ def build_realtime_room_metadata(
         "mode": mode,
         "route": DEFAULT_ROUTE,
         "voice_version": DEFAULT_REALTIME_VERSION,
+        "pipeline_mode": cfg.pipeline_mode,
         "realtime_provider": cfg.realtime_provider,
+        "stt_provider": cfg.stt_provider if cfg.uses_modular_pipeline else "none",
+        "tts_provider": cfg.tts_provider if cfg.uses_modular_pipeline else "none",
     }
     if extra:
         data.update(extra)

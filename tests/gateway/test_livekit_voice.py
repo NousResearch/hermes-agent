@@ -12,9 +12,11 @@ from gateway.livekit_realtime_agent import (
     HERMES_BRAIN_UNAVAILABLE_MESSAGE,
     HermesRealtimeAssistant,
     build_server,
+    build_modular_session,
     build_hermes_brain_payload,
     build_assistant_instructions,
     create_realtime_model,
+    modular_preflight,
     guard_enabled_for_run,
     hermes_live_voice,
     _install_session_telemetry,
@@ -26,6 +28,8 @@ from gateway.livekit_voice import (
     DEFAULT_GEMINI_REALTIME_MODEL,
     DEFAULT_HERMES_BRAIN_MODEL,
     DEFAULT_REALTIME_MODEL,
+    DEFAULT_DEEPGRAM_MODEL,
+    DEFAULT_CARTESIA_MODEL,
     DEFAULT_XAI_REALTIME_MODEL,
     build_dispatch_rule_payload,
     build_inbound_trunk_payload,
@@ -362,7 +366,7 @@ def test_hermes_live_voice_logs_job_and_session(monkeypatch, caplog):
     assert "hermes_call event=session_started" in caplog.text
 
 
-def test_realtime_preflight_reports_missing_openai_key():
+def test_realtime_preflight_reports_missing_gemini_key_by_default():
     env = {
         "LIVEKIT_URL": "wss://pafi-livekit.example.com",
         "LIVEKIT_API_KEY": "livekit-key",
@@ -371,7 +375,9 @@ def test_realtime_preflight_reports_missing_openai_key():
     report = build_livekit_preflight(env, include_realtime=True)
     assert report["ok"] is False
     assert report["ready"]["realtime_agent"] is False
-    assert any(issue["code"] == "missing_openai_api_key" for issue in report["issues"])
+    assert report["config"]["pipeline_mode"] == "realtime"
+    assert report["config"]["realtime_provider"] == "gemini"
+    assert any(issue["code"] == "missing_google_api_key" for issue in report["issues"])
 
 
 def test_livekit_preflight_rejects_remote_ws_url():
@@ -474,26 +480,30 @@ def test_realtime_config_defaults_and_status_are_operator_safe():
         "LIVEKIT_URL": "wss://pafi-livekit.example.com",
         "LIVEKIT_API_KEY": "livekit-key",
         "LIVEKIT_API_SECRET": "livekit-secret",
-        "OPENAI_API_KEY": "sk-test-secret-value",
+        "GEMINI_API_KEY": "gemini-secret-value",
         "HERMES_LIVEKIT_REALTIME_ENABLED": "true",
     }
     cfg = load_livekit_config(env)
     status = build_realtime_worker_status(config=cfg)
-    assert cfg.realtime_provider == "openai"
-    assert cfg.realtime_model == DEFAULT_REALTIME_MODEL
-    assert cfg.realtime_voice == "coral"
+    assert cfg.pipeline_mode == "realtime"
+    assert cfg.realtime_provider == "gemini"
+    assert cfg.realtime_model == DEFAULT_GEMINI_REALTIME_MODEL
+    assert cfg.realtime_voice == "Puck"
     assert status["enabled"] is True
     assert status["mode"] == "manual"
     assert "gateway.livekit_realtime_agent" in status["run"]
 
 
 def test_realtime_room_metadata_is_stable_for_webrtc_dispatch():
-    cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "openai"})
+    cfg = load_livekit_config({})
     assert build_realtime_room_metadata(mode="webrtc", config=cfg) == {
         "mode": "webrtc",
         "route": "hermes-main",
         "voice_version": "v02",
-        "realtime_provider": "openai",
+        "pipeline_mode": "realtime",
+        "realtime_provider": "gemini",
+        "stt_provider": "none",
+        "tts_provider": "none",
     }
 
 
@@ -545,7 +555,10 @@ def test_openai_realtime_model_uses_config_key(monkeypatch):
     monkeypatch.setitem(sys.modules, "livekit.plugins", fake_plugins)
     monkeypatch.setitem(sys.modules, "livekit.plugins.openai", fake_openai)
 
-    cfg = load_livekit_config({"OPENAI_API_KEY": "cfg-openai-key"})
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_REALTIME_PROVIDER": "openai",
+        "OPENAI_API_KEY": "cfg-openai-key",
+    })
     model = create_realtime_model(cfg)
 
     assert os.environ["OPENAI_API_KEY"] == "cfg-openai-key"
@@ -606,6 +619,88 @@ def test_xai_realtime_model_uses_config_key(monkeypatch):
     assert model.model == DEFAULT_XAI_REALTIME_MODEL
     assert model.voice == "ara"
 
+
+
+def test_modular_provider_env_parsing_and_public_dict_redaction():
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_PIPELINE_MODE": "modular",
+        "HERMES_LIVEKIT_STT_PROVIDER": "deepgram",
+        "HERMES_LIVEKIT_TTS_PROVIDER": "cartesia",
+        "HERMES_LIVEKIT_DEEPGRAM_MODEL": "nova-3",
+        "HERMES_LIVEKIT_DEEPGRAM_LANGUAGE": "ro",
+        "HERMES_LIVEKIT_CARTESIA_MODEL": "sonic-2",
+        "HERMES_LIVEKIT_CARTESIA_VOICE": "voice-id",
+        "DEEPGRAM_API_KEY": "deepgram-secret",
+        "CARTESIA_API_KEY": "cartesia-secret",
+    })
+    public = cfg.public_dict()
+    rendered = json.dumps(public, sort_keys=True)
+    assert cfg.uses_modular_pipeline is True
+    assert cfg.has_modular_credentials is True
+    assert cfg.deepgram_model == "nova-3"
+    assert cfg.deepgram_language == "ro"
+    assert cfg.cartesia_model == "sonic-2"
+    assert public["deepgram_api_key"] == "set"
+    assert public["cartesia_api_key"] == "set"
+    assert "deepgram-secret" not in rendered
+    assert "cartesia-secret" not in rendered
+
+
+def test_modular_preflight_reports_missing_dependency_or_key(monkeypatch):
+    env = {
+        "LIVEKIT_URL": "wss://pafi-livekit.example.com",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+        "HERMES_LIVEKIT_PIPELINE_MODE": "modular",
+    }
+    report = build_livekit_preflight(env, include_realtime=True)
+    assert report["ok"] is False
+    assert any(issue["code"] == "missing_deepgram_api_key" for issue in report["issues"])
+    assert any(issue["code"] == "missing_cartesia_api_key" for issue in report["issues"])
+
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+    preflight = modular_preflight(load_livekit_config({"HERMES_LIVEKIT_PIPELINE_MODE": "modular"}))
+    assert preflight["dependencies_ready"] is False
+    assert any("deepgram" in warning for warning in preflight["warnings"])
+    assert preflight["cartesia_voice"] in {"set", "missing"}
+
+
+def test_build_modular_session_uses_lazy_livekit_plugin_apis(monkeypatch):
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.delenv("CARTESIA_API_KEY", raising=False)
+
+    class FakeSession:
+        def __init__(self, *, stt, tts):
+            self.stt = stt
+            self.tts = tts
+
+    class FakeSTT:
+        def __init__(self, *, model, language, **_kwargs):
+            self.model = model
+            self.language = language
+
+    class FakeTTS:
+        def __init__(self, *, model, voice, **_kwargs):
+            self.model = model
+            self.voice = voice
+
+    monkeypatch.setattr("gateway.livekit_realtime_agent.AgentSession", FakeSession)
+    fake_deepgram = types.SimpleNamespace(STT=FakeSTT)
+    fake_cartesia = types.SimpleNamespace(TTS=FakeTTS)
+    fake_plugins = types.SimpleNamespace(deepgram=fake_deepgram, cartesia=fake_cartesia)
+    monkeypatch.setitem(sys.modules, "livekit.plugins", fake_plugins)
+    monkeypatch.setitem(sys.modules, "livekit.plugins.deepgram", fake_deepgram)
+    monkeypatch.setitem(sys.modules, "livekit.plugins.cartesia", fake_cartesia)
+
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_PIPELINE_MODE": "modular",
+        "DEEPGRAM_API_KEY": "deepgram-key",
+        "CARTESIA_API_KEY": "cartesia-key",
+    })
+    session = build_modular_session(cfg)
+
+    assert session.stt.model == DEFAULT_DEEPGRAM_MODEL
+    assert session.tts.model == DEFAULT_CARTESIA_MODEL
 
 def test_dispatch_rule_payload_uses_explicit_agent_dispatch():
     payload = build_dispatch_rule_payload(

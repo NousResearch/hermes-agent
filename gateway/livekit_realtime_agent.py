@@ -7,6 +7,7 @@ Telegram gateway continues to run independently.
 
 from __future__ import annotations
 
+import importlib.util
 import ipaddress
 import logging
 import os
@@ -189,6 +190,8 @@ def build_assistant_instructions(config: LiveKitVoiceConfig | None = None) -> st
 def create_realtime_model(config: LiveKitVoiceConfig | None = None) -> Any:
     """Create the configured realtime model lazily so imports stay isolated."""
     cfg = config or load_livekit_config()
+    if cfg.uses_modular_pipeline:
+        raise RuntimeError("HERMES_LIVEKIT_PIPELINE_MODE=modular uses build_modular_session, not a realtime llm")
     if cfg.realtime_provider == "openai":
         return _create_openai_realtime_model(cfg)
     if cfg.realtime_provider == "gemini":
@@ -260,6 +263,97 @@ def _create_xai_realtime_model(cfg: LiveKitVoiceConfig) -> Any:
         model=cfg.realtime_model,
         voice=cfg.realtime_voice,
     )
+
+
+def modular_preflight(config: LiveKitVoiceConfig | None = None) -> dict[str, Any]:
+    """Return redacted modular-pipeline readiness without importing paid clients."""
+    cfg = config or load_livekit_config()
+    deps = {
+        "livekit.plugins.deepgram": cfg.stt_provider != "deepgram" or _optional_module_available("livekit.plugins.deepgram"),
+        "livekit.plugins.cartesia": cfg.tts_provider != "cartesia" or _optional_module_available("livekit.plugins.cartesia"),
+    }
+    warnings = [name for name, ok in deps.items() if not ok]
+    return {
+        "mode": cfg.pipeline_mode,
+        "stt_provider": cfg.stt_provider,
+        "tts_provider": cfg.tts_provider,
+        "deepgram_model": cfg.deepgram_model,
+        "deepgram_language": cfg.deepgram_language,
+        "cartesia_model": cfg.cartesia_model,
+        "cartesia_voice": "set" if cfg.cartesia_voice else "missing",
+        "dependencies_ready": not warnings,
+        "warnings": [f"missing optional dependency: {name}" for name in warnings],
+        "credentials_ready": cfg.has_modular_credentials,
+    }
+
+
+def _optional_module_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def build_modular_session(config: LiveKitVoiceConfig | None = None) -> Any:
+    """Create a LiveKit AgentSession for opt-in modular STT/LLM/TTS calls."""
+    cfg = config or load_livekit_config()
+    if not cfg.uses_modular_pipeline:
+        raise RuntimeError("Set HERMES_LIVEKIT_PIPELINE_MODE=modular to use the modular session builder")
+    if AgentSession is None:
+        raise RuntimeError("Install the livekit optional extra before starting the modular worker")
+    stt = _create_modular_stt(cfg)
+    tts = _create_modular_tts(cfg)
+    try:
+        return AgentSession(stt=stt, tts=tts)
+    except TypeError as exc:
+        raise RuntimeError("Installed livekit-agents does not expose the expected modular AgentSession(stt=..., tts=...) API") from exc
+
+
+def _create_modular_stt(cfg: LiveKitVoiceConfig) -> Any:
+    if cfg.stt_provider == "deepgram":
+        deepgram_api_key = cfg.deepgram_api_key or os.getenv("DEEPGRAM_API_KEY")
+        if not deepgram_api_key:
+            raise RuntimeError("DEEPGRAM_API_KEY is required for modular Deepgram STT")
+        try:
+            from livekit.plugins import deepgram  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("Install hermes-agent[livekit] with LiveKit Deepgram plugin support") from exc
+        return deepgram.STT(model=cfg.deepgram_model, language=cfg.deepgram_language, api_key=deepgram_api_key)
+    if cfg.stt_provider == "groq":
+        if not cfg.groq_api_key and not os.getenv("GROQ_API_KEY"):
+            raise RuntimeError("GROQ_API_KEY is required for modular Groq STT")
+        raise RuntimeError("LiveKit Groq STT plugin is not bundled yet; use deepgram or openai")
+    if cfg.stt_provider == "openai":
+        openai_api_key = cfg.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is required for modular OpenAI STT")
+        try:
+            from livekit.plugins import openai  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("Install hermes-agent[livekit] with LiveKit OpenAI plugin support") from exc
+        return openai.STT(api_key=openai_api_key)
+    raise RuntimeError("HERMES_LIVEKIT_STT_PROVIDER must be deepgram, groq, or openai")
+
+
+def _create_modular_tts(cfg: LiveKitVoiceConfig) -> Any:
+    if cfg.tts_provider == "cartesia":
+        cartesia_api_key = cfg.cartesia_api_key or os.getenv("CARTESIA_API_KEY")
+        if not cartesia_api_key:
+            raise RuntimeError("CARTESIA_API_KEY is required for modular Cartesia TTS")
+        try:
+            from livekit.plugins import cartesia  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("Install hermes-agent[livekit] with LiveKit Cartesia plugin support") from exc
+        return cartesia.TTS(model=cfg.cartesia_model, voice=cfg.cartesia_voice, api_key=cartesia_api_key)
+    if cfg.tts_provider == "elevenlabs":
+        if not cfg.elevenlabs_api_key and not os.getenv("ELEVENLABS_API_KEY"):
+            raise RuntimeError("ELEVENLABS_API_KEY is required for modular ElevenLabs TTS")
+        try:
+            from livekit.plugins import elevenlabs  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("Install hermes-agent[livekit] with LiveKit ElevenLabs plugin support") from exc
+        return elevenlabs.TTS()
+    raise RuntimeError("HERMES_LIVEKIT_TTS_PROVIDER must be cartesia or elevenlabs")
 
 
 def build_hermes_brain_payload(
@@ -425,11 +519,14 @@ async def hermes_live_voice(ctx: Any) -> None:
     _log_call_event(
         "job_start",
         room=room_name,
+        mode=cfg.pipeline_mode,
         provider=cfg.realtime_provider,
+        stt_provider=cfg.stt_provider if cfg.uses_modular_pipeline else None,
+        tts_provider=cfg.tts_provider if cfg.uses_modular_pipeline else None,
         model=cfg.realtime_model,
         voice=cfg.realtime_voice,
     )
-    session = AgentSession(llm=create_realtime_model(cfg))
+    session = build_modular_session(cfg) if cfg.uses_modular_pipeline else AgentSession(llm=create_realtime_model(cfg))
     _install_session_telemetry(
         session,
         config=cfg,
@@ -441,6 +538,7 @@ async def hermes_live_voice(ctx: Any) -> None:
         "session_started",
         elapsed_ms=int((time.perf_counter() - started_at) * 1000),
         room=room_name,
+        mode=cfg.pipeline_mode,
         provider=cfg.realtime_provider,
     )
     if cfg.realtime_provider == "openai":

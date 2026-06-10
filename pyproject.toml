@@ -136,7 +136,7 @@ livekit = [
   # is explicitly installed.
   "livekit==1.1.8",
   "livekit-api==1.1.0",
-  "livekit-agents[google,openai,xai]==1.5.17",
+  "livekit-agents[google,openai,xai,deepgram,cartesia]==1.5.17",
 ]
 pty = [
   # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now

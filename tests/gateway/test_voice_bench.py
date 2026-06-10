@@ -196,6 +196,50 @@ def test_format_recent_aggregates_duplicate_stage_timings(tmp_path, monkeypatch)
     assert "stt=250ms" in output
 
 
+
+def test_format_recent_includes_modular_benchmark_fields(tmp_path, monkeypatch):
+    path = tmp_path / "voice_bench.jsonl"
+    monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    monkeypatch.setenv("HERMES_VOICE_BENCH_SYNC", "1")
+    voice_bench.append_event({
+        "turn_id": "voice-modular",
+        "stage": "stt",
+        "platform": "telegram",
+        "chat_id": "123",
+        "mode": "modular",
+        "stt_provider": "deepgram",
+        "tts_provider": "cartesia",
+        "stt_model": "nova-3",
+        "elapsed_ms": 120,
+        "transcript": "hello",
+    })
+    voice_bench.append_event({
+        "turn_id": "voice-modular",
+        "stage": "brain",
+        "platform": "telegram",
+        "chat_id": "123",
+        "elapsed_ms": 80,
+    })
+    voice_bench.append_event({
+        "turn_id": "voice-modular",
+        "stage": "tts",
+        "platform": "telegram",
+        "chat_id": "123",
+        "tts_model": "sonic-2",
+        "first_audio_ms": 310,
+        "elapsed_ms": 190,
+        "error": "authorization bearer abcdefghijklmnop",
+    })
+
+    row_text = path.read_text(encoding="utf-8")
+    assert "abcdefghijklmnop" not in row_text
+    output = voice_bench.format_recent("telegram", "123", limit=1)
+    assert "mode=modular" in output
+    assert "stt_provider=deepgram" in output
+    assert "tts_provider=cartesia" in output
+    assert "first_audio=310ms" in output
+    assert "brain=80ms" in output
+
 def test_recent_events_ignores_malformed_rows_and_filters_chat(tmp_path, monkeypatch):
     path = tmp_path / "voice_bench.jsonl"
     monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))

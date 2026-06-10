@@ -250,6 +250,13 @@ def grouped_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "platform": item.get("platform"),
                 "chat_id": item.get("chat_id"),
                 "message_id": item.get("message_id"),
+                "mode": item.get("mode") or item.get("pipeline_mode"),
+                "realtime_provider": item.get("realtime_provider"),
+                "stt_provider": item.get("stt_provider"),
+                "tts_provider": item.get("tts_provider"),
+                "realtime_model": item.get("realtime_model"),
+                "stt_model": item.get("stt_model") or item.get("deepgram_model"),
+                "tts_model": item.get("tts_model") or item.get("cartesia_model"),
                 "stages": {},
             },
         )
@@ -257,6 +264,16 @@ def grouped_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         turn["platform"] = item.get("platform") or turn.get("platform")
         turn["chat_id"] = item.get("chat_id") or turn.get("chat_id")
         turn["message_id"] = item.get("message_id") or turn.get("message_id")
+        for key in ("mode", "pipeline_mode", "realtime_provider", "stt_provider", "tts_provider", "realtime_model", "stt_model", "tts_model", "deepgram_model", "cartesia_model"):
+            value = item.get(key)
+            if value and key == "pipeline_mode":
+                turn["mode"] = value
+            elif value and key == "deepgram_model":
+                turn["stt_model"] = value
+            elif value and key == "cartesia_model":
+                turn["tts_model"] = value
+            elif value:
+                turn[key] = value
         stage = str(item.get("stage") or "").strip()
         if stage:
             existing = turn["stages"].get(stage)
@@ -318,21 +335,35 @@ def format_recent(platform: str | None = None, chat_id: str | None = None, *, li
         agent = _stage_item(stages.get("agent"))
         tts = _stage_item(stages.get("tts"))
         delivery = _stage_item(stages.get("delivery"))
+        brain = _stage_item(stages.get("brain"))
+        first_audio_ms = delivery.get("first_audio_ms") or tts.get("first_audio_ms")
         stage_values = [
             stage.get("elapsed_ms")
-            for stage in (stt, agent, tts, delivery)
+            for stage in (stt, brain, agent, tts, delivery)
             if isinstance(stage.get("elapsed_ms"), (int, float))
         ]
-        total_ms = sum(stage_values) if stage_values else None
+        total_ms = turn.get("total_ms") if isinstance(turn.get("total_ms"), (int, float)) else (sum(stage_values) if stage_values else None)
         status = "ok" if not any(
             (_stage_item(s).get("error") for s in stages.values())
         ) else "warn"
+        labels = []
+        if turn.get("mode"):
+            labels.append(f"mode={turn.get('mode')}")
+        if turn.get("realtime_provider"):
+            labels.append(f"realtime={turn.get('realtime_provider')}")
+        if turn.get("stt_provider"):
+            labels.append(f"stt_provider={turn.get('stt_provider')}")
+        if turn.get("tts_provider"):
+            labels.append(f"tts_provider={turn.get('tts_provider')}")
         lines.append(
             f"- {status} total={_ms(total_ms)} "
+            f"first_audio={_ms(first_audio_ms)} "
             f"stt={_ms(stt.get('elapsed_ms'))} "
+            f"brain={_ms(brain.get('elapsed_ms'))} "
             f"agent={_ms(agent.get('elapsed_ms'))} "
             f"tts={_ms(tts.get('elapsed_ms'))} "
-            f"send={_ms(delivery.get('elapsed_ms'))}"
+            f"send={_ms(delivery.get('elapsed_ms'))} "
+            + " ".join(labels)
         )
         transcript = str(
             stt.get("transcript_preview") or _redact_text(stt.get("transcript"))

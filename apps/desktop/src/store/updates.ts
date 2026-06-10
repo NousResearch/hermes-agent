@@ -88,7 +88,8 @@ function isUpdateToastSnoozed(): boolean {
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
 // against. The backend reports its own value in session runtime info; a lower
 // value (or none — a pre-GUI checkout) means GUI<->backend skew.
-const REQUIRED_BACKEND_CONTRACT = 1
+// v2: requires the file.attach RPC (remote-gateway non-image file upload).
+const REQUIRED_BACKEND_CONTRACT = 2
 const SKEW_TOAST_ID = 'backend-contract-skew'
 
 /**

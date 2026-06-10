@@ -93,6 +93,7 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
+  pluginsHub: boolean
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean
@@ -127,6 +128,7 @@ export interface UiState {
   pasteCollapseChars: number
 
   sections: SectionVisibility
+  sessionTitle: string
   showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle

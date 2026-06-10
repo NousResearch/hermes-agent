@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
@@ -1077,6 +1078,54 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
 
 
 @pytest.mark.asyncio
+async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
+    monkeypatch,
+):
+    """A stuck post-delivery callback must not keep the typing task alive."""
+    monkeypatch.setattr(base_platform, "_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS", 0.01)
+    adapter = ProgressCaptureAdapter()
+    events = []
+
+    async def _handler(event):
+        return "done"
+
+    async def _post_delivery_cb():
+        events.append("callback-start")
+        await asyncio.Event().wait()
+
+    async def _stop_typing(chat_id):
+        events.append("typing-stopped")
+        await ProgressCaptureAdapter.stop_typing(adapter, chat_id)
+
+    adapter.set_message_handler(_handler)
+    adapter.stop_typing = _stop_typing
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
+
+    await asyncio.wait_for(
+        adapter._process_message_background(event, session_key), timeout=1.0
+    )
+
+    assert [call["content"] for call in adapter.sent] == ["done"]
+    assert events[:2] == ["typing-stopped", "callback-start"]
+    assert any(call["metadata"] == {"stopped": True} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_drops_tool_progress_after_generation_invalidation(monkeypatch, tmp_path):
     import yaml
 
@@ -1295,10 +1344,12 @@ class TerminalCommandAgent:
 
 
 @pytest.mark.asyncio
-async def test_terminal_progress_is_truncated_preview_not_bash_block(monkeypatch, tmp_path):
-    """Regression for #41215: terminal progress must render as a short truncated
-    preview, never the full command in a fenced ```bash block, even on a
-    markdown-capable (supports_code_blocks) gateway."""
+async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
+    """Terminal progress on a markdown-capable (supports_code_blocks) gateway
+    renders a bare fenced code block — no language tag (Slack mrkdwn would print
+    'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
+    command is collapsed to a single line capped at tool_preview_length so a long
+    or multi-line command doesn't render as a huge block (#42634)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1328,18 +1379,71 @@ async def test_terminal_progress_is_truncated_preview_not_bash_block(monkeypatch
         context_prompt="",
         history=[],
         source=source,
-        session_id="sess-terminal-no-bash-block",
+        session_id="sess-terminal-code-block",
         session_key="agent:main:telegram:dm:12345",
     )
 
     assert result["final_response"] == "done"
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
-    # Compact truncated preview, not a fenced bash block.
+    # Bare fenced block, no language tag (no '```bash').
+    assert "```" in all_content
     assert "```bash" not in all_content
-    assert 'terminal: "' in all_content
-    # The full multi-line command body must not reach the chat.
+    # Non-verbose collapses to the first line + truncation marker — the later
+    # command lines must NOT appear (this was the "huge block" regression).
+    assert "set -euo pipefail" in all_content
     assert "npm install -g hyperframes@latest" not in all_content
+    assert "node --version" not in all_content
+    # No truncated quoted preview for the terminal command.
+    assert 'terminal: "' not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_path):
+    """Verbose mode on a markdown-capable gateway renders the FULL multi-line
+    command in a bare fenced block (no truncation, no 'bash' tag).  This is the
+    parity guarantee for #42634: verbose keeps full detail, non-verbose caps."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-code-block-verbose",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "```" in all_content
+    assert "```bash" not in all_content
+    # Full command body present — verbose is uncapped.
+    assert "npm install -g hyperframes@latest" in all_content
+    assert "node --version" in all_content
 
 
 @pytest.mark.asyncio

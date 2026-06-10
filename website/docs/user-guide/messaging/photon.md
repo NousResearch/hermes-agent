@@ -22,26 +22,30 @@ your account.
 
 ## Architecture
 
-Inbound messages arrive as **signed webhooks**: Photon POSTs JSON with
-an `X-Spectrum-Signature` header to a URL you register, and Hermes'
-aiohttp listener verifies the HMAC-SHA256 signature before dispatching
-the event into the agent.
+Photon is a **persistent-connection** channel, like Discord or Slack —
+**no webhook, no public URL, no signing secret to manage.**
 
-Outbound replies go through a small supervised **Node sidecar** that
-runs the `spectrum-ts` SDK on loopback. Photon does not currently
-expose a public HTTP send-message endpoint — that's a roadmap item on
-their side — so until then the sidecar is the only way to call
-`Space.send(...)`. The Python plugin starts, supervises, and shuts
-down the sidecar automatically. When Photon ships an HTTP send
-endpoint we'll retire the sidecar in a follow-up release.
+The `spectrum-ts` SDK holds a long-lived **gRPC stream** to Photon for
+both directions. Because the SDK is TypeScript-only, Hermes runs it in a
+small supervised **Node sidecar** and talks to it over loopback:
+
+- **Inbound** — the sidecar consumes the SDK's `app.messages` gRPC
+  stream and forwards each message to the Python adapter over a loopback
+  `GET /inbound` (NDJSON). The adapter dedupes and dispatches it to the
+  agent, reconnecting automatically if the stream drops.
+- **Outbound** — replies are loopback POSTs to the sidecar, which calls
+  `space.send(...)` on the SDK.
+
+The Python plugin starts, supervises, and shuts down the sidecar
+automatically.
 
 ## Prerequisites
 
 - A Photon account — sign up at [app.photon.codes][app]
 - **Node.js 18.17 or newer** on PATH (`node --version`)
 - A phone number that can receive iMessage (used to bind your account)
-- A publicly reachable URL for the webhook receiver — Cloudflare
-  Tunnel, ngrok, or your own gateway hostname all work
+
+That's it — there is no public URL or tunnel to set up.
 
 ## First-time setup
 
@@ -58,17 +62,24 @@ hermes gateway setup
 hermes photon setup --phone +15551234567
 ```
 
-The setup:
+The setup, in order:
 
-1. Opens `https://app.photon.codes/` for device approval
-2. Creates a Spectrum-enabled project under your account
-3. Calls the Spectrum `create-user` endpoint with `type: shared` so
-   Photon allocates an iMessage line from the free pool
-4. Runs `npm install` inside the plugin's sidecar directory
+1. **Device login** (`client_id=photon-cli`) — opens
+   `https://app.photon.codes/` for approval and stores the bearer token.
+2. **Finds or creates** the `Hermes Agent` project on your account.
+3. **Enables Spectrum**, reads the project's Spectrum id, and rotates
+   the project secret.
+4. **Registers your phone number** as a Spectrum user — skipped if a
+   user with that number already exists, so re-running is safe.
+5. **Prints your assigned iMessage line** — the number you text to reach
+   your agent.
+6. **Runs `npm install`** inside the plugin's sidecar directory.
 
-Credentials are stored in `~/.hermes/auth.json` under
-`credential_pool.photon` (bearer token) and
-`credential_pool.photon_project` (project id + secret).
+Runtime credentials are written to `~/.hermes/.env`
+(`PHOTON_PROJECT_ID` = the Spectrum project id, `PHOTON_PROJECT_SECRET`),
+the same place every other channel keeps its token. Management metadata
+(device token, dashboard project id) lives in `~/.hermes/auth.json` under
+`credential_pool.photon` / `credential_pool.photon_project`.
 
 ## Authorizing users
 
@@ -131,26 +142,6 @@ Both keys also accept env vars (`PHOTON_REQUIRE_MENTION`,
 `PHOTON_MENTION_PATTERNS`). This is the same mention-gating model the
 BlueBubbles iMessage channel uses.
 
-## Registering the webhook
-
-Photon needs a public URL it can POST to. Expose your local listener
-(default port 8788, path `/photon/webhook`) via Cloudflare Tunnel or
-ngrok, then:
-
-```bash
-hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook
-```
-
-The response includes a `signingSecret` — **Photon only returns it
-once.** Save it to `~/.hermes/.env`:
-
-```bash
-PHOTON_WEBHOOK_SECRET=v0_64-char-hex...
-```
-
-The plugin verifies every inbound `POST` against this secret and
-rejects deliveries with a timestamp drift greater than 5 minutes.
-
 ## Start the gateway
 
 ```bash
@@ -160,7 +151,7 @@ hermes gateway start --platform photon
 You'll see something like:
 
 ```
-[photon] connected — webhook at 0.0.0.0:8788/photon/webhook, sidecar on 127.0.0.1:8789
+[photon] connected — sidecar on 127.0.0.1:8789, streaming inbound over gRPC
 ```
 
 Send an iMessage to your assigned number and Hermes will reply.
@@ -171,15 +162,20 @@ Send an iMessage to your assigned number and Hermes will reply.
 hermes photon status
 ```
 
-Prints:
+Prints saved credentials, sidecar health, your registered number, and the
+assigned iMessage line Hermes uses. When a Photon token and dashboard project
+are available, `status` refreshes missing number rows from the dashboard
+without provisioning new lines.
 
 ```
 Photon iMessage status
 ──────────────────────
   device token        : ✓ stored
-  project id          : 3c90c3cc-0d44-4b50-...
-  project key         : ✓ stored
-  webhook key         : ✓ set
+  dashboard project   : 3c90c3cc-0d44-4b50-...
+  spectrum project id : sp-...
+  project secret      : ✓ stored
+  my number           : +15551234567
+  assigned number     : +16282679185
   node binary         : /usr/bin/node
   sidecar deps        : ✓ installed
 ```
@@ -188,27 +184,19 @@ Common issues:
 
 - **`sidecar deps : ✗ run hermes photon install-sidecar`** — Node is
   installed but `spectrum-ts` isn't. Run the suggested command.
-- **`webhook key : ⚠ unset — verification disabled`** — the
-  plugin will accept ANY POST to the webhook URL, which is unsafe.
-  Re-run `hermes photon webhook register` and store the secret.
-- **`PHOTON_WEBHOOK_PORT` already in use** — set a different port via
-  `~/.hermes/.env`.
-- **Webhook reachable from localhost but Photon can't deliver** —
-  Photon needs a public hostname. Cloudflare Tunnel is the easiest
-  free option.
-
-## Webhook management
-
-```bash
-hermes photon webhook list                  # show registered hooks
-hermes photon webhook delete <webhook-id>   # remove one
-```
+- **`device token : ✗ missing`** — run `hermes photon setup` to log in.
+- **`No iMessage line assigned yet`** — Spectrum is enabled but no line
+  has been provisioned; re-run `hermes photon setup` or check the
+  [dashboard][app].
+- **Sidecar won't start** — confirm `node --version` is 18.17+ and that
+  `hermes photon install-sidecar` completed without errors.
 
 ## Limits today
 
-- **Inbound attachments are metadata-only.** Inbound webhooks carry the
-  filename + MIME type but no download URL — Photon documents an
-  attachment retrieval endpoint as roadmap.
+- **Inbound attachments are metadata-only.** Inbound events carry the
+  filename + MIME type; the agent sees a marker but can't yet read the
+  bytes. The SDK exposes attachment bytes via `content.read()`, so this
+  is a sidecar follow-up.
 - **Outbound attachments are supported.** Hermes sends images, voice
   notes, video, and documents through spectrum-ts' `attachment()` /
   `voice()` content builders via the sidecar's `/send-attachment`
@@ -222,23 +210,19 @@ hermes photon webhook delete <webhook-id>   # remove one
 
 | Variable                  | Default            | Notes                                      |
 |---------------------------|--------------------|--------------------------------------------|
-| `PHOTON_PROJECT_ID`       | from `auth.json`   | Set by `hermes photon setup`               |
-| `PHOTON_PROJECT_SECRET`   | from `auth.json`   | Set by `hermes photon setup`               |
-| `PHOTON_WEBHOOK_SECRET`   | (unset)            | From `hermes photon webhook register`      |
-| `PHOTON_WEBHOOK_PORT`     | `8788`             | Local port for the aiohttp listener        |
-| `PHOTON_WEBHOOK_PATH`     | `/photon/webhook`  | Path under which the listener mounts       |
-| `PHOTON_WEBHOOK_BIND`     | `0.0.0.0`          | Bind address for the listener              |
-| `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for sidecar control          |
+| `PHOTON_PROJECT_ID`       | from `.env`        | Spectrum project id (the SDK's `projectId`); set by setup |
+| `PHOTON_PROJECT_SECRET`   | from `.env`        | Project secret; set by setup               |
+| `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
-| `PHOTON_HOME_CHANNEL`     | (unset)            | Default space ID for cron / notifications  |
+| `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
 | `PHOTON_REQUIRE_MENTION`  | `false`            | Require a wake word before responding in groups |
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
-| `PHOTON_API_HOST`         | `spectrum.photon.codes` | Override the Spectrum management API host |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
+| `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
 
 [photon]: https://photon.codes/
 [app]: https://app.photon.codes/

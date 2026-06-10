@@ -107,6 +107,64 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
         server._clear_session_context(tokens)
 
 
+def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
+    import yaml
+
+    home.mkdir(parents=True, exist_ok=True)
+    cfg = {"terminal": {"cwd": cwd}} if cwd is not None else {}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    return home
+
+
+def test_profile_configured_cwd_reads_target_profile(tmp_path):
+    """A profile's own terminal.cwd is read from its config.yaml."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    home = _write_profile_cfg(tmp_path / "home", str(project))
+    assert server._profile_configured_cwd(home) == str(project)
+
+
+def test_profile_configured_cwd_skips_placeholders_and_missing(tmp_path):
+    """Placeholder values, missing config, and bad paths fall through to None."""
+    assert server._profile_configured_cwd(None) is None
+    assert server._profile_configured_cwd(tmp_path / "nope") is None
+    for placeholder in (".", "auto", "cwd", ""):
+        home = _write_profile_cfg(tmp_path / placeholder.strip("."), placeholder)
+        assert server._profile_configured_cwd(home) is None
+    home = _write_profile_cfg(tmp_path / "ghost", str(tmp_path / "does-not-exist"))
+    assert server._profile_configured_cwd(home) is None
+
+
+def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
+    """Issue #40334: a new session bound to another profile must use THAT
+    profile's terminal.cwd, not the launch profile's stale TERMINAL_CWD."""
+    profile_b = tmp_path / "ef-design"
+    profile_b.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-b", str(profile_b))
+    stale = tmp_path / "mahjong"
+    stale.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+
+    assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
+    # No profile → unchanged fallback to the launch env var.
+    assert server._completion_cwd({}) == str(stale)
+
+
+def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
+    """An explicit client-provided cwd still beats the profile config."""
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    profile_b = tmp_path / "configured"
+    profile_b.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-c", str(profile_b))
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
+    assert result == str(explicit)
+
+
 def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
     """A local terminal backend must keep host-validated session cwd behaviour."""
     project = tmp_path / "project"
@@ -900,6 +958,115 @@ def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
         "anthropic/claude-sonnet-4.6",
         "anthropic",
     )
+
+
+def test_load_fallback_model_merges_chain_providers_first(monkeypatch):
+    # Parity with HermesCLI / gateway: fallback_providers stays first and keeps
+    # its order, with any distinct legacy fallback_model entry merged in after
+    # (deduped on provider/model/base_url).
+    fallback_chain = [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    ]
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "fallback_model": {"provider": "legacy", "model": "legacy-model"},
+            "fallback_providers": fallback_chain,
+        },
+    )
+
+    assert server._load_fallback_model() == [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+        {"provider": "legacy", "model": "legacy-model"},
+    ]
+
+
+def test_make_agent_passes_configured_fallback_chain(monkeypatch):
+    captured = {}
+    fallback_chain = [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+    ]
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+            "fallback_providers": fallback_chain,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "token",
+            "api_mode": "codex_responses",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    agent = server._make_agent("sid", "session-key")
+
+    assert agent.model == "gpt-5.5"
+    assert captured["fallback_model"] == fallback_chain
+    assert captured["platform"] == "tui"
+
+
+def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
+    chain = [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    ]
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        _fallback_chain=chain,
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["fallback_model"] == chain
+
+
+def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+    )
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "max_turns": 25,
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "openai/gpt-5.5"},
+            ],
+        },
+    )
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["fallback_model"] == []
 
 
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):
@@ -2230,7 +2397,7 @@ def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
         target["agent"] = agent
         agent_ready.set()
 
-    def fake_apply(sid, target, raw):
+    def fake_apply(sid, target, raw, **kwargs):
         calls.append(("apply", sid, target.get("agent"), raw))
         if target.get("agent") is not agent:
             raise AssertionError("model switch ran before lazy agent was ready")
@@ -2257,7 +2424,7 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     server._sessions["sid"] = _session()
     seen = {}
 
-    def _fake_apply(sid, session, raw):
+    def _fake_apply(sid, session, raw, **_kwargs):
         seen["args"] = (sid, session["session_key"], raw)
         return {"value": "new/model", "warning": "catalog unreachable"}
 
@@ -2273,6 +2440,74 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     assert resp["result"]["value"] == "new/model"
     assert resp["result"]["warning"] == "catalog unreachable"
     assert seen["args"] == ("sid", "session-key", "new/model")
+
+
+def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch):
+    class _Agent:
+        provider = "openrouter"
+        model = "old/model"
+        base_url = ""
+        api_key = "sk-or"
+        switched = False
+
+        def switch_model(self, **_kwargs):
+            self.switched = True
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="openai/gpt-5.5-pro",
+        target_provider="openrouter",
+        api_key="sk-or",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        warning_message="",
+        model_info=types.SimpleNamespace(
+            has_cost_data=lambda: True,
+            cost_input=25.0,
+            cost_output=125.0,
+        ),
+    )
+
+    agent = _Agent()
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "openai/gpt-5.5-pro --provider openrouter",
+            },
+        }
+    )
+
+    assert resp["result"]["confirm_required"] is True
+    assert "did you mean to select openai/gpt-5.5?" in resp["result"]["confirm_message"]
+    assert agent.switched is False
+
+    confirmed = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "openai/gpt-5.5-pro --provider openrouter",
+                "confirm_expensive_model": True,
+            },
+        }
+    )
+
+    assert confirmed["result"]["confirm_required"] is False
+    assert confirmed["result"]["value"] == "openai/gpt-5.5-pro"
+    assert agent.switched is True
 
 
 def test_config_set_model_global_persists(monkeypatch):
@@ -2803,6 +3038,164 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     assert resp["result"]["path"] == str(screenshot)
     assert resp["result"]["remainder"] == ""
     assert len(server._sessions["sid"]["attached_images"]) == 1
+
+
+def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp_path):
+    """Remote case: client path doesn't exist on gateway → decode data_url bytes."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+
+        stored = workspace / ".hermes" / "desktop-attachments" / "report.txt"
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert resp["result"]["path"] == str(stored)
+        assert resp["result"]["ref_text"] == "@file:.hermes/desktop-attachments/report.txt"
+        assert stored.read_text(encoding="utf-8") == "hello world"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
+    """Local case: gateway can see the file but it's outside the workspace → copy in."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "outside.txt"
+    source.write_text("outside workspace", encoding="utf-8")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": str(source)},
+            }
+        )
+
+        stored = workspace / ".hermes" / "desktop-attachments" / "outside.txt"
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert resp["result"]["ref_text"] == "@file:.hermes/desktop-attachments/outside.txt"
+        assert stored.read_text(encoding="utf-8") == "outside workspace"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_uses_in_workspace_file_without_copying(monkeypatch, tmp_path):
+    """Local case: file already inside the workspace → ref it directly, no copy."""
+    workspace = tmp_path / "workspace"
+    (workspace / "data").mkdir(parents=True)
+    source = workspace / "data" / "exam.csv"
+    source.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": str(source)},
+            }
+        )
+
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is False
+        assert resp["result"]["ref_text"] == "@file:data/exam.csv"
+        # No copy: nothing staged under desktop-attachments.
+        assert not (workspace / ".hermes" / "desktop-attachments").exists()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_errors_when_unresolvable_and_no_bytes(monkeypatch, tmp_path):
+    """Remote path not on gateway and no data_url → actionable error, not a stage."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": "/Users/alice/missing.txt"},
+            }
+        )
+
+        assert "error" in resp
+        assert "no data_url" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
+    """Staged names with spaces must be backtick-quoted so the @file: ref parses."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "name": "my exam schedule.csv",
+                    "data_url": "data:text/csv;base64,YSxiCg==",
+                },
+            }
+        )
+
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["ref_text"] == "@file:`.hermes/desktop-attachments/my exam schedule.csv`"
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
@@ -3619,7 +4012,7 @@ def test_config_set_model_rejects_while_running(monkeypatch):
     """/model via config.set must reject during an in-flight turn."""
     seen = {"called": False}
 
-    def _fake_apply(sid, session, raw):
+    def _fake_apply(sid, session, raw, **_kwargs):
         seen["called"] = True
         return {"value": raw, "warning": ""}
 
@@ -3653,7 +4046,7 @@ def test_config_set_model_allowed_when_idle(monkeypatch):
     """Regression guard: idle sessions can still switch models."""
     seen = {"called": False}
 
-    def _fake_apply(sid, session, raw):
+    def _fake_apply(sid, session, raw, **_kwargs):
         seen["called"] = True
         return {"value": "newmodel", "warning": ""}
 

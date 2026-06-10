@@ -1,32 +1,30 @@
 """
 Photon Spectrum (iMessage) platform adapter for Hermes Agent.
 
+Both directions of traffic flow through a small supervised Node sidecar
+(see ``sidecar/index.mjs``) that runs the ``spectrum-ts`` SDK — the SDK is
+TypeScript-only and there is no public HTTP message API, so a sidecar is
+unavoidable.
+
 Inbound:
-    Photon delivers signed JSON ``POST``s to a URL we register.  The
-    adapter spins up an aiohttp server on ``PHOTON_WEBHOOK_PORT``,
-    verifies ``X-Spectrum-Signature`` (HMAC-SHA256 of
-    ``v0:{timestamp}:{body}`` keyed by the per-URL signing secret),
-    rejects deliveries with a timestamp drift > 5 minutes, dedupes on
-    ``message.id``, and dispatches a normalized ``MessageEvent`` to the
-    gateway runner via ``BasePlatformAdapter.handle_message``.
+    The SDK's ``app.messages`` is a long-lived **gRPC** stream. The sidecar
+    serializes each message to a normalized JSON event and streams it to this
+    adapter over a loopback ``GET /inbound`` (NDJSON). A background task here
+    consumes that stream, dedupes on ``messageId``, and dispatches a
+    ``MessageEvent`` to the gateway via ``BasePlatformAdapter.handle_message``.
+    No webhook, no public URL, no signing secret.
 
 Outbound:
-    Photon does not currently expose a public HTTP send-message
-    endpoint, so the adapter spawns a small Node sidecar (see
-    ``sidecar/index.mjs``) that runs the ``spectrum-ts`` SDK.  Each
-    ``send`` / ``send_typing`` / attachment call from Hermes is a
-    loopback POST to the sidecar with a shared bearer token.  Outbound
-    media (images, voice notes, video, documents) goes through
-    spectrum-ts' ``attachment()`` / ``voice()`` content builders.
-
-When Photon ships an HTTP send endpoint we can collapse the sidecar
-into ``_send_via_http`` and drop the Node dependency entirely.
+    ``send`` / ``send_typing`` are loopback POSTs to the sidecar's control
+    endpoints, authenticated with a shared bearer token.  Outbound media
+    (images, voice notes, video, documents) goes through spectrum-ts'
+    ``attachment()`` / ``voice()`` content builders via the sidecar's
+    ``/send-attachment`` endpoint.
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
+import base64
 import json
 import logging
 import os
@@ -39,21 +37,21 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-try:
+if TYPE_CHECKING:
+    # Type checkers see ``httpx`` as the always-imported module, so every use
+    # site type-checks cleanly. The runtime fallback below keeps the optional
+    # dependency truly optional (each use site is guarded by HTTPX_AVAILABLE).
     import httpx
     HTTPX_AVAILABLE = True
-except ImportError:  # pragma: no cover - httpx is already a Hermes dep
-    HTTPX_AVAILABLE = False
-    httpx = None  # type: ignore[assignment]
-
-try:
-    from aiohttp import web
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
-    web = None  # type: ignore[assignment]
+else:
+    try:
+        import httpx
+        HTTPX_AVAILABLE = True
+    except ImportError:  # pragma: no cover - httpx is already a Hermes dep
+        HTTPX_AVAILABLE = False
+        httpx = None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -62,21 +60,14 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.platforms.helpers import strip_markdown
 
-from .auth import (
-    DEFAULT_SPECTRUM_HOST,
-    load_project_credentials,
-    _spectrum_host,
-)
+from .auth import load_project_credentials
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
-
-_DEFAULT_WEBHOOK_PORT = 8788
-_DEFAULT_WEBHOOK_PATH = "/photon/webhook"
-_DEFAULT_WEBHOOK_BIND = "0.0.0.0"
 
 _DEFAULT_SIDECAR_PORT = 8789
 _DEFAULT_SIDECAR_BIND = "127.0.0.1"
@@ -86,11 +77,8 @@ _DEFAULT_SIDECAR_BIND = "127.0.0.1"
 # size to ~16 KB.  Keep a conservative cap that matches BlueBubbles.
 _MAX_MESSAGE_LENGTH = 8000
 
-# Spec says reject deliveries older than ~5 minutes for replay protection.
-_TIMESTAMP_DRIFT_SECONDS = 300
-
-# Dedup parameters — keep at least 1k IDs for ~48h per Photon's
-# at-least-once guidance.
+# Dedup parameters — the gRPC stream is at-least-once, and a sidecar
+# reconnect can replay, so keep at least 1k ids for ~48h.
 _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
@@ -118,7 +106,7 @@ def _coerce_port(value: Any, default: int) -> int:
 
 def check_requirements() -> bool:
     """Return True when both Python deps and the Node sidecar are available."""
-    if not HTTPX_AVAILABLE or not AIOHTTP_AVAILABLE:
+    if not HTTPX_AVAILABLE:
         return False
     if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
         return False
@@ -146,61 +134,33 @@ def is_connected(cfg: PlatformConfig) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed PlatformConfig.extra from env so env-only setups appear in status."""
+    """Seed PlatformConfig.extra from env so env-only setups appear in status.
+
+    The special ``home_channel`` key is handled by the core plugin hook and
+    becomes a proper ``HomeChannel`` on ``PlatformConfig``.
+    """
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    return {
-        "project_id": project_id,
-        "project_secret": project_secret,
-        "webhook_port": _coerce_port(os.getenv("PHOTON_WEBHOOK_PORT"), _DEFAULT_WEBHOOK_PORT),
-        "webhook_path": os.getenv("PHOTON_WEBHOOK_PATH") or _DEFAULT_WEBHOOK_PATH,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Signature verification
-
-def verify_signature(
-    *,
-    body: bytes,
-    timestamp_header: str,
-    signature_header: str,
-    signing_secret: str,
-    now: Optional[float] = None,
-    drift: int = _TIMESTAMP_DRIFT_SECONDS,
-) -> bool:
-    """Constant-time verify a Photon webhook signature.
-
-    Returns True iff the timestamp is within ``drift`` of *now* AND
-    ``signature_header == "v0=" + hmac_sha256(secret, "v0:{ts}:{body}")``.
-
-    Exposed at module scope so tests can exercise it without an adapter
-    instance.
-    """
-    if not timestamp_header or not signature_header or not signing_secret:
-        return False
-    try:
-        ts = int(timestamp_header)
-    except ValueError:
-        return False
-    if abs((now or time.time()) - ts) > drift:
-        return False
-    if not signature_header.startswith("v0="):
-        return False
-    expected = hmac.new(
-        signing_secret.encode("utf-8"),
-        f"v0:{ts}:".encode("utf-8") + body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature_header[3:])
+    seed = {"project_id": project_id, "project_secret": project_secret}
+    home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("PHOTON_HOME_CHANNEL_NAME", "Home"),
+        }
+    return seed
 
 
 # ---------------------------------------------------------------------------
 # Adapter
 
 class PhotonAdapter(BasePlatformAdapter):
-    """Inbound: signed webhook on aiohttp. Outbound: Node sidecar via loopback HTTP."""
+    """Bidirectional bridge to Photon Spectrum via the Node spectrum-ts sidecar.
+
+    Inbound: consume the sidecar's ``/inbound`` gRPC stream.
+    Outbound: loopback POSTs to the sidecar's control channel.
+    """
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
 
@@ -209,6 +169,8 @@ class PhotonAdapter(BasePlatformAdapter):
         extra = config.extra or {}
 
         # Project credentials (env wins, then config.extra, then auth.json).
+        # ``project_id`` here is the project's spectrumProjectId — the value
+        # the spectrum-ts SDK authenticates with.
         stored_id, stored_sec = load_project_credentials()
         self._project_id: str = (
             os.getenv("PHOTON_PROJECT_ID")
@@ -220,27 +182,6 @@ class PhotonAdapter(BasePlatformAdapter):
             os.getenv("PHOTON_PROJECT_SECRET")
             or extra.get("project_secret")
             or stored_sec
-            or ""
-        )
-
-        # Webhook receiver
-        self._webhook_port = _coerce_port(
-            extra.get("webhook_port") or os.getenv("PHOTON_WEBHOOK_PORT"),
-            _DEFAULT_WEBHOOK_PORT,
-        )
-        self._webhook_path = (
-            extra.get("webhook_path")
-            or os.getenv("PHOTON_WEBHOOK_PATH")
-            or _DEFAULT_WEBHOOK_PATH
-        )
-        self._webhook_bind = (
-            extra.get("webhook_bind")
-            or os.getenv("PHOTON_WEBHOOK_BIND")
-            or _DEFAULT_WEBHOOK_BIND
-        )
-        self._webhook_secret: str = (
-            os.getenv("PHOTON_WEBHOOK_SECRET")
-            or extra.get("webhook_secret")
             or ""
         )
 
@@ -259,12 +200,13 @@ class PhotonAdapter(BasePlatformAdapter):
         self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
         # Runtime state
-        self._runner: Optional["web.AppRunner"] = None
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
+        self._inbound_task: Optional[asyncio.Task] = None
+        self._inbound_running = False
         self._http_client: Optional["httpx.AsyncClient"] = None
-        # Lightweight in-memory dedup. Photon's at-least-once guarantee
-        # means we WILL see the same message.id more than once.
+        # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
+        # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
 
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
@@ -345,13 +287,6 @@ class PhotonAdapter(BasePlatformAdapter):
     # -- Connection lifecycle ---------------------------------------------
 
     async def connect(self) -> bool:
-        if not AIOHTTP_AVAILABLE:
-            self._set_fatal_error(
-                "MISSING_DEP",
-                "aiohttp not installed. Run: pip install aiohttp",
-                retryable=False,
-            )
-            return False
         if not HTTPX_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_DEP", "httpx not installed", retryable=False
@@ -366,19 +301,11 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             return False
 
-        # Start the aiohttp receiver first; without it the sidecar would
-        # be able to forward inbound traffic to a closed port.
-        try:
-            await self._start_webhook_server()
-        except OSError as e:
-            self._set_fatal_error(
-                "PORT_IN_USE",
-                f"webhook port {self._webhook_port} unavailable: {e}",
-                retryable=True,
-            )
-            return False
+        client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = client
 
-        # Spin up the Node sidecar (required for outbound).
+        # The sidecar holds the gRPC stream for BOTH directions, so it is
+        # required now (not just for outbound).
         if self._autostart_sidecar:
             try:
                 await self._start_sidecar()
@@ -388,23 +315,39 @@ class PhotonAdapter(BasePlatformAdapter):
                     f"failed to start Photon sidecar: {e}",
                     retryable=True,
                 )
-                await self._stop_webhook_server()
+                await client.aclose()
+                self._http_client = None
                 return False
         else:
-            logger.info("[photon] sidecar autostart disabled — outbound will fail")
+            logger.warning(
+                "[photon] sidecar autostart disabled — inbound + outbound will fail"
+            )
 
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        # Start consuming the inbound gRPC stream from the sidecar.
+        self._inbound_running = True
+        self._inbound_task = asyncio.get_event_loop().create_task(
+            self._inbound_loop()
+        )
+
         self._mark_connected()
         logger.info(
-            "[photon] connected — webhook at %s:%d%s, sidecar on %s:%d",
-            self._webhook_bind, self._webhook_port, self._webhook_path,
+            "[photon] connected — sidecar on %s:%d, streaming inbound over gRPC",
             self._sidecar_bind, self._sidecar_port,
         )
         return True
 
     async def disconnect(self) -> None:
+        self._inbound_running = False
+        if self._inbound_task is not None:
+            self._inbound_task.cancel()
+            try:
+                await self._inbound_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            self._inbound_task = None
         await self._stop_sidecar()
-        await self._stop_webhook_server()
         if self._http_client is not None:
             try:
                 await self._http_client.aclose()
@@ -413,119 +356,167 @@ class PhotonAdapter(BasePlatformAdapter):
             self._http_client = None
         self._mark_disconnected()
 
-    # -- Webhook server ----------------------------------------------------
+    # -- Inbound stream consumer ------------------------------------------
 
-    async def _start_webhook_server(self) -> None:
-        app = web.Application()
-        app.router.add_post(self._webhook_path, self._handle_webhook)
-        app.router.add_get("/healthz", lambda _: web.Response(text="ok"))
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self._webhook_bind, self._webhook_port)
-        await site.start()
+    async def _inbound_loop(self) -> None:
+        """Consume the sidecar's ``/inbound`` NDJSON stream, with reconnect.
 
-    async def _stop_webhook_server(self) -> None:
-        if self._runner is not None:
+        The sidecar owns the gRPC reconnect/heartbeat to Photon; this loop
+        only has to re-open the loopback HTTP stream if it drops (e.g. the
+        sidecar restarts).
+        """
+        client = self._http_client
+        if client is None:
+            return
+        url = f"http://{self._sidecar_bind}:{self._sidecar_port}/inbound"
+        headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
+        backoff = 1.0
+        while self._inbound_running:
             try:
-                await self._runner.cleanup()
-            except Exception:
-                pass
-            self._runner = None
+                async with client.stream(
+                    "GET", url, headers=headers, timeout=None,
+                ) as resp:
+                    if resp.status_code != 200:
+                        raise RuntimeError(f"/inbound returned {resp.status_code}")
+                    backoff = 1.0  # reset on a successful connect
+                    async for line in resp.aiter_lines():
+                        if not self._inbound_running:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue  # heartbeat
+                        await self._on_inbound_line(line)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if not self._inbound_running:
+                    break
+                logger.warning(
+                    "[photon] inbound stream dropped (%s); reconnecting in %.1fs",
+                    e, backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
-    async def _handle_webhook(self, request: "web.Request") -> "web.Response":
-        body = await request.read()
-        if self._webhook_secret:
-            ts = request.headers.get("X-Spectrum-Timestamp", "")
-            sig = request.headers.get("X-Spectrum-Signature", "")
-            if not verify_signature(
-                body=body,
-                timestamp_header=ts,
-                signature_header=sig,
-                signing_secret=self._webhook_secret,
-            ):
-                logger.warning("[photon] rejected webhook with bad signature")
-                return web.Response(status=401, text="invalid signature")
-        else:
-            logger.warning(
-                "[photon] PHOTON_WEBHOOK_SECRET unset — accepting unsigned "
-                "deliveries. Set the per-URL signing secret returned by "
-                "register-webhook to enable verification."
-            )
-
+    async def _on_inbound_line(self, line: str) -> None:
         try:
-            payload = json.loads(body or b"{}")
+            event = json.loads(line)
         except json.JSONDecodeError:
-            return web.Response(status=400, text="invalid json")
-        if payload.get("event") != "messages":
-            # Photon currently emits only `messages`; any future event
-            # types are ack'd 200 so they don't retry.
-            return web.Response(text="ok")
-
-        msg = payload.get("message") or {}
-        msg_id = msg.get("id")
-        if not msg_id:
-            return web.Response(status=400, text="missing message.id")
-        if self._is_duplicate(msg_id):
-            return web.Response(text="ok (dup)")
-
+            logger.debug("[photon] skipping non-JSON inbound line")
+            return
+        msg_id = event.get("messageId")
+        if msg_id and self._is_duplicate(msg_id):
+            return
         try:
-            await self._dispatch_inbound(payload)
+            await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
-            # 200 anyway — we own the dedup; failing here would cause
-            # Photon to retry the same id.
-        return web.Response(text="ok")
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
-        if len(self._seen_messages) > _DEDUP_MAX_SIZE:
-            cutoff = now - _DEDUP_WINDOW_SECONDS
-            self._seen_messages = {
-                k: v for k, v in self._seen_messages.items() if v > cutoff
-            }
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
+        seen = self._seen_messages
+        t = seen.get(msg_id)
+        if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
+            return True  # seen, unexpired
+        # New or expired: record and enforce a HARD size bound (evict oldest,
+        # insertion-order) so a burst of unique ids within the window can't grow
+        # the dict without limit — not just the expired-only prune.
+        if msg_id in seen:
+            del seen[msg_id]  # refresh insertion order
+        seen[msg_id] = now
+        if len(seen) > _DEDUP_MAX_SIZE:
+            for old in list(seen.keys())[: len(seen) - _DEDUP_MAX_SIZE]:
+                del seen[old]
         return False
 
-    async def _dispatch_inbound(self, payload: Dict[str, Any]) -> None:
-        msg = payload.get("message") or {}
-        space = msg.get("space") or payload.get("space") or {}
-        sender = msg.get("sender") or {}
-        content = msg.get("content") or {}
+    async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
+        """Normalize a sidecar inbound event and dispatch it to the gateway.
+
+        Event shape (from ``sidecar/index.mjs``)::
+
+            {
+              "messageId": "...",
+              "platform": "iMessage",
+              "space": {"id": "...", "type": "dm"|"group", "phone": "+E164"},
+              "sender": {"id": "+E164"},
+              "content": {"type": "text", "text": "..."}
+                       | {"type": "attachment"|"voice", "id", "name",
+                          "mimeType", "size", "duration"?, "data"?,
+                          "encoding"?},
+              "timestamp": "2026-05-14T19:06:32.000Z"
+
+        Attachment and voice content carry the bytes inline as base64 ``data``
+        (with ``encoding == "base64"``) when the sidecar could read them
+        within its size cap; otherwise only metadata is present and we surface
+        a marker.
+            }
+        """
+        space = event.get("space") or {}
+        sender = event.get("sender") or {}
+        content = event.get("content") or {}
 
         space_id = space.get("id") or ""
-        sender_id = sender.get("id") or ""
         if not space_id:
             logger.warning("[photon] inbound missing space.id")
             return
 
-        # Space type — Photon documents iMessage DM ids as `any;-;+E164`
-        # and group ids as `any;+;<chat-guid>`.  Use that as the
-        # heuristic; everything else is treated as DM.
-        chat_type = "group" if ";+;" in space_id else "dm"
+        # iMessage spaces carry their type directly — no id string-sniffing.
+        chat_type = "group" if space.get("type") == "group" else "dm"
+        sender_id = sender.get("id") or space.get("phone") or space_id
 
-        # Timestamp — ISO 8601 from the platform.
-        ts_str = msg.get("timestamp") or ""
+        ts_str = event.get("timestamp") or ""
         try:
-            timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            timestamp = (
+                datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts_str
+                else datetime.now(tz=timezone.utc)
+            )
         except ValueError:
             timestamp = datetime.now(tz=timezone.utc)
 
-        # Content normalization.  Spectrum is a discriminated union;
-        # text vs attachment metadata.  Attachments are metadata-only
-        # today (no download URL) — log + carry the name so the agent
-        # at least knows something was sent.
-        if content.get("type") == "text":
+        # Media attachments (local cached paths) handed to the agent via the
+        # gateway's image-routing path, exactly like the BlueBubbles channel.
+        media_urls: List[str] = []
+        media_types: List[str] = []
+
+        ctype = content.get("type")
+        if ctype == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
-        elif content.get("type") == "attachment":
-            name = content.get("name") or "(unnamed)"
+        elif ctype in {"attachment", "voice"}:
+            is_voice = ctype == "voice"
+            name = content.get("name") or ("voice" if is_voice else "(unnamed)")
             mime = content.get("mimeType") or ""
-            text = f"[Photon attachment received: {name} ({mime}) — no download URL yet]"
-            mtype = _attachment_message_type(mime)
+            mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
+            cached = _cache_inbound_attachment(
+                content, name, mime, force_audio=is_voice
+            )
+            if cached:
+                media_urls.append(cached)
+                media_types.append(
+                    mime or ("audio/mp4" if is_voice else "application/octet-stream")
+                )
+                # The real bytes are attached, so the agent sees the media
+                # itself — a short marker is enough text, and it keeps group
+                # mention-gating consistent with plain messages.
+                text = "(voice)" if is_voice else "(attachment)"
+            else:
+                # No bytes (over the sidecar cap, a failed read, or a caching
+                # failure) — fall back to a metadata marker so the agent still
+                # knows something arrived.
+                label = "voice" if is_voice else "attachment"
+                duration = content.get("duration")
+                duration_text = (
+                    f", duration: {duration}s"
+                    if isinstance(duration, (int, float))
+                    else ""
+                )
+                text = (
+                    f"[Photon {label} received: {name} "
+                    f"({mime or 'unknown MIME'}{duration_text})]"
+                )
         else:
-            text = f"[Photon content type not handled: {content.get('type')}]"
+            text = f"[Photon content type not handled: {ctype}]"
             mtype = MessageType.TEXT
 
         # Group-mention gating (parity with BlueBubbles). In group chats with
@@ -545,18 +536,20 @@ class PhotonAdapter(BasePlatformAdapter):
             chat_id=space_id,
             chat_name=space_id,
             chat_type=chat_type,
-            user_id=sender_id or space_id,
+            user_id=sender_id,
             user_name=sender_id or None,
         )
-        event = MessageEvent(
+        message_event = MessageEvent(
             text=text,
             message_type=mtype,
             source=source,
-            message_id=msg.get("id"),
-            raw_message=payload,
+            message_id=event.get("messageId"),
+            raw_message=event,
             timestamp=timestamp,
+            media_urls=media_urls,
+            media_types=media_types,
         )
-        await self.handle_message(event)
+        await self.handle_message(message_event)
 
     # -- Sidecar lifecycle -------------------------------------------------
 
@@ -670,7 +663,7 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, content, reply_to=reply_to)
+        return await self._sidecar_send(chat_id, self.format_message(content))
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -696,7 +689,7 @@ class PhotonAdapter(BasePlatformAdapter):
             # Couldn't fetch the URL — fall back to sending it as text.
             return await super().send_image(chat_id, image_url, caption, reply_to)
         return await self._sidecar_send_attachment(
-            chat_id, local_path, caption=caption, reply_to=reply_to,
+            chat_id, local_path, caption=caption,
         )
 
     async def send_image_file(
@@ -709,7 +702,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, image_path, caption=caption, reply_to=reply_to,
+            chat_id, image_path, caption=caption,
         )
 
     async def send_voice(
@@ -722,7 +715,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, audio_path, caption=caption, reply_to=reply_to, kind="voice",
+            chat_id, audio_path, caption=caption, kind="voice",
         )
 
     async def send_video(
@@ -735,7 +728,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, video_path, caption=caption, reply_to=reply_to,
+            chat_id, video_path, caption=caption,
         )
 
     async def send_document(
@@ -749,7 +742,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, file_path, name=file_name, caption=caption, reply_to=reply_to,
+            chat_id, file_path, name=file_name, caption=caption,
         )
 
     async def send_animation(
@@ -767,23 +760,97 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         try:
-            await self._sidecar_call("/typing", {"spaceId": chat_id})
+            await self._sidecar_call(
+                "/typing", {"spaceId": chat_id, "state": "start"}
+            )
         except Exception as e:
             logger.debug("[photon] send_typing failed: %s", e)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        try:
+            await self._sidecar_call(
+                "/typing", {"spaceId": chat_id, "state": "stop"}
+            )
+        except Exception as e:
+            logger.debug("[photon] stop_typing failed: %s", e)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return whatever we know about a Spectrum space id.
 
-        Photon's `space.id` is opaque (`any;-;+E164` for DMs,
-        `any;+;<guid>` for groups). We surface that shape directly so
-        the gateway has something to show in session pickers / logs.
+        Photon's ``space.id`` is opaque; the inbound event also carries the
+        DM/group type, but here we only have the id, so infer conservatively.
         """
-        chat_type = "group" if ";+;" in chat_id else "dm"
-        return {"name": chat_id, "type": chat_type, "id": chat_id}
+        return {"name": chat_id, "type": "dm", "id": chat_id}
 
-    async def _sidecar_send(
-        self, space_id: str, text: str, *, reply_to: Optional[str] = None,
+    def format_message(self, content: str) -> str:
+        return strip_markdown(content)
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
     ) -> SendResult:
+        """Photon/iMessage is plain text, so never show the generic Markdown banner."""
+        text = self.format_message(content)
+        result = await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result.success:
+            return result
+
+        error_str = result.error or ""
+        is_network = result.retryable or self._is_retryable_error(error_str)
+        if not is_network and self._is_timeout_error(error_str):
+            return result
+
+        if is_network:
+            for attempt in range(1, max_retries + 1):
+                delay = base_delay * (2 ** (attempt - 1))
+                logger.warning(
+                    "[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
+                    attempt, max_retries, delay, error_str,
+                )
+                await asyncio.sleep(delay)
+                result = await self.send(
+                    chat_id=chat_id,
+                    content=text,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return result
+                error_str = result.error or ""
+                if not (result.retryable or self._is_retryable_error(error_str)):
+                    break
+            else:
+                logger.error(
+                    "[photon] Failed to deliver response after %d retries: %s",
+                    max_retries, error_str,
+                )
+                return result
+
+        logger.warning(
+            "[photon] Send failed: %s - retrying plain-text message",
+            error_str,
+        )
+        fallback_result = await self.send(
+            chat_id=chat_id,
+            content=text[: self.MAX_MESSAGE_LENGTH],
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if not fallback_result.success:
+            logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
+        return fallback_result
+
+    async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning(
                 "[photon] truncating outbound from %d to %d chars",
@@ -791,8 +858,6 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
-        if reply_to:
-            body["replyTo"] = reply_to
         try:
             data = await self._sidecar_call("/send", body)
         except Exception as e:
@@ -807,7 +872,6 @@ class PhotonAdapter(BasePlatformAdapter):
         name: Optional[str] = None,
         mime_type: Optional[str] = None,
         caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
         kind: str = "attachment",
     ) -> SendResult:
         """POST a local file to the sidecar's ``/send-attachment`` endpoint.
@@ -842,8 +906,6 @@ class PhotonAdapter(BasePlatformAdapter):
             body["mimeType"] = mime_type
         if caption:
             body["caption"] = caption
-        if reply_to:
-            body["replyTo"] = reply_to
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:
@@ -887,11 +949,87 @@ def _attachment_message_type(mime: str) -> MessageType:
     return MessageType.DOCUMENT
 
 
+# MIME → file-extension maps for caching inbound attachment bytes. These mirror
+# the BlueBubbles iMessage channel so both adapters name cached media the same.
+_IMAGE_EXT_BY_MIME = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".jpg",
+    "image/heif": ".jpg",
+    "image/tiff": ".jpg",
+}
+_AUDIO_EXT_BY_MIME = {
+    "audio/mp3": ".mp3",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-caf": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".m4a",
+}
+
+
+def _cache_inbound_attachment(
+    content: Dict[str, Any],
+    name: str,
+    mime: str,
+    *,
+    force_audio: bool = False,
+) -> Optional[str]:
+    """Decode a base64-inlined inbound attachment and cache it locally.
+
+    The sidecar inlines the attachment bytes as ``content["data"]`` (base64).
+    We decode them and route to the shared media cache by MIME type, returning
+    the cached absolute path so the caller can populate ``media_urls`` (which
+    the gateway then hands to the model). Returns ``None`` when there are no
+    bytes (over the sidecar's inline cap or a failed read) or when caching
+    fails, so the caller can fall back to a text marker.
+    """
+    data_b64 = content.get("data")
+    if not data_b64:
+        return None
+    try:
+        raw = base64.b64decode(data_b64)
+    except (ValueError, TypeError) as exc:
+        logger.warning("[photon] failed to decode inbound attachment bytes: %s", exc)
+        return None
+
+    from gateway.platforms.base import (
+        cache_audio_from_bytes,
+        cache_document_from_bytes,
+        cache_image_from_bytes,
+    )
+
+    mime = (mime or "").lower()
+    # Prefer the real extension from the filename; fall back to the MIME map.
+    suffix = Path(name).suffix if name else ""
+    try:
+        if mime.startswith("image/"):
+            ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
+            try:
+                return cache_image_from_bytes(raw, ext)
+            except ValueError:
+                # Bytes don't look like a supported image (e.g. HEIC magic) —
+                # still deliver them as a document rather than dropping them.
+                return cache_document_from_bytes(raw, name)
+        if force_audio or mime.startswith("audio/"):
+            ext = suffix or _AUDIO_EXT_BY_MIME.get(
+                mime, ".m4a" if force_audio else ".mp3"
+            )
+            return cache_audio_from_bytes(raw, ext)
+        # Video, application/*, and everything else → document cache.
+        return cache_document_from_bytes(raw, name)
+    except Exception as exc:
+        logger.warning("[photon] failed to cache inbound attachment %s: %s", name, exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Standalone (out-of-process) send for cron deliveries when the gateway
-# is not co-resident.  Spins up an ephemeral sidecar call by spawning
-# the existing sidecar binary one-shot; if a live sidecar is already
-# listening on the configured port we reuse it.
+# is not co-resident.  Reuses a live sidecar already listening on the
+# configured port (cron processes cannot spawn the sidecar themselves).
 
 async def _standalone_send(
     pconfig: PlatformConfig,
@@ -980,7 +1118,7 @@ def register(ctx) -> None:
 
     ctx.register_platform(
         name="photon",
-        label="Photon iMessage",
+        label="iMessage via Photon",
         adapter_factory=lambda cfg: PhotonAdapter(cfg),
         check_fn=check_requirements,
         validate_config=validate_config,
@@ -1011,7 +1149,7 @@ def register(ctx) -> None:
             "Treat replies like regular text messages — short, friendly, no "
             "markdown rendering. Recipient identifiers are E.164 phone "
             "numbers; never expose them in responses unless the user asked. "
-            "Attachments arrive as metadata only (no download URL yet)."
+            "Attachments arrive as metadata only."
         ),
     )
 

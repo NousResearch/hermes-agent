@@ -75,6 +75,14 @@ export async function desktopGitRoot(path: string): Promise<string | null> {
   return result.root
 }
 
+export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string } | null> {
+  if (!isDesktopFsRemoteMode()) {
+    return null
+  }
+
+  return bridge().api<{ branch: string; cwd: string }>({ path: '/api/fs/default-cwd' })
+}
+
 export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {
   const desktop = bridge()
   if (!isDesktopFsRemoteMode()) {

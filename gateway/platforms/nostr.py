@@ -345,6 +345,17 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
+        # Guard against two gateway instances driving the same Nostr identity:
+        # that would double-process inbound gift wraps, double-send outbound
+        # DMs, and corrupt the pubkey-scoped dedup file (non-atomic writes from
+        # two processes). Mirrors yuanbao/whatsapp/telegram. On contention this
+        # records a non-retryable fatal error and returns False; the lock is
+        # released in disconnect() (which the gateway always calls on failure).
+        if not self._acquire_platform_lock(
+            "nostr-pubkey", self._pubkey_hex, "Nostr identity"
+        ):
+            return False
+
         self._load_seen_ids()
         self._client = Client(self._signer)
 
@@ -362,12 +373,13 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
                 len(self._relay_urls),
             )
             self._client = None
+            self._release_platform_lock()
             return False
 
         await self._client.connect()
         logger.info("Nostr: connected to %d/%d relay(s)", added, len(self._relay_urls))
 
-        self._running = True
+        self._mark_connected()
 
         # Publish Kind 0 profile and Kind 10050 DM inbox list
         try:
@@ -406,7 +418,7 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
         # Order matters: stop the watchdog first so it can't start a recovery
         # cycle while we are tearing the client down.  The notif task and the
         # client follow, mirroring connect()'s construction order in reverse.
-        self._running = False
+        self._mark_disconnected()
         if self._watchdog_task:
             self._watchdog_task.cancel()
             try:
@@ -429,6 +441,7 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
             self._client = None
         if NostrAdapter._active_instance is self:
             NostrAdapter.set_active(None)
+        self._release_platform_lock()
         logger.info("Nostr: disconnected")
 
     # ------------------------------------------------------------------
@@ -725,6 +738,9 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
         if not self._client:
             return SendResult(success=False, error="Nostr: not connected")
 
+        if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
+
         try:
             recipient_pk = PublicKey.parse(chat_id.strip())
         except Exception:
@@ -733,30 +749,39 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
         exp_ts = int(time.time()) + self._nip40_ttl_seconds
         expiration = Tag.expiration(Timestamp.from_secs(exp_ts))
 
-        try:
-            output = await self._client.send_private_msg(recipient_pk, content, [expiration])
-        except Exception as exc:
-            logger.error("Nostr: failed to send DM: %s", exc)
-            return SendResult(success=False, error=str(exc))
+        # Long replies are split into multiple DMs. Relays accept large events,
+        # but each NIP-17 message is a separate gift wrap and most Nostr clients
+        # render very long DMs poorly. truncate_message preserves code-fence
+        # boundaries and appends "(1/N)" indicators. Mirrors whatsapp.py:937.
+        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
 
-        # NIP-17: also send a copy to ourselves so we can recover sent-message
-        # history from any other client we sign in with.
-        try:
-            await self._client.send_private_msg(self._keys.public_key(), content, [expiration])
-        except Exception as exc:
-            logger.debug("Nostr: failed to publish self-copy: %s", exc)
-
-        # Try to expose a message_id; tolerate shape changes between sdk versions.
-        message_id: Optional[str] = None
-        try:
-            message_id = output.id.to_hex()  # type: ignore[attr-defined]
-        except Exception:
+        self_pk = self._keys.public_key()
+        last_message_id: Optional[str] = None
+        for chunk in chunks:
             try:
-                message_id = output.id().to_hex()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+                output = await self._client.send_private_msg(recipient_pk, chunk, [expiration])
+            except Exception as exc:
+                logger.error("Nostr: failed to send DM: %s", exc)
+                return SendResult(success=False, error=str(exc))
 
-        return SendResult(success=True, message_id=message_id)
+            # NIP-17: also send a copy to ourselves so we can recover sent-message
+            # history from any other client we sign in with.
+            try:
+                await self._client.send_private_msg(self_pk, chunk, [expiration])
+            except Exception as exc:
+                logger.debug("Nostr: failed to publish self-copy: %s", exc)
+
+            # Try to expose a message_id; tolerate shape changes between sdk
+            # versions. The last chunk's id is returned (matches whatsapp.py).
+            try:
+                last_message_id = output.id.to_hex()  # type: ignore[attr-defined]
+            except Exception:
+                try:
+                    last_message_id = output.id().to_hex()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+        return SendResult(success=True, message_id=last_message_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Nostr has no typing-indicator protocol; this is a no-op."""

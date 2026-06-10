@@ -1103,6 +1103,18 @@ def load_gateway_config() -> GatewayConfig:
             # apply_yaml_config_fn hook (plugins/platforms/whatsapp/adapter.py).
             # #41112 / #3823.
 
+            # Nostr settings → env vars (env vars take precedence). Nostr is
+            # DM-only (NIP-17), so the only allowlist is allow_from → the npub
+            # allowlist the authz layer reads (NOSTR_ALLOWED_NPUBS). Use "*" to
+            # allow all. Mirrors the whatsapp/telegram allow_from bridge.
+            nostr_cfg = yaml_cfg.get("nostr", {})
+            if isinstance(nostr_cfg, dict):
+                af = nostr_cfg.get("allow_from")
+                if af is not None and not os.getenv("NOSTR_ALLOWED_NPUBS"):
+                    if isinstance(af, list):
+                        af = ",".join(str(v) for v in af)
+                    os.environ["NOSTR_ALLOWED_NPUBS"] = str(af)
+
             # Signal settings → env vars (env vars take precedence)
             signal_cfg = yaml_cfg.get("signal", {})
             if isinstance(signal_cfg, dict):

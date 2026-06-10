@@ -504,6 +504,49 @@ class TestLoadGatewayConfig:
             "123456789012345678,999888777666555444"
         )
 
+    def test_bridges_nostr_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
+        """nostr.allow_from should populate NOSTR_ALLOWED_NPUBS for auth.
+
+        Nostr's allowlist env var is NOSTR_ALLOWED_NPUBS (not the generic
+        <PLATFORM>_ALLOWED_USERS), so it needs its own YAML→env bridge; the
+        authz layer reads the env var, not config.extra.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "nostr:\n"
+            "  allow_from:\n"
+            "    - \"npub1aaa\"\n"
+            "    - \"npub1bbb\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("NOSTR_ALLOWED_NPUBS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("NOSTR_ALLOWED_NPUBS") == "npub1aaa,npub1bbb"
+
+    def test_nostr_allow_from_does_not_override_env(self, tmp_path, monkeypatch):
+        """An explicit NOSTR_ALLOWED_NPUBS env var wins over config.yaml."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "nostr:\n"
+            "  allow_from: \"npub1fromyaml\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("NOSTR_ALLOWED_NPUBS", "npub1fromenv")
+
+        load_gateway_config()
+
+        assert os.environ.get("NOSTR_ALLOWED_NPUBS") == "npub1fromenv"
+
     def test_bridges_discord_platform_extra_allow_from_to_env(self, tmp_path, monkeypatch):
         """platforms.discord.extra.allow_from should reach DISCORD_ALLOWED_USERS too."""
         hermes_home = tmp_path / ".hermes"

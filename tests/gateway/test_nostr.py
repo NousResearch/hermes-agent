@@ -528,6 +528,57 @@ class TestNostrAdapterRuntime:
         assert result.success is False
         assert "not connected" in (result.error or "").lower()
 
+    @pytest.mark.asyncio
+    async def test_send_chunks_long_messages(self):
+        # Relays accept large events but clients render long DMs poorly, and
+        # declaring MAX_MESSAGE_LENGTH is inert unless send() actually splits.
+        # A >MAX_MESSAGE_LENGTH reply must go out as multiple NIP-17 DMs, each
+        # with its own self-copy.
+        from gateway.platforms.nostr import NostrAdapter
+        from nostr_sdk import Keys
+
+        config = self._make_config()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
+            adapter = NostrAdapter(config)
+
+        recipient_hex = Keys.parse("ab" * 32).public_key().to_hex()
+        mock_client = MagicMock()
+        mock_client.send_private_msg = AsyncMock()
+        adapter._client = mock_client
+
+        # Two full chunks' worth of newline-free text forces a split.
+        long_text = "x" * (adapter.MAX_MESSAGE_LENGTH * 2)
+        expected_chunks = adapter.truncate_message(long_text, adapter.MAX_MESSAGE_LENGTH)
+        assert len(expected_chunks) >= 2, "test text should span multiple chunks"
+
+        result = await adapter.send(recipient_hex, long_text)
+
+        assert result.success is True
+        # Each chunk is sent once to the recipient and once as a self-copy.
+        assert mock_client.send_private_msg.call_count == len(expected_chunks) * 2
+        # Every send stays within the declared per-message ceiling.
+        for call in mock_client.send_private_msg.call_args_list:
+            assert len(call.args[1]) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_send_skips_empty_content(self):
+        from gateway.platforms.nostr import NostrAdapter
+        from nostr_sdk import Keys
+
+        config = self._make_config()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
+            adapter = NostrAdapter(config)
+
+        mock_client = MagicMock()
+        mock_client.send_private_msg = AsyncMock()
+        adapter._client = mock_client
+
+        result = await adapter.send(Keys.parse("ab" * 32).public_key().to_hex(), "   ")
+        assert result.success is True
+        assert mock_client.send_private_msg.call_count == 0
+
 
 # ---------------------------------------------------------------------------
 # connect() relay-add guard + _active_instance lifecycle
@@ -572,6 +623,61 @@ class TestNostrConnectLifecycle:
         mock_client.connect.assert_not_awaited()
         mock_client.subscribe.assert_not_awaited()
         assert NostrAdapter.get_active() is not adapter
+
+    @pytest.mark.asyncio
+    async def test_connect_aborts_when_identity_lock_held(self):
+        # Two gateways driving the same nsec would double-process inbound gift
+        # wraps, double-send outbound DMs, and corrupt the pubkey-scoped dedup
+        # file. connect() must bail before building a client when the
+        # identity lock is already held elsewhere.
+        from gateway.platforms.nostr import NostrAdapter
+
+        config = self._make_config()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
+            adapter = NostrAdapter(config)
+        NostrAdapter.set_active(None)
+
+        adapter._load_seen_ids = MagicMock()
+        adapter._acquire_platform_lock = MagicMock(return_value=False)
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock()
+
+        with patch("gateway.platforms.nostr.Client", return_value=mock_client):
+            ok = await adapter.connect()
+
+        assert ok is False
+        adapter._acquire_platform_lock.assert_called_once()
+        # The lock scope/identity must be the bot pubkey, not e.g. the relay URL.
+        scope, identity, _desc = adapter._acquire_platform_lock.call_args.args
+        assert scope == "nostr-pubkey"
+        assert identity == adapter._pubkey_hex
+        adapter._load_seen_ids.assert_not_called()
+        mock_client.connect.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_releases_identity_lock_when_all_relays_fail(self):
+        # The zero-relay bail-out must not leak the identity lock, or a clean
+        # restart on the same nsec would falsely report the identity in use.
+        from gateway.platforms.nostr import NostrAdapter
+
+        config = self._make_config(relays="wss://r1.example.com")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
+            adapter = NostrAdapter(config)
+        NostrAdapter.set_active(None)
+
+        adapter._load_seen_ids = MagicMock()
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._release_platform_lock = MagicMock()
+        mock_client = MagicMock()
+        mock_client.add_relay = AsyncMock(side_effect=RuntimeError("relay rejected"))
+
+        with patch("gateway.platforms.nostr.Client", return_value=mock_client):
+            ok = await adapter.connect()
+
+        assert ok is False
+        adapter._release_platform_lock.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_disconnect_cancels_watchdog_before_notif_task(self):

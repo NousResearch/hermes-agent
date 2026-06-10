@@ -167,6 +167,31 @@ def _write_stderr_log_header(server_name: str) -> None:
     except Exception:
         pass
 
+
+def _mcp_stderr_log_path_display() -> str:
+    """Return the user-facing path for the shared MCP stderr log."""
+    try:
+        from hermes_constants import display_hermes_home
+        return f"{display_hermes_home()}/logs/mcp-stderr.log"
+    except Exception:
+        return "~/.hermes/logs/mcp-stderr.log"
+
+
+def _uses_stdio_transport(config: dict) -> bool:
+    """Return true when this MCP server config will spawn a stdio process."""
+    return bool(config.get("command")) and "url" not in config
+
+
+def _format_connect_error_for_config(exc: BaseException, config: dict) -> str:
+    """Render a connection error with stdio-specific diagnostic context."""
+    message = _format_connect_error(exc)
+    if _uses_stdio_transport(config):
+        message = (
+            f"{message} (stdio subprocess stderr log: "
+            f"{_mcp_stderr_log_path_display()})"
+        )
+    return message
+
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
 # ---------------------------------------------------------------------------
@@ -3550,7 +3575,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                     "Failed to connect to MCP server '%s'%s: %s",
                     name,
                     f" (command={command})" if command else "",
-                    _format_connect_error(result),
+                    _format_connect_error_for_config(result, new_servers.get(name, {})),
                 )
 
     # Per-server timeouts are handled inside _discover_and_register_server.
@@ -3740,7 +3765,11 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
 
         for name, outcome in zip(names, outcomes):
             if isinstance(outcome, Exception):
-                logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
+                logger.debug(
+                    "Probe: failed to connect to '%s': %s",
+                    name,
+                    _format_connect_error_for_config(outcome, enabled.get(name, {})),
+                )
                 continue
             probed_servers.append(outcome)
             tools = []

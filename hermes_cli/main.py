@@ -3515,11 +3515,12 @@ def _parse_cli_args(parser, subparsers, argv):
     return args
 
 
-def _default_to_chat(args) -> None:
+def _default_to_chat(args) -> int:
     """No subcommand given: run chat."""
     _promote_top_level_resume(args)
     _set_chat_arg_defaults(args)
-    cmd_chat(args)
+    result = cmd_chat(args)
+    return int(result) if isinstance(result, int) else 0
 
 
 def main():
@@ -3608,20 +3609,19 @@ def main():
 
     # No subcommand (optionally with top-level --resume / --continue) → chat.
     if args.command is None:
-        _default_to_chat(args)
-        return
+        return _default_to_chat(args)
 
     # A handler's int return code becomes the exit code (None = success).
     if hasattr(args, "func"):
-        rc = args.func(args)
-        if isinstance(rc, int) and rc != 0:
-            sys.exit(rc)
+        result = args.func(args)
+        return int(result) if isinstance(result, int) else 0
     else:
         parser.print_help()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

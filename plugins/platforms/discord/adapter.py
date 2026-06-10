@@ -602,6 +602,11 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
+        # linked text-channel id; set by run.py. Lets the inactivity timer leave
+        # the bot in the channel when the user deliberately picked text-only
+        # (/voice off) instead of leaving (/voice leave).
+        self._voice_mode_getter: Optional[Callable] = None  # set by run.py
         # Phase 3: continuous voice mixer (ambient idle bed + ducked speech).
         # Installed once per guild on join; lets acks / TTS / the "thinking"
         # loop overlap in one outgoing stream instead of stop-and-swap.
@@ -2265,6 +2270,20 @@ class DiscordAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
+        # ``/voice off`` mutes spoken replies but deliberately keeps the bot in
+        # the channel (leaving is ``/voice leave``). The inactivity timer only
+        # counts the bot's OWN audio as activity, so under voice-off mode it
+        # fires every VOICE_TIMEOUT seconds, yanks the bot out, and spams the
+        # text channel with "Left voice channel (inactivity timeout)." Honor the
+        # user's choice: skip the auto-disconnect while voice replies are off.
+        # (The timer re-arms when the bot next speaks or hears a user.)
+        _mode_getter = getattr(self, "_voice_mode_getter", None)
+        if text_ch_id is not None and _mode_getter is not None:
+            try:
+                if _mode_getter(str(text_ch_id)) == "off":
+                    return
+            except Exception:
+                pass
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:
@@ -2395,6 +2414,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=False,
                     ):
                         continue
+                    # A user speaking to the bot is activity too — not just the
+                    # bot's own playback. Reset the inactivity timer so an active
+                    # listener isn't disconnected mid-conversation (this also
+                    # covers voice-on text-only sessions that never play audio).
+                    self._reset_voice_timeout(guild_id)
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
             pass

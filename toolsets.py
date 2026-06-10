@@ -193,8 +193,8 @@ TOOLSETS = {
 
     
     "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search_files"],
+        "description": "File manipulation tools: read, write, patch (with fuzzy matching), search (content + files), and Obsidian vault operations",
+        "tools": ["read_file", "write_file", "patch", "search_files", "vault_health", "vault_read", "vault_search", "vault_list", "vault_create"],
         "includes": []
     },
     

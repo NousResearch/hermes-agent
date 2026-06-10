@@ -688,6 +688,40 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+# Placeholder ``terminal.cwd`` values that don't name a real directory — the
+# gateway resolves these to the home dir at runtime, so they must NOT be treated
+# as an explicit workspace (mirrors gateway/run.py's config bridge).
+_CWD_PLACEHOLDERS = {".", "auto", "cwd"}
+
+
+def _profile_configured_cwd(profile_home: Path | None) -> str | None:
+    """Resolve a non-launch profile's ``terminal.cwd`` from its own config.yaml.
+
+    The desktop's app-global remote mode serves every profile from one backend,
+    so the process-global ``TERMINAL_CWD`` belongs to the *launch* profile. A new
+    session bound to another profile must take its workspace from THAT profile's
+    config, not the stale env var (issue #40334). Returns an absolute, existing
+    directory, or None for placeholders / missing / invalid paths.
+    """
+    if profile_home is None:
+        return None
+    try:
+        import yaml
+
+        p = Path(profile_home) / "config.yaml"
+        if not p.exists():
+            return None
+        with open(p, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        raw = str((data.get("terminal") or {}).get("cwd") or "").strip()
+        if not raw or raw in _CWD_PLACEHOLDERS:
+            return None
+        resolved = os.path.abspath(os.path.expanduser(raw))
+        return resolved if os.path.isdir(resolved) else None
+    except Exception:
+        return None
+
+
 def write_json(obj: dict) -> bool:
     """Emit one JSON frame. Routes via the most-specific transport available.
 
@@ -995,9 +1029,13 @@ def _normalize_completion_path(path_part: str) -> str:
 
 
 def _completion_cwd(params: dict | None = None) -> str:
+    params = params or {}
     raw = (
-        (params or {}).get("cwd")
-        or _sessions.get((params or {}).get("session_id") or "", {}).get("cwd")
+        params.get("cwd")
+        or _sessions.get(params.get("session_id") or "", {}).get("cwd")
+        # A session bound to another profile resolves its workspace from THAT
+        # profile's config before falling back to the launch profile's env var.
+        or _profile_configured_cwd(_profile_home(params.get("profile")))
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
     )

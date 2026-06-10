@@ -641,11 +641,13 @@ class CLIAgentSetupMixin:
             _session_label_c = _skin.get_color("session_label", "#DAA520")
             _session_border_c = _skin.get_color("session_border", "#8B8682")
             _assistant_label_c = _skin.get_color("ui_ok", "#8FBC8F")
+            _agent_label = _skin.get_branding("agent_name") or "Hermes"
         except Exception:
             _history_text_c = "#FFF8DC"
             _session_label_c = "#DAA520"
             _session_border_c = "#8B8682"
             _assistant_label_c = "#8FBC8F"
+            _agent_label = "Hermes"
 
         lines = Text()
         if skipped:
@@ -664,13 +666,13 @@ class CLIAgentSetupMixin:
                     lines.append(f"         {ml}\n", style="dim")
             elif role == "assistant_last":
                 # Last assistant response shown in full, non-dim
-                lines.append("  ◆ Hermes: ", style=f"bold {_assistant_label_c}")
+                lines.append(f"  ◆ {_agent_label}: ", style=f"bold {_assistant_label_c}")
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="")
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="")
             else:
-                lines.append("  ◆ Hermes: ", style=f"dim bold {_assistant_label_c}")
+                lines.append(f"  ◆ {_agent_label}: ", style=f"dim bold {_assistant_label_c}")
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:

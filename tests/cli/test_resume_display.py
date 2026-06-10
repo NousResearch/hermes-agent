@@ -132,7 +132,7 @@ class TestDisplayResumedHistory:
         output = self._capture_display(cli)
 
         assert "You:" in output
-        assert "Hermes:" in output
+        assert "◆" in output  # assistant label with skin agent_name
         assert "What is Python?" in output
         assert "Python is a high-level programming language." in output
         assert "How do I install it?" in output
@@ -333,7 +333,7 @@ class TestDisplayResumedHistory:
 
         # The assistant entry should be skipped, only the user message shown
         assert "You:" in output
-        assert "Hermes:" not in output
+        assert "◆" not in output  # no assistant entries to show
 
     def test_only_system_messages_no_output(self):
         cli = _make_cli()

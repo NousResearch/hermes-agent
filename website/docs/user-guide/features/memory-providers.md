@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, GBrain"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,23 +22,60 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, gbrain
 ```
 
 ## How It Works
 
-When a memory provider is active, Hermes automatically:
+When a write-capable memory provider is active, Hermes can automatically:
 
-1. **Injects provider context** into the system prompt (what the provider knows)
-2. **Prefetches relevant memories** before each turn (background, non-blocking)
-3. **Syncs conversation turns** to the provider after each response
-4. **Extracts memories on session end** (for providers that support it)
+1. **Inject provider context** into the system prompt (what the provider knows)
+2. **Prefetch relevant memories** before each turn (background, non-blocking)
+3. **Sync conversation turns** to the provider after each response
+4. **Extract memories on session end** (for providers that support it)
 5. **Mirrors built-in memory writes** to the external provider
 6. **Adds provider-specific tools** so the agent can search, store, and manage memories
+
+Read-only providers or read-only modes, such as GBrain's safe default, intentionally disable write/sync/ingest behavior while preserving search/recall.
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### GBrain
+
+Local or self-hosted GBrain recall through an HTTP MCP endpoint, designed for single-writer governance. GBrain is read-only by default so normal Hermes profiles can search memory without ingesting, deleting, or modifying pages. Explicit `read-write` mode is intended only for Athena/steward-style profiles that are authorized to curate durable brain updates.
+
+| | |
+|---|---|
+| **Best for** | Reusing an existing GBrain knowledge base as Hermes long-term recall |
+| **Requires** | A GBrain HTTP MCP endpoint, typically a read-only proxy for non-steward profiles |
+| **Data storage** | Your configured GBrain backend |
+| **Cost** | Whatever your GBrain deployment costs |
+
+**Tools (2):** `gbrain_memory_search` (query recalled GBrain context) and `gbrain_memory_store_candidate` (blocked Athena handoff in read-only mode; write-tool call only in explicit read-write mode).
+
+**Safe default setup:**
+
+```bash
+hermes memory setup gbrain
+```
+
+Manual read-only configuration:
+
+```yaml
+memory:
+  provider: gbrain
+  gbrain:
+    endpoint: "http://127.0.0.1:3132/mcp"
+    mode: "read-only"
+    source_id: "__all__"
+    max_results: 6
+```
+
+For Athena-only write-capable usage, configure `mode: read-write` against a writer endpoint and keep credentials outside config/docs/logs. Read-write mode still does not auto-ingest whole conversations; it mirrors only explicit memory writes or explicit store-candidate tool calls through the configured write tool.
+
+See `plugins/memory/gbrain/README.md` for the full config reference and single-writer safety notes.
 
 ### Honcho
 

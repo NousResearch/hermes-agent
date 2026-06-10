@@ -139,16 +139,17 @@ def _conn(board: Optional[str] = None):
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
-# Columns shown by the dashboard, in left-to-right order. "archived" is
-# available via a filter toggle rather than a visible column.
+# Default columns shown by the dashboard, in left-to-right order. "archived"
+# is available via a filter toggle rather than a visible column.
 #
-# Keep this in sync with kanban_db.VALID_STATUSES.  In particular,
-# ``scheduled`` is a first-class waiting column used for time-based follow-ups;
-# if it is omitted here, the board-level fallback below mis-buckets scheduled
-# tasks into ``todo`` and makes the dashboard look like the Scheduled column
-# disappeared.
+# The Kanban core still accepts additional statuses such as ``scheduled`` and
+# ``review`` for CLI/API workflows, but Olympus no longer wants empty columns
+# for those rarely-used states after retiring cron-as-card projections.  The
+# board endpoint below will still surface any non-default status dynamically
+# when tasks actually exist, so such tasks are never silently mis-bucketed into
+# ``todo``.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
+    "triage", "todo", "ready", "running", "blocked", "done",
 ]
 
 
@@ -475,7 +476,13 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
-            col = t.status if t.status in columns else "todo"
+            col = t.status
+            if col not in columns:
+                # Keep empty uncommon statuses out of the normal board view, but
+                # if a task actually exists in one (for example ``scheduled`` or
+                # ``review`` from CLI/API workflows), add that column on demand
+                # rather than mis-bucketing it into ``todo``.
+                columns[col] = []
             columns[col].append(d)
 
         # Stable per-column ordering already applied by list_tasks

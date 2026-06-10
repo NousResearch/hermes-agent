@@ -1,0 +1,6 @@
+name: gbrain
+version: 1.0.0
+description: "GBrain MCP-backed memory provider with read-only safe default and Athena-only write opt-in."
+hooks:
+  - prefetch
+  - on_memory_write

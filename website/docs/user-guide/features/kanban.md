@@ -700,6 +700,63 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
+### Automatic stale `done` task archival
+
+Hermes ships a maintenance entrypoint for moving old completed tasks out of the active board and reconciling their Discord forum projections:
+
+```bash
+# Manual dry-run from a source checkout
+python scripts/kanban_archive_done.py --board default --dry-run --done-age-days 7 --batch-size 25
+
+# Manual live run
+python scripts/kanban_archive_done.py --board default --done-age-days 7 --batch-size 25
+```
+
+What it does:
+
+- Selects only tasks with `status='done'` and `completed_at` older than `--done-age-days`.
+- Leaves newer `done` tasks and all non-`done` tasks untouched.
+- Archives the Kanban task first, keeping Kanban as the lifecycle source of truth.
+- For Discord subscriptions, PATCHes the forum thread to `archived=true` and `locked=true`, including the configured archived title/status/assignee tags from `discord-forum-tags.json` when available.
+- Removes Discord subscription rows after a successful PATCH, a 404/missing thread, or malformed/missing thread metadata; keeps rows on token/API/network failures so the next run retries reconciliation.
+- Also retries already-archived tasks that still have Discord subscriptions, which makes partial-failure reruns safe and idempotent.
+
+Recommended cron setup uses `--no-agent` so no model call is needed. Cron scripts must live under the profile's `~/.hermes/scripts/` directory:
+
+```bash
+mkdir -p ~/.hermes/scripts
+cp ~/.hermes/hermes-agent/scripts/kanban_archive_done.py ~/.hermes/scripts/kanban_archive_done.py
+chmod +x ~/.hermes/scripts/kanban_archive_done.py
+
+hermes cron create "30 3 * * *" \
+  --name kanban-archive-done \
+  --script kanban_archive_done.py \
+  --no-agent \
+  --deliver local
+```
+
+To change the policy, edit the job's script arguments or wrapper script, then run one dry-run before re-enabling live archival. Common conservative settings are `--done-age-days 7` and `--batch-size 25`; lower batch sizes reduce Discord/API pressure during a first backfill.
+
+Operations:
+
+```bash
+hermes cron list --all                         # find the job id and last status
+hermes cron status                             # confirm the gateway scheduler is running
+hermes cron run <job_id>                       # trigger on the next scheduler tick
+hermes cron pause <job_id>                     # temporarily disable
+hermes cron resume <job_id>                    # re-enable
+hermes cron remove <job_id>                    # permanently delete the schedule
+```
+
+Monitoring and troubleshooting:
+
+- The script prints JSON with `candidate_count`, `archived_count`, `already_archived_count`, `discord_archived_locked_count`, `skipped_by_reason`, `failure_count`, and per-task details.
+- Exit code is `0` when `failure_count` is zero and `1` when retryable Discord/API/token failures remain.
+- `discord_token_missing`, `http_*`, `request_error`, and `retry_exhausted` failures leave the subscription row in place for the next cron run.
+- `missing_or_deleted_discord_thread`, `missing_discord_thread_ref`, and `malformed_discord_thread_ref` are treated as nonfatal cleanup cases.
+- `no_discord_projection` only means there was no local subscription row; it is not proof that no Discord thread exists. Use Kanban repair/reconcile tooling if live Discord projection metadata looks stale.
+- Check gateway/cron logs with `hermes logs --level warning --session gateway` or by inspecting `~/.hermes/logs/gateway.log` on older installs.
+
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 
 ### Concurrency, scheduling, and child promotion config

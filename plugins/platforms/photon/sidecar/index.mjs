@@ -31,6 +31,8 @@
 //   - POST /unreact     -> {"ok": true} | 400 soft failure
 //       body: {"spaceId": "...", "messageId": "<target msg id>",
 //              "reactionId": "..." | null (restart-recovery fallback)}
+//   - POST /send-poll   -> {"ok": true, "messageId": "..."}
+//       body: {"spaceId": "...", "title": "...", "options": ["...", "..."]}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
@@ -237,12 +239,14 @@ let Spectrum,
   voice,
   spectrumText,
   spectrumMarkdown,
-  spectrumTyping;
+  spectrumTyping,
+  spectrumPoll;
 try {
   ({
     Spectrum,
     attachment,
     voice,
+    poll: spectrumPoll,
     text: spectrumText,
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
@@ -878,6 +882,21 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "reaction not removable");
       }
       return badRequest(res, "no tracked reaction for message");
+    }
+    if (req.url === "/send-poll") {
+      const { spaceId, title, options } = body || {};
+      const choices = Array.isArray(options)
+        ? options.map((option) => String(option || "").trim()).filter(Boolean)
+        : [];
+      if (!spaceId || typeof title !== "string" || !title.trim()) {
+        return badRequest(res, "spaceId and title are required");
+      }
+      if (choices.length < 2) {
+        return badRequest(res, "options must contain at least two choices");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(spectrumPoll(title.trim(), choices));
+      return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/typing") {
       const { spaceId, state = "start" } = body || {};

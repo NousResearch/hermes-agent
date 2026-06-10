@@ -153,8 +153,10 @@ All env vars are documented in `plugin.yaml`. The most important:
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
   reachable across restarts via spectrum-ts' `space.get(id)`.
-- **Message effects, polls** — supported by `spectrum-ts` but not yet
-  exposed; the sidecar is the natural place to add them.
+- **Native polls are supported.** Hermes posts poll content through
+  `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
+- **Message effects** — supported by `spectrum-ts` but not yet exposed; the
+  sidecar is the natural place to add them.
 - **Cron/standalone sends require a running gateway.** Processes outside
   the gateway (cron subprocesses, `hermes send`) cannot spawn the sidecar;
   they authenticate to the gateway's live sidecar via the runtime record at

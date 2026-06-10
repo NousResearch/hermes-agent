@@ -250,3 +250,79 @@ def test_stale_gateway_pid_cleaned_up_on_restart(restart_container: str) -> None
     assert r.returncode != 0, "stale gateway.pid survived restart"
     r = _sh(container, "test -f /opt/data/profiles/ghost/processes.json")
     assert r.returncode != 0, "stale processes.json survived restart"
+
+
+def test_live_gateway_autostarts_after_real_restart_without_manual_state_stamp(
+    restart_container: str,
+) -> None:
+    """End-to-end guard for issue #42675.
+
+    The other tests in this module stamp gateway_state.json directly to
+    exercise the reconciler's READ side. This one exercises the WRITE
+    side: a real, live gateway is killed by the container/s6 SIGTERM that
+    `docker restart` sends — no manual state stamp — and must come back up
+    on the next boot.
+
+    Before the fix, the shutdown handler unconditionally persisted
+    gateway_state=stopped on that SIGTERM, so the reconciler saw 'stopped'
+    and registered the slot DOWN — the gateway silently stayed dark after
+    every container restart. The fix classifies an unmarked SIGTERM as
+    signal-initiated and persists 'running' instead, so auto-start works.
+    """
+    container = restart_container
+
+    _exec(container, "hermes", "profile", "create", "live").check_returncode()
+    r = _exec(container, "hermes", "-p", "live", "gateway", "start", timeout=60)
+    assert r.returncode == 0, f"gateway start failed: {r.stderr}"
+
+    # Wait for the gateway to actually come up under supervision AND write
+    # its own gateway_state=running (we do NOT stamp it ourselves).
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        r = _sh(container, "/command/s6-svstat /run/service/gateway-live")
+        if r.returncode == 0 and "up " in r.stdout:
+            break
+        time.sleep(0.5)
+    assert "up " in r.stdout, f"gateway never came up pre-restart: {r.stdout!r}"
+
+    # Confirm the gateway persisted its own 'running' state (sanity: we're
+    # testing the real write path, not a stamped fixture).
+    deadline = time.monotonic() + 15.0
+    state = ""
+    while time.monotonic() < deadline:
+        r = _sh(
+            container,
+            "cat /opt/data/profiles/live/gateway_state.json 2>/dev/null",
+        )
+        if r.returncode == 0 and '"gateway_state"' in r.stdout:
+            state = r.stdout
+            break
+        time.sleep(0.5)
+    assert '"running"' in state, (
+        f"gateway never persisted running state pre-restart: {state!r}"
+    )
+
+    # Real restart — Docker sends SIGTERM to PID 1; s6 propagates it to the
+    # supervised gateway. No planned-stop marker is written (this is not an
+    # operator `hermes gateway stop`), so the shutdown is signal-initiated.
+    _docker("restart", container, timeout=60).check_returncode()
+
+    log = _wait_for_reconcile_log_mention(container, "live", deadline_s=30.0)
+    assert "profile=live" in log, (
+        f"reconciler never logged live after restart: {log!r}"
+    )
+    # The crux: the reconciler must AUTO-START it, not register it down.
+    assert "action=started" in log, (
+        f"gateway did NOT auto-start after a real restart (issue #42675 "
+        f"regression): {log!r}"
+    )
+
+    # Slot recreated, and NO down marker (we expect auto-start).
+    assert _wait_for_path(
+        container, "/run/service/gateway-live", kind="d", deadline_s=10.0,
+    ), "slot not recreated after restart"
+    r = _sh(container, "test -f /run/service/gateway-live/down")
+    assert r.returncode != 0, (
+        "down marker present despite a live gateway being restarted — "
+        "the signal-initiated shutdown wrongly persisted 'stopped' (#42675)"
+    )

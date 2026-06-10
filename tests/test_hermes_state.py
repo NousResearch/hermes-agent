@@ -2889,6 +2889,17 @@ class TestCompressionChainProjection:
         # root1's tip must be tip1 (via mid1), not delegate1.
         assert db.get_compression_tip("root1") == "tip1"
 
+    def test_is_session_descendant_walks_parent_lineage(self, db):
+        db.create_session("root", "telegram")
+        db.create_session("child", "telegram", parent_session_id="root")
+        db.create_session("grandchild", "telegram", parent_session_id="child")
+
+        assert db.is_session_descendant("grandchild", "root") is True
+        assert db.is_session_descendant("child", "root") is True
+        assert db.is_session_descendant("root", "root") is True
+        assert db.is_session_descendant("root", "child") is False
+        assert db.is_session_descendant("missing", "root") is False
+
     def test_list_surfaces_tip_for_compressed_root(self, db):
         """The list must show the tip's id/message_count/preview in place of
         the root row, so users can see and resume the live conversation.

@@ -7771,7 +7771,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
             if binding:
-                bound_session_id = str(binding.get("session_id") or "")
+                original_bound_session_id = str(binding.get("session_id") or "")
+                bound_session_id = original_bound_session_id
                 # Heal bindings that point at a pre-compression parent: walk
                 # the compression-continuation chain forward to its tip so the
                 # next message resumes the compressed child instead of
@@ -7794,6 +7795,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         and canonical_session_id != bound_session_id
                     ):
                         bound_session_id = canonical_session_id
+                    elif (
+                        bound_session_id
+                        and bound_session_id != session_entry.session_id
+                        and str(binding.get("session_key") or "") == session_key
+                        and str(binding.get("managed_mode") or "") != "restored"
+                    ):
+                        try:
+                            if self._session_db.is_session_descendant(
+                                session_entry.session_id,
+                                bound_session_id,
+                            ):
+                                bound_session_id = session_entry.session_id
+                        except Exception:
+                            logger.debug(
+                                "session-lineage lookup failed for topic binding %s -> %s",
+                                bound_session_id, session_entry.session_id,
+                                exc_info=True,
+                            )
                 if bound_session_id and bound_session_id != session_entry.session_id:
                     # Route the override through SessionStore so the session_key
                     # → session_id mapping is persisted to disk and the previous
@@ -7805,10 +7824,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_entry = switched
                 # If the stored binding pointed at a parent, rewrite it to the
                 # canonical descendant now that we've followed the chain.
-                if (
-                    bound_session_id
-                    and bound_session_id != str(binding.get("session_id") or "")
-                ):
+                if bound_session_id and bound_session_id != original_bound_session_id:
                     self._sync_telegram_topic_binding(
                         source, session_entry, reason="compression-tip-walk",
                     )

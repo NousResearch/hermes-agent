@@ -267,6 +267,83 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
 
 
 @pytest.mark.asyncio
+async def test_restored_topic_binding_is_not_rewritten_to_descendant_session_store_entry(
+    tmp_path, monkeypatch
+):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="restored-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="descendant-session",
+        source="telegram",
+        user_id="208214988",
+        parent_session_id="restored-session",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="restored-session",
+        managed_mode="restored",
+    )
+    runner = _make_runner(session_db=session_db)
+    runner.session_store.get_or_create_session.side_effect = lambda source, force_new=False: SessionEntry(
+        session_key=topic_key,
+        session_id="descendant-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=source,
+    )
+    switched_entry = SessionEntry(
+        session_key=topic_key,
+        session_id="restored-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+    )
+    runner.session_store.switch_session = MagicMock(return_value=switched_entry)
+    captured = {}
+
+    async def fake_run_agent(*args, **kwargs):
+        captured["session_id"] = kwargs.get("session_id")
+        return {
+            "success": True,
+            "final_response": "restored response",
+            "session_id": kwargs.get("session_id"),
+            "messages": [],
+        }
+
+    runner._run_agent = AsyncMock(side_effect=fake_run_agent)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("continue restored", thread_id="17585"))
+
+    assert result == "restored response"
+    assert captured["session_id"] == "restored-session"
+    runner.session_store.switch_session.assert_called_once_with(topic_key, "restored-session")
+    refreshed = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert refreshed is not None
+    assert refreshed["session_id"] == "restored-session"
+
+
+@pytest.mark.asyncio
 async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_enabled(
     tmp_path, monkeypatch
 ):
@@ -529,6 +606,76 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     )
     assert refreshed is not None
     assert refreshed["session_id"] == "child-session"
+
+
+@pytest.mark.asyncio
+async def test_topic_binding_prefers_newer_session_store_entry_when_tip_lookup_cannot_heal(tmp_path, monkeypatch):
+    """Do not let a stale topic binding rewind a topic after compression.
+
+    In the wild, a gateway process that compressed a Telegram DM topic updated
+    ``sessions.json`` to the new continuation session but left
+    ``telegram_dm_topic_bindings`` pointing at the old parent. Because the old
+    parent was ended as ``session_switch`` rather than ``compression``, the
+    ``get_compression_tip()`` read-path healer returned the stale parent and
+    the next inbound message rewound the topic back to old context.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-parent", source="telegram", user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="json-child",
+        source="telegram",
+        user_id="208214988",
+        parent_session_id="old-parent",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="old-parent",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    runner.session_store.get_or_create_session.side_effect = lambda source, force_new=False: SessionEntry(
+        session_key=topic_key,
+        session_id="json-child",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=source,
+    )
+    runner.session_store.switch_session = MagicMock(
+        side_effect=AssertionError("stale binding must not rewind the topic")
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "success": True,
+            "final_response": "ok",
+            "session_id": "json-child",
+            "messages": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    await runner._handle_message(_make_event("follow up after stale binding", thread_id="17585"))
+
+    refreshed = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert refreshed is not None
+    assert refreshed["session_id"] == "json-child"
+    runner.session_store.switch_session.assert_not_called()
 
 
 @pytest.mark.asyncio

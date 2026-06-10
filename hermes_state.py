@@ -1836,6 +1836,29 @@ class SessionDB:
             current = row["id"]
         return current
 
+    def is_session_descendant(self, session_id: str, ancestor_session_id: str) -> bool:
+        """Return True when ``session_id`` is in ``ancestor_session_id``'s lineage."""
+        current = str(session_id or "")
+        ancestor = str(ancestor_session_id or "")
+        if not current or not ancestor or current == ancestor:
+            return bool(current and ancestor and current == ancestor)
+        for _ in range(100):
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    (current,),
+                ).fetchone()
+            if row is None:
+                return False
+            parent = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+            if not parent:
+                return False
+            parent = str(parent)
+            if parent == ancestor:
+                return True
+            current = parent
+        return False
+
     def list_sessions_rich(
         self,
         source: str = None,

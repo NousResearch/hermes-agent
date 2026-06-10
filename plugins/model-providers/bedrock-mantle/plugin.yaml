@@ -1,0 +1,5 @@
+name: bedrock-mantle-provider
+kind: model-provider
+version: 1.0.0
+description: AWS Bedrock Mantle (OpenAI-compatible, SigV4)
+author: Nous Research

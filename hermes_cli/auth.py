@@ -431,6 +431,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "bedrock-mantle": ProviderConfig(
+        id="bedrock-mantle",
+        name="AWS Bedrock Mantle",
+        auth_type="aws_sdk",
+        inference_base_url="https://bedrock-mantle.us-east-2.api.aws/v1",
+        api_key_env_vars=(),
+        base_url_env_var="BEDROCK_MANTLE_BASE_URL",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",

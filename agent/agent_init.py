@@ -395,6 +395,27 @@ def init_agent(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
 
+    # Bedrock Mantle serves two API surfaces on one endpoint: GPT-5.x require
+    # the Responses API, the open models use Chat Completions. Provider/runtime
+    # resolution (cli chat, gateway) may hand us an explicit chat_completions
+    # api_mode for the whole provider, which is correct for the open models but
+    # wrong for GPT-5.x. Unlike the generic upgrade above (gated on
+    # api_mode is None), this override fires even when api_mode was passed
+    # explicitly — scoped strictly to the Mantle provider + a Responses-only
+    # model, so no other provider (e.g. Azure, which needs chat for gpt-5) is
+    # affected.
+    if (
+        agent.provider == "bedrock-mantle"
+        and agent.api_mode == "chat_completions"
+        and agent._provider_model_requires_responses_api(
+            agent.model,
+            provider=agent.provider,
+        )
+    ):
+        agent.api_mode = "codex_responses"
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
+
     # Pre-warm OpenRouter model metadata cache in a background thread.
     # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
     # HTTP request on the first API response when pricing is estimated.

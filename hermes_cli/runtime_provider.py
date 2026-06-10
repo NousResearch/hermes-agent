@@ -1650,6 +1650,58 @@ def resolve_runtime_provider(
             runtime["guardrail_config"] = guardrail_config
         return runtime
 
+    # AWS Bedrock Mantle (OpenAI-compatible surface, SigV4-signed).
+    # Distinct from native `bedrock` (Converse): Mantle speaks the OpenAI
+    # Chat Completions + Responses wire formats, so it uses the OpenAI client
+    # with SigV4 auth attached in agent_runtime_helpers.create_openai_client.
+    if provider == "bedrock-mantle":
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+        )
+        from agent.bedrock_sigv4_adapter import (
+            mantle_base_url,
+            mantle_region_for_model,
+            resolve_mantle_region,
+        )
+
+        is_explicit = requested_provider in {
+            "bedrock-mantle", "mantle", "aws-mantle",
+            "bedrock-openai", "amazon-bedrock-mantle",
+        }
+        if not is_explicit and not has_aws_credentials():
+            raise AuthError(
+                "No AWS credentials found for Bedrock Mantle. Configure one of:\n"
+                "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY\n"
+                "  - AWS_PROFILE (for SSO / named profiles)\n"
+                "  - IAM instance role (EC2, ECS, Lambda)\n"
+                "Or run 'aws configure' to set up credentials.",
+                code="no_aws_credentials",
+            )
+        _current_model = str(target_model or model_cfg.get("default") or "").strip()
+        # Per-model region routing: GPT-5.x → us-east-2, everything else → default.
+        region = mantle_region_for_model(_current_model)
+        auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
+        # GPT-5.5 / GPT-5.4 require the Responses API; the open models use
+        # Chat Completions. Derive from the target model so a one-shot
+        # `--model openai.gpt-5.5` routes correctly even when the persisted
+        # default model differs.
+        _current_model = str(target_model or model_cfg.get("default") or "").strip()
+        try:
+            from run_agent import AIAgent
+            _needs_responses = AIAgent._model_requires_responses_api(_current_model)
+        except Exception:
+            _needs_responses = _current_model.lower().replace("openai.", "").startswith("gpt-5")
+        return {
+            "provider": "bedrock-mantle",
+            "api_mode": "codex_responses" if _needs_responses else "chat_completions",
+            "base_url": mantle_base_url(region),
+            "api_key": "***",  # placeholder; SigV4 auth replaces it
+            "source": auth_source,
+            "region": region,
+            "requested_provider": requested_provider,
+        }
+
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":

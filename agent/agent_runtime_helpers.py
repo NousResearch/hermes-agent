@@ -1337,6 +1337,26 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+        # Bedrock Mantle (OpenAI-compatible) requires AWS SigV4-signed requests
+        # rather than a static bearer api_key. Attach a SigV4 httpx.Auth to the
+        # keepalive client so both the chat.completions and responses paths sign
+        # per request. Gated on the Mantle host so no other provider is touched.
+        _base_url = client_kwargs.get("base_url", "")
+        try:
+            from agent.bedrock_sigv4_adapter import (
+                build_sigv4_http_client,
+                is_mantle_base_url,
+                region_from_base_url,
+            )
+
+            if is_mantle_base_url(_base_url):
+                _region = region_from_base_url(_base_url)
+                if _region:
+                    keepalive_http = build_sigv4_http_client(
+                        _region, base_client=keepalive_http
+                    )
+        except Exception as exc:  # never block client creation on signing setup
+            _ra().logger.warning("Bedrock Mantle SigV4 setup failed: %s", exc)
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Uses the module-level `OpenAI` name, resolved lazily on first

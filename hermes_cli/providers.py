@@ -211,6 +211,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    "bedrock-mantle": HermesOverlay(
+        transport="chat_completions",
+        auth_type="aws_sdk",
+    ),
 }
 
 
@@ -375,6 +379,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "bedrock-mantle": "AWS Bedrock Mantle",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }

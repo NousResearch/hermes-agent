@@ -1223,9 +1223,14 @@ class AIAgent:
         which provider is serving the model.
         """
         m = model.lower()
-        # Strip vendor prefix (e.g. "openai/gpt-5.4" → "gpt-5.4")
+        # Strip vendor prefix (e.g. "openai/gpt-5.4" → "gpt-5.4", and the
+        # Bedrock Mantle dotted form "openai.gpt-5.5" → "gpt-5.5"). Mantle model
+        # ids use a dot as the vendor separator, so the slash-only strip missed
+        # them and GPT-5.x on Mantle was never upgraded to the Responses API.
         if "/" in m:
             m = m.rsplit("/", 1)[-1]
+        if m.startswith("openai.gpt-5"):
+            m = m.split(".", 1)[-1]
         return m.startswith("gpt-5")
 
     @staticmethod

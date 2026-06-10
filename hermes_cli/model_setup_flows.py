@@ -2734,3 +2734,56 @@ def _model_flow_anthropic(config, current_model=""):
         print(f"Default model set to: {selected} (via Anthropic)")
     else:
         print("No change.")
+
+
+def _model_flow_bedrock_mantle(config, current_model=""):
+    """AWS Bedrock Mantle provider: SigV4 auth, model picker, save config.
+
+    Uses the OpenAI-compatible Mantle endpoint with AWS SigV4 signing.
+    No API key prompt — credentials come from the AWS SDK chain.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.models import provider_model_ids
+
+    # 1. Check AWS credentials
+    try:
+        from agent.bedrock_adapter import has_aws_credentials
+        has_creds = has_aws_credentials()
+    except Exception:
+        has_creds = False
+
+    if not has_creds:
+        print("  \u26a0 No AWS credentials detected.")
+        print("  Bedrock Mantle uses the AWS SDK credential chain.")
+        print("  Configure one of: AWS_PROFILE, AWS_ACCESS_KEY_ID, IAM role")
+        print("  Or run 'aws configure' then re-run 'hermes model'.")
+        print()
+        return
+
+    print("  AWS credentials: detected \u2713")
+    print()
+
+    # 2. Get sorted model list
+    model_ids = provider_model_ids("bedrock-mantle")
+    if not model_ids:
+        print("  No models found for Bedrock Mantle.")
+        print()
+        return
+
+    # 3. Model selection
+    selected = _prompt_model_selection(
+        model_ids=model_ids,
+        current=current_model,
+        provider_slug="bedrock-mantle",
+    )
+    if selected is None:
+        return
+
+    # 4. Save choice
+    _save_model_choice("bedrock-mantle", selected)
+    deactivate_provider()
+    print(f"Default model set to: {selected} (via Bedrock Mantle)")

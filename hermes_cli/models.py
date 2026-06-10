@@ -483,6 +483,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.meta.llama4-maverick-17b-instruct-v1:0",
         "us.meta.llama4-scout-17b-instruct-v1:0",
     ],
+    # Bedrock Mantle: OpenAI-compatible surface (SigV4). Curated offline
+    # fallback — the live SigV4 GET /v1/models branch in provider_model_ids
+    # supplies the us-east-1 catalog (Claude, open models). Models exclusive to
+    # us-east-2 (GPT-5.x) are listed here and merged at runtime.
+    "bedrock-mantle": [
+        # Claude models (live-discovered from us-east-1, listed for clarity).
+        "anthropic.claude-opus-4-8",
+        "anthropic.claude-fable-5",
+        "anthropic.claude-haiku-4-5",
+        "anthropic.claude-opus-4-7",
+        # GPT models (us-east-2 only — curated so the picker shows them).
+        "openai.gpt-5.5",
+        "openai.gpt-5.4",
+        "openai.gpt-oss-120b",
+        "openai.gpt-oss-20b",
+    ],
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
@@ -1022,6 +1038,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (Curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (Open models subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
+    ProviderEntry("bedrock-mantle", "AWS Bedrock Mantle",      "AWS Bedrock Mantle (OpenAI-compatible, GPT-5.x, Claude; SigV4)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
 ]
@@ -1214,6 +1231,10 @@ _PROVIDER_ALIASES = {
     "aws-bedrock": "bedrock",
     "amazon-bedrock": "bedrock",
     "amazon": "bedrock",
+    "mantle": "bedrock-mantle",
+    "aws-mantle": "bedrock-mantle",
+    "bedrock-openai": "bedrock-mantle",
+    "amazon-bedrock-mantle": "bedrock-mantle",
     "grok": "xai",
     "grok-oauth": "xai-oauth",
     "xai-oauth": "xai-oauth",
@@ -2309,6 +2330,34 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 return ids
         except Exception:
             pass
+
+    # Bedrock Mantle (OpenAI-compatible, SigV4): live-discover the full catalog
+    # via a SigV4-signed GET /v1/models. Mirrors the bedrock branch above but
+    # hits Mantle's REST endpoint instead of the AWS SDK control plane. Falls
+    # through to the curated _PROVIDER_MODELS["bedrock-mantle"] entry on failure.
+    # NOTE: live discovery only returns models available in the default region
+    # (us-east-1). Models exclusive to us-east-2 (GPT-5.x) are merged from the
+    # curated list so the model picker is comprehensive.
+    # Curated models are placed first, then sorted alphabetically.
+    if normalized == "bedrock-mantle":
+        merged_ids: list[str] = []
+        curated = _PROVIDER_MODELS.get("bedrock-mantle", [])
+        seen: set[str] = set()
+        for m in curated:
+            merged_ids.append(m)
+            seen.add(m)
+        try:
+            from agent.bedrock_sigv4_adapter import mantle_model_ids_or_none
+            ids = mantle_model_ids_or_none()
+            if ids is not None:
+                for m in ids:
+                    if m not in seen:
+                        merged_ids.append(m)
+        except Exception:
+            pass
+        if merged_ids:
+            merged_ids.sort()
+            return merged_ids
 
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".

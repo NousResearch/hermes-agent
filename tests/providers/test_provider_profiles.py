@@ -1,6 +1,5 @@
 """Tests for the provider module registry and profiles."""
 
-import pytest
 from providers import get_provider_profile, _REGISTRY
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
 
@@ -42,6 +41,10 @@ class TestNvidiaProfile:
         p = get_provider_profile("nvidia")
         assert "nvidia.com" in p.base_url
 
+    def test_billing_header_not_profile_wide(self):
+        p = get_provider_profile("nvidia")
+        assert p.default_headers == {}
+
 
 class TestKimiProfile:
     def test_temperature_omit(self):
@@ -65,10 +68,12 @@ class TestKimiProfile:
         assert kimi.base_url != cn.base_url
 
     def test_thinking_enabled(self):
+        # xor contract (fix ce4e74b3): an explicit recognized effort sends
+        # reasoning_effort ONLY — never paired with extra_body.thinking.
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": True, "effort": "high"})
-        assert eb["thinking"] == {"type": "enabled"}
         assert tl["reasoning_effort"] == "high"
+        assert "thinking" not in eb
 
     def test_thinking_disabled(self):
         p = get_provider_profile("kimi")
@@ -77,15 +82,18 @@ class TestKimiProfile:
         assert "reasoning_effort" not in tl
 
     def test_reasoning_effort_default(self):
+        # enabled with no effort → thinking toggle only, no top-level effort.
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": True})
-        assert tl["reasoning_effort"] == "medium"
+        assert eb["thinking"] == {"type": "enabled"}
+        assert "reasoning_effort" not in tl
 
     def test_no_config_defaults(self):
+        # No reasoning_config → thinking on, server picks depth; no effort.
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config=None)
         assert eb["thinking"] == {"type": "enabled"}
-        assert tl["reasoning_effort"] == "medium"
+        assert "reasoning_effort" not in tl
 
 
 class TestOpenRouterProfile:
@@ -94,10 +102,55 @@ class TestOpenRouterProfile:
         body = p.build_extra_body(provider_preferences={"allow": ["anthropic"]})
         assert body["provider"] == {"allow": ["anthropic"]}
 
+    def test_extra_body_session_id(self):
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(session_id="test-session-123")
+        assert body["session_id"] == "test-session-123"
+
     def test_extra_body_no_prefs(self):
         p = get_provider_profile("openrouter")
         body = p.build_extra_body()
         assert body == {}
+
+    def test_pareto_min_coding_score_emitted_for_pareto_model(self):
+        """min_coding_score → plugins block when model is openrouter/pareto-code."""
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(
+            model="openrouter/pareto-code",
+            openrouter_min_coding_score=0.65,
+        )
+        assert body["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.65}
+        ]
+
+    def test_pareto_score_ignored_for_other_models(self):
+        """Score has no effect on any other model — plugins block must not appear."""
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(
+            model="anthropic/claude-sonnet-4.6",
+            openrouter_min_coding_score=0.65,
+        )
+        assert "plugins" not in body
+
+    def test_pareto_score_unset_omits_plugins(self):
+        """Empty/None score → no plugins block (router uses its omission default)."""
+        p = get_provider_profile("openrouter")
+        for unset in (None, ""):
+            body = p.build_extra_body(
+                model="openrouter/pareto-code",
+                openrouter_min_coding_score=unset,
+            )
+            assert "plugins" not in body, f"unset={unset!r}"
+
+    def test_pareto_score_out_of_range_dropped(self):
+        """Invalid scores are silently dropped — never forwarded to OR."""
+        p = get_provider_profile("openrouter")
+        for bad in (1.5, -0.1, "not-a-number"):
+            body = p.build_extra_body(
+                model="openrouter/pareto-code",
+                openrouter_min_coding_score=bad,
+            )
+            assert "plugins" not in body, f"bad={bad!r}"
 
     def test_reasoning_full_config(self):
         p = get_provider_profile("openrouter")
@@ -116,17 +169,135 @@ class TestOpenRouterProfile:
         )
         assert eb["reasoning"] == {"enabled": False}
 
+    def test_reasoning_disable_omitted_for_mandatory_anthropic(self):
+        """Reasoning-mandatory Anthropic models (4.6+/fable) reject any disable
+        form: OpenRouter translates ``reasoning: {enabled: false}`` into
+        Anthropic's ``thinking: {type: disabled}``, which 400s. The profile must
+        omit ``reasoning`` so the model falls back to adaptive thinking instead.
+        """
+        p = get_provider_profile("openrouter")
+        for model in (
+            "anthropic/claude-fable-5",          # new named model
+            "anthropic/claude-some-future-7",    # unknown → default mandatory
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-opus-4.6",
+        ):
+            for cfg in ({"enabled": False}, {"effort": "none"}):
+                eb, _ = p.build_api_kwargs_extras(
+                    reasoning_config=cfg,
+                    supports_reasoning=True,
+                    model=model,
+                )
+                assert "reasoning" not in eb, (model, cfg, eb)
+
+    def test_reasoning_disable_kept_for_legacy_anthropic(self):
+        """Older Anthropic models still accept an explicit disable form, so the
+        profile must keep forwarding it."""
+        p = get_provider_profile("openrouter")
+        for model in (
+            "anthropic/claude-3.7-sonnet",
+            "anthropic/claude-opus-4.5",
+            "anthropic/claude-sonnet-4.5",
+        ):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": False}, (model, eb)
+
+    def test_reasoning_disable_kept_for_non_anthropic(self):
+        """Non-Anthropic models (DeepSeek, Qwen, …) disable reasoning fine; the
+        Anthropic-mandatory guard must not touch them."""
+        p = get_provider_profile("openrouter")
+        for model in ("deepseek/deepseek-chat", "qwen/qwen3-max", "openai/gpt-5.4"):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": False}, (model, eb)
+
+    def test_reasoning_omitted_for_mandatory_anthropic_even_when_enabled(self):
+        """Reasoning-mandatory Anthropic models (4.6+/fable) use adaptive
+        thinking — OpenRouter ignores reasoning.effort for them, and sending any
+        reasoning field makes OpenRouter emit thinking.type.disabled on
+        tool-continuation turns (whose assistant tool_calls carry no thinking
+        block), 400ing every turn after the first tool call. The profile must
+        omit reasoning entirely so the model defaults to adaptive.
+        """
+        p = get_provider_profile("openrouter")
+        for cfg in (
+            {"enabled": True, "effort": "medium"},
+            {"enabled": True, "effort": "xhigh"},
+            {"effort": "high"},
+            {"enabled": True},
+        ):
+            eb, _ = p.build_api_kwargs_extras(
+                reasoning_config=cfg,
+                supports_reasoning=True,
+                model="anthropic/claude-fable-5",
+            )
+            assert "reasoning" not in eb, (cfg, eb)
+
     def test_default_reasoning(self):
         p = get_provider_profile("openrouter")
         eb, _ = p.build_api_kwargs_extras(supports_reasoning=True)
         assert eb["reasoning"] == {"enabled": True, "effort": "medium"}
 
+    def test_grok_session_id_sets_cache_affinity_header(self):
+        """OpenRouter + Grok model + session_id => x-grok-conv-id header."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(
+            model="x-ai/grok-4",
+            session_id="sess-abc123",
+        )
+        assert tl["extra_headers"]["x-grok-conv-id"] == "sess-abc123"
+
+    def test_grok_xai_prefix_also_supported(self):
+        """xai/ prefix (without dash) should also get the header."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(
+            model="xai/grok-3",
+            session_id="sess-xyz",
+        )
+        assert tl["extra_headers"]["x-grok-conv-id"] == "sess-xyz"
+
+    def test_non_grok_model_no_affinity_header(self):
+        """OpenRouter + non-Grok model => no x-grok-conv-id header."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(
+            model="anthropic/claude-sonnet-4.6",
+            session_id="sess-abc123",
+        )
+        assert "extra_headers" not in tl
+        assert "x-grok-conv-id" not in tl
+
+    def test_grok_without_session_id_no_header(self):
+        """Grok model but no session_id => no header (nothing to pin)."""
+        p = get_provider_profile("openrouter")
+        _, tl = p.build_api_kwargs_extras(model="x-ai/grok-4")
+        assert "extra_headers" not in tl
+
+    def test_grok_reasoning_and_header_together(self):
+        """Reasoning extra_body and Grok header should coexist."""
+        p = get_provider_profile("openrouter")
+        eb, tl = p.build_api_kwargs_extras(
+            model="x-ai/grok-4",
+            session_id="sess-123",
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert eb["reasoning"] == {"enabled": True, "effort": "high"}
+        assert tl["extra_headers"]["x-grok-conv-id"] == "sess-123"
+
 
 class TestNousProfile:
     def test_tags(self):
+        from agent.portal_tags import nous_portal_tags
         p = get_provider_profile("nous")
         body = p.build_extra_body()
-        assert body["tags"] == ["product=hermes-agent"]
+        assert body["tags"] == nous_portal_tags()
 
     def test_auth_type(self):
         p = get_provider_profile("nous")

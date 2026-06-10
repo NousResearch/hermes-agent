@@ -64,7 +64,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_CATALOG_URL = (
     "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json"
 )
-DEFAULT_TTL_HOURS = 24
+# Fallback fetch chain. The Docusaurus site is served through Vercel, which
+# occasionally returns HTTP 403 + x-vercel-mitigated: challenge for non-
+# browser clients (urllib, curl). When that happens the disk cache goes
+# stale and new model releases never reach the picker. The raw GitHub URL
+# is the same manifest published from the same repo and is not bot-gated,
+# so we fall through to it whenever the primary URL fails.
+DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
+    "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/api/model-catalog.json",
+)
+DEFAULT_TTL_HOURS = 1
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
 
@@ -139,6 +148,31 @@ def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
     return data
 
 
+def _fetch_manifest_with_fallback(
+    primary_url: str,
+    timeout: float,
+    fallback_urls: tuple[str, ...] = DEFAULT_CATALOG_FALLBACK_URLS,
+) -> dict[str, Any] | None:
+    """Try ``primary_url`` first, then walk ``fallback_urls``.
+
+    Returns the first manifest that fetches and validates, or None when
+    every URL fails. Skips fallback URLs identical to the primary so an
+    operator who configured the catalog URL to point at the raw GitHub
+    copy doesn't double-fetch.
+    """
+    data = _fetch_manifest(primary_url, timeout)
+    if data is not None:
+        return data
+    for url in fallback_urls:
+        if not url or url == primary_url:
+            continue
+        data = _fetch_manifest(url, timeout)
+        if data is not None:
+            logger.info("model catalog primary URL failed; using fallback %s", url)
+            return data
+    return None
+
+
 def _validate_manifest(data: Any) -> bool:
     """Return True when ``data`` matches the minimum manifest shape."""
     if not isinstance(data, dict):
@@ -173,7 +207,7 @@ def _read_disk_cache() -> tuple[dict[str, Any] | None, float]:
     except (OSError, FileNotFoundError):
         return (None, 0.0)
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return (None, 0.0)
@@ -187,7 +221,7 @@ def _write_disk_cache(data: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
         atomic_replace(tmp, path)
@@ -235,7 +269,7 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         return disk_data
 
     # Need to (re)fetch. If it fails, fall back to any stale disk copy.
-    fetched = _fetch_manifest(cfg["url"], DEFAULT_FETCH_TIMEOUT)
+    fetched = _fetch_manifest_with_fallback(cfg["url"], DEFAULT_FETCH_TIMEOUT)
     if fetched is not None:
         _write_disk_cache(fetched)
         new_disk_data, new_mtime = _read_disk_cache()
@@ -320,6 +354,37 @@ def get_curated_nous_models() -> list[str] | None:
         if mid:
             out.append(mid)
     return out or None
+
+
+def seed_cache_from_checkout(project_root: "Path | str") -> bool:
+    """Overwrite the disk cache with the catalog shipped in a local checkout.
+
+    ``hermes update`` pulls the latest repo, so the freshly-pulled
+    ``website/static/api/model-catalog.json`` IS the newest catalog — no
+    network round-trip needed. Copying it straight over the disk cache keeps
+    the model picker current even when the remote manifest fetch is bot-gated
+    or the Portal hiccups.
+
+    Reads the shipped manifest, validates it against the schema, and writes it
+    to ``~/.hermes/cache/model_catalog.json`` via the same atomic writer the
+    network path uses. Returns ``True`` on success, ``False`` if the file is
+    missing, malformed, or fails validation (caller should treat a ``False``
+    as non-fatal — the network fetch path still applies on the next picker
+    open).
+    """
+    src = Path(project_root) / "website" / "static" / "api" / "model-catalog.json"
+    try:
+        with open(src, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("model catalog seed from checkout skipped (%s): %s", src, exc)
+        return False
+    if not _validate_manifest(data):
+        logger.debug("model catalog seed from checkout skipped: invalid manifest at %s", src)
+        return False
+    _write_disk_cache(data)
+    reset_cache()  # drop the in-process copy so the next read picks up the seed
+    return True
 
 
 def reset_cache() -> None:

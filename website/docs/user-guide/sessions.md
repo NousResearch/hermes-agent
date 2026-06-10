@@ -4,16 +4,17 @@ title: "Sessions"
 description: "Session persistence, resume, search, management, and per-platform session tracking"
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Sessions
 
 Hermes Agent automatically saves every conversation as a session. Sessions enable conversation resume, cross-session search, and full conversation history management.
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in:
 
-1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search
-2. **JSONL transcripts** (`~/.hermes/sessions/`) — raw conversation transcripts including tool calls (gateway)
+1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search, plus full message history
 
 The SQLite database stores:
 - Session ID, source platform, user ID
@@ -24,6 +25,46 @@ The SQLite database stores:
 - Token counts (input/output)
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
+
+### What Counts Toward Context
+
+Hermes stores session history so it can resume conversations, but it does not
+keep re-sending every byte it has ever handled. On each turn, the model sees
+the selected system prompt, the current conversation window, and any content
+Hermes explicitly injects for that turn.
+
+Media attachments are handled as turn-scoped inputs:
+
+- Images may be attached natively to the next model call, or pre-analyzed into
+  a text description when the active model does not support native vision.
+- Audio is transcribed into text when speech-to-text is configured.
+- Text documents can have their extracted text included; other document types
+  are usually represented by a saved local path and a short note.
+- Attachment paths and extracted/derived text can appear in the transcript, but
+  the raw image, audio, or binary file bytes are not repeatedly copied into
+  future prompts.
+
+For example, if a user sends an image and asks Hermes to make a meme from it,
+Hermes may inspect that image once with vision and run an image-processing
+script. Future turns do not automatically carry the original JPEG in context.
+They carry only whatever was written into the conversation, such as the user's
+request, a short image description, a local cache path, or the final assistant
+response.
+
+The most common cause of context growth is not the media file itself. It is
+verbose text: pasted transcripts, full logs, large tool outputs, long diffs,
+repeated status reports, and detailed proof dumps. Prefer summaries, file
+paths, focused excerpts, and tool-backed lookups over copying large artifacts
+into chat.
+
+:::tip
+Use `/compress` when a session gets long, `/new` for a fresh thread, and
+`hermes sessions prune` only when you want to delete old ended sessions from
+storage. Compression reduces the active context; it is not a privacy delete.
+Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
+initial title up front — useful for finding it later with `/resume <name>` or
+in the `/sessions` picker.
+:::
 
 ### Session Sources
 
@@ -105,7 +146,7 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
 
-<img className="docs-terminal-figure" src="/img/docs/session-recap.svg" alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
+<img className="docs-terminal-figure" src={useBaseUrl('/img/docs/session-recap.svg')} alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
 <p className="docs-figure-caption">Resume mode shows a compact recap panel with recent user and assistant turns before returning you to the live prompt.</p>
 
 The recap:
@@ -126,6 +167,44 @@ display:
 :::tip
 Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a 6-char hex suffix (e.g. `20250305_091523_a1b2c3`), gateway sessions use an 8-char suffix (e.g. `20250305_091523_a1b2c3d4`). You can resume by ID (full or unique prefix) or by title — both work with `-c` and `-r`.
 :::
+
+## Cross-Platform Handoff
+
+Use `/handoff <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
+
+```bash
+# Inside a CLI session
+/handoff telegram
+```
+
+What happens:
+
+1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
+2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
+3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
+   - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
+   - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
+   - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
+   - **WhatsApp / Signal / Matrix / SMS** — no native threads, falls back to the home channel directly.
+4. The gateway re-binds the destination key to your existing CLI session id, then forges a synthetic user turn asking the agent to confirm and summarize. The reply lands in the new thread.
+5. When the gateway acknowledges success, the CLI prints a `/resume` hint and exits cleanly:
+
+   ```
+   ↻ Handoff complete. The session is now active on telegram.
+     Resume it on this CLI later with: /resume my-session-title
+   ```
+
+6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
+
+**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
+
+**Failure modes:**
+- No home channel configured → CLI refuses with a `/sethome` hint.
+- Platform not enabled / gateway not running → CLI times out at 60s with a clear message and your CLI session stays intact.
+- Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
+- `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
+
+**Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack — by far the common case — so most setups never hit this.
 
 ## Session Naming
 
@@ -287,34 +366,77 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/docs/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine.
+The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
 
-### How It Works
+### Three calling shapes
 
-1. FTS5 searches matching messages ranked by relevance
-2. Groups results by session, takes the top N unique sessions (default 3)
-3. Loads each session's conversation, truncates to ~100K chars centered on matches
-4. Sends to a fast summarization model for focused summaries
-5. Returns per-session summaries with metadata and surrounding context
+The tool infers what you want from which arguments you set. There's no `mode` parameter.
 
-### FTS5 Query Syntax
+**1. Discovery — pass `query`:**
 
-The search supports standard FTS5 query syntax:
+```python
+session_search(query="auth refactor", limit=3)
+```
 
-- Simple keywords: `docker deployment`
+Runs FTS5, dedupes hits by session lineage, returns the top N sessions. Each result carries:
+
+- `session_id`, `title`, `when`, `source`
+- `snippet` — FTS5-highlighted match excerpt
+- `bookend_start` — first 3 user+assistant messages of the session (the goal/kickoff)
+- `messages` — ±5 messages around the FTS5 match, with the anchor message flagged (the hit in context)
+- `bookend_end` — last 3 user+assistant messages of the session (the resolution/decisions)
+- `match_message_id`, `messages_before`, `messages_after`
+
+Bookends + window together reconstruct goal → match → resolution without paying for the whole transcript. Typical wall time: 15–50ms on a real session DB.
+
+**2. Scroll — pass `session_id` + `around_message_id`:**
+
+```python
+session_search(session_id="20260510_174648_805cc2", around_message_id=590803, window=10)
+```
+
+Returns a window of ±`window` messages centered on the anchor. No FTS5, no bookends — just the slice. Use after a discovery call when you need more context than the ±5 default window.
+
+- To scroll **forward**: pass `messages[-1].id` back as `around_message_id`
+- To scroll **backward**: pass `messages[0].id` back as `around_message_id`
+- The boundary message appears in both windows as an orientation marker
+- When `messages_before` or `messages_after` is less than `window`, you're at the start or end of the session
+
+Typical wall time: 1–2ms per scroll call.
+
+**3. Browse — no args:**
+
+```python
+session_search()
+```
+
+Returns recent sessions chronologically (titles, previews, timestamps). Useful when the user asks "what was I working on" without naming a topic.
+
+### FTS5 query syntax
+
+The keyword mode supports standard FTS5 query syntax:
+
+- Simple keywords: `docker deployment` (FTS5 defaults to AND)
 - Phrases: `"exact phrase"`
 - Boolean: `docker OR kubernetes`, `python NOT java`
 - Prefix: `deploy*`
+
+### Optional parameters
+
+- `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
+- `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
 ### When It's Used
 
 The agent is prompted to use session search automatically:
 
 > *"When the user references something from a past conversation or you suspect relevant prior context exists, use session_search to recall it before asking them to repeat themselves."*
+
+Typical triggers: "we did this before", "remember when", "last time", "as I mentioned", or any reference to a project/person/concept that isn't in the current window.
 
 ## Per-Platform Session Tracking
 
@@ -367,10 +489,17 @@ Sessions with **active background processes** are never auto-reset, regardless o
 | What | Path | Description |
 |------|------|-------------|
 | SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
-| Gateway transcripts | `~/.hermes/sessions/` | JSONL transcripts per session + sessions.json index |
-| Gateway index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs |
+| Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
+| Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
+
+:::note Legacy JSONL transcripts
+Sessions created before state.db became canonical may have leftover
+`*.jsonl` files in `~/.hermes/sessions/`. They are no longer written or
+read by Hermes. Safe to delete after verifying the corresponding session
+exists in state.db.
+:::
 
 ### Database Schema
 

@@ -31,6 +31,11 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+
+# Sentinel value used by the runtime provider system for providers that are
+# not natively known (named custom providers, third-party aggregators, etc.).
+# Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
+_RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
@@ -129,7 +134,9 @@ MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected u
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
 _MIN_SPAWN_DEPTH = 1
-_MAX_SPAWN_DEPTH_CAP = 3
+# No upper ceiling on spawn depth — like max_concurrent_children, depth has a
+# floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
+# stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
 
 
 # ---------------------------------------------------------------------------
@@ -254,9 +261,11 @@ def _extract_output_tail(
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = msg.get("content") or ""
-        if not isinstance(content, str):
-            content = str(content)
+        # Flatten content-block lists/dicts to text so the overlay shows real
+        # output (not a "[{'type': 'text'...}]" blob) and error detection can
+        # see markers buried inside content blocks. Crude str() here would
+        # mislabel a block-wrapped "Error: ..." result as is_error=False.
+        content = _stringify_tool_content(msg.get("content") or "")
         is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
         # Preserve line structure so the overlay's wrapped scroll region can
@@ -269,7 +278,35 @@ def _extract_output_tail(
     return tail
 
 
-def _looks_like_error_output(content: str) -> bool:
+def _stringify_tool_content(content: Any) -> str:
+    """Return a stable text representation for tool-result content.
+
+    Most providers store tool results as strings, but some OpenAI-compatible
+    paths can return content-block lists. Delegate observability must never
+    crash while summarising a child run just because the transport used blocks.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, default=str))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False, default=str)
+    return str(content)
+
+
+def _looks_like_error_output(content: Any) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
     The old heuristic flagged any preview containing the substring "error",
@@ -279,6 +316,7 @@ def _looks_like_error_output(content: str) -> bool:
       - structured JSON with ``status`` of error/failed
       - first line starts with a classic error marker
     """
+    content = _stringify_tool_content(content)
     if not content:
         return False
 
@@ -315,7 +353,7 @@ def _normalize_role(r: Optional[str]) -> str:
     if r is None or not r:
         return "leaf"
     r_norm = str(r).strip().lower()
-    if r_norm in ("leaf", "orchestrator"):
+    if r_norm in {"leaf", "orchestrator"}:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
@@ -387,7 +425,7 @@ def _get_child_timeout() -> float:
 
 
 def _get_max_spawn_depth() -> int:
-    """Read delegation.max_spawn_depth from config, clamped to [1, 3].
+    """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
 
     depth 0 = parent agent.  max_spawn_depth = N means agents at depths
     0..N-1 can spawn; depth N is the leaf floor.  Default 1 is flat:
@@ -395,9 +433,11 @@ def _get_max_spawn_depth() -> int:
     (blocked by this guard AND, for leaf children, by the delegation
     toolset strip in _strip_blocked_tools).
 
-    Raise to 2 or 3 to unlock nested orchestration. role="orchestrator"
-    removes the toolset strip for depth-1 children when
+    Raise to 2+ to unlock nested orchestration. role="orchestrator"
+    removes the toolset strip for spawning children when
     max_spawn_depth >= 2, enabling them to spawn their own workers.
+    Like max_concurrent_children, there is no upper ceiling — but each
+    extra level multiplies API cost, so raise it deliberately.
     """
     cfg = _load_config()
     val = cfg.get("max_spawn_depth")
@@ -412,16 +452,15 @@ def _get_max_spawn_depth() -> int:
             MAX_DEPTH,
         )
         return MAX_DEPTH
-    clamped = max(_MIN_SPAWN_DEPTH, min(_MAX_SPAWN_DEPTH_CAP, ival))
-    if clamped != ival:
+    floored = max(_MIN_SPAWN_DEPTH, ival)
+    if floored != ival:
         logger.warning(
-            "delegation.max_spawn_depth=%d out of range [%d, %d]; " "clamping to %d",
+            "delegation.max_spawn_depth=%d below floor %d; using %d",
             ival,
             _MIN_SPAWN_DEPTH,
-            _MAX_SPAWN_DEPTH_CAP,
-            clamped,
+            floored,
         )
-    return clamped
+    return floored
 
 
 def _get_orchestrator_enabled() -> bool:
@@ -437,7 +476,7 @@ def _get_orchestrator_enabled() -> bool:
         return val
     # Accept "true"/"false" strings from YAML that doesn't auto-coerce.
     if isinstance(val, str):
-        return val.strip().lower() in ("true", "1", "yes", "on")
+        return val.strip().lower() in {"true", "1", "yes", "on"}
     return True
 
 
@@ -1017,7 +1056,18 @@ def _build_child_agent(
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
-    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
+    # different provider than the parent — each provider has its own API surface
+    # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
+    # Inheriting the parent's mode causes 404 errors when the child routes to the
+    # wrong endpoint.  Derive the mode from the target provider when it differs.
+    _parent_provider = getattr(parent_agent, "provider", None) or ""
+    if override_api_mode is not None:
+        effective_api_mode = override_api_mode
+    elif effective_provider != _parent_provider:
+        effective_api_mode = None  # force re-derivation from provider's defaults
+    else:
+        effective_api_mode = getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -1077,11 +1127,15 @@ def _build_child_agent(
     child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
     child_providers_order = getattr(parent_agent, "providers_order", None)
     child_provider_sort = getattr(parent_agent, "provider_sort", None)
+    child_openrouter_min_coding_score = getattr(parent_agent, "openrouter_min_coding_score", None)
     if override_provider:
         child_providers_allowed = None
         child_providers_ignored = None
         child_providers_order = None
         child_provider_sort = None
+        # Note: openrouter_min_coding_score is model-gated (only emitted on
+        # openrouter/pareto-code), so we keep it inherited even when the
+        # provider is overridden — it's a no-op on any other model.
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -1111,6 +1165,7 @@ def _build_child_agent(
         providers_ignored=child_providers_ignored,
         providers_order=child_providers_order,
         provider_sort=child_provider_sort,
+        openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
@@ -1125,10 +1180,13 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    child_pool = _resolve_child_credential_pool(
+        effective_provider, parent_agent, effective_base_url
+    )
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -1149,6 +1207,21 @@ def _build_child_agent(
             child_progress_cb("subagent.spawn_requested", preview=goal)
         except Exception as exc:
             logger.debug("spawn_requested relay failed: %s", exc)
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "subagent_start",
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+            parent_subagent_id=parent_subagent_id,
+            child_session_id=getattr(child, "session_id", None),
+            child_subagent_id=subagent_id,
+            child_role=effective_role,
+            child_goal=goal,
+        )
+    except Exception:
+        logger.debug("subagent_start hook invocation failed", exc_info=True)
 
     return child
 
@@ -1234,7 +1307,7 @@ def _dump_subagent_timeout_diagnostic(
         if tool_names:
             _w(f"  loaded tool count: {len(tool_names)}")
             try:
-                _w(f"  loaded tools:      {sorted(list(tool_names))}")
+                _w(f"  loaded tools:      {sorted(tool_names)}")
             except Exception:
                 pass
         _w("")
@@ -1415,7 +1488,6 @@ def _run_single_child(
                 pass
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
-    _heartbeat_thread.start()
 
     # Register the live agent in the module-level registry so the TUI can
     # target it by subagent_id (kill, pause, status queries).  Unregistered
@@ -1446,6 +1518,7 @@ def _run_single_child(
         )
 
     try:
+        _heartbeat_thread.start()
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.start", preview=goal)
@@ -1632,8 +1705,8 @@ def _run_single_child(
                         if tc_id:
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
-                    is_error = bool(content and "error" in content[:80].lower())
+                    content = _stringify_tool_content(msg.get("content", ""))
+                    is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),
                         "status": "error" if is_error else "ok",
@@ -1820,9 +1893,13 @@ def _run_single_child(
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
-        # after the child has finished (or failed).
+        # after the child has finished (or failed).  Guard the join: .start()
+        # now lives inside the try block, so if it raised (OS thread
+        # exhaustion) the thread was never started and Thread.join() would
+        # raise RuntimeError.  ident is None until start() succeeds.
         _heartbeat_stop.set()
-        _heartbeat_thread.join(timeout=5)
+        if _heartbeat_thread.ident is not None:
+            _heartbeat_thread.join(timeout=5)
 
         # Drop the TUI-facing registry entry.  Safe to call even if the
         # child was never registered (e.g. ID missing on test doubles).
@@ -1865,6 +1942,29 @@ def _run_single_child(
                 child.close()
         except Exception:
             logger.debug("Failed to close child agent after delegation")
+
+
+def _recover_tasks_from_json_string(
+    tasks: Any,
+) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    if not isinstance(tasks, str):
+        return None, None
+    raw = tasks.strip()
+    if not raw:
+        return None, "Provide either 'goal' (single task) or 'tasks' (batch)."
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, (
+            "tasks must be a JSON array of task objects; received a string "
+            f"that could not be parsed as JSON ({exc.msg})."
+        )
+    if not isinstance(parsed, list):
+        return None, (
+            f"tasks must be a JSON array of task objects; parsed "
+            f"{type(parsed).__name__} instead."
+        )
+    return parsed, None
 
 
 def delegate_task(
@@ -1918,7 +2018,8 @@ def delegate_task(
                     f"Delegation depth limit reached (depth={depth}, "
                     f"max_spawn_depth={max_spawn}). Raise "
                     f"delegation.max_spawn_depth in config.yaml if deeper "
-                    f"nesting is required (cap: {_MAX_SPAWN_DEPTH_CAP})."
+                    f"nesting is required (no hard ceiling, but each level "
+                    f"multiplies API cost)."
                 )
             }
         )
@@ -1951,6 +2052,12 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
+    recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
+    if tasks_error:
+        return tool_error(tasks_error)
+    if recovered_tasks is not None:
+        tasks = recovered_tasks
+
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
             return tool_error(
@@ -1973,6 +2080,10 @@ def delegate_task(
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
+        if not isinstance(task, dict):
+            return tool_error(
+                f"Task {i} must be an object, got {type(task).__name__}."
+            )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
@@ -2207,9 +2318,17 @@ def delegate_task(
         if _invoke_hook is None:
             continue
         try:
+            _child_index = entry.get("task_index", -1)
+            _child_agent = (
+                children[_child_index][2]
+                if isinstance(_child_index, int) and 0 <= _child_index < len(children)
+                else None
+            )
             _invoke_hook(
                 "subagent_stop",
                 parent_session_id=_parent_session_id,
+                parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+                child_session_id=getattr(_child_agent, "session_id", None),
                 child_role=child_role,
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),
@@ -2233,9 +2352,9 @@ def delegate_task(
             # total as "none" when the parent itself hadn't billed any calls
             # yet (rare but possible when the parent's only action this turn
             # was delegate_task).
-            if getattr(parent_agent, "session_cost_source", "none") in (None, "", "none"):
+            if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
                 parent_agent.session_cost_source = "subagent"
-            if getattr(parent_agent, "session_cost_status", "unknown") in (None, "", "unknown"):
+            if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
                 parent_agent.session_cost_status = "estimated"
         except Exception:
             logger.debug("Subagent cost rollup failed", exc_info=True)
@@ -2251,7 +2370,11 @@ def delegate_task(
     )
 
 
-def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
+def _resolve_child_credential_pool(
+    effective_provider: Optional[str],
+    parent_agent,
+    effective_base_url: Optional[str] = None,
+):
     """Resolve a credential pool for the child agent.
 
     Rules:
@@ -2260,12 +2383,60 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     2. Different provider -> try to load that provider's own pool.
     3. No pool available -> return None and let the child keep the inherited
        fixed credential behavior.
+
+    Custom endpoints are a special case: every direct ``delegation.base_url``
+    runtime collapses to ``provider="custom"``, so bare provider equality would
+    treat two *different* custom endpoints as interchangeable and let the child
+    inherit the parent's pool. Leasing from that pool then overwrites the
+    child's delegated ``base_url`` with the parent's endpoint (issue #7833).
+    We therefore resolve custom runtimes by endpoint identity (the
+    ``custom:<name>`` pool key derived from the base_url) and only share the
+    parent's pool when both resolve to the *same* custom endpoint.
     """
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)
 
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
+
+    # Custom endpoints: distinguish by endpoint identity, not the bare "custom"
+    # provider string. Two custom runtimes are only interchangeable when they
+    # resolve to the same custom:<name> pool key.
+    if effective_provider == "custom":
+        try:
+            from agent.credential_pool import get_custom_provider_pool_key, load_pool
+
+            child_key = get_custom_provider_pool_key(effective_base_url)
+            if child_key is None:
+                # Unregistered endpoint (raw delegation.base_url with no
+                # matching custom_providers entry) -> no shared pool exists.
+                # Keep the child's fixed delegated credential rather than
+                # risk inheriting the parent's custom endpoint.
+                return None
+
+            # Reuse the parent's pool only when it is the same custom endpoint.
+            parent_key = get_custom_provider_pool_key(
+                getattr(parent_agent, "base_url", None)
+            )
+            if (
+                parent_pool is not None
+                and parent_provider == "custom"
+                and parent_key is not None
+                and parent_key == child_key
+            ):
+                return parent_pool
+
+            pool = load_pool(child_key)
+            if pool is not None and pool.has_credentials():
+                return pool
+        except Exception as exc:
+            logger.debug(
+                "Could not resolve custom credential pool for child endpoint '%s': %s",
+                effective_base_url,
+                exc,
+            )
+        return None
+
     if parent_pool is not None and effective_provider == parent_provider:
         return parent_pool
 
@@ -2309,6 +2480,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
     if configured_base_url:
         # When delegation.api_key is not set, return None so _build_child_agent
@@ -2319,9 +2491,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         # callers to duplicate the key under delegation.api_key.
         api_key = configured_api_key  # None → inherited from parent in _build_child_agent
 
+        # Use the shared URL-based api_mode detector (same path the main agent's
+        # runtime resolver uses) so Anthropic-compatible direct endpoints with a
+        # /anthropic suffix — Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM
+        # proxies — pick the right transport automatically. Without this,
+        # subagents would default to chat_completions and hit 404s on endpoints
+        # that only speak the Anthropic Messages protocol. Fixes #10213.
+        from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
         base_lower = configured_base_url.lower()
         provider = "custom"
-        api_mode = "chat_completions"
+        api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
@@ -2334,6 +2514,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+
+        # Explicit delegation.api_mode in config always wins. Lets users force
+        # a transport for non-standard endpoints the URL heuristic can't detect.
+        if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+            api_mode = configured_api_mode
 
         return {
             "model": configured_model,
@@ -2375,7 +2560,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     return {
         "model": configured_model or runtime.get("model") or None,
-        "provider": runtime.get("provider"),
+        "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
@@ -2413,17 +2598,62 @@ def _load_config() -> dict:
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
 
-DELEGATE_TASK_SCHEMA = {
-    "name": "delegate_task",
-    "description": (
+
+def _build_top_level_description() -> str:
+    """Compose the delegate_task tool description with current runtime limits.
+
+    The model needs to know its actual ceilings (not the framework defaults),
+    otherwise it self-caps at "default 3" / "default 2" even when the user has
+    raised delegation.max_concurrent_children / max_spawn_depth. Called both
+    at module import (to seed DELEGATE_TASK_SCHEMA) and on every
+    get_definitions() call via dynamic_schema_overrides.
+    """
+    try:
+        max_children = _get_max_concurrent_children()
+    except Exception:
+        max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    try:
+        max_depth = _get_max_spawn_depth()
+    except Exception:
+        max_depth = MAX_DEPTH
+    try:
+        orchestrator_on = _get_orchestrator_enabled()
+    except Exception:
+        orchestrator_on = True
+
+    if max_depth >= 2 and orchestrator_on:
+        nesting_clause = (
+            f"Nested delegation IS enabled for this user "
+            f"(max_spawn_depth={max_depth}): pass role='orchestrator' on a "
+            f"child to let it spawn its own workers, up to {max_depth - 1} "
+            f"additional level(s) deep."
+        )
+    elif max_depth >= 2 and not orchestrator_on:
+        nesting_clause = (
+            f"Nested delegation is DISABLED on this install "
+            f"(delegation.orchestrator_enabled=false), even though "
+            f"max_spawn_depth={max_depth}. role='orchestrator' is silently "
+            f"forced to 'leaf'."
+        )
+    else:
+        nesting_clause = (
+            f"Nested delegation is OFF for this user "
+            f"(max_spawn_depth={max_depth}): every child is a leaf and "
+            f"cannot delegate further. Raise delegation.max_spawn_depth in "
+            f"config.yaml to enable nesting."
+        )
+
+    return (
         "Spawn one or more subagents to work on tasks in isolated contexts. "
         "Each subagent gets its own conversation, terminal session, and toolset. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to delegation.max_concurrent_children items (default 3, configurable via config.yaml, no hard ceiling). "
-        "All run concurrently and results are returned together. Nested delegation requires role='orchestrator' and delegation.max_spawn_depth >= 2.\n\n"
+        f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
+        f"items concurrently for this user (configured via "
+        f"delegation.max_concurrent_children in config.yaml). "
+        f"All run in parallel and results are returned together. {nesting_clause}\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -2459,11 +2689,101 @@ DELEGATE_TASK_SCHEMA = {
         "- Orchestrator subagents (role='orchestrator') retain "
         "delegate_task so they can spawn their own workers, but still "
         "cannot use clarify, memory, send_message, or execute_code. "
-        "Orchestrators are bounded by delegation.max_spawn_depth "
-        "(default 2) and can be disabled globally via "
+        f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
+        f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
+    )
+
+
+def _build_tasks_param_description() -> str:
+    """Compose the 'tasks' parameter description with current concurrency limit."""
+    try:
+        max_children = _get_max_concurrent_children()
+    except Exception:
+        max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    return (
+        f"Batch mode: tasks to run in parallel (up to {max_children} for this "
+        f"user, set via delegation.max_concurrent_children). Each gets "
+        "its own subagent with isolated context and terminal session. "
+        "When provided, top-level goal/context/toolsets are ignored."
+    )
+
+
+def _build_role_param_description() -> str:
+    """Compose the 'role' parameter description with current spawn-depth limit."""
+    try:
+        max_depth = _get_max_spawn_depth()
+    except Exception:
+        max_depth = MAX_DEPTH
+    try:
+        orchestrator_on = _get_orchestrator_enabled()
+    except Exception:
+        orchestrator_on = True
+
+    if max_depth >= 2 and orchestrator_on:
+        nesting_note = (
+            f"Nesting IS enabled for this user (max_spawn_depth={max_depth}): "
+            f"orchestrator children can themselves delegate up to {max_depth - 1} "
+            "more level(s) deep."
+        )
+    elif max_depth >= 2 and not orchestrator_on:
+        nesting_note = (
+            "Nesting is currently disabled "
+            "(delegation.orchestrator_enabled=false); 'orchestrator' is "
+            "silently forced to 'leaf'."
+        )
+    else:
+        nesting_note = (
+            f"Nesting is OFF for this user (max_spawn_depth={max_depth}); "
+            "'orchestrator' is silently forced to 'leaf'. Raise "
+            "delegation.max_spawn_depth in config.yaml to enable."
+        )
+
+    return (
+        "Role of the child agent. 'leaf' (default) = focused "
+        "worker, cannot delegate further. 'orchestrator' = can "
+        f"use delegate_task to spawn its own workers. {nesting_note}"
+    )
+
+
+def _build_dynamic_schema_overrides() -> dict:
+    """Return per-call schema overrides reflecting current config.
+
+    Plugged into ToolEntry.dynamic_schema_overrides so every
+    get_definitions() pass rewrites the description fields to the user's
+    actual limits.
+    """
+    overrides_params = {
+        **DELEGATE_TASK_SCHEMA["parameters"],
+    }
+    # Deep-copy properties so we don't mutate the static schema dict.
+    overrides_params["properties"] = {
+        k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
+    }
+    overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+    overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+    return {
+        "description": _build_top_level_description(),
+        "parameters": overrides_params,
+    }
+
+
+DELEGATE_TASK_SCHEMA = {
+    "name": "delegate_task",
+    # NOTE: description / tasks.description / role.description are placeholder
+    # values. The real text is generated per get_definitions() call by
+    # _build_dynamic_schema_overrides() (registered via
+    # dynamic_schema_overrides below) so the model sees the user's actual
+    # delegation.max_concurrent_children / max_spawn_depth, not the framework
+    # defaults. Building these lazily (instead of at module import) also
+    # avoids forcing cli.CLI_CONFIG to load before the test conftest can
+    # redirect HERMES_HOME.
+    "description": (
+        "Spawn one or more subagents in isolated contexts. "
+        "Description is rebuilt at every get_definitions() call to reflect "
+        "the user's current delegation limits."
     ),
     "parameters": {
         "type": "object",
@@ -2513,12 +2833,16 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'copilot'). Overrides the top-level acp_command for this task only.",
+                            "description": (
+                                "Per-task ACP command override (e.g. 'copilot'). "
+                                "Overrides the top-level acp_command for this task only. "
+                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
+                            ),
                         },
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
                         },
                         "role": {
                             "type": "string",
@@ -2531,24 +2855,12 @@ DELEGATE_TASK_SCHEMA = {
                 # No maxItems — the runtime limit is configurable via
                 # delegation.max_concurrent_children (default 3) and
                 # enforced with a clear error in delegate_task().
-                "description": (
-                    "Batch mode: tasks to run in parallel (limit configurable via delegation.max_concurrent_children, default 3). Each gets "
-                    "its own subagent with isolated context and terminal session. "
-                    "When provided, top-level goal/context/toolsets are ignored."
-                ),
+                "description": "(rebuilt at get_definitions() time)",
             },
             "role": {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
-                "description": (
-                    "Role of the child agent. 'leaf' (default) = focused "
-                    "worker, cannot delegate further. 'orchestrator' = can "
-                    "use delegate_task to spawn its own workers. Requires "
-                    "delegation.max_spawn_depth >= 2 in config; ignored "
-                    "(treated as 'leaf') when the child would exceed "
-                    "max_spawn_depth or when "
-                    "delegation.orchestrator_enabled=false."
-                ),
+                "description": "(rebuilt at get_definitions() time)",
             },
             "acp_command": {
                 "type": "string",
@@ -2557,7 +2869,10 @@ DELEGATE_TASK_SCHEMA = {
                     "When set, children use ACP subprocess transport instead of inheriting "
                     "the parent's transport. Requires an ACP-compatible CLI "
                     "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation."
+                    "See agent/copilot_acp_client.py for the implementation. "
+                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
+                    "a specific ACP-compatible CLI is installed and configured. "
+                    "Leave empty to use the parent's default transport (Hermes subagents)."
                 ),
             },
             "acp_args": {
@@ -2565,7 +2880,8 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set."
+                    "Only used when acp_command is set. "
+                    "Leave empty unless acp_command is explicitly provided."
                 ),
             },
         },
@@ -2594,4 +2910,5 @@ registry.register(
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",
+    dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )

@@ -1,6 +1,5 @@
 """Tests for gateway /verbose command (config-gated tool progress cycling)."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -128,8 +127,14 @@ class TestVerboseCommand:
                 f"Expected {mode}, got {actual}"
 
     @pytest.mark.asyncio
-    async def test_defaults_to_all_when_no_tool_progress_set(self, tmp_path, monkeypatch):
-        """When tool_progress is not in config, defaults to 'all' then cycles to verbose."""
+    async def test_defaults_to_platform_default_when_no_tool_progress_set(self, tmp_path, monkeypatch):
+        """When tool_progress is not in config, starts from platform default then cycles.
+
+        Telegram's tier-1 preset overrides ``tool_progress`` to ``"off"`` so the
+        platform stays final-answer-first by default on mobile inboxes.  The
+        first ``/verbose`` invocation therefore cycles ``off → new``, not
+        ``all → ...``.
+        """
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -143,17 +148,18 @@ class TestVerboseCommand:
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
 
-        # Telegram default is "all" (high tier) → cycles to verbose
-        assert "VERBOSE" in result
+        # Telegram platform default is "off" → cycles to "new"
+        assert "NEW" in result
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
+        assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "new"
 
     @pytest.mark.asyncio
     async def test_per_platform_isolation(self, tmp_path, monkeypatch):
         """Cycling /verbose on Telegram doesn't change Slack's setting.
 
         Without a global tool_progress, each platform uses its built-in
-        default: Telegram = 'all' (high tier), Slack = 'off' (quiet Slack default).
+        default — Telegram = 'off' (tier-1 inbox override), Slack = 'off'
+        (quiet Slack default). Both cycle to 'new' on first /verbose.
         """
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -178,8 +184,8 @@ class TestVerboseCommand:
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         platforms = saved["display"]["platforms"]
-        # Telegram: all -> verbose (high tier default = all)
-        assert platforms["telegram"]["tool_progress"] == "verbose"
+        # Telegram: off -> new (platform default = off, tier-1 inbox override)
+        assert platforms["telegram"]["tool_progress"] == "new"
         # Slack: off -> new (first /verbose cycle from quiet default)
         assert platforms["slack"]["tool_progress"] == "new"
 

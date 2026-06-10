@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { ActionStatusResponse } from "@/lib/api";
-import { Toast } from "@/components/Toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
 import {
   SystemActionsContext,
@@ -71,10 +71,28 @@ export function SystemActionsProvider({
       try {
         if (action === "restart") {
           await api.restartGateway();
+          setActiveAction(action);
         } else {
-          await api.updateHermes();
+          const resp = await api.updateHermes();
+          // In a Docker install the image is immutable, so `hermes update`
+          // can't apply — the endpoint returns 200 with a structured
+          // {ok:false, error:"docker_update_unsupported", message, update_command}
+          // envelope instead of spawning the action (see #34347 / #36263).
+          // Surface that guidance to the user rather than starting the poll,
+          // which would otherwise report a generic "failed (exit 1)".
+          if (!resp.ok && resp.error === "docker_update_unsupported") {
+            const cmd = resp.update_command ? `  ${resp.update_command}` : "";
+            setToast({
+              type: "success",
+              message:
+                (resp.message ??
+                  "Updates don't apply inside Docker — re-pull the image instead.") +
+                cmd,
+            });
+            return;
+          }
+          setActiveAction(action);
         }
-        setActiveAction(action);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         setToast({

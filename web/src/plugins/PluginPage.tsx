@@ -35,7 +35,7 @@ export function PluginPage({ name }: { name: string }) {
       <div
         className={cn(
           "max-w-lg p-4",
-          "font-mondwest text-sm tracking-[0.08em] text-midground/80",
+          "font-mondwest text-sm tracking-[0.08em] text-text-secondary",
         )}
         role="alert"
       >
@@ -48,7 +48,7 @@ export function PluginPage({ name }: { name: string }) {
     <div
       className={cn(
         "flex items-center gap-2 p-4",
-        "font-mondwest text-sm tracking-[0.1em] text-midground/60",
+        "font-mondwest text-sm tracking-[0.1em] text-text-tertiary",
       )}
     >
       <Spinner className="shrink-0" />

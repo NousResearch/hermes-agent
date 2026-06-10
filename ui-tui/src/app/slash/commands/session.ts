@@ -93,15 +93,31 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'browse and resume previous sessions',
+    aliases: ['switch', 'session', 'resume'],
+    help: 'browse, switch, or resume sessions',
     name: 'sessions',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
-        return
+      const trimmed = arg.trim()
+
+      // A new *live* session keeps the current one running in the background
+      // (it doesn't close it), so fanning out while busy is allowed — that's
+      // the whole point of multiple live sessions.
+      if (trimmed.toLowerCase() === 'new') {
+        return ctx.session.newLiveSession()
       }
-      if (!arg.trim()) {
-        return patchOverlayState({ picker: true })
+
+      // `/resume <id|title>` (and `/sessions <id>`) load a cold session and
+      // CLOSE the current one, so guard it while a turn is in-flight to avoid
+      // corrupting streaming/busy state. Bare opens the overlay to browse.
+      if (trimmed) {
+        if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+          return
+        }
+
+        return ctx.session.resumeById(trimmed)
       }
+
+      patchOverlayState({ sessions: true })
     }
   },
 
@@ -212,7 +228,6 @@ export const sessionCommands: SlashCommand[] = [
           void ctx.session.closeSession(prevSid)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
-          ctx.transcript.setHistoryItems([])
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)
         })
       )
@@ -233,6 +248,7 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
+          ctx.voice.setVoiceTts(!!r.tts)
 
           // Render the configured record key (config.yaml ``voice.record_key``)
           // instead of hardcoded "Ctrl+B" — the gateway response carries the
@@ -502,7 +518,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'session usage (live counts — worker sees zeros)',
+    help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
@@ -516,8 +532,19 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
+        // Nous credits block is agent-independent (a portal fetch), so it shows
+        // even with zero API calls or on a resumed session. Render it whenever
+        // present, before the token panel.
+        const creditsLines = r?.credits_lines ?? []
+        if (creditsLines.length) {
+          ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
+        }
+
         if (!r?.calls) {
-          return ctx.transcript.sys('no API calls yet')
+          if (!creditsLines.length) {
+            ctx.transcript.sys('no API calls yet')
+          }
+          return
         }
 
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()

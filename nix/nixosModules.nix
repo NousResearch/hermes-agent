@@ -28,8 +28,10 @@
 
   let
     cfg = config.services.hermes-agent;
-    effectivePackage = if cfg.extraPythonPackages == [ ] then cfg.package
-      else cfg.package.override { inherit (cfg) extraPythonPackages; };
+    effectivePackage =
+      if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ]
+      then cfg.package
+      else cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
     hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
@@ -46,6 +48,12 @@
     configFile = if cfg.configFile != null then cfg.configFile else generatedConfigFile;
 
     configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
+
+    # config.yaml mode: group-writable (0660) when interactive users share this
+    # HERMES_HOME via addToSystemPackages, so they can save settings through the
+    # CLI/TUI without hitting EACCES; otherwise group-read-only (0640). Secrets
+    # (.env) stay 0640 regardless — see below.
+    configYamlMode = if cfg.addToSystemPackages then "0660" else "0640";
 
     # Generate .env from non-secret environment attrset
     envFileContent = lib.concatStringsSep "\n" (
@@ -115,9 +123,13 @@
       chown "$HERMES_UID:$HERMES_GID" "$TARGET_HOME"
       chmod 0750 "$TARGET_HOME"
 
-      # Ensure HERMES_HOME is owned by the target user
+      # Ensure HERMES_HOME is owned by the target user.
+      # Use find instead of chown -R: chown strips the setgid bit (kernel
+      # behavior), destroying the 2770 permissions the NixOS activation
+      # script sets for group access by hostUsers.  Only touch files with
+      # wrong ownership so correctly-owned dirs keep their permission bits.
       if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
-        chown -R "$HERMES_UID:$HERMES_GID" "$HERMES_HOME"
+        find "$HERMES_HOME" \! -user "$HERMES_UID" -exec chown "$HERMES_UID:$HERMES_GID" {} +
       fi
 
       # ── Provision apt packages (first boot only, cached in writable layer) ──
@@ -236,7 +248,7 @@
         type = types.str;
         default = "${cfg.stateDir}/workspace";
         defaultText = literalExpression ''"''${cfg.stateDir}/workspace"'';
-        description = "Working directory for the agent (MESSAGING_CWD).";
+        description = "Working directory for the agent.";
       };
 
       # ── Declarative config ───────────────────────────────────────────────
@@ -512,6 +524,21 @@
         '';
       };
 
+      extraDependencyGroups = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = ''
+          Additional pyproject.toml optional-dependency groups to include in
+          the sealed Python venv. These are resolved by uv alongside core
+          dependencies — no PYTHONPATH patching or collision risk.
+
+          Use this for optional extras already declared in hermes-agent's
+          pyproject.toml (e.g. "hindsight", "honcho", "voice").
+          Use extraPythonPackages for external packages not in pyproject.toml.
+        '';
+        example = [ "hindsight" ];
+      };
+
       restart = mkOption {
         type = types.str;
         default = "always";
@@ -707,7 +734,8 @@
           chmod 0750 ${cfg.stateDir}/home
 
           # Create subdirs, set setgid + group-writable, migrate existing files.
-          # Nix-managed files (config.yaml, .env, .managed) stay 0640/0644.
+          # Nix-managed .env/.managed stay 0640/0644; config.yaml uses
+          # configYamlMode (0660 under addToSystemPackages, else 0640).
           find ${cfg.stateDir}/.hermes -maxdepth 1 \
             \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
             -exec chmod g+rw {} + 2>/dev/null || true
@@ -722,12 +750,14 @@
           # Merge Nix settings into existing config.yaml.
           # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
           # If configFile is user-provided (not generated), overwrite instead of merge.
+          # Mode is configYamlMode (0660 under addToSystemPackages so interactive
+          # hermes-group users can save settings via the CLI/TUI, else 0640).
           ${if cfg.configFile != null then ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+            install -o ${cfg.user} -g ${cfg.group} -m ${configYamlMode} -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
           '' else ''
             ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
             chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
-            chmod 0640 ${cfg.stateDir}/.hermes/config.yaml
+            chmod ${configYamlMode} ${cfg.stateDir}/.hermes/config.yaml
           ''}
 
           # Managed mode marker (so interactive shells also detect NixOS management)

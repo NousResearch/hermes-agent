@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -390,58 +391,142 @@ async def test_forum_post_file_creation_failure():
 
 
 # ---------------------------------------------------------------------------
-# Typing indicator task lifecycle
+# Typing indicator — single-shot semantics (regression for stuck typing)
+#
+# Before this behavior: DiscordAdapter.send_typing spawned an adapter-side
+# persistent _typing_loop task while BasePlatformAdapter._keep_typing also
+# refreshed typing every 2s.  If cleanup stopped one inner loop and _keep_typing
+# recreated another during the shutdown window, the new loop could become
+# orphaned and keep Discord's "typing" indicator alive indefinitely.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_typing_task_removed_after_api_error():
-    """When typing API call fails, stale task must be removed so typing can restart."""
+async def test_send_typing_issues_single_request_per_call():
+    """send_typing must POST exactly once and never spawn a background loop."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock()
+    adapter._client.http.request = AsyncMock()
+
+    await adapter.send_typing("12345")
+
+    assert adapter._client.http.request.await_count == 1, \
+        "send_typing must issue exactly one POST per call"
+    assert adapter._typing_tasks == {}, \
+        "send_typing must not spawn or track persistent typing tasks"
+
+
+@pytest.mark.asyncio
+async def test_send_typing_swallows_api_errors_without_raising():
+    """A network/rate-limit error during typing must not crash the caller."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     adapter._client = MagicMock()
     adapter._client.http = MagicMock()
     adapter._client.http.request = AsyncMock(side_effect=Exception("rate limited"))
-    adapter._typing_tasks = {}
 
     await adapter.send_typing("12345")
-    await asyncio.sleep(0.1)
 
-    assert "12345" not in adapter._typing_tasks, \
-        "Stale task should be removed after API error"
+    assert adapter._typing_tasks == {}, \
+        "Failed typing call must not leave task state behind"
+
 
 
 @pytest.mark.asyncio
-async def test_typing_restartable_after_error():
-    """After a typing error, send_typing should start a new task (not blocked by stale entry)."""
+async def test_send_typing_propagates_cancellation():
+    """Cancellation must unwind _keep_typing instead of being swallowed."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    adapter._client = MagicMock()
-    adapter._client.http = MagicMock()
-    adapter._typing_tasks = {}
+    client = MagicMock()
+    client.http = MagicMock()
+    client.http.request = AsyncMock(side_effect=asyncio.CancelledError)
+    adapter._client = client
 
-    # First call fails
-    adapter._client.http.request = AsyncMock(side_effect=Exception("503"))
-    await adapter.send_typing("12345")
-    await asyncio.sleep(0.1)
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.send_typing("12345")
 
-    # Second call should work
-    adapter._client.http.request = AsyncMock()
-    await adapter.send_typing("12345")
-
-    assert "12345" in adapter._typing_tasks, \
-        "Should restart typing after previous failure"
+    assert adapter._typing_tasks == {}
 
 
 @pytest.mark.asyncio
-async def test_typing_stop_cleans_up():
-    """stop_typing should remove the task from _typing_tasks."""
+async def test_send_typing_logs_rate_limit_retry_after(caplog):
+    """Single-shot typing still preserves 429 visibility from #29671."""
+
+    class DiscordRateLimit(Exception):
+        retry_after = 3.5
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    client = MagicMock()
+    client.http = MagicMock()
+    client.http.request = AsyncMock(side_effect=DiscordRateLimit("429"))
+    adapter._client = client
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter"):
+        await adapter.send_typing("12345")
+
+    assert adapter._typing_tasks == {}
+    assert "Typing indicator rate-limited for 12345" in caplog.text
+    assert "3.5s" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_send_typing_repeated_calls_each_issue_one_request():
+    """Each _keep_typing tick should produce exactly one POST."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     adapter._client = MagicMock()
     adapter._client.http = MagicMock()
     adapter._client.http.request = AsyncMock()
-    adapter._typing_tasks = {}
 
-    await adapter.send_typing("12345")
-    assert "12345" in adapter._typing_tasks
+    for _ in range(3):
+        await adapter.send_typing("12345")
+
+    assert adapter._client.http.request.await_count == 3, \
+        "Three send_typing calls must produce three POSTs"
+    assert adapter._typing_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_is_idempotent_noop():
+    """stop_typing is a no-op now because there is no adapter-side loop."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock()
+    adapter._client.http.request = AsyncMock()
 
     await adapter.stop_typing("12345")
-    assert "12345" not in adapter._typing_tasks
+    await adapter.send_typing("12345")
+    await adapter.stop_typing("12345")
+    await adapter.stop_typing("12345")
+
+    assert adapter._typing_tasks == {}, \
+        "stop_typing must never leave or require task state"
+    assert adapter._client.http.request.await_count == 1, \
+        "stop_typing must not issue HTTP requests"
+
+
+@pytest.mark.asyncio
+async def test_send_typing_no_client_is_silent():
+    """Pre-connect / post-disconnect: send_typing returns silently."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = None
+
+    await adapter.send_typing("12345")
+
+
+@pytest.mark.asyncio
+async def test_no_orphan_loop_after_stop_typing_send_typing_race():
+    """send_typing after stop_typing must not leave an orphan task."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock()
+    adapter._client.http.request = AsyncMock()
+
+    await adapter.send_typing("12345")
+    await adapter.stop_typing("12345")
+    await adapter.send_typing("12345")
+    await adapter.stop_typing("12345")
+    await asyncio.sleep(0.1)
+
+    assert adapter._typing_tasks == {}, \
+        "send_typing must never leave background tasks behind"
+    assert adapter._client.http.request.await_count == 2, \
+        "Each send_typing call must produce exactly one POST"

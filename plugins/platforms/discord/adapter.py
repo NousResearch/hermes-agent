@@ -617,8 +617,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
-        # Persistent typing indicator loops per channel (DMs don't reliably
-        # show the standard typing gateway event for bots)
+        # Typing is single-shot per send_typing() call; BasePlatformAdapter._keep_typing
+        # owns the refresh cadence.  Keep this deprecated dict only so legacy
+        # introspection/tests do not AttributeError.
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
@@ -2976,68 +2977,48 @@ class DiscordAdapter(BasePlatformAdapter):
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Start a persistent typing indicator for a channel.
+        """Send a single typing indicator pulse for a channel.
 
-        Discord's TYPING_START gateway event is unreliable in DMs for bots.
-        Instead, start a background loop that hits the typing endpoint every
-        12 seconds (typing indicator lasts ~10s).  The loop is cancelled when
-        stop_typing() is called (after the response is sent).
-
-        Rate-limit handling: if a 429 is encountered, the loop logs a
-        warning, sleeps for the ``retry_after`` duration (or a sensible
-        default), and continues — it does NOT die on a single rate-limit
-        hit.  Only CancelledError (from stop_typing) stops the loop.
+        Discord keeps a successful POST /channels/{id}/typing visible for
+        roughly 10 seconds.  BasePlatformAdapter._keep_typing already calls this
+        method on a short cadence while a turn is active, so an adapter-owned
+        persistent loop is both redundant and racy: cleanup could cancel one
+        inner loop while _keep_typing recreated another, leaving an orphan that
+        refreshed the typing indicator indefinitely.
         """
         if not self._client:
             return
-        # Don't start a duplicate loop
-        if chat_id in self._typing_tasks:
-            return
-
-        async def _typing_loop() -> None:
-            try:
-                while True:
-                    try:
-                        route = discord.http.Route(
-                            "POST", "/channels/{channel_id}/typing",
-                            channel_id=chat_id,
-                        )
-                        await self._client.http.request(route)
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as e:
-                        # Don't die on 429 — backoff and continue
-                        retry_after = self._extract_discord_retry_after(e)
-                        if retry_after is not None:
-                            logger.warning(
-                                "Typing indicator rate-limited for %s; retrying in %.1fs",
-                                chat_id, retry_after,
-                            )
-                        else:
-                            logger.debug(
-                                "Discord typing indicator failed for %s: %s",
-                                chat_id, e,
-                            )
-                            return
-                        await asyncio.sleep(retry_after)
-                        continue
-                    await asyncio.sleep(12)
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self._typing_tasks.pop(chat_id, None)
-
-        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
+        try:
+            route = discord.http.Route(
+                "POST", "/channels/{channel_id}/typing",
+                channel_id=chat_id,
+            )
+            await self._client.http.request(route)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if self._is_discord_rate_limit(e):
+                retry_after = self._extract_discord_retry_after(e)
+                if retry_after is not None:
+                    logger.warning(
+                        "Typing indicator rate-limited for %s; next keep-typing tick will retry after %.1fs",
+                        chat_id,
+                        retry_after,
+                    )
+                else:
+                    logger.warning(
+                        "Typing indicator rate-limited for %s; next keep-typing tick will retry",
+                        chat_id,
+                    )
+            else:
+                logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
 
     async def stop_typing(self, chat_id: str) -> None:
-        """Stop the persistent typing indicator for a channel."""
-        task = self._typing_tasks.pop(chat_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+        """No-op: Discord typing now expires naturally after send_typing stops.
+
+        Kept for BasePlatformAdapter cleanup hooks and adapter API symmetry.
+        """
+        return
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""

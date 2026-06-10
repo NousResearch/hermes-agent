@@ -216,7 +216,16 @@ export const ja = defineLocale({
       technicalDesc: '生のツール引数、結果、低レベルの詳細を含めます。',
       themeTitle: 'テーマ',
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
-      themeProfileNote: profile => `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`
+      themeProfileNote: profile => `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      installTitle: 'VS Code から導入',
+      installDesc: 'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'インストール',
+      installing: 'インストール中…',
+      installError: 'そのテーマをインストールできませんでした。',
+      installed: name => `「${name}」をインストールしました。`,
+      removeTheme: 'テーマを削除',
+      importedBadge: 'インポート済み'
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -762,6 +771,17 @@ export const ja = defineLocale({
     settings: '設定',
     changeTheme: 'テーマを変更...',
     changeColorMode: 'カラーモードを変更...',
+    installTheme: {
+      title: 'テーマをインストール...',
+      placeholder: 'VS Code Marketplace を検索...',
+      loading: 'Marketplace を検索中...',
+      error: 'Marketplace に接続できませんでした。',
+      empty: '一致するテーマがありません。',
+      install: 'インストール',
+      installing: 'インストール中...',
+      installed: 'インストール済み',
+      installs: count => `${count} 回インストール`
+    },
     settingsFields: '設定フィールド',
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',

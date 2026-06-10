@@ -4451,20 +4451,29 @@ def _(rid, params: dict) -> dict:
 
 @method("delegation.pause")
 def _(rid, params: dict) -> dict:
+    from action_runtime.task_registry import get_registry
     from tools.delegate_tool import set_spawn_paused
 
     paused = bool(params.get("paused", True))
+    # Dual-write era (Phase 5 Step 3): mirror the flag into the registry,
+    # but keep the old global authoritative — delegate_task still reads it
+    # until the Step 7 cutover.
+    get_registry().pause_spawns(paused)
     return _ok(rid, {"paused": set_spawn_paused(paused)})
 
 
 @method("subagent.interrupt")
 def _(rid, params: dict) -> dict:
+    from action_runtime.task_registry import get_registry
     from tools.delegate_tool import interrupt_subagent
 
     subagent_id = str(params.get("subagent_id") or "").strip()
     if not subagent_id:
         return _err(rid, 4000, "subagent_id required")
-    ok = interrupt_subagent(subagent_id)
+    # Registry first (Phase 5 Step 3); fall back to the legacy dict for
+    # spawn paths that don't register into the registry yet (Step 7 cutover
+    # removes the fallback).
+    ok = get_registry().interrupt(subagent_id) or interrupt_subagent(subagent_id)
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
@@ -5966,6 +5975,53 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, str(e))
 
 
+# Phase 5 Step 4: mirror gateway-spawned background runs (bg_*, preview_*)
+# into the AgentTaskRegistry so task.status/task.list can see them. Best
+# effort by design — registry failures must never break the run itself.
+# No agent_ref is held: the agent is constructed inline inside run(), so
+# task.cancel returns found=false for these tasks for now (doc §Step 4).
+
+
+def _registry_register_bg(task_id: str, goal: str, intent: str) -> None:
+    try:
+        from action_runtime.task_registry import AgentTaskRecord, get_registry
+
+        get_registry().register(
+            AgentTaskRecord(task_id=task_id, goal=goal[:120], intent=intent)
+        )
+    except Exception:
+        pass
+
+
+def _registry_complete_bg(
+    task_id: str, text: str = "", exc: Optional[BaseException] = None
+) -> None:
+    try:
+        from action_runtime.contract import (
+            ErrorType,
+            ExecError,
+            ExecutionResult,
+            Status,
+        )
+        from action_runtime.task_registry import get_registry
+
+        if exc is None:
+            result = ExecutionResult(
+                task_id=task_id, status=Status.SUCCEEDED, outputs={"output": text}
+            )
+        else:
+            result = ExecutionResult(
+                task_id=task_id,
+                status=Status.FAILED,
+                error=ExecError(
+                    type=ErrorType.INTERNAL, retryable=False, message=str(exc)
+                ),
+            )
+        get_registry().complete(task_id, result)
+    except Exception:
+        pass
+
+
 @method("prompt.background")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -5978,6 +6034,7 @@ def _(rid, params: dict) -> dict:
 
     def run():
         session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
+        _registry_register_bg(task_id, goal=text, intent="tui-background")
         try:
             from agent.brain_host_gate import build_agent
 
@@ -5988,19 +6045,19 @@ def _(rid, params: dict) -> dict:
                 user_message=text,
                 task_id=task_id,
             )
+            final_text = (
+                result.get("final_response", str(result))
+                if isinstance(result, dict)
+                else str(result)
+            )
+            _registry_complete_bg(task_id, text=final_text)
             _emit(
                 "background.complete",
                 parent,
-                {
-                    "task_id": task_id,
-                    "text": (
-                        result.get("final_response", str(result))
-                        if isinstance(result, dict)
-                        else str(result)
-                    ),
-                },
+                {"task_id": task_id, "text": final_text},
             )
         except Exception as e:
+            _registry_complete_bg(task_id, exc=e)
             _emit(
                 "background.complete",
                 parent,
@@ -6076,6 +6133,7 @@ def _(rid, params: dict) -> dict:
         # Pin the validated preview cwd, else the parent workspace — never an
         # invalid client path, which would silently fall back to the launch dir.
         session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
+        _registry_register_bg(task_id, goal=prompt, intent="preview-restart")
         try:
             from agent.brain_host_gate import build_agent
             from tools.terminal_tool import register_task_env_overrides
@@ -6107,8 +6165,10 @@ def _(rid, params: dict) -> dict:
                 if isinstance(result, dict)
                 else str(result)
             )
+            _registry_complete_bg(task_id, text=text)
             _emit("preview.restart.complete", parent, {"task_id": task_id, "text": text})
         except Exception as e:
+            _registry_complete_bg(task_id, exc=e)
             _emit(
                 "preview.restart.complete",
                 parent,
@@ -8542,6 +8602,42 @@ def _(rid, params: dict) -> dict:
     if idempotency_key:
         _task_result_store(idempotency_key, rich)
     return _ok(rid, rich)
+
+
+# ── Methods: task.status / task.cancel / task.list (Phase 5 Step 4) ──
+# Read/cancel surface over the AgentTaskRegistry (central-brain-openclaw.md
+# §11 Phase 5). Purely additive: a query miss is data ({"found": false}),
+# NOT a protocol error, so pollers never special-case the error envelope.
+
+
+@method("task.status")
+def _(rid, params: dict) -> dict:
+    from action_runtime.task_registry import get_registry
+
+    task_id = str(params.get("task_id") or "").strip()
+    if not task_id:
+        return _err(rid, 4000, "task_id required")
+    record = get_registry().get(task_id)
+    if record is None:
+        return _ok(rid, {"found": False, "task_id": task_id})
+    return _ok(rid, {"found": True, **record.snapshot()})
+
+
+@method("task.cancel")
+def _(rid, params: dict) -> dict:
+    from action_runtime.task_registry import get_registry
+
+    task_id = str(params.get("task_id") or "").strip()
+    if not task_id:
+        return _err(rid, 4000, "task_id required")
+    return _ok(rid, {"found": get_registry().interrupt(task_id), "task_id": task_id})
+
+
+@method("task.list")
+def _(rid, params: dict) -> dict:
+    from action_runtime.task_registry import get_registry
+
+    return _ok(rid, {"tasks": [r.snapshot() for r in get_registry().list_active()]})
 
 
 # ── Methods: voice ───────────────────────────────────────────────────

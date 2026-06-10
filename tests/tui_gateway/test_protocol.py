@@ -1217,6 +1217,209 @@ def test_task_submit_propagates_slash_core_errors(server):
     assert resp["error"]["code"] == 4001
 
 
+# ── AgentTaskRegistry RPCs (Phase 5 Steps 3-4) ───────────────────────
+
+
+@pytest.fixture()
+def registry(monkeypatch):
+    """Fresh AgentTaskRegistry singleton per test — the registry is a
+    process-level global, so leaking records across tests would make
+    task.list/task.status assertions order-dependent."""
+    import action_runtime.task_registry as task_registry_mod
+
+    monkeypatch.setattr(task_registry_mod, "_instance", None)
+    yield task_registry_mod.get_registry()
+    task_registry_mod._instance = None
+
+
+class _FakeInterruptibleAgent:
+    def __init__(self):
+        self.interrupted = False
+
+    def interrupt(self):
+        self.interrupted = True
+
+
+def test_task_status_round_trip_returns_snapshot(server, registry):
+    """task.status on a registered record returns its snapshot + found=true."""
+    from action_runtime.task_registry import AgentTaskRecord
+
+    registry.register(AgentTaskRecord(
+        task_id="task-rt-1",
+        goal="round trip",
+        intent="test",
+        model="test/model",
+        started_at=123.0,
+    ))
+
+    resp = server.handle_request({
+        "id": "r-task-status",
+        "method": "task.status",
+        "params": {"task_id": "task-rt-1"},
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "found": True,
+        "task_id": "task-rt-1",
+        "parent_task_id": None,
+        "depth": 0,
+        "goal": "round trip",
+        "intent": "test",
+        "model": "test/model",
+        "started_at": 123.0,
+        "finished_at": None,
+        "status": "running",
+        "tool_count": 0,
+        "last_tool": None,
+        "result": None,
+    }
+
+
+def test_task_status_unknown_id_is_found_false_not_error(server, registry):
+    """A query miss is data, not a protocol error."""
+    resp = server.handle_request({
+        "id": "r-task-status-miss",
+        "method": "task.status",
+        "params": {"task_id": "no-such-task"},
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {"found": False, "task_id": "no-such-task"}
+
+
+def test_task_cancel_unknown_id_is_found_false(server, registry):
+    resp = server.handle_request({
+        "id": "r-task-cancel-miss",
+        "method": "task.cancel",
+        "params": {"task_id": "no-such-task"},
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {"found": False, "task_id": "no-such-task"}
+
+
+def test_task_cancel_interrupts_registered_agent(server, registry):
+    """task.cancel resolves the record's agent_ref and calls interrupt()."""
+    from action_runtime.task_registry import AgentTaskRecord
+
+    fake = _FakeInterruptibleAgent()
+    registry.register(AgentTaskRecord(task_id="task-c-1", agent_ref=fake))
+
+    resp = server.handle_request({
+        "id": "r-task-cancel",
+        "method": "task.cancel",
+        "params": {"task_id": "task-c-1"},
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {"found": True, "task_id": "task-c-1"}
+    assert fake.interrupted is True
+
+
+def test_task_list_returns_active_only(server, registry):
+    """Completed records drop out of task.list; running ones remain."""
+    from action_runtime.task_registry import AgentTaskRecord
+
+    registry.register(AgentTaskRecord(task_id="task-l-running", goal="live"))
+    registry.register(AgentTaskRecord(task_id="task-l-done", goal="done"))
+    registry.complete("task-l-done", None)
+
+    resp = server.handle_request({
+        "id": "r-task-list",
+        "method": "task.list",
+        "params": {},
+    })
+
+    assert "error" not in resp
+    tasks = resp["result"]["tasks"]
+    assert [t["task_id"] for t in tasks] == ["task-l-running"]
+    assert tasks[0]["status"] == "running"
+
+
+def test_subagent_interrupt_falls_back_to_legacy_dict_on_registry_miss(
+    server, registry, monkeypatch
+):
+    """Dual-write era: when the registry doesn't know the id, the handler
+    falls back to delegate_tool.interrupt_subagent (Step 7 removes this).
+    The module is stubbed in sys.modules (run_agent-stub pattern above):
+    importing the real delegate_tool here would execute its import chain
+    under the fixture's mocked hermes_constants."""
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.delegate_tool",
+        types.SimpleNamespace(
+            interrupt_subagent=lambda sid: calls.append(sid) or True
+        ),
+    )
+
+    resp = server.handle_request({
+        "id": "r-sub-int-fallback",
+        "method": "subagent.interrupt",
+        "params": {"subagent_id": "sa-0-deadbeef"},
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {"found": True, "subagent_id": "sa-0-deadbeef"}
+    assert calls == ["sa-0-deadbeef"]
+
+
+def test_subagent_interrupt_prefers_registry_hit(server, registry, monkeypatch):
+    """A registry hit must NOT reach the legacy path."""
+    from action_runtime.task_registry import AgentTaskRecord
+
+    fake = _FakeInterruptibleAgent()
+    registry.register(AgentTaskRecord(task_id="sa-1-cafebabe", agent_ref=fake))
+    legacy = MagicMock(return_value=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.delegate_tool",
+        types.SimpleNamespace(interrupt_subagent=legacy),
+    )
+
+    resp = server.handle_request({
+        "id": "r-sub-int-registry",
+        "method": "subagent.interrupt",
+        "params": {"subagent_id": "sa-1-cafebabe"},
+    })
+
+    assert resp["result"] == {"found": True, "subagent_id": "sa-1-cafebabe"}
+    assert fake.interrupted is True
+    legacy.assert_not_called()
+
+
+def test_delegation_pause_writes_both_stores(server, registry, monkeypatch):
+    """Dual-write era: delegation.pause sets the registry flag AND the old
+    delegate_tool global (still authoritative until the Step 7 cutover)."""
+    legacy = MagicMock(side_effect=lambda paused: paused)
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.delegate_tool",
+        types.SimpleNamespace(set_spawn_paused=legacy),
+    )
+
+    resp = server.handle_request({
+        "id": "r-del-pause",
+        "method": "delegation.pause",
+        "params": {"paused": True},
+    })
+
+    assert resp["result"] == {"paused": True}
+    legacy.assert_called_once_with(True)
+    assert registry.spawns_paused() is True
+
+    resp = server.handle_request({
+        "id": "r-del-unpause",
+        "method": "delegation.pause",
+        "params": {"paused": False},
+    })
+
+    assert resp["result"] == {"paused": False}
+    legacy.assert_called_with(False)
+    assert registry.spawns_paused() is False
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

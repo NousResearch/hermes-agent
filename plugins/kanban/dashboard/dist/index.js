@@ -2841,6 +2841,32 @@
       }).catch(function (e) { setErr(String(e.message || e)); });
     };
 
+    // "Reply & unblock" for the BlockedBanner: post comment (if any),
+    // unblock (PATCH status=ready), then nudge the dispatcher.
+    const handleReplyAndUnblock = function (commentBody, andUnblock) {
+      var chain = Promise.resolve();
+      if (commentBody && commentBody.trim()) {
+        chain = chain.then(function () {
+          return SDK.fetchJSON(
+            withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug),
+            { method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ body: commentBody.trim() }) }
+          );
+        });
+      }
+      if (andUnblock !== false) {
+        chain = chain.then(function () {
+          return doPatch({ status: "ready" });
+        });
+        chain = chain.then(function () {
+          return SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, boardSlug), { method: "POST" });
+        });
+      }
+      chain.then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setErr(String(e.message || e)); });
+      return chain;
+    };
+
     // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
     // so the browser sets the multipart boundary. Auth rides the session
     // cookie + bearer token, matching the rest of the dashboard.
@@ -3047,6 +3073,7 @@
           onDeleteAttachment: handleDeleteAttachment,
           uploadBusy: uploadBusy,
           uploadErr: uploadErr,
+          onReplyAndUnblock: handleReplyAndUnblock,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3222,6 +3249,11 @@
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
+      (t.status === "blocked" && t.block_reason) ? h(BlockedBanner, {
+        task: t,
+        i18n: i18n,
+        onReplyAndUnblock: props.onReplyAndUnblock,
+      }) : null,
       h(StatusActions, {
         task: t,
         onPatch: props.onPatch,
@@ -3823,6 +3855,72 @@
           ? "hermes-kanban-msg-ok"
           : "hermes-kanban-msg-err",
       }, decomposeMsg.text) : null,
+    );
+  }
+
+
+  // Inline banner for blocked tasks — shows the block reason and lets
+  // the operator reply and unblock in one action instead of 8+ steps.
+  function BlockedBanner(props) {
+    var task = props.task;
+    var i18n = props.i18n;
+    var reason = task.block_reason;
+    if (!reason) return null;
+
+    var _useState = useState("");
+    var replyText = _useState[0];
+    var setReplyText = _useState[1];
+    var _busyState = useState(false);
+    var busy = _busyState[0];
+    var setBusy = _busyState[1];
+
+    function doReply(andUnblock) {
+      if (busy) return;
+      setBusy(true);
+      Promise.resolve()
+        .then(function () {
+          return props.onReplyAndUnblock(replyText, andUnblock);
+        })
+        .then(function () {
+          setReplyText("");
+        })
+        .catch(function () {})
+        .then(function () { setBusy(false); });
+    }
+
+    return h("div", { className: "hermes-kanban-blocked-banner" },
+      h("div", { className: "hermes-kanban-blocked-banner-header" },
+        "\u26d4 ",
+        tx(i18n, "blockedNeedsInput", "Blocked \u2014 needs your input")
+      ),
+      h("div", { className: "hermes-kanban-blocked-banner-reason" }, reason),
+      h(Input, {
+        value: replyText,
+        onChange: function (e) { setReplyText(e.target.value); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            doReply(true);
+          }
+        },
+        placeholder: tx(i18n, "replyPlaceholder", "Type your reply\u2026"),
+        className: "hermes-kanban-blocked-banner-input",
+        disabled: busy,
+      }),
+      h("div", { className: "hermes-kanban-blocked-banner-actions" },
+        h(Button, {
+          onClick: function () { doReply(true); },
+          disabled: busy,
+          size: "sm",
+          className: "hermes-kanban-blocked-banner-primary",
+        }, busy ? "Working\u2026" : tx(i18n, "replyAndUnblock", "Reply & unblock")),
+        h(Button, {
+          onClick: function () { doReply(false); },
+          disabled: busy,
+          size: "sm",
+          variant: "ghost",
+        }, tx(i18n, "replyOnly", "Reply only")),
+      ),
     );
   }
 

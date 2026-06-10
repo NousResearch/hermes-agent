@@ -156,23 +156,18 @@ def _normalize_chat_content(
 
     if isinstance(content, list):
         parts: List[str] = []
-        total_len = 0
         items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
         for item in items:
             if isinstance(item, str):
                 if item:
-                    part = item[:MAX_NORMALIZED_TEXT_LENGTH]
-                    parts.append(part)
-                    total_len += len(part)
+                    parts.append(item[:MAX_NORMALIZED_TEXT_LENGTH])
             elif isinstance(item, dict):
                 item_type = str(item.get("type") or "").strip().lower()
                 if item_type in {"text", "input_text", "output_text"}:
                     text = item.get("text", "")
                     if text:
                         try:
-                            part = str(text)[:MAX_NORMALIZED_TEXT_LENGTH]
-                            parts.append(part)
-                            total_len += len(part)
+                            parts.append(str(text)[:MAX_NORMALIZED_TEXT_LENGTH])
                         except Exception:
                             pass
                 # Silently skip image_url / other non-text parts
@@ -180,9 +175,8 @@ def _normalize_chat_content(
                 nested = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
                 if nested:
                     parts.append(nested)
-                    total_len += len(nested)
             # Check accumulated size
-            if total_len >= MAX_NORMALIZED_TEXT_LENGTH:
+            if sum(len(p) for p in parts) >= MAX_NORMALIZED_TEXT_LENGTH:
                 break
         result = "\n".join(parts)
         return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result

@@ -1,9 +1,9 @@
-"""Tests for the auto-continue feature (#4493 / #45232).
+"""Tests for the auto-continue feature (#4493).
 
-When the gateway restarts mid-agent-work, the session transcript can end on a
+When the gateway restarts mid-agent-work, the session transcript ends on a
 tool result that the agent never processed.  The auto-continue logic detects
-this and prepends an API-only system note to the next user message so the model
-does not re-execute stale interrupted tool calls before addressing new input.
+this and prepends a system note to the next user message so the model
+finishes the interrupted work before addressing the new input.
 """
 
 
@@ -18,10 +18,11 @@ def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     message = user_message
     if agent_history and agent_history[-1].get("role") == "tool":
         message = (
-            "[System note: A new message has arrived. The conversation "
-            "history contains pending tool outputs from an interrupted turn. "
-            "IGNORE those pending results. Address the user's NEW message "
-            "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
+            "[System note: Your previous turn was interrupted before you could "
+            "process the last tool result(s). The conversation history contains "
+            "tool outputs you haven't responded to yet. Please finish processing "
+            "those results and summarize what was accomplished, then address the "
+            "user's new message below.]\n\n"
             + message
         )
     return message
@@ -41,8 +42,6 @@ class TestAutoDetection:
         result = _simulate_auto_continue(history, "what happened?")
         assert "[System note:" in result
         assert "interrupted" in result
-        assert "NEW message" in result
-        assert "Do NOT re-execute" in result
         assert "what happened?" in result
 
     def test_trailing_assistant_message_no_note(self):
@@ -93,105 +92,3 @@ class TestAutoDetection:
         note_end = result.index("]\n\n")
         user_msg_start = result.index("now do X")
         assert user_msg_start > note_end
-
-
-class TestInterruptedReplayFiltering:
-    def test_interrupted_tool_tail_is_removed_from_agent_history(self):
-        from gateway.run import _build_gateway_agent_history
-
-        history = [
-            {"role": "user", "content": "transcribe this video"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_1",
-                "content": '{"exit_code": 130, "output": "[Command interrupted]"}',
-            },
-        ]
-
-        agent_history, observed_context = _build_gateway_agent_history(history)
-
-        assert observed_context is None
-        assert agent_history == [{"role": "user", "content": "transcribe this video"}]
-
-    def test_mixed_tail_with_one_interrupted_result_is_removed(self):
-        from gateway.run import _build_gateway_agent_history
-
-        history = [
-            {"role": "user", "content": "search and transcribe"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
-                    {"id": "call_2", "function": {"name": "terminal", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_1", "content": "found URL"},
-            {
-                "role": "tool",
-                "tool_call_id": "call_2",
-                "content": '{"exit_code": 130, "output": "[Command interrupted]"}',
-            },
-        ]
-
-        agent_history, _observed_context = _build_gateway_agent_history(history)
-
-        assert agent_history == [{"role": "user", "content": "search and transcribe"}]
-
-    def test_successful_tool_tail_is_preserved(self):
-        from gateway.run import _build_gateway_agent_history
-
-        history = [
-            {"role": "user", "content": "deploy"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_1", "content": "deployed successfully"},
-        ]
-
-        agent_history, _observed_context = _build_gateway_agent_history(history)
-
-        assert agent_history[-1]["role"] == "tool"
-        assert agent_history[-1]["content"] == "deployed successfully"
-
-    def test_persisted_auto_continue_note_is_not_replayed(self):
-        from gateway.run import _build_gateway_agent_history
-
-        history = [
-            {"role": "user", "content": "first real question"},
-            {
-                "role": "user",
-                "content": (
-                    "[System note: Your previous turn was interrupted before you could "
-                    "process the last tool result(s).]\n\nsecond real question"
-                ),
-            },
-            {"role": "assistant", "content": "answer"},
-            {
-                "role": "user",
-                "content": (
-                    "[System note: A new message has arrived. The conversation "
-                    "history contains pending tool outputs from an interrupted turn.]\n\nthird"
-                ),
-            },
-        ]
-
-        agent_history, _observed_context = _build_gateway_agent_history(history)
-
-        assert agent_history == [
-            {"role": "user", "content": "first real question"},
-            {"role": "user", "content": "second real question"},
-            {"role": "assistant", "content": "answer"},
-            {"role": "user", "content": "third"},
-        ]

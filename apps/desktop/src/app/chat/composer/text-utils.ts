@@ -6,13 +6,7 @@ export interface TriggerState {
   tokenLength: number
 }
 
-// `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
-// single tokens. `/` triggers keep going so the popover stays live while the
-// user types args (`/personality alic` → arg completer suggests `alice`).
-// Restricting the slash command name to `[a-zA-Z][\w-]*` avoids matching file
-// paths like `src/foo/bar`.
-const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@/]*)$/
-const SLASH_TRIGGER_RE = /(?:^|[\s])(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
+const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {
@@ -103,17 +97,11 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {
-  const slash = SLASH_TRIGGER_RE.exec(textBefore)
+  const match = TRIGGER_RE.exec(textBefore)
 
-  if (slash) {
-    return { kind: '/', query: slash[2], tokenLength: 1 + slash[2].length }
+  if (!match) {
+    return null
   }
 
-  const at = AT_TRIGGER_RE.exec(textBefore)
-
-  if (at) {
-    return { kind: '@', query: at[2], tokenLength: 1 + at[2].length }
-  }
-
-  return null
+  return { kind: match[1] as '@' | '/', query: match[2], tokenLength: 1 + match[2].length }
 }

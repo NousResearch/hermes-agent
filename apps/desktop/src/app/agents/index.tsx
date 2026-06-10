@@ -3,8 +3,8 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { FadeText } from '@/components/ui/fade-text'
-import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -25,7 +25,7 @@ import { OverlayView } from '../overlays/overlay-view'
 function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
   if (status === 'running' || status === 'queued') {
     return (
-      <GlyphSpinner
+      <BrailleSpinner
         ariaLabel={a.running}
         className="size-3.5 shrink-0 text-[0.95rem] text-muted-foreground/80"
         spinner="breathe"
@@ -290,7 +290,7 @@ function StreamLine({
       <span className={cn('min-w-0 flex-1 wrap-anywhere', tone, isMono && 'font-mono text-[0.69rem]')}>
         {entry.text}
         {active ? (
-          <GlyphSpinner
+          <BrailleSpinner
             ariaLabel={t.agents.streaming}
             className="ml-1 inline-block size-2.5 align-middle text-muted-foreground/70"
             spinner="breathe"
@@ -372,9 +372,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
 
       {open && fileLines.length > 0 ? (
         <div className="grid min-w-0 gap-0.5 pl-6">
-          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">
-            {t.agents.files}
-          </p>
+          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">{t.agents.files}</p>
           {fileLines.slice(0, 8).map(line => (
             <p className="wrap-break-word font-mono text-[0.67rem] leading-relaxed text-muted-foreground/80" key={line}>
               {line}

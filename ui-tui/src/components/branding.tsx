@@ -254,12 +254,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>
               {s.tools} tool{s.tools === 1 ? '' : 's'}
             </Text>
-          ) : s.disabled || s.status === 'disabled' ? (
-            <Text color={t.color.muted}>disabled</Text>
-          ) : s.status === 'connecting' ? (
-            <Text color={t.color.warn}>connecting</Text>
-          ) : s.status === 'configured' ? (
-            <Text color={t.color.muted}>configured</Text>
           ) : (
             <Text color={t.color.error}>failed</Text>
           )}

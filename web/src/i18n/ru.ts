@@ -286,8 +286,8 @@ export const ru: Translations = {
     nameRequired: "Имя обязательно",
     nameRule:
       "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
-    invalidName: "Недопустимое имя профиля",    cloneFrom: "Клонировать конфигурацию из профиля",
-    cloneFromNone: "Нет (пусто)",
+    invalidName: "Недопустимое имя профиля",
+    cloneFromDefault: "Клонировать конфигурацию из профиля по умолчанию",
     allProfiles: "Профили",
     noProfiles: "Профили не найдены.",
     defaultBadge: "по умолчанию",

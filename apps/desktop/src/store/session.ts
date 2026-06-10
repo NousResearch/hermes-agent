@@ -1,6 +1,5 @@
-import { atom, computed } from 'nanostores'
+import { atom } from 'nanostores'
 
-import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -11,19 +10,13 @@ type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
+// Cached copy of Settings → Sessions → Default project directory. The main
+// process persists this in project-dir.json, but the renderer must also honor it
+// when seeding $currentCwd — otherwise PR #37586's sticky localStorage home dir
+// wins and new sessions ignore the user's explicit picker choice.
 let configuredDefaultProjectDir = ''
 
-function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
-  if (connection?.mode !== 'remote') {
-    return WORKSPACE_CWD_KEY
-  }
-
-  const base = encodeURIComponent(connection.baseUrl || 'remote')
-  const profile = encodeURIComponent(connection.profile || 'default')
-  return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
-}
-
-export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
+export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
@@ -61,13 +54,6 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
     }
   }
 
-  const remembered = getRememberedWorkspaceCwd()
-
-  if ($connection.get()?.mode === 'remote') {
-    seedLiveCwd(remembered)
-    return
-  }
-
   if (configured) {
     const { cwd } = await sanitize(configured)
     seedLiveCwd(cwd)
@@ -75,10 +61,8 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
     return
   }
 
-  if (remembered) {
-    const { cwd } = await sanitize(remembered)
-    seedLiveCwd(cwd)
-  }
+  const { cwd } = await sanitize(getRememberedWorkspaceCwd())
+  seedLiveCwd(cwd)
 }
 
 export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
@@ -141,18 +125,10 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
-  // Deduplicate by compression lineage: when auto-compression rotates the tip
-  // id (old #4 → new #5), the incoming page carries the new tip but the
-  // previous list still holds the old one.  Without lineage-level dedup both
-  // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(
-    incoming.map(session => session._lineage_root_id ?? session.id)
-  )
 
   const survivors = previous.filter(
     session =>
       !incomingIds.has(session.id) &&
-      !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
@@ -196,15 +172,6 @@ export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
-
-// Streaming-stable derivations of $messages. During a token stream the array
-// is replaced ~30×/s; components that only care about coarse facts (is the
-// thread empty? is the tail a user message?) subscribe to these instead of
-// $messages so per-token flushes don't re-render them — nanostores' `computed`
-// only notifies when the derived VALUE changes.
-export const $messagesEmpty = computed($messages, messages => messages.length === 0)
-export const $lastVisibleMessageIsUser = computed($messages, lastVisibleMessageIsUser)
-
 export const $freshDraftReady = atom(false)
 export const $busy = atom(false)
 export const $awaitingResponse = atom(false)
@@ -233,7 +200,6 @@ export const $availablePersonalities = atom<string[]>([])
 export const $introSeed = atom(0)
 export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
-export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
@@ -263,16 +229,15 @@ export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive,
 
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)
-  persistString(workspaceCwdKey(), $currentCwd.get().trim() || null)
+  // Keep localStorage in sync with the atom: a real folder is remembered, an
+  // empty cwd clears the key (|| null → removeItem).
+  persistString(WORKSPACE_CWD_KEY, $currentCwd.get().trim() || null)
 }
 
-export const workspaceCwdForNewSession = (): string => {
-  if ($connection.get()?.mode === 'remote') {
-    return getRememberedWorkspaceCwd()
-  }
-
-  return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
-}
+/** Workspace for a brand-new chat. Explicit Settings override wins; otherwise
+ *  fall back to the sticky last-used folder, then whatever is already live. */
+export const workspaceCwdForNewSession = (): string =>
+  getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
@@ -284,7 +249,6 @@ export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
-export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sessionPickerOpen, next)
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)

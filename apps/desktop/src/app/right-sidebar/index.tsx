@@ -5,8 +5,8 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
@@ -16,7 +16,6 @@ import { $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
-import { RemoteFolderPicker } from './files/remote-picker'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -33,11 +32,17 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
 
+  const cwdName = hasCwd
+    ? (currentCwd
+        .split(/[\\/]+/)
+        .filter(Boolean)
+        .pop() ?? currentCwd)
+    : r.noFolderSelected
+
   const {
     collapseAll,
     collapseNonce,
     data,
-    effectiveCwd,
     loadChildren,
     openState,
     refreshRoot,
@@ -46,18 +51,11 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     setNodeOpen
   } = useProjectTree(currentCwd)
 
-  const cwdName = hasCwd
-    ? (effectiveCwd
-        .split(/[\\/]+/)
-        .filter(Boolean)
-        .pop() ?? effectiveCwd)
-    : r.noFolderSelected
-
   const canCollapse = Object.values(openState).some(Boolean)
 
   const chooseFolder = async () => {
-    const selected = await selectDesktopPaths({
-      defaultPath: hasCwd ? effectiveCwd : undefined,
+    const selected = await window.hermesDesktop?.selectPaths({
+      defaultPath: hasCwd ? currentCwd : undefined,
       directories: true,
       multiple: false,
       title: r.changeCwdTitle
@@ -70,7 +68,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
 
   const previewFile = async (path: string) => {
     try {
-      const preview = await normalizeOrLocalPreviewTarget(path, effectiveCwd || undefined)
+      const preview = await normalizeOrLocalPreviewTarget(path, currentCwd || undefined)
 
       if (!preview) {
         throw new Error(r.couldNotPreview(path))
@@ -92,12 +90,10 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      <RemoteFolderPicker />
-
       <FilesystemTab
         canCollapse={canCollapse}
         collapseNonce={collapseNonce}
-        cwd={effectiveCwd}
+        cwd={currentCwd}
         cwdName={cwdName}
         data={data}
         error={rootError}
@@ -126,12 +122,13 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   onRefresh: () => void
 }
 
-// Sidebar palette + hover-reveal: refresh tracks label hover; collapse-all
-// stays visible while any folder is expanded.
+// Sidebar-specific color/hover treatment only — size, radius, cursor and the
+// base focus ring come from <Button size="icon-xs">. This constant exists
+// purely to share the sidebar palette + the hover-reveal behavior below.
 const HEADER_ACTION_CLASS =
   'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
-const HEADER_ACTION_LABEL_REVEAL = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 peer-focus-visible/project-label:pointer-events-auto peer-focus-visible/project-label:opacity-100 peer-hover/project-label:pointer-events-auto peer-hover/project-label:opacity-100`
+const HEADER_ACTION_REVEAL_CLASS = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
 
 function FilesystemTab({
   canCollapse,
@@ -156,20 +153,20 @@ function FilesystemTab({
   const r = t.rightSidebar
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="group/project-header flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <div className="peer/project-label flex min-w-0 flex-1">
+        <Tip label={hasCwd ? r.folderTip(cwd) : r.openFolder}>
           <button
-            className="flex w-full min-w-0 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
+            className="flex min-w-0 flex-1 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
             onClick={() => void onChangeFolder()}
             type="button"
           >
             <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
           </button>
-        </div>
+        </Tip>
         <Button
           aria-label={r.refreshTree}
-          className={HEADER_ACTION_LABEL_REVEAL}
+          className={HEADER_ACTION_CLASS}
           disabled={!hasCwd || loading}
           onClick={onRefresh}
           size="icon-xs"
@@ -188,7 +185,7 @@ function FilesystemTab({
         </Button>
         <Button
           aria-label={r.collapseAll}
-          className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
+          className={HEADER_ACTION_REVEAL_CLASS}
           disabled={!hasCwd || !canCollapse}
           onClick={onCollapseAll}
           size="icon-xs"
@@ -208,7 +205,6 @@ function FilesystemTab({
         onLoadChildren={onLoadChildren}
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}
-        onRetry={onRefresh}
         openState={openState}
       />
     </div>
@@ -230,9 +226,6 @@ interface FileTreeBodyProps {
   onLoadChildren: (id: string) => void | Promise<void>
   onNodeOpenChange: (id: string, open: boolean) => void
   onPreviewFile?: (path: string) => void
-  /** Force-reload the root. The hook also auto-retries while errored, so this
-   *  is the impatient-user path. */
-  onRetry?: () => void
   openState: ReturnType<typeof useProjectTree>['openState']
 }
 
@@ -247,7 +240,6 @@ function FileTreeBody({
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
-  onRetry,
   openState
 }: FileTreeBodyProps) {
   const { t } = useI18n()
@@ -258,20 +250,7 @@ function FileTreeBody({
   }
 
   if (error) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-        <EmptyState body={r.unreadableBody(error)} title={r.unreadableTitle} />
-        {onRetry && (
-          <button
-            className="text-[0.68rem] font-medium text-muted-foreground transition hover:text-foreground"
-            onClick={onRetry}
-            type="button"
-          >
-            {r.tryAgain}
-          </button>
-        )}
-      </div>
-    )
+    return <EmptyState body={r.unreadableBody(error)} title={r.unreadableTitle} />
   }
 
   if (loading && data.length === 0) {

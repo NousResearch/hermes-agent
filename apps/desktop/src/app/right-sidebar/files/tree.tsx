@@ -7,13 +7,10 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { getFileTreeDndManager } from './dnd-manager'
 import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
 const INDENT = 10
-/** Base inset for every row; react-arborist owns paddingLeft for depth indent. */
-const TREE_ROW_INSET = 12
 
 interface ProjectTreeProps {
   collapseNonce: number
@@ -97,7 +94,6 @@ export function ProjectTree({
           disableDrag
           disableDrop
           disableEdit
-          dndManager={getFileTreeDndManager()}
           height={size.height}
           indent={INDENT}
           initialOpenState={openState}
@@ -149,8 +145,7 @@ function ProjectTreeRow({
   }
 
   const isFolder = node.data.isDirectory
-  const isPlaceholder = Boolean(node.data.placeholder)
-  const isErrorPlaceholder = node.data.placeholder === 'error'
+  const isPlaceholder = node.data.id.endsWith('::__loading__')
 
   return (
     <div
@@ -202,21 +197,21 @@ function ProjectTreeRow({
         event.dataTransfer.setData('text/plain', node.data.id)
       }}
       ref={dragHandle}
-      style={{
-        ...style,
-        paddingLeft:
-          (typeof style.paddingLeft === 'number'
-            ? style.paddingLeft
-            : Number.parseFloat(String(style.paddingLeft ?? 0)) || 0) + TREE_ROW_INSET
-      }}
+      style={style}
     >
-      {/* No chevron column — the folder icon (open/closed) already carries the
-          expand state, so the extra glyph was pure noise. */}
+      {isFolder && !isPlaceholder && (
+        <span aria-hidden className="flex w-3 items-center justify-center">
+          <Codicon
+            className="text-(--ui-text-tertiary)"
+            name={node.isOpen ? 'chevron-down' : 'chevron-right'}
+            size="0.75rem"
+          />
+        </span>
+      )}
+      {!isFolder && <span aria-hidden className="w-3 shrink-0" />}
       <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
-        {isPlaceholder && !isErrorPlaceholder ? (
+        {isPlaceholder ? (
           <Codicon name="loading" size="0.75rem" spinning />
-        ) : isErrorPlaceholder ? (
-          <Codicon name="warning" size="0.75rem" />
         ) : isFolder ? (
           <Codicon name={node.isOpen ? 'folder-opened' : 'folder'} size="0.875rem" />
         ) : (

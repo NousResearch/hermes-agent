@@ -93,39 +93,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 3  # origin probe + git fetch + git rev-list
-
-
-def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
-    """Passive update checks must not trigger SSH auth for official installs."""
-    import hermes_cli.banner as banner
-
-    repo_dir = tmp_path / "hermes-agent"
-    repo_dir.mkdir()
-    (repo_dir / ".git").mkdir()
-
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(returncode=0, stdout="git@github.com:NousResearch/hermes-agent.git\n")
-        if cmd == ["git", "rev-parse", "HEAD"]:
-            return MagicMock(returncode=0, stdout="local-sha\n")
-        if cmd == [
-            "git",
-            "ls-remote",
-            "https://github.com/NousResearch/hermes-agent.git",
-            "refs/heads/main",
-        ]:
-            return MagicMock(returncode=0, stdout="upstream-sha\trefs/heads/main\n")
-        raise AssertionError(f"unexpected git command: {cmd!r}")
-
-    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
-        result = banner._check_via_local_git(repo_dir)
-
-    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
-    assert ["git", "fetch", "origin", "--quiet"] not in calls
+    assert mock_run.call_count == 2  # git fetch + git rev-list
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

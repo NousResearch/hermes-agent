@@ -52,13 +52,7 @@ export function GatewayConnectingOverlay() {
   const [tail, setTail] = useState(TAIL)
   const [phase, setPhase] = useState<Phase>('live')
 
-  // The full-screen connecting overlay is for initial boot only. After a
-  // healthy boot, flaky networks / sleep-wake can drop the socket and flip the
-  // gateway state back to closed/error while the app reconnects. Do not cover
-  // the chat then — users should still be able to type drafts, open settings,
-  // and recover instead of staring at a modal CONNECTING screen.
-  const initialBootActive = boot.visible || boot.running || boot.progress < 100
-  const connecting = gatewayState !== 'open' && !boot.error && initialBootActive
+  const connecting = gatewayState !== 'open' && !boot.error
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase
   // kicks in doesn't unmount us and cause a flash.

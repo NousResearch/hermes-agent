@@ -22,161 +22,110 @@ export interface DesktopThemeCommandOption {
   name: string
 }
 
-/**
- * Local client action a command resolves to. Each id maps to exactly one
- * handler in the dispatcher (`use-prompt-actions`), so adding a command never
- * means adding a branch to a switch ladder — you add a row here + a handler
- * keyed by the id.
- */
-export type DesktopActionId =
-  | 'branch'
-  | 'handoff'
-  | 'help'
-  | 'new'
-  | 'profile'
-  | 'skin'
-  | 'title'
-  | 'yolo'
+const DESKTOP_COMMAND_META = [
+  ['/agents', 'Show active desktop sessions and running tasks'],
+  ['/background', 'Run a prompt in the background'],
+  ['/branch', 'Branch the latest message into a new chat'],
+  ['/compress', 'Compress this conversation context'],
+  ['/debug', 'Create a debug report'],
+  ['/goal', 'Manage the standing goal for this session'],
+  ['/help', 'Show desktop slash commands'],
+  ['/new', 'Start a new desktop chat'],
+  ['/profile', 'Switch the active Hermes profile'],
+  ['/queue', 'Queue a prompt for the next turn'],
+  ['/resume', 'Resume a saved session'],
+  ['/retry', 'Retry the last user message'],
+  ['/rollback', 'List or restore filesystem checkpoints'],
+  ['/skin', 'Switch desktop theme or cycle to the next one'],
+  ['/status', 'Show current session status'],
+  ['/steer', 'Steer the current run after the next tool call'],
+  ['/stop', 'Stop running background processes'],
+  ['/title', 'Rename the current session'],
+  ['/undo', 'Remove the last user/assistant exchange'],
+  ['/usage', 'Show token usage for this session'],
+  ['/version', 'Show Hermes Agent version'],
+  ['/yolo', 'Toggle YOLO — auto-approve dangerous commands']
+] as const
 
-/** A command fulfilled by opening a desktop overlay picker. */
-export type DesktopPickerId = 'model' | 'session'
+const DESKTOP_COMMANDS: ReadonlySet<string> = new Set(DESKTOP_COMMAND_META.map(([command]) => command))
 
-/** Why a known Hermes command has no desktop UI surface. */
-export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | 'terminal'
+const DESKTOP_ALIASES = new Map([
+  ['/bg', '/background'],
+  ['/btw', '/background'],
+  ['/fork', '/branch'],
+  ['/q', '/queue'],
+  ['/reload_mcp', '/reload-mcp'],
+  ['/reload_skills', '/reload-skills'],
+  ['/reset', '/new'],
+  ['/tasks', '/agents']
+])
 
-/**
- * How the desktop fulfils a command. This is the single discriminator the
- * dispatcher, popover, pills, and pickers all read — no parallel block-lists.
- *
- * - `action`     → handled by a local client handler (new chat, branch, …)
- * - `picker`     → opens an overlay (`/model`, `/resume`); a typed arg is
- *                  resolved by that picker instead of falling through
- * - `exec`       → runs on the backend via slash.exec / command.dispatch and
- *                  renders its text output inline
- * - `unavailable`→ a known command with genuinely no desktop UI (terminal-only,
- *                  messaging-only, …); shows a reason instead of executing
- */
-export type DesktopCommandSurface =
-  | { kind: 'action'; action: DesktopActionId }
-  | { kind: 'picker'; picker: DesktopPickerId }
-  | { kind: 'exec' }
-  | { kind: 'unavailable'; reason: DesktopUnavailableReason }
+const DESKTOP_COMMAND_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(DESKTOP_COMMAND_META)
 
-export interface DesktopCommandSpec {
-  /** Canonical command, leading slash included (e.g. `/resume`). */
-  name: string
-  /** Popover/help label; omitted for unavailable commands (never surfaced). */
-  description?: string
-  aliases?: string[]
-  surface: DesktopCommandSurface
-  /**
-   * Hide from the slash popover / completions while still letting it execute.
-   * Used for picker commands reachable from chrome (the model picker lives on
-   * the status bar), so the popover doesn't dead-end on inline completion.
-   */
-  hidden?: boolean
-  /**
-   * The command has an inline options "screen" (theme / personality / session /
-   * platform / toolset list). Picking the bare command in the popover expands to
-   * that argument step instead of committing — mirroring typing `/<cmd> ` by hand.
-   */
-  args?: boolean
-}
+const PICKER_OWNED_COMMANDS = new Set(['/model'])
 
-const exec = (): DesktopCommandSurface => ({ kind: 'exec' })
-const action = (id: DesktopActionId): DesktopCommandSurface => ({ kind: 'action', action: id })
-const picker = (id: DesktopPickerId): DesktopCommandSurface => ({ kind: 'picker', picker: id })
-const unavailable = (reason: DesktopUnavailableReason): DesktopCommandSurface => ({ kind: 'unavailable', reason })
+const TERMINAL_ONLY_COMMANDS = new Set([
+  '/browser',
+  '/busy',
+  '/clear',
+  '/commands',
+  '/compact',
+  '/config',
+  '/copy',
+  '/cron',
+  '/details',
+  '/exit',
+  '/footer',
+  '/gateway',
+  '/gquota',
+  '/history',
+  '/image',
+  '/indicator',
+  '/logs',
+  '/mouse',
+  '/paste',
+  '/platforms',
+  '/plugins',
+  '/quit',
+  '/redraw',
+  '/reload',
+  '/restart',
+  '/save',
+  '/sb',
+  '/set-home',
+  '/sethome',
+  '/snap',
+  '/snapshot',
+  '/statusbar',
+  '/toolsets',
+  '/tools',
+  '/update',
+  '/verbose'
+])
 
-/**
- * THE source of truth for desktop slash commands. Everything below — execution
- * gating, popover suggestions, catalog filtering, pill grouping, and the
- * dispatcher's behavior — derives from this one table.
- */
-const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
-  // Local client actions
-  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
-  { name: '/branch', description: 'Branch the latest message into a new chat', aliases: ['/fork'], surface: action('branch') },
-  { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
-  { name: '/handoff', description: 'Hand off this session to a messaging platform', surface: action('handoff'), args: true },
-  { name: '/profile', description: 'Switch the active Hermes profile', surface: action('profile') },
-  { name: '/skin', description: 'Switch desktop theme or cycle to the next one', surface: action('skin'), args: true },
-  { name: '/title', description: 'Rename the current session', surface: action('title') },
-  { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
+const MESSAGING_ONLY_COMMANDS = new Set(['/approve', '/deny'])
 
-  // Overlay pickers
-  { name: '/model', description: 'Switch the model for this session', surface: picker('model'), hidden: true },
-  {
-    name: '/resume',
-    description: 'Resume a saved session',
-    aliases: ['/sessions', '/switch'],
-    surface: picker('session'),
-    args: true
-  },
+const SETTINGS_OWNED_COMMANDS = new Set(['/skills'])
 
-  // Backend-executed commands that render useful inline output
-  { name: '/agents', description: 'Show active desktop sessions and running tasks', aliases: ['/tasks'], surface: exec() },
-  { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
-  { name: '/compress', description: 'Compress this conversation context', surface: exec() },
-  { name: '/debug', description: 'Create a debug report', surface: exec() },
-  { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
-  { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
-  { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
-  { name: '/retry', description: 'Retry the last user message', surface: exec() },
-  { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
-  { name: '/save', description: 'Save the current transcript to JSON', surface: exec() },
-  { name: '/status', description: 'Show current session status', surface: exec() },
-  { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec() },
-  { name: '/stop', description: 'Stop running background processes', surface: exec() },
-  { name: '/tools', description: 'List or toggle tools available to the agent', surface: exec(), args: true },
-  { name: '/undo', description: 'Remove the last user/assistant exchange', surface: exec() },
-  { name: '/usage', description: 'Show token usage for this session', surface: exec() },
-  { name: '/version', description: 'Show Hermes Agent version', surface: exec() },
+const ADVANCED_COMMANDS = new Set([
+  '/curator',
+  '/fast',
+  '/insights',
+  '/kanban',
+  '/personality',
+  '/reasoning',
+  '/reload-mcp',
+  '/reload-skills',
+  '/voice'
+])
 
-  // No desktop surface, but carry an alias (underscore spelling variants).
-  { name: '/reload-mcp', aliases: ['/reload_mcp'], surface: unavailable('advanced') },
-  { name: '/reload-skills', aliases: ['/reload_skills'], surface: unavailable('advanced') }
-]
-
-// Known commands with no desktop surface (and no alias) — a flat name list
-// per reason beats 40 identical object literals.
-const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
-  terminal: [
-    '/browser', '/busy', '/clear', '/compact', '/config', '/copy', '/cron', '/details',
-    '/exit', '/footer', '/gateway', '/gquota', '/history', '/image', '/indicator', '/logs',
-    '/mouse', '/paste', '/platforms', '/plugins', '/quit', '/redraw', '/reload', '/restart',
-    '/sb', '/set-home', '/sethome', '/snap', '/snapshot', '/statusbar', '/toolsets', '/update', '/verbose'
-  ],
-  messaging: ['/approve', '/deny'],
-  settings: ['/skills'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
-}
-
-const ALL_SPECS: readonly DesktopCommandSpec[] = [
-  ...DESKTOP_COMMAND_SPECS,
-  ...(Object.entries(NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
-    ([reason, names]) => names.map(name => ({ name, surface: unavailable(reason) }))
-  )
-]
-
-const SPEC_BY_NAME = new Map<string, DesktopCommandSpec>(ALL_SPECS.map(spec => [spec.name, spec]))
-
-const ALIAS_TO_CANONICAL = new Map<string, string>(
-  ALL_SPECS.flatMap(spec => (spec.aliases ?? []).map(alias => [alias, spec.name] as const))
-)
-
-const UNAVAILABLE_MESSAGE: Record<DesktopUnavailableReason, (command: string) => string> = {
-  advanced: command =>
-    `${command} is not shown in the desktop slash palette. Use the relevant desktop control or terminal interface instead.`,
-  messaging: command => `${command} is only used from messaging platforms.`,
-  settings: command => `${command} is managed from the desktop sidebar.`,
-  terminal: command => `${command} is only available in the terminal interface.`
-}
-
-const PICKER_UNAVAILABLE_MESSAGE: Record<DesktopPickerId, (command: string) => string> = {
-  model: command => `${command} uses the desktop model picker instead of a slash command.`,
-  session: command => `${command} uses the desktop session picker instead of a slash command.`
-}
+const BLOCKED_COMMANDS = new Set([
+  ...PICKER_OWNED_COMMANDS,
+  ...TERMINAL_ONLY_COMMANDS,
+  ...MESSAGING_ONLY_COMMANDS,
+  ...SETTINGS_OWNED_COMMANDS,
+  ...ADVANCED_COMMANDS
+])
 
 function normalizeCommand(command: string): string {
   const trimmed = command.trim()
@@ -188,25 +137,27 @@ function normalizeCommand(command: string): string {
 export function canonicalDesktopSlashCommand(command: string): string {
   const normalized = normalizeCommand(command)
 
-  return ALIAS_TO_CANONICAL.get(normalized) || normalized
+  return DESKTOP_ALIASES.get(normalized) || normalized
 }
 
-/** Resolve a command (or alias) to its desktop spec, or null for unknown/extension commands. */
-export function resolveDesktopCommand(command: string): DesktopCommandSpec | null {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command)) ?? null
-}
-
-function isKnownHermesSlashCommand(command: string): boolean {
+export function isDesktopSlashCommand(command: string): boolean {
   const normalized = normalizeCommand(command)
+  const canonical = canonicalDesktopSlashCommand(normalized)
 
-  return SPEC_BY_NAME.has(normalized) || ALIAS_TO_CANONICAL.has(normalized)
+  if (BLOCKED_COMMANDS.has(normalized) || BLOCKED_COMMANDS.has(canonical)) {
+    return false
+  }
+
+  return DESKTOP_COMMANDS.has(canonical) || !isKnownHermesSlashCommand(normalized)
 }
 
 /**
  * An "extension" command is anything the backend surfaces that is NOT one of
  * Hermes' built-in slash commands — i.e. skill commands (`/gif-search`,
  * `/codex`, …) and user-defined quick commands. These are user-activated, so
- * they appear in the desktop slash palette and execute when typed.
+ * they should appear in the desktop slash palette even though they aren't in
+ * the curated `DESKTOP_COMMANDS` allow-list. This mirrors the predicate in
+ * `isDesktopSlashCommand` that already lets them EXECUTE when typed.
  */
 export function isDesktopSlashExtensionCommand(command: string): boolean {
   const normalized = normalizeCommand(command)
@@ -218,85 +169,63 @@ export function isDesktopSlashExtensionCommand(command: string): boolean {
   return !isKnownHermesSlashCommand(normalized)
 }
 
-/** Gates execution: true unless the command is a known no-desktop-surface command. */
-export function isDesktopSlashCommand(command: string): boolean {
-  const spec = resolveDesktopCommand(command)
-
-  if (spec) {
-    return spec.surface.kind !== 'unavailable'
-  }
-
-  return isDesktopSlashExtensionCommand(command)
-}
-
-/** Gates discovery in the popover/completions. */
 export function isDesktopSlashSuggestion(command: string): boolean {
   const normalized = normalizeCommand(command)
+  const canonical = canonicalDesktopSlashCommand(normalized)
 
-  // Aliases stay hidden so the popover isn't cluttered with duplicates.
-  if (ALIAS_TO_CANONICAL.has(normalized)) {
-    return false
+  // Surface skill / quick commands (extensions the backend provides) alongside
+  // the curated built-ins. Built-in aliases stay hidden so the popover isn't
+  // cluttered with duplicates.
+  if (isDesktopSlashExtensionCommand(normalized)) {
+    return true
   }
 
-  const spec = SPEC_BY_NAME.get(normalized)
-
-  if (spec) {
-    return spec.surface.kind !== 'unavailable' && !spec.hidden
-  }
-
-  // Skill / quick commands the backend provides.
-  return isDesktopSlashExtensionCommand(normalized)
+  return DESKTOP_COMMANDS.has(canonical) && !DESKTOP_ALIASES.has(normalized)
 }
 
 /**
- * True for commands the desktop fulfils by opening an overlay picker
- * (`/model`, `/resume`/`/sessions`/`/switch`). Optionally pin to one picker.
+ * True for commands the desktop fulfils by opening the model picker overlay
+ * (e.g. `/model`) rather than executing a slash command. The caller opens the
+ * picker UI instead of printing the "uses the desktop model picker" notice.
  */
-export function isPickerCommand(command: string, picker?: DesktopPickerId): boolean {
-  const surface = resolveDesktopCommand(command)?.surface
-
-  if (surface?.kind !== 'picker') {
-    return false
-  }
-
-  return picker ? surface.picker === picker : true
-}
-
-/** Back-compat shim for the model picker check. */
 export function isModelPickerCommand(command: string): boolean {
-  return isPickerCommand(command, 'model')
+  const normalized = normalizeCommand(command)
+  const canonical = canonicalDesktopSlashCommand(normalized)
+
+  return PICKER_OWNED_COMMANDS.has(canonical)
 }
 
 export function desktopSlashUnavailableMessage(command: string): string | null {
-  const canonical = canonicalDesktopSlashCommand(command)
-  const surface = SPEC_BY_NAME.get(canonical)?.surface
+  const normalized = normalizeCommand(command)
+  const canonical = canonicalDesktopSlashCommand(normalized)
 
-  if (!surface) {
-    return null
+  if (PICKER_OWNED_COMMANDS.has(canonical)) {
+    return `/${canonical.slice(1)} uses the desktop model picker instead of a slash command.`
   }
 
-  if (surface.kind === 'unavailable') {
-    return UNAVAILABLE_MESSAGE[surface.reason](canonical)
+  if (SETTINGS_OWNED_COMMANDS.has(canonical)) {
+    return `/${canonical.slice(1)} is managed from the desktop sidebar.`
   }
 
-  if (surface.kind === 'picker') {
-    return PICKER_UNAVAILABLE_MESSAGE[surface.picker](canonical)
+  if (MESSAGING_ONLY_COMMANDS.has(canonical)) {
+    return `/${canonical.slice(1)} is only used from messaging platforms.`
+  }
+
+  if (ADVANCED_COMMANDS.has(canonical)) {
+    return `/${canonical.slice(1)} is not shown in the desktop slash palette. Use the relevant desktop control or terminal interface instead.`
+  }
+
+  if (TERMINAL_ONLY_COMMANDS.has(normalized) || TERMINAL_ONLY_COMMANDS.has(canonical)) {
+    return `/${canonical.slice(1)} is only available in the terminal interface.`
   }
 
   return null
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
-}
+  const canonical = canonicalDesktopSlashCommand(command)
 
-/**
- * True when picking the bare command should expand to its inline argument
- * options (theme / personality / session / platform / toolset) rather than
- * committing immediately. Lets the popover act as a two-step picker.
- */
-export function desktopSlashCommandTakesArgs(command: string): boolean {
-  return resolveDesktopCommand(command)?.args ?? false
+  return DESKTOP_COMMAND_DESCRIPTIONS.get(canonical) || fallback
 }
 
 export function desktopSkinSlashCompletions(
@@ -345,36 +274,13 @@ export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): Comm
     ?.filter(([command]) => isDesktopSlashSuggestion(command))
     .map(([command, description]) => [command, desktopSlashDescription(command, description)] as [string, string])
 
-  // Recount skill commands from the filtered output so /help's footer reflects
-  // what the user actually sees. Backend's skill_count includes commands the
-  // desktop hides (terminal-only, picker-owned, advanced), producing a footer
-  // like "60 skill commands available" while only ~29 appear in the list.
-  const filteredCommands = new Set<string>()
-
-  for (const section of categories ?? []) {
-    for (const [command] of section.pairs) {
-      filteredCommands.add(canonicalDesktopSlashCommand(command))
-    }
-  }
-
-  for (const [command] of pairs ?? []) {
-    filteredCommands.add(canonicalDesktopSlashCommand(command))
-  }
-
-  let skillCount = 0
-
-  for (const command of filteredCommands) {
-    if (isDesktopSlashExtensionCommand(command)) {
-      skillCount += 1
-    }
-  }
-
-  const hasSkillCount = catalog.skill_count !== undefined || skillCount > 0
-
   return {
     ...catalog,
     ...(categories ? { categories } : {}),
-    ...(pairs ? { pairs } : {}),
-    ...(hasSkillCount ? { skill_count: skillCount } : {})
+    ...(pairs ? { pairs } : {})
   }
+}
+
+function isKnownHermesSlashCommand(command: string): boolean {
+  return DESKTOP_COMMANDS.has(command) || DESKTOP_ALIASES.has(command) || BLOCKED_COMMANDS.has(command)
 }

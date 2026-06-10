@@ -28,9 +28,9 @@ class TestRenderNoticeLine:
         )
         assert (
             render_notice_line(
-                AgentNotice(text="✕ Credit access paused · run /credits to top up", level="error")
+                AgentNotice(text="✕ Credit access paused · run /usage for balance", level="error")
             )
-            == "✕ Credit access paused · run /credits to top up"
+            == "✕ Credit access paused · run /usage for balance"
         )
 
     def test_does_not_prepend_a_second_glyph(self):

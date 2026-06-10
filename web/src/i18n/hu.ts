@@ -286,8 +286,8 @@ export const hu: Translations = {
     nameRequired: "A név kötelező",
     nameRule:
       "Csak kisbetűk, számjegyek, _ és - karakterek; betűvel vagy számjeggyel kell kezdődnie; legfeljebb 64 karakter.",
-    invalidName: "Érvénytelen profilnév",    cloneFrom: "Konfiguráció klónozása ebből a profilból",
-    cloneFromNone: "Nincs (üres)",
+    invalidName: "Érvénytelen profilnév",
+    cloneFromDefault: "Konfiguráció klónozása az alapértelmezett profilból",
     allProfiles: "Profilok",
     noProfiles: "Nem található profil.",
     defaultBadge: "alapértelmezett",

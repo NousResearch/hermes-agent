@@ -108,7 +108,6 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/model x-model')).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
-      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model'
@@ -129,7 +128,6 @@ describe('createSlashHandler', () => {
       createSlashHandler(ctx)(`/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`)
     ).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
-      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
@@ -142,7 +140,6 @@ describe('createSlashHandler', () => {
 
     createSlashHandler(ctx)('/model x-model --global')
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
-      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model --global'

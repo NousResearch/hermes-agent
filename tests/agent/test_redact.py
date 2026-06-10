@@ -53,10 +53,6 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("fal_abc123def456ghi789jkl")
         assert "abc123def456" not in result
 
-    def test_notion_internal_integration_token(self):
-        result = redact_sensitive_text("ntn_abc123def456ghi789jkl")
-        assert "abc123def456" not in result
-
     def test_short_token_fully_masked(self):
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result

@@ -28,14 +28,11 @@ from typing import Literal, Sequence
 
 log = logging.getLogger(__name__)
 
-# Only this desired state triggers automatic restart. Everything else
+# Only this prior state triggers automatic restart. Everything else
 # (startup_failed, starting, stopped, missing) registers the slot in
 # the down state and waits for explicit user action — this avoids the
 # crash-loop where a broken gateway keeps being restarted across
-# `docker restart` cycles. Older installs only have gateway_state;
-# newer lifecycle commands persist desired_state separately so a transient
-# runtime state (draining/startup_failed) does not erase the operator's
-# durable start/stop intent across pod/container recreation.
+# `docker restart` cycles.
 _AUTOSTART_STATES = frozenset({"running"})
 
 # Stale runtime files we sweep before recreating service slots. These
@@ -107,7 +104,7 @@ def reconcile_profile_gateways(
         container_argv=container_argv,
         dry_run=dry_run,
     )
-    default_prior_state = legacy_default_state or _read_desired_state(hermes_home)
+    default_prior_state = legacy_default_state or _read_prior_state(hermes_home)
     default_should_start = default_prior_state in _AUTOSTART_STATES
     if not dry_run:
         _cleanup_stale_runtime_files(hermes_home)
@@ -142,7 +139,7 @@ def reconcile_profile_gateways(
                 )
                 continue
 
-            prior_state = _read_desired_state(entry)
+            prior_state = _read_prior_state(entry)
             should_start = prior_state in _AUTOSTART_STATES
 
             if not dry_run:
@@ -191,7 +188,6 @@ def _maybe_migrate_legacy_gateway_run_state(
         import time
         state_file.write_text(json.dumps({
             "gateway_state": "running",
-            "desired_state": "running",
             "timestamp": int(time.time()),
             "migrated_from": "legacy-container-cmd",
         }) + "\n")
@@ -207,15 +203,8 @@ def _read_container_argv() -> tuple[str, ...]:
     return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
 
 
-def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
-    """Strip the s6/wrapper prefix off PID 1 argv, leaving the hermes args.
-
-    The container PID 1 argv looks like
-    ``/init /opt/hermes/docker/main-wrapper.sh <subcommand> [args...]`` and
-    the wrapper re-execs ``hermes <subcommand>``. Peel ``init`` →
-    ``main-wrapper.sh`` → ``hermes`` so callers can match on the bare
-    subcommand. Shared by the legacy-gateway and dashboard role detectors.
-    """
+def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
+    """Return True for Docker commands equivalent to `gateway run`."""
     args = list(argv)
     if args and Path(args[0]).name == "init":
         args = args[1:]
@@ -223,58 +212,20 @@ def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
         args = args[1:]
     if args and Path(args[0]).name == "hermes":
         args = args[1:]
-    return args
-
-
-def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
-    """Return True for Docker commands equivalent to `gateway run`."""
-    args = _strip_container_argv_prefix(argv)
     if "--no-supervise" in args:
         return False
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
 
 
-def _is_dashboard_container(argv: Sequence[str]) -> bool:
-    """Return True when the container's command is the dashboard.
-
-    A dashboard-only container (``hermes dashboard ...``) never spawns or
-    supervises per-profile gateways — that is the gateway container's job.
-    Reconciling profile gateway s6 slots there is not just wasted work: when
-    the gateway and dashboard containers share a bind-mounted HERMES_HOME,
-    both race to ``flock()`` the same ``logs/gateways/<profile>/lock`` files,
-    producing "Resource busy" failures and an s6-log restart storm. So the
-    dashboard container skips reconciliation entirely.
-
-    Detected from PID 1 argv (``/proc/1/cmdline``) rather than an operator
-    flag: the role is a fact about the container's command, not a tunable,
-    and a flag can be forgotten in a hand-written compose/k8s manifest —
-    reintroducing the exact storm this prevents. Mirrors the argv handling
-    in :func:`_is_legacy_gateway_run_request`.
-    """
-    args = _strip_container_argv_prefix(argv)
-    return bool(args) and args[0] == "dashboard"
-
-
-def _read_desired_state(profile_dir: Path) -> str | None:
-    """Read the persisted gateway desired state for reconciliation.
-
-    Newer state files carry ``desired_state``: operator intent written by
-    s6 lifecycle commands. Older files only carry ``gateway_state``; keep
-    that as a compatibility fallback so existing running/stopped profiles
-    preserve their behavior until the next explicit start/stop.
-
-    Missing or unparseable files count as "no desired state" so we don't
-    bork the whole reconciliation on a corrupt file.
-    """
+def _read_prior_state(profile_dir: Path) -> str | None:
+    """Read gateway_state.json's ``gateway_state`` field, or None if
+    missing or unparseable. Unparseable counts as "no prior state" so
+    we don't bork the whole reconciliation on a corrupt file."""
     state_file = profile_dir / "gateway_state.json"
     if not state_file.exists():
         return None
     try:
-        data = json.loads(state_file.read_text())
-        desired_state = data.get("desired_state")
-        if desired_state is not None:
-            return desired_state
-        return data.get("gateway_state")
+        return json.loads(state_file.read_text()).get("gateway_state")
     except (OSError, json.JSONDecodeError):
         log.warning(
             "could not read %s; treating as no prior state", state_file,
@@ -427,22 +378,6 @@ _LOG_ROTATE_BYTES = 256 * 1024
 
 def main() -> int:
     """Entry point invoked from /etc/cont-init.d/02-reconcile-profiles."""
-    # A dashboard-only container never spawns or supervises per-profile
-    # gateways, so reconciling their s6 slots here is pure waste — and
-    # actively harmful: when the gateway and dashboard containers share a
-    # bind-mounted HERMES_HOME, both race to flock() the same s6-log lock
-    # files under logs/gateways/<profile>/lock, producing "Resource busy"
-    # failures and a restart storm. Detect the role from PID 1 argv and
-    # skip reconciliation in the dashboard container. No operator flag:
-    # the role is a fact about the container's command, and a flag can be
-    # forgotten in a hand-written manifest, reintroducing the storm.
-    if _is_dashboard_container(_read_container_argv()):
-        print(
-            "reconcile: skipping (dashboard container — does not need "
-            "per-profile gateways)"
-        )
-        return 0
-
     hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
     scandir = Path(os.environ.get("S6_PROFILE_GATEWAY_SCANDIR", "/run/service"))
     actions = reconcile_profile_gateways(

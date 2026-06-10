@@ -282,8 +282,8 @@ export const zh: Translations = {
     nameRequired: "名称必填",
     nameRule:
       "仅允许小写字母、数字、下划线和短横线；首字符必须是字母或数字；最多 64 个字符。",
-    invalidName: "多Agent配置名称非法",    cloneFrom: "从配置文件克隆",
-    cloneFromNone: "无（空白）",
+    invalidName: "多Agent配置名称非法",
+    cloneFromDefault: "从默认多Agent配置克隆配置",
     allProfiles: "多Agent配置列表",
     noProfiles: "暂无多Agent配置。",
     defaultBadge: "默认",

@@ -282,127 +282,30 @@ def secure_parent_dir(path: Path) -> None:
         pass
 
 
-def _norm_home_path(path: str | None) -> str:
-    """Return a comparable absolute path string, or ``""`` for empty input."""
-    raw = (path or "").strip()
-    if not raw:
-        return ""
-    try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
-    except Exception:
-        return os.path.normcase(raw)
+def get_subprocess_home() -> str | None:
+    """Return a per-profile HOME directory for subprocesses, or None.
 
+    When ``{HERMES_HOME}/home/`` exists on disk, subprocesses should use it
+    as ``HOME`` so system tools (git, ssh, gh, npm …) write their configs
+    inside the Hermes data directory instead of the OS-level ``/root`` or
+    ``~/``.  This provides:
 
-def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
-    """Return ``{HERMES_HOME}/home`` when the profile-home directory exists."""
-    hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
+    * **Docker persistence** — tool configs land inside the persistent volume.
+    * **Profile isolation** — each profile gets its own git identity, SSH
+      keys, gh tokens, etc.
+
+    The Python process's own ``os.environ["HOME"]`` and ``Path.home()`` are
+    **never** modified — only subprocess environments should inject this value.
+    Activation is directory-based: if the ``home/`` subdirectory doesn't
+    exist, returns ``None`` and behavior is unchanged.
+    """
+    hermes_home = get_hermes_home_override() or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
     profile_home = os.path.join(hermes_home, "home")
     if os.path.isdir(profile_home):
         return profile_home
     return None
-
-
-def _is_profile_home(candidate: str | None, profile_home: str | None) -> bool:
-    return bool(candidate and profile_home and _norm_home_path(candidate) == _norm_home_path(profile_home))
-
-
-def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
-    """Return likely OS-user home candidates in trust order."""
-    env = env or {}
-    candidates: list[str] = []
-    explicit = str(env.get("HERMES_REAL_HOME") or os.getenv("HERMES_REAL_HOME", "")).strip()
-    if explicit:
-        candidates.append(explicit)
-    home = str(env.get("HOME") or os.getenv("HOME", "")).strip()
-    if home:
-        candidates.append(home)
-    try:
-        import pwd
-
-        pw_home = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX-only module inside try/except
-        if pw_home:
-            candidates.append(pw_home)
-    except Exception:
-        pass
-    userprofile = str(env.get("USERPROFILE") or os.getenv("USERPROFILE", "")).strip()
-    if userprofile:
-        candidates.append(userprofile)
-    drive = str(env.get("HOMEDRIVE") or os.getenv("HOMEDRIVE", "")).strip()
-    path = str(env.get("HOMEPATH") or os.getenv("HOMEPATH", "")).strip()
-    if drive and path:
-        candidates.append(f"{drive}{path}" if path.startswith(("\\", "/")) else os.path.join(drive, path))
-    expanded = os.path.expanduser("~")
-    if expanded and expanded != "~":
-        candidates.append(expanded)
-    return candidates
-
-
-def get_real_home(env: dict[str, str] | None = None) -> str:
-    """Return the OS user's real home directory, avoiding Hermes profile HOME.
-
-    ``HERMES_HOME`` scopes Hermes state. ``HOME`` is reserved for the OS/user
-    account and the many external CLIs that store credentials under ``~``.
-    If a parent process is already running with ``HOME={HERMES_HOME}/home``,
-    this helper repairs back to the account home when possible.
-    """
-    profile_home = _profile_home_path(env)
-    seen: set[str] = set()
-    for candidate in _iter_real_home_candidates(env):
-        key = _norm_home_path(candidate)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        if not _is_profile_home(candidate, profile_home):
-            return candidate
-    return "/tmp"
-
-
-def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
-    """Return a subprocess ``HOME`` override, if one should be applied.
-
-    Policy is controlled by ``terminal.home_mode`` (bridged to
-    ``TERMINAL_HOME_MODE``):
-
-    * ``auto`` (default): host installs keep the real user HOME; containers use
-      ``{HERMES_HOME}/home`` for persistent state. If a host parent already has
-      HOME pointed at the profile home, repair subprocesses back to real HOME.
-    * ``real``: always prefer the real OS-user HOME.
-    * ``profile``: use ``{HERMES_HOME}/home`` when it exists, preserving the
-      older strict per-profile tool-config isolation.
-    """
-    env = env or {}
-    profile_home = _profile_home_path(env)
-    mode = str(env.get("TERMINAL_HOME_MODE") or os.getenv("TERMINAL_HOME_MODE", "auto")).strip().lower() or "auto"
-    if mode in {"isolated", "profile_home", "profile-home"}:
-        mode = "profile"
-    if mode in {"host", "user", "real_home", "real-home"}:
-        mode = "real"
-
-    if mode == "profile":
-        return profile_home
-
-    real_home = get_real_home(env)
-    current_home = str(env.get("HOME") or os.getenv("HOME", "")).strip()
-    if mode == "real":
-        return real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
-
-    if profile_home and is_container():
-        return profile_home
-    if _is_profile_home(current_home, profile_home):
-        return real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
-    return None
-
-
-def apply_subprocess_home_env(env: dict[str, str]) -> None:
-    """Apply Hermes' subprocess HOME contract to *env* in-place."""
-    real_home = get_real_home(env)
-    if real_home:
-        env["HERMES_REAL_HOME"] = real_home
-    home = get_subprocess_home(env)
-    if home:
-        env["HOME"] = home
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")

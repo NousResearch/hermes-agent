@@ -21,12 +21,6 @@ The failure modes we've seen in the wild:
   optional fields (common Pydantic/MCP shape). Anthropic rejects these at
   the top of ``input_schema``; collapse them to the non-null branch.
 * Unconstrained ``additionalProperties`` on objects with empty properties.
-* ``default`` (and other annotation keywords) alongside ``$ref`` — strict
-  backends (Fireworks-hosted Kimi, JSON Schema draft-07 validators) reject
-  sibling keywords at the same level as ``$ref``.  Common MCP/Pydantic shape
-  after nullable-union collapse::
-
-      {"$ref": "#/$defs/Foo", "default": null}
 
 This module walks the final tool schema tree (after MCP-level normalization
 and any per-tool dynamic rebuilds) and fixes the known-hostile constructs
@@ -96,35 +90,6 @@ def _sanitize_single_tool(tool: dict) -> dict:
     fn["parameters"] = _strip_top_level_combinators(
         fn["parameters"], path=fn.get("name", "<tool>")
     )
-    fn["parameters"] = _strip_ref_siblings(fn["parameters"])
-    return out
-
-
-# Sibling keywords strict JSON Schema validators reject alongside ``$ref``.
-_REF_FORBIDDEN_SIBLINGS = frozenset({"default"})
-
-
-def _strip_ref_siblings(node: Any) -> Any:
-    """Drop forbidden sibling keywords from nodes that carry ``$ref``.
-
-    Fireworks (and other draft-07-strict backends) fail tool requests with::
-
-        JSON Schema not supported: keyword(s) ['default'] not allowed at
-        the same level as $ref.
-
-    Nullable-union collapse and MCP ingestion can leave ``default`` on a
-    ``$ref`` node; strip it recursively.
-    """
-    if isinstance(node, list):
-        return [_strip_ref_siblings(item) for item in node]
-    if not isinstance(node, dict):
-        return node
-
-    out = {key: _strip_ref_siblings(value) for key, value in node.items()}
-    if "$ref" in out:
-        for key in _REF_FORBIDDEN_SIBLINGS:
-            if key in out:
-                out.pop(key, None)
     return out
 
 
@@ -220,9 +185,6 @@ def strip_nullable_unions(
                 replacement.setdefault("nullable", True)
             for meta_key in ("title", "description", "default", "examples"):
                 if meta_key in stripped and meta_key not in replacement:
-                    # ``default`` is illegal alongside ``$ref`` on strict backends.
-                    if meta_key == "default" and "$ref" in replacement:
-                        continue
                     replacement[meta_key] = stripped[meta_key]
             return strip_nullable_unions(replacement, keep_nullable_hint=keep_nullable_hint)
     return stripped

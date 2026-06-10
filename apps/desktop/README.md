@@ -93,7 +93,7 @@ Run before opening a PR (lint may surface pre-existing warnings but must exit cl
 
 ```bash
 npm run fix
-npm run typecheck
+npm run type-check
 npm run lint
 npm run test:desktop:all
 ```

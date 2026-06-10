@@ -174,13 +174,12 @@ def _fake_popen_capture(captured):
     return _fake
 
 
-def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch, tmp_path):
+def test_run_prompt_prefers_profile_home_when_available(monkeypatch, tmp_path):
     hermes_home = tmp_path / "hermes"
-    (hermes_home / "home").mkdir(parents=True)
-    real_home = tmp_path / "real-home"
-    real_home.mkdir()
+    profile_home = hermes_home / "home"
+    profile_home.mkdir(parents=True)
 
-    monkeypatch.setenv("HOME", str(real_home))
+    monkeypatch.delenv("HOME", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     captured = {}
@@ -190,8 +189,7 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
         with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
             client._run_prompt("hello", timeout_seconds=1)
 
-    assert captured["kwargs"]["env"]["HOME"] == str(real_home)
-    assert captured["kwargs"]["env"]["HERMES_REAL_HOME"] == str(real_home)
+    assert captured["kwargs"]["env"]["HOME"] == str(profile_home)
 
 
 def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):

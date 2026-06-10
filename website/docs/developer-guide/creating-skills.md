@@ -66,11 +66,6 @@ metadata:
         description: "What this setting controls"
         default: "sensible-default"
         prompt: "Display prompt for setup"
-    blueprint:                              # Optional — marks this skill a runnable automation
-      schedule: "0 9 * * *"              #   cron expr / "every 2h" / ISO timestamp
-      deliver: origin                    #   optional (default origin)
-      prompt: "Task instruction for each run"  # optional
-      no_agent: false                    # optional
 required_environment_variables:          # Optional — env vars the skill needs
   - name: MY_API_KEY
     prompt: "Enter your API key"
@@ -338,64 +333,6 @@ Bundled skills (in `skills/`) ship with every Hermes install. They should be **b
 If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo, is discoverable via `hermes skills browse` (labeled "official"), and installs with built-in trust.
 
 If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a registry and share it via `hermes skills install`.
-
-## Blueprints: skills that are also automations
-
-A **blueprint** is an ordinary skill that additionally declares a schedule in its frontmatter. Add a `metadata.hermes.blueprint` block and the skill becomes a shareable, runnable automation:
-
-```yaml
-metadata:
-  hermes:
-    tags: [blueprint, email]
-    blueprint:
-      schedule: "0 8 * * *"     # presence of `blueprint:` marks it runnable
-      deliver: telegram          # optional (default: origin)
-      prompt: "Summarize my unread email and today's calendar."  # optional
-      no_agent: false            # optional
-```
-
-Because a blueprint **is** a skill, it flows through the entire skills pipeline unchanged — search, inspect, install, security scan, provenance, taps, the centralized index, and `hermes skills publish` for sharing. Nothing new to learn.
-
-**Installing a blueprint.** When you install a skill that carries a `blueprint:` block, Hermes registers it as a **suggested cron job** rather than scheduling it. Scheduling is **opt-in** — installing never silently creates a recurring job. You review and accept it via `/suggestions`:
-
-```bash
-hermes skills install owner/morning-brief
-# → Blueprint: 'morning-brief' is an automation (schedule 0 8 * * *).
-#   Added to your suggestions — run /suggestions to schedule or dismiss it.
-
-# then, in a session:
-/suggestions             # lists pending suggestions, numbered
-/suggestions accept 1    # creates the cron job
-/suggestions dismiss 1   # never offer it again
-```
-
-Blueprints are one **source** of the unified Suggested Cron Jobs surface — the same place curated starter automations and (later) usage-pattern and integration suggestions appear. See [Suggested Cron Jobs](#suggested-cron-jobs) below.
-
-**Sharing an automation you built.** A blueprint loaded by a cron job (`hermes cron create --skill <name> ...`) can be exported back to a SKILL.md and published like any other skill, so an automation you tuned for yourself becomes a one-command install for someone else.
-
-The blueprint layer adds no new object type, store, or transport — the blueprint is a skill, the schedule is a cron job, and sharing is the existing publish/tap/index path.
-
-## Suggested Cron Jobs
-
-Hermes can *propose* automations and let you accept them with one tap, instead of making you assemble cron jobs by hand. Every proposal flows through one surface — the `/suggestions` command — regardless of where it came from:
-
-| Source | Trigger |
-|--------|---------|
-| `catalog` | Curated starter automations (`/suggestions catalog`) — daily briefing, important-mail monitor, weekly review, workday-start reminder |
-| `blueprint` | You installed a skill carrying a `blueprint:` block |
-| `usage` | The background review noticed a recurring ask a schedule would serve |
-| `integration` | You connected an account (Gmail, GitHub, ...) and the obvious automations are offered |
-
-```bash
-/suggestions             # list pending
-/suggestions accept N    # schedule suggestion N (creates the cron job)
-/suggestions dismiss N   # dismiss it — latched, never re-offered
-/suggestions catalog     # add the curated starter automations
-```
-
-Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
-
-The **important-mail monitor** catalog entry is the poll→classify→surface pattern: it scores inbox items with a cheap classifier model (`auxiliary.monitor` in `config.yaml`) and delivers only the ones above an urgency threshold, staying silent otherwise.
 
 ## Publishing Skills
 

@@ -53,7 +53,7 @@ export async function readOsc52Clipboard(querier: null | OscQuerier, timeoutMs =
     return null
   }
 
-  const timeout = new Promise<void>(resolve => setTimeout(resolve, timeoutMs))
+  const timeout = new Promise<undefined>(resolve => setTimeout(resolve, timeoutMs))
 
   const query = querier.send<OscResponse>({
     request: buildOsc52ClipboardQuery(),

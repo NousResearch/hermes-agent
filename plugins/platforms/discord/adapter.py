@@ -20,7 +20,6 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -67,43 +66,6 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
-
-
-async def _wait_for_ready_or_bot_exit(
-    ready_event: asyncio.Event,
-    bot_task: asyncio.Task,
-    timeout: float,
-) -> None:
-    """Wait until Discord is ready, or surface early bot startup failure.
-
-    ``discord.py`` startup errors (including SOCKS/proxy failures from
-    aiohttp-socks/python-socks) happen inside ``Bot.start()``.  If ``connect()``
-    only waits on ``ready_event``, a dead background task still burns the full
-    ready timeout before the gateway supervisor can reconnect.  Racing the ready
-    event against the bot task keeps failures fast and preserves the original
-    exception for logging/classification.
-    """
-    ready_task = asyncio.create_task(ready_event.wait())
-    try:
-        done, _pending = await asyncio.wait(
-            {ready_task, bot_task},
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if not done:
-            raise asyncio.TimeoutError
-        if bot_task in done:
-            exc = bot_task.exception()
-            if exc is not None:
-                raise exc
-            if not ready_task.done():
-                raise RuntimeError("Discord bot task exited before ready")
-        await ready_task
-    finally:
-        if not ready_task.done():
-            ready_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await ready_task
 
 
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
@@ -660,10 +622,6 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
-        # True while disconnect() is intentionally closing discord.py. The
-        # bot task's done callback uses this to distinguish an operator/service
-        # shutdown from a runtime websocket crash.
-        self._disconnecting = False
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -675,65 +633,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
-
-    def _handle_bot_task_done(self, task: asyncio.Task) -> None:
-        """Surface post-startup discord.py task exits to the gateway supervisor.
-
-        discord.py reconnects normal gateway interruptions internally. When its
-        top-level ``Bot.start()`` task actually exits after the adapter has been
-        marked running, the Discord websocket is dead while the Hermes gateway
-        process can remain alive. Treat that split-brain state as a retryable
-        fatal adapter error so ``GatewayRunner._handle_adapter_fatal_error`` can
-        remove this adapter and queue Discord for the existing reconnect watcher.
-        """
-        if getattr(self, "_disconnecting", False):
-            # Intentional service/operator shutdown. Drain the task result so
-            # asyncio doesn't emit "exception was never retrieved" warnings.
-            with suppress(asyncio.CancelledError, Exception):
-                task.exception()
-            return
-
-        # Ignore stale callbacks from an older client if a reconnect already
-        # installed a newer Bot.start() task on this adapter instance.
-        if self._bot_task is not None and task is not self._bot_task:
-            with suppress(asyncio.CancelledError, Exception):
-                task.exception()
-            return
-
-        if not self._running:
-            # Startup failures are handled by _wait_for_ready_or_bot_exit() in
-            # connect(); this callback is only for post-startup split-brain.
-            with suppress(asyncio.CancelledError, Exception):
-                task.exception()
-            return
-
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            return
-        except Exception as err:  # pragma: no cover - defensive
-            exc = err
-
-        if exc is None:
-            message = "Discord gateway task exited without an exception"
-        else:
-            message = f"Discord gateway task exited: {exc}"
-
-        logger.error("[%s] %s", self.name, message, exc_info=exc if exc else False)
-        self._set_fatal_error("discord_gateway_task_exited", message, retryable=True)
-
-        async def _notify() -> None:
-            try:
-                await self._notify_fatal_error()
-            except Exception as notify_exc:  # pragma: no cover - defensive logging
-                logger.warning(
-                    "[%s] Failed to notify gateway supervisor about Discord task exit: %s",
-                    self.name,
-                    notify_exc,
-                    exc_info=True,
-                )
-
-        asyncio.create_task(_notify())
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -895,7 +794,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
-                _role_authorized = False
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
@@ -919,7 +817,6 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=_is_dm,
                     ):
                         return
-                    _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
                 
                 # Multi-agent filtering: if the message mentions specific bots
                 # but NOT this bot, the sender is talking to another agent —
@@ -961,7 +858,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
-                await self._handle_message(message, role_authorized=_role_authorized)
+                await self._handle_message(message)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -1001,55 +898,25 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._register_slash_commands()
 
             # Start the bot in background
-            self._disconnecting = False
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
-            self._bot_task.add_done_callback(self._handle_bot_task_done)
 
-            # Wait for ready, but fail fast if discord.py's background startup
-            # task dies first (for example on SOCKS/proxy connect errors).
-            await _wait_for_ready_or_bot_exit(self._ready_event, self._bot_task, timeout=30)
+            # Wait for ready
+            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
 
             self._running = True
             return True
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
-            # Cancel the background bot task so it cannot fire on_message after
-            # this adapter is discarded.  Without this, the task keeps running and
-            # a later successful reconnect leaves two active Discord clients that
-            # each process every message, producing duplicate threads/responses.
-            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
-            # Same zombie-client hazard as the timeout branch: the background
-            # client.start() task may already be running when a later setup
-            # step raises. Cancel it so the discarded adapter cannot connect.
-            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
 
-    async def _cancel_bot_task(self) -> None:
-        """Cancel and await the background client.start() task, if running."""
-        if self._bot_task and not self._bot_task.done():
-            self._bot_task.cancel()
-            try:
-                await self._bot_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._bot_task = None
-
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
-        self._disconnecting = True
-        # Cancel the bot task before closing the client.  If connect() timed out
-        # and returned False, the background client.start() task may still be
-        # running; calling client.close() alone is not enough to stop it because
-        # discord.py's reconnect loop can ignore the closed flag while a
-        # WebSocket handshake is in flight.  Explicitly cancelling the task here
-        # ensures the zombie client cannot receive or dispatch any further events.
-        await self._cancel_bot_task()
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
@@ -4859,7 +4726,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
-    async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
+    async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
@@ -4973,13 +4840,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
-        referenced_attachments = []
-        reference = getattr(message, "reference", None)
-        resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
-            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
+        all_attachments = list(message.attachments) + snapshot_attachments
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -5049,7 +4910,6 @@ class DiscordAdapter(BasePlatformAdapter):
             guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
-            role_authorized=role_authorized,
         )
 
         # Build media URLs -- download image attachments to local cache so the
@@ -5775,7 +5635,6 @@ def _define_discord_view_classes() -> None:
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._selected_provider: str = ""
-            self._pending_expensive_model: str = ""
 
             self._build_provider_select()
 
@@ -5858,41 +5717,6 @@ def _define_discord_view_classes() -> None:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
-        def _build_expensive_confirm(self, model_id: str):
-            """Build confirmation buttons for unusually expensive models."""
-            self.clear_items()
-            self._pending_expensive_model = model_id
-
-            confirm_btn = discord.ui.Button(
-                label="Switch anyway",
-                style=discord.ButtonStyle.red,
-                custom_id="model_expensive_confirm",
-            )
-            confirm_btn.callback = self._on_expensive_confirm
-            self.add_item(confirm_btn)
-
-            cancel_btn = discord.ui.Button(
-                label="Cancel",
-                style=discord.ButtonStyle.grey,
-                custom_id="model_expensive_cancel",
-            )
-            cancel_btn.callback = self._on_cancel
-            self.add_item(cancel_btn)
-
-        async def _expensive_warning_for(self, model_id: str):
-            try:
-                from hermes_cli.model_cost_guard import expensive_model_warning
-
-                # Pricing lookup can hit models.dev / a /models endpoint on a
-                # cache miss — keep it off the event loop.
-                return await asyncio.to_thread(
-                    expensive_model_warning,
-                    model_id,
-                    provider=self._selected_provider,
-                )
-            except Exception:
-                return None
-
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
@@ -5922,11 +5746,7 @@ def _define_discord_view_classes() -> None:
                 view=self,
             )
 
-        async def _switch_selected_model(
-            self,
-            interaction: discord.Interaction,
-            model_id: str,
-        ):
+        async def _on_model_selected(self, interaction: discord.Interaction):
             if self.resolved:
                 await interaction.response.send_message(
                     "Already resolved~", ephemeral=True
@@ -5939,6 +5759,7 @@ def _define_discord_view_classes() -> None:
                 return
 
             self.resolved = True
+            model_id = interaction.data["values"][0]
             self.clear_items()
             await interaction.response.edit_message(
                 embed=discord.Embed(
@@ -5965,50 +5786,6 @@ def _define_discord_view_classes() -> None:
                     color=discord.Color.green(),
                 ),
                 view=None,
-            )
-
-        async def _on_model_selected(self, interaction: discord.Interaction):
-            if self.resolved:
-                await interaction.response.send_message(
-                    "Already resolved~", ephemeral=True
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
-                return
-
-            model_id = interaction.data["values"][0]
-            warning = await self._expensive_warning_for(model_id)
-            if warning is not None:
-                self._build_expensive_confirm(model_id)
-                await interaction.response.edit_message(
-                    embed=discord.Embed(
-                        title="⚠ Expensive Model Warning",
-                        description=warning.message,
-                        color=discord.Color.red(),
-                    ),
-                    view=self,
-                )
-                return
-
-            await self._switch_selected_model(interaction, model_id)
-
-        async def _on_expensive_confirm(self, interaction: discord.Interaction):
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
-                return
-            if not self._pending_expensive_model:
-                await interaction.response.send_message(
-                    "Model selection expired.", ephemeral=True
-                )
-                return
-            await self._switch_selected_model(
-                interaction,
-                self._pending_expensive_model,
             )
 
         async def _on_back(self, interaction: discord.Interaction):

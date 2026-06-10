@@ -41,7 +41,6 @@ def _build_parser():
     mcp_add.add_argument("name")
     mcp_add.add_argument("--url")
     mcp_add.add_argument("--command", dest="mcp_command")
-    mcp_add.add_argument("--args", nargs=argparse.REMAINDER, default=[])
 
     return parser
 
@@ -86,26 +85,3 @@ class TestMcpAddCommandDest:
         assert args.command == "mcp"
         assert args.mcp_command is None
         assert args.url is None
-
-    def test_args_passthrough_keeps_nested_option_flags(self):
-        """`--args` must keep command flags like Docker MCP's --profile."""
-        parser = _build_parser()
-        args = parser.parse_args(
-            [
-                "mcp",
-                "add",
-                "docker-research",
-                "--command",
-                "docker",
-                "--args",
-                "mcp",
-                "gateway",
-                "run",
-                "--profile",
-                "research",
-            ]
-        )
-
-        assert args.command == "mcp"
-        assert args.mcp_command == "docker"
-        assert args.args == ["mcp", "gateway", "run", "--profile", "research"]

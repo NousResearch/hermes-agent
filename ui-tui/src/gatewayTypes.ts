@@ -43,16 +43,6 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-// ── Credits / top-up ─────────────────────────────────────────────────
-
-export interface CreditsViewResponse {
-  balance_lines: string[]
-  depleted: boolean
-  identity_line: string | null
-  logged_in: boolean
-  topup_url: string | null
-}
-
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
@@ -113,8 +103,6 @@ export interface ConfigGetValueResponse {
 }
 
 export interface ConfigSetResponse {
-  confirm_message?: string
-  confirm_required?: boolean
   credential_warning?: string
   history_reset?: boolean
   info?: SessionInfo
@@ -579,11 +567,7 @@ export type GatewayEvent =
       session_id?: string
       type: 'clarify.request'
     }
-  | {
-      payload: { allow_permanent?: boolean; command: string; description: string }
-      session_id?: string
-      type: 'approval.request'
-    }
+  | { payload: { command: string; description: string }; session_id?: string; type: 'approval.request' }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }

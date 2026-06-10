@@ -28,38 +28,13 @@ def _stub_mautrix():
         sys.modules.setdefault(sub, types.ModuleType(sub))
     sys.modules.setdefault("mautrix", stub)
     m = sys.modules["mautrix.types"]
-
-    class EventType:
-        ROOM_MESSAGE = "m.room.message"
-        REACTION = "m.reaction"
-        ROOM_ENCRYPTED = "m.room.encrypted"
-        ROOM_NAME = "m.room.name"
-
-    class PaginationDirection:
-        BACKWARD = "b"
-        FORWARD = "f"
-
-    class PresenceState:
-        ONLINE = "online"
-        OFFLINE = "offline"
-        UNAVAILABLE = "unavailable"
-
-    class RoomCreatePreset:
-        PRIVATE = "private_chat"
-        PUBLIC = "public_chat"
-        TRUSTED_PRIVATE = "trusted_private_chat"
-
-    class TrustState:
-        UNVERIFIED = 0
-        VERIFIED = 1
-
-    for attr in ("ContentURI", "EventID", "RoomID", "SyncToken", "UserID"):
-        setattr(m, attr, str)
-    m.EventType = EventType
-    m.PaginationDirection = PaginationDirection
-    m.PresenceState = PresenceState
-    m.RoomCreatePreset = RoomCreatePreset
-    m.TrustState = TrustState
+    for attr in (
+        "ContentURI", "EventID", "EventType", "PaginationDirection",
+        "PresenceState", "RoomCreatePreset", "RoomID", "SyncToken",
+        "TrustState", "UserID",
+    ):
+        if not hasattr(m, attr):
+            setattr(m, attr, str)
 
 
 _stub_mautrix()

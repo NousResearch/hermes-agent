@@ -1,5 +1,4 @@
 const fs = require('node:fs')
-const os = require('node:os')
 const path = require('node:path')
 const { fileURLToPath } = require('node:url')
 
@@ -107,162 +106,71 @@ function sensitiveFileBlockReason(filePath) {
   return null
 }
 
-function ipcPathError(code, message) {
-  const error = new Error(message)
-  error.code = code
-  return error
-}
-
-function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
-  if (typeof filePath !== 'string') {
-    throw ipcPathError('invalid-path', `${purpose} failed: file path is required.`)
-  }
-
-  const raw = filePath.trim()
+function resolveRequestedFilePath(filePath, baseDir = process.cwd(), purpose = 'File read') {
+  const raw = String(filePath || '').trim()
 
   if (!raw) {
-    throw ipcPathError('invalid-path', `${purpose} failed: file path is required.`)
+    throw new Error(`${purpose} failed: file path is required.`)
   }
 
   if (raw.includes('\0')) {
-    throw ipcPathError('invalid-path', `${purpose} failed: file path is invalid.`)
-  }
-
-  const normalized = raw.replace(/\\/g, '/').toLowerCase()
-  if (
-    normalized.startsWith('//?/') ||
-    normalized.startsWith('//./') ||
-    normalized.startsWith('globalroot/device/') ||
-    normalized.includes('/globalroot/device/')
-  ) {
-    throw ipcPathError('device-path', `${purpose} blocked: Windows device paths are not allowed.`)
-  }
-
-  return raw
-}
-
-function resolveRequestedPathForIpc(filePath, options = {}) {
-  const purpose = String(options.purpose || 'File read')
-  let raw = rejectUnsafePathSyntax(filePath, purpose)
-
-  // Gateway-reported cwds (config `terminal.cwd`, remote sessions) routinely
-  // arrive as `~/...`. Node's fs has no shell — without expansion the path
-  // resolves under process.cwd() and every read "ENOENT"s forever.
-  if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')) {
-    raw = path.join(os.homedir(), raw.slice(1))
+    throw new Error(`${purpose} failed: file path is invalid.`)
   }
 
   if (/^file:/i.test(raw)) {
-    let resolvedPath
     try {
-      const parsed = new URL(raw)
-      if (parsed.protocol !== 'file:') {
-        throw new Error('not a file URL')
-      }
-      resolvedPath = fileURLToPath(parsed)
+      return fileURLToPath(raw)
     } catch {
-      throw ipcPathError('invalid-path', `${purpose} failed: file URL is invalid.`)
+      throw new Error(`${purpose} failed: file URL is invalid.`)
     }
-
-    rejectUnsafePathSyntax(resolvedPath, purpose)
-    return path.resolve(resolvedPath)
   }
 
-  const baseInput = typeof options.baseDir === 'string' && options.baseDir.trim() ? options.baseDir : process.cwd()
-  const safeBaseInput = rejectUnsafePathSyntax(baseInput, purpose)
-  const resolvedBase = path.resolve(safeBaseInput)
-  rejectUnsafePathSyntax(resolvedBase, purpose)
-  const resolvedPath = path.resolve(resolvedBase, raw)
-  rejectUnsafePathSyntax(resolvedPath, purpose)
-
-  return resolvedPath
-}
-
-async function statForIpc(fsImpl, resolvedPath, purpose, typeLabel) {
-  try {
-    return await fsImpl.promises.stat(resolvedPath)
-  } catch (error) {
-    const code = error && typeof error === 'object' ? error.code : ''
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      throw ipcPathError(code || 'ENOENT', `${purpose} failed: ${typeLabel} does not exist.`)
-    }
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
-  }
-}
-
-async function realpathForIpc(fsImpl, resolvedPath, purpose) {
-  if (typeof fsImpl.promises.realpath !== 'function') {
-    return resolvedPath
-  }
-
-  try {
-    const realPath = await fsImpl.promises.realpath(resolvedPath)
-    rejectUnsafePathSyntax(realPath, purpose)
-    return realPath
-  } catch (error) {
-    const code = error && typeof error === 'object' ? error.code : ''
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
-  }
-}
-
-function rejectSensitiveFilePath(filePath, purpose) {
-  const blockReason = sensitiveFileBlockReason(filePath)
-  if (blockReason) {
-    throw ipcPathError('sensitive-file', `${purpose} blocked for sensitive file: ${blockReason}`)
-  }
-}
-
-async function resolveDirectoryForIpc(dirPath, options = {}) {
-  const purpose = String(options.purpose || 'Directory read')
-  const fsImpl = options.fs || fs
-  const resolvedPath = resolveRequestedPathForIpc(dirPath, { baseDir: options.baseDir, purpose })
-  const stat = await statForIpc(fsImpl, resolvedPath, purpose, 'directory')
-
-  if (!stat.isDirectory()) {
-    throw ipcPathError('ENOTDIR', `${purpose} failed: path is not a directory.`)
-  }
-
-  const realPath = await realpathForIpc(fsImpl, resolvedPath, purpose)
-
-  return { realPath, resolvedPath, stat }
+  const resolvedBase = path.resolve(String(baseDir || process.cwd()))
+  return path.resolve(resolvedBase, raw)
 }
 
 async function resolveReadableFileForIpc(filePath, options = {}) {
   const purpose = String(options.purpose || 'File read')
-  const fsImpl = options.fs || fs
-  const resolvedPath = resolveRequestedPathForIpc(filePath, { baseDir: options.baseDir, purpose })
+  const resolvedPath = resolveRequestedFilePath(filePath, options.baseDir, purpose)
 
   if (options.blockSensitive !== false) {
-    rejectSensitiveFilePath(resolvedPath, purpose)
+    const blockReason = sensitiveFileBlockReason(resolvedPath)
+    if (blockReason) {
+      throw new Error(`${purpose} blocked for sensitive file: ${blockReason}`)
+    }
   }
 
-  const stat = await statForIpc(fsImpl, resolvedPath, purpose, 'file')
+  let stat
+  try {
+    stat = await fs.promises.stat(resolvedPath)
+  } catch (error) {
+    const code = error && typeof error === 'object' ? error.code : ''
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw new Error(`${purpose} failed: file does not exist.`)
+    }
+    throw new Error(`${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
 
   if (stat.isDirectory()) {
-    throw ipcPathError('EISDIR', `${purpose} failed: path points to a directory.`)
+    throw new Error(`${purpose} failed: path points to a directory.`)
   }
 
   if (!stat.isFile()) {
-    throw ipcPathError('EINVAL', `${purpose} failed: only regular files can be read.`)
-  }
-
-  const realPath = await realpathForIpc(fsImpl, resolvedPath, purpose)
-  if (options.blockSensitive !== false) {
-    rejectSensitiveFilePath(realPath, purpose)
+    throw new Error(`${purpose} failed: only regular files can be read.`)
   }
 
   const maxBytes = Number.isFinite(options.maxBytes) && Number(options.maxBytes) > 0 ? Number(options.maxBytes) : null
   if (maxBytes && stat.size > maxBytes) {
-    throw ipcPathError('EFBIG', `${purpose} failed: file is too large (${stat.size} bytes; limit ${maxBytes} bytes).`)
+    throw new Error(`${purpose} failed: file is too large (${stat.size} bytes; limit ${maxBytes} bytes).`)
   }
 
   try {
-    await fsImpl.promises.access(resolvedPath, fs.constants.R_OK)
+    await fs.promises.access(resolvedPath, fs.constants.R_OK)
   } catch {
-    throw ipcPathError('EACCES', `${purpose} failed: file is not readable.`)
+    throw new Error(`${purpose} failed: file is not readable.`)
   }
 
-  return { realPath, resolvedPath, stat }
+  return { resolvedPath, stat }
 }
 
 module.exports = {
@@ -270,10 +178,7 @@ module.exports = {
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret,
-  rejectUnsafePathSyntax,
-  resolveDirectoryForIpc,
   resolveReadableFileForIpc,
-  resolveRequestedPathForIpc,
   resolveTimeoutMs,
   sensitiveFileBlockReason
 }

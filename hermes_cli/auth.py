@@ -616,8 +616,8 @@ ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
     ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 
@@ -1079,13 +1079,8 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
-    # target_path=None preserves the existing contract (write the active
-    # store at _auth_file_path()). An explicit path lets callers persist a
-    # specific store — e.g. the global-root write-through for rotating xAI
-    # OAuth grants (#43589) — reusing this function's atomic O_EXCL + 0o600
-    # write so the root auth.json gets the same TOCTOU-safe treatment.
-    auth_file = target_path if target_path is not None else _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
+    auth_file = _auth_file_path()
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -3529,22 +3524,6 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
-    """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
-    imported = _import_codex_cli_tokens()
-    # Require BOTH tokens before adopting: persisting a payload without a
-    # usable refresh_token would only break the next refresh cycle.
-    if not (
-        imported
-        and str(imported.get("access_token", "") or "").strip()
-        and str(imported.get("refresh_token", "") or "").strip()
-    ):
-        return None
-    logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
-    return dict(imported)
-
-
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -3681,34 +3660,11 @@ def _refresh_codex_auth_tokens(
     
     Saves the new tokens to Hermes auth store automatically.
     """
-    try:
-        refreshed = refresh_codex_oauth_pure(
-            str(tokens.get("access_token", "") or ""),
-            str(tokens.get("refresh_token", "") or ""),
-            timeout_seconds=timeout_seconds,
-        )
-    except AuthError as exc:
-        # Self-heal cross-store refresh_token rotation. Hermes keeps its OWN
-        # Codex OAuth token (per profile + top-level), separate from the Codex
-        # CLI's ~/.codex/auth.json. OAuth refresh_tokens are single-use, so when
-        # the Codex CLI (or another Hermes process) rotates the shared token,
-        # this frozen copy's refresh_token goes stale and the refresh fails with
-        # a relogin-required error (invalid_grant / refresh_token_reused / 401).
-        # Before surfacing that as a hard 401 to the turn, adopt the canonical
-        # fresh token from ~/.codex/auth.json (the Codex CLI keeps it current) so
-        # idle profiles / desktop sessions recover automatically instead of
-        # 401'ing until a manual re-auth. Transient failures (e.g. 429 quota)
-        # keep relogin_required=False — the stored token is still valid there, so
-        # we never self-heal those and re-raise unchanged.
-        if not getattr(exc, "relogin_required", False):
-            raise
-        imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
-        )
-        if not imported:
-            raise
-        return imported
-
+    refreshed = refresh_codex_oauth_pure(
+        str(tokens.get("access_token", "") or ""),
+        str(tokens.get("refresh_token", "") or ""),
+        timeout_seconds=timeout_seconds,
+    )
     updated_tokens = dict(tokens)
     updated_tokens["access_token"] = refreshed["access_token"]
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
@@ -3768,25 +3724,9 @@ def resolve_codex_runtime_credentials(
     HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
-    read_error: Optional[AuthError] = None
     try:
         data = _read_codex_tokens()
-    except AuthError as exc:
-        read_error = exc
-        if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
-            "codex_auth_missing_access_token",
-            "codex_auth_missing_refresh_token",
-            "codex_auth_invalid_shape",
-        }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
-            if imported:
-                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
-            else:
-                data = None
-        else:
-            data = None
-
-    if data is None:
+    except AuthError:
         pool_token = _pool_codex_access_token()
         if pool_token:
             base_url = (
@@ -3801,14 +3741,7 @@ def resolve_codex_runtime_credentials(
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
             }
-        if read_error is not None:
-            raise read_error
-        raise AuthError(
-            "No Codex credentials stored. Run `hermes auth` to authenticate.",
-            provider="openai-codex",
-            code="codex_auth_missing",
-            relogin_required=True,
-        )
+        raise
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
@@ -3891,64 +3824,13 @@ def _pool_codex_access_token() -> str:
 # xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
-def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return usable xAI OAuth state from provider state or credential pool."""
-    state = _load_provider_state(auth_store, "xai-oauth")
-    tokens = state.get("tokens") if isinstance(state, dict) else None
-    if isinstance(tokens, dict):
-        access_token = str(tokens.get("access_token", "") or "").strip()
-        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
-        if access_token and refresh_token:
-            return state
-
-    credential_pool = auth_store.get("credential_pool")
-    entries = (
-        credential_pool.get("xai-oauth")
-        if isinstance(credential_pool, dict)
-        else None
-    )
-    if isinstance(entries, list):
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            access_token = str(entry.get("access_token", "") or "").strip()
-            refresh_token = str(entry.get("refresh_token", "") or "").strip()
-            if not access_token or not refresh_token:
-                continue
-            merged = dict(state or {})
-            merged["tokens"] = {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": str(entry.get("token_type") or "Bearer"),
-            }
-            if entry.get("last_refresh"):
-                merged["last_refresh"] = entry.get("last_refresh")
-            merged.setdefault("auth_mode", "oauth_pkce")
-            return merged
-
-    return state if isinstance(state, dict) else None
-
-
-def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
-    tokens = state.get("tokens") if isinstance(state, dict) else None
-    return (
-        isinstance(tokens, dict)
-        and bool(str(tokens.get("access_token", "") or "").strip())
-        and bool(str(tokens.get("refresh_token", "") or "").strip())
-    )
-
-
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     if _lock:
         with _auth_store_lock():
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _xai_oauth_state_from_store(auth_store)
-    if not _xai_oauth_state_has_usable_tokens(state):
-        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
-        if _xai_oauth_state_has_usable_tokens(global_state):
-            state = global_state
+    state = _load_provider_state(auth_store, "xai-oauth")
     if not state:
         raise AuthError(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
@@ -3988,62 +3870,6 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _profile_has_own_xai_oauth_state(auth_store: Dict[str, Any]) -> bool:
-    """True when this store has its OWN ``providers.xai-oauth`` block.
-
-    Distinguishes a profile that genuinely shadows the root xAI grant from
-    one that only *reads* root via ``_load_provider_state``'s fallback. Only
-    the latter needs the refresh write-through below.
-    """
-    providers = auth_store.get("providers")
-    return isinstance(providers, dict) and isinstance(providers.get("xai-oauth"), dict)
-
-
-def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
-    """Persist a rotated xAI OAuth ``state`` into the global-root auth.json.
-
-    Best-effort write-through for the multi-profile rotation hazard (#43589):
-    xAI rotates the refresh_token on every refresh, so when a profile session
-    refreshes a grant it resolved from the root fallback, the rotated chain
-    must land back in root. Otherwise root keeps a now-revoked refresh token
-    and every other profile reading the stale root grant dies with
-    ``invalid_grant`` once its access token expires.
-
-    Only updates ``providers.xai-oauth`` in the root store; never touches the
-    profile store (the caller already saved that). Swallows all errors — a
-    failed write-through degrades to the pre-existing behavior (root stale),
-    it must never break the profile's own successful save.
-    """
-    global_path = _global_auth_file_path()
-    if global_path is None:
-        # Classic mode (profile == root); the profile save already hit root.
-        return
-    # Seat belt: under pytest, refuse to write the real user's
-    # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
-    # (mirrors the read-side guard in _load_global_auth_store). Uses the
-    # unmodified HOME env, not Path.home() which fixtures may monkeypatch.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_env = os.environ.get("HOME", "")
-        if real_home_env:
-            real_root = Path(real_home_env) / ".hermes" / "auth.json"
-            try:
-                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
-                    return
-            except Exception:
-                return
-    try:
-        if global_path.exists():
-            global_store = _load_auth_store(global_path)
-        else:
-            global_store = {}
-        if not isinstance(global_store, dict):
-            return
-        _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
-        _save_auth_store(global_store, global_path)
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
-
-
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any],
     *,
@@ -4055,11 +3881,6 @@ def _save_xai_oauth_tokens(
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        # A profile that lacks its own xai-oauth block is reading the root
-        # grant through _load_provider_state's fallback. When such a profile
-        # refreshes the (rotating) grant, we must write the rotated chain back
-        # to root too, or root is left holding a revoked refresh token (#43589).
-        write_through_to_root = not _profile_has_own_xai_oauth_state(auth_store)
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
@@ -4070,8 +3891,6 @@ def _save_xai_oauth_tokens(
             state["redirect_uri"] = redirect_uri
         _save_provider_state(auth_store, "xai-oauth", state)
         _save_auth_store(auth_store)
-        if write_through_to_root:
-            _write_through_xai_oauth_to_global_root(state)
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -6356,40 +6175,6 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def _confirm_expensive_model_selection(
-    model_id: str,
-    *,
-    provider: str = "",
-    base_url: str = "",
-    api_key: str = "",
-) -> bool:
-    """Prompt before saving a model whose known pricing exceeds guardrails."""
-    try:
-        from hermes_cli.model_cost_guard import expensive_model_warning
-
-        warning = expensive_model_warning(
-            model_id,
-            provider=provider,
-            base_url=base_url,
-            api_key=api_key,
-        )
-    except Exception:
-        warning = None
-    if warning is None:
-        return True
-
-    print()
-    print("=" * 72)
-    print(warning.message)
-    print("=" * 72)
-    try:
-        response = input("Switch anyway? [y/N]: ").strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return False
-    return response in {"y", "yes"}
-
-
 def _prompt_model_selection(
     model_ids: List[str],
     current_model: str = "",
@@ -6397,9 +6182,6 @@ def _prompt_model_selection(
     unavailable_models: Optional[List[str]] = None,
     portal_url: str = "",
     unavailable_message: str = "",
-    confirm_provider: str = "",
-    confirm_base_url: str = "",
-    confirm_api_key: str = "",
 ) -> Optional[str]:
     """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
 
@@ -6412,18 +6194,6 @@ def _prompt_model_selection(
     from hermes_cli.models import _format_price_per_mtok
 
     _unavailable = unavailable_models or []
-
-    def _confirmed_selection(mid: str) -> Optional[str]:
-        if not mid:
-            return None
-        if confirm_provider and not _confirm_expensive_model_selection(
-            mid,
-            provider=confirm_provider,
-            base_url=confirm_base_url,
-            api_key=confirm_api_key,
-        ):
-            return None
-        return mid
 
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
@@ -6540,13 +6310,13 @@ def _prompt_model_selection(
             return None
         print()
         if idx < len(ordered):
-            return _confirmed_selection(ordered[idx])
+            return ordered[idx]
         elif idx == len(ordered):
             try:
                 custom = input("Enter model name: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
-            return _confirmed_selection(custom) if custom else None
+            return custom if custom else None
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
@@ -6578,10 +6348,10 @@ def _prompt_model_selection(
                 return None
             idx = int(choice)
             if 1 <= idx <= n:
-                return _confirmed_selection(ordered[idx - 1])
+                return ordered[idx - 1]
             elif idx == n + 1:
                 custom = input("Enter model name: ").strip()
-                return _confirmed_selection(custom) if custom else None
+                return custom if custom else None
             elif idx == n + 2:
                 return None
             print(f"Please enter 1-{n + 2}")
@@ -7960,9 +7730,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     unavailable_models=unavailable_models,
                     portal_url=_portal,
                     unavailable_message=unavailable_message,
-                    confirm_provider="nous",
-                    confirm_base_url=inference_base_url,
-                    confirm_api_key=runtime_key,
                 )
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")

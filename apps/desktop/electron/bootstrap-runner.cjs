@@ -40,15 +40,6 @@ const path = require('node:path')
 const https = require('node:https')
 const { spawn } = require('node:child_process')
 
-const IS_WINDOWS = process.platform === 'win32'
-
-function hiddenWindowsChildOptions(options = {}) {
-  if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
-    return options
-  }
-  return { ...options, windowsHide: true }
-}
-
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
 
 // Stages flagged needs_user_input=true in the manifest are skipped by the
@@ -293,7 +284,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
 
-    const child = spawn(ps, fullArgs, hiddenWindowsChildOptions({
+    const child = spawn(ps, fullArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -301,7 +292,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         // choice rather than re-computing the default.
         HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
       }
-    }))
+    })
 
     let stdout = ''
     let stderr = ''

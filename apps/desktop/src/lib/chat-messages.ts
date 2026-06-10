@@ -1,6 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 
-import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
@@ -59,16 +58,12 @@ export type GatewayEventPayload = {
   // approval.request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
-  // False when a tirith content-security warning forbids a permanent allow.
-  allow_permanent?: boolean
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
   // terminal.read.request (GUI agent reading the in-app terminal pane)
   start?: number
   count?: number
-  // status.update (kind=process → background process completion/watch-match)
-  kind?: string
 }
 
 export function textPart(text: string): ChatMessagePart {
@@ -812,12 +807,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   })
   flushPendingTools(messages.length)
 
-  const withoutGeneratedImageEchoes = result.map(message =>
-    message.role === 'assistant' ? { ...message, parts: dedupeGeneratedImageEchoesInParts(message.parts) } : message
-  )
-
   return withUniqueToolCallIds(
-    withoutGeneratedImageEchoes.filter(m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
+    result.filter(m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
   )
 }
 

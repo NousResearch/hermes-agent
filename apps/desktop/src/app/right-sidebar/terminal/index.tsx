@@ -9,7 +9,7 @@ import { useI18n } from '@/i18n'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { setTerminalTakeover } from '../store'
 
-import { KbdCombo } from '@/components/ui/kbd'
+import { addSelectionShortcutLabel } from './selection'
 import { useTerminalSession } from './use-terminal-session'
 
 interface TerminalTabProps {
@@ -69,7 +69,7 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
               variant="secondary"
             >
               {t.rightSidebar.addToChat}
-              <KbdCombo className="ml-1 opacity-70" combo="mod+l" size="sm" />
+              <span className="ml-1 text-[0.6rem] text-(--ui-text-tertiary)">{addSelectionShortcutLabel()}</span>
             </Button>
           </div>
         )}

@@ -11,8 +11,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:build:debug": "tauri build --debug",
-    "typecheck": "tsc -p . --noEmit"
+    "tauri:build:debug": "tauri build --debug"
   },
   "dependencies": {
     "@nous-research/ui": "0.16.0",
@@ -41,7 +40,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
-    "typescript": "^6.0.3",
+    "typescript": "~5.9.3",
     "vite": "^7.3.1"
   }
 }

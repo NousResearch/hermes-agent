@@ -7,8 +7,8 @@ import { useNavigate } from 'react-router-dom'
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import { KbdCombo } from '@/components/ui/kbd'
-import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
+import { KbdGroup } from '@/components/ui/kbd'
+import { getHermesConfigRecord, listSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -38,6 +38,7 @@ import {
   Wrench,
   Zap
 } from '@/lib/icons'
+import { comboTokens } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
@@ -118,11 +119,7 @@ const paletteFilter = (value: string, search: string, keywords?: string[]): numb
   return needle.split(/\s+/).every(term => haystack.includes(term)) ? 1 : 0
 }
 
-// Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
-// "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
-const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
-
-type SessionRow = Awaited<ReturnType<typeof listAllProfileSessions>>['sessions'][number]
+type SessionRow = Awaited<ReturnType<typeof listSessions>>['sessions'][number]
 
 const toSessionEntry = (session: SessionRow): SessionEntry => ({
   id: session.id,
@@ -221,13 +218,13 @@ export function CommandPalette() {
 
   const sessionsQuery = useQuery({
     queryKey: ['command-palette', 'sessions'],
-    queryFn: () => listAllProfileSessions(200, 1, 'exclude'),
+    queryFn: () => listSessions(200, 1, 'exclude'),
     enabled: open
   })
 
   const archivedQuery = useQuery({
     queryKey: ['command-palette', 'archived'],
-    queryFn: () => listAllProfileSessions(200, 0, 'only'),
+    queryFn: () => listSessions(200, 0, 'only'),
     enabled: open
   })
 
@@ -416,24 +413,6 @@ export function CommandPalette() {
     }
 
     const result: PaletteGroup[] = []
-
-    // Paste a raw session id → jump straight to it, even if it predates the
-    // recent-200 window the lists below are built from.
-    const directId = search.trim()
-
-    if (SESSION_ID_RE.test(directId)) {
-      result.push({
-        items: [
-          {
-            icon: MessageCircle,
-            id: `goto-${directId}`,
-            keywords: ['session', 'id', 'go to', directId],
-            label: `${t.commandCenter.goToSession} ${directId}`,
-            run: go(sessionRoute(directId))
-          }
-        ]
-      })
-    }
 
     if (sessions.length > 0) {
       result.push({
@@ -641,6 +620,7 @@ export function CommandPalette() {
                   {group.items.map(item => {
                     const Icon = item.icon
                     const combo = item.action ? bindings[item.action]?.[0] : undefined
+                    const keys = combo ? comboTokens(combo) : null
 
                     return (
                       <CommandItem
@@ -652,10 +632,10 @@ export function CommandPalette() {
                       >
                         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
                         <span className="truncate">{item.label}</span>
-                        {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
+                        {keys && <KbdGroup className="ml-auto" keys={keys} />}
                         {item.to && (
                           <ChevronRight
-                            className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
+                            className={cn('size-3.5 shrink-0 text-muted-foreground/70', !keys && 'ml-auto')}
                           />
                         )}
                       </CommandItem>

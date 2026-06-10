@@ -1,7 +1,6 @@
 import { useCallback } from 'react'
 
-import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
-import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
+import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
@@ -287,26 +286,6 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [currentCwd]
   )
 
-  const insertContextPathInlineRef = useCallback(
-    (path: string, isDirectory = false) => {
-      if (!path) {
-        return false
-      }
-
-      const ref = droppedFileInlineRef({ isDirectory, path }, currentCwd)
-
-      if (!ref) {
-        return false
-      }
-
-      requestComposerInsertRefs([ref])
-      requestComposerFocus('main')
-
-      return true
-    },
-    [currentCwd]
-  )
-
   const attachContextFilePath = useCallback(
     (filePath: string) => {
       if (!filePath) {
@@ -567,7 +546,6 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
-    insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,
     pickImages,

@@ -280,11 +280,6 @@ thread.
 Only the first token is checked against the known command list, so
 casual messages like `!nice work` pass through to the agent unchanged.
 
-Approval prompts (dangerous command / `execute_code` approval) normally
-render as interactive buttons. When buttons can't be delivered and
-Hermes falls back to a text prompt, the prompt instructs you to reply
-with `!approve` / `!deny` — the form that works inside threads.
-
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash

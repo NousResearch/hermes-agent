@@ -180,7 +180,7 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
+const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
 const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
@@ -430,24 +430,19 @@ const persistShowAll = (value: boolean) => {
 
 export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const { t } = useI18n()
-  const { localEndpoint, manual, mode, providers } = useStore($desktopOnboarding)
+  const { manual, mode, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
   const apiKeyOptions = useApiKeyCatalog()
 
-  // localEndpoint forces the key form regardless of `mode` (which a manual
-  // provider refresh may flip back to 'oauth'); it preselects the local option
-  // and hides the "back to sign in" link since the user came specifically to
-  // configure a custom endpoint.
-  if (localEndpoint || mode === 'apikey' || !hasOauth) {
+  if (mode === 'apikey' || !hasOauth) {
     return (
       <div className="grid gap-3">
         <ApiKeyForm
-          canGoBack={hasOauth && !localEndpoint}
-          initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : undefined}
+          canGoBack={hasOauth}
           onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
+          onSave={(envKey, value, name) => saveOnboardingApiKey(envKey, value, name, ctx)}
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -635,7 +630,6 @@ export function ProviderRow({
 // surfaces render the identical form.
 export function ApiKeyForm({
   canGoBack,
-  initialEnvKey,
   isSet,
   onBack,
   onClear,
@@ -644,31 +638,16 @@ export function ApiKeyForm({
   redactedValue
 }: {
   canGoBack: boolean
-  /** Preselect a specific option by env key (e.g. 'OPENAI_BASE_URL' to land on
-   *  the local / custom endpoint form). Falls back to the first option. */
-  initialEnvKey?: string
   isSet?: (envKey: string) => boolean
   onBack: () => void
   onClear?: (envKey: string) => void
-  onSave: (
-    envKey: string,
-    value: string,
-    name: string,
-    apiKey?: string
-  ) => Promise<{ message?: string; ok: boolean }>
+  onSave: (envKey: string, value: string, name: string) => Promise<{ message?: string; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
   const { t } = useI18n()
-
-  const [option, setOption] = useState<ApiKeyOption>(
-    () => options.find(o => o.envKey === initialEnvKey) ?? options[0]
-  )
-
+  const [option, setOption] = useState<ApiKeyOption>(options[0])
   const [value, setValue] = useState('')
-  // Optional endpoint API key, only used by the local / custom endpoint option
-  // (whose `value` is the base URL). Cleared whenever the option changes.
-  const [localKey, setLocalKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -678,7 +657,6 @@ export function ApiKeyForm({
     if (options.length > 0 && !options.some(o => o.envKey === option.envKey)) {
       setOption(options[0])
       setValue('')
-      setLocalKey('')
       setError(null)
     }
   }, [option.envKey, options])
@@ -690,7 +668,6 @@ export function ApiKeyForm({
   const pick = (o: ApiKeyOption) => {
     setOption(o)
     setValue('')
-    setLocalKey('')
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -716,11 +693,10 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name, isLocal ? localKey : undefined)
+    const result = await onSave(option.envKey, value, option.name)
 
     if (result.ok) {
       setValue('')
-      setLocalKey('')
     } else {
       setError(result.message ?? t.onboarding.couldNotSave)
     }
@@ -783,17 +759,6 @@ export function ApiKeyForm({
           type={isLocal ? 'text' : 'password'}
           value={value}
         />
-        {isLocal ? (
-          <Input
-            autoComplete="off"
-            className="font-mono"
-            onChange={e => setLocalKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && void submit()}
-            placeholder={t.onboarding.localApiKeyPlaceholder}
-            type="password"
-            value={localKey}
-          />
-        ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
 

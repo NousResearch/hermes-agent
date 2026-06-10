@@ -296,8 +296,7 @@ def test_live_gateway_autostarts_after_real_restart_without_manual_state_stamp(
         )
         if r.returncode == 0 and '"gateway_state"' in r.stdout:
             state = r.stdout
-            if '"running"' in state:
-                break
+            break
         time.sleep(0.5)
     assert '"running"' in state, (
         f"gateway never persisted running state pre-restart: {state!r}"

@@ -1,23 +1,11 @@
 import type { ReactNode } from 'react'
 
-import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
-
-/** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS. */
-const COMPOSER_HOTKEY_ROWS = [
-  { id: 'composer.mention', combos: ['@'] },
-  { id: 'composer.slash', combos: ['/'] },
-  { id: 'composer.help', combos: ['?'] },
-  { id: 'composer.sendNewline', combos: ['enter', 'shift+enter'] },
-  { id: 'composer.sendQueued', combos: ['mod+shift+k'] },
-  { id: 'keybinds.openPanel', combos: ['mod+/'] },
-  { id: 'composer.cancel', combos: ['escape'] },
-  { id: 'composer.history', combos: ['up', 'down'] }
-] as const
+const HOTKEY_KEYS = ['@', '/', '?', 'Enter', 'Cmd/Ctrl+Shift+K', 'Cmd/Ctrl+/', 'Esc', '↑ / ↓']
 
 export function HelpHint() {
   const { t } = useI18n()
@@ -32,8 +20,8 @@ export function HelpHint() {
       </Section>
 
       <Section title={c.hotkeys}>
-        {COMPOSER_HOTKEY_ROWS.map(row => (
-          <HotkeyRow description={c.hotkeyDescs[row.id] ?? ''} combos={[...row.combos]} key={row.id} />
+        {HOTKEY_KEYS.map(key => (
+          <Row description={c.hotkeyDescs[key] ?? ''} key={key} keyLabel={key} />
         ))}
       </Section>
 
@@ -64,19 +52,6 @@ function Row({ description, keyLabel, mono = false }: { description: string; key
         }
       >
         {keyLabel}
-      </span>
-      <span className="min-w-0 truncate text-muted-foreground/80">{description}</span>
-    </div>
-  )
-}
-
-function HotkeyRow({ combos, description }: { combos: string[]; description: string }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1 text-xs">
-      <span className="flex shrink-0 items-center gap-1">
-        {combos.map(combo => (
-          <KbdCombo combo={combo} key={combo} size="sm" />
-        ))}
       </span>
       <span className="min-w-0 truncate text-muted-foreground/80">{description}</span>
     </div>

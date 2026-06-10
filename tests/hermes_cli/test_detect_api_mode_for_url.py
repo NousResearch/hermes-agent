@@ -56,16 +56,13 @@ class TestAnthropicMessagesDetection:
     def test_trailing_slash_tolerated(self):
         assert _detect_api_mode_for_url("https://api.minimax.io/anthropic/") == "anthropic_messages"
 
-    def test_versioned_anthropic_base_url_tolerated(self):
-        assert _detect_api_mode_for_url("https://proxy.example.com/anthropic/v1") == "anthropic_messages"
-
     def test_uppercase_path_tolerated(self):
         assert _detect_api_mode_for_url("https://API.MINIMAX.IO/Anthropic") == "anthropic_messages"
 
-    def test_anthropic_endpoint_subpath_does_not_match(self):
+    def test_anthropic_in_middle_of_path_does_not_match(self):
         # The helper requires ``/anthropic`` as the path SUFFIX, not anywhere.
         # Protects against false positives on e.g. /anthropic/v1/models.
-        assert _detect_api_mode_for_url("https://api.example.com/anthropic/v1/models") is None
+        assert _detect_api_mode_for_url("https://api.example.com/anthropic/v1") is None
 
 
 class TestDefaultCase:

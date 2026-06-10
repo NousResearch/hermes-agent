@@ -155,46 +155,6 @@ class TestCodexBuildKwargs:
         )
         assert "max_output_tokens" not in kw
 
-    def test_codex_backend_does_not_set_extra_headers(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-
-        kw = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=messages,
-            tools=[],
-            session_id="conv-codex-1",
-            is_codex_backend=True,
-        )
-
-        assert "extra_headers" not in kw
-
-    def test_codex_backend_strips_caller_extra_headers(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-
-        kw = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=messages,
-            tools=[],
-            session_id="conv-codex-1",
-            is_codex_backend=True,
-            request_overrides={"extra_headers": {"x-test": "1"}},
-        )
-
-        assert "extra_headers" not in kw
-
-    def test_non_codex_responses_preserves_caller_extra_headers(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-
-        kw = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=messages,
-            tools=[],
-            is_codex_backend=False,
-            request_overrides={"extra_headers": {"x-test": "1"}},
-        )
-
-        assert kw["extra_headers"] == {"x-test": "1"}
-
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

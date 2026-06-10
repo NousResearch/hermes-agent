@@ -11,7 +11,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Kbd } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -87,7 +86,7 @@ export function ContextMenu({
 
           <div className="px-2 py-1 text-[0.7rem] text-muted-foreground/80">
             {c.tipPre}
-            <Kbd size="sm">@</Kbd>
+            <kbd className="rounded bg-muted/70 px-1 py-px font-mono text-[0.65rem]">@</kbd>
             {c.tipPost}
           </div>
         </DropdownMenuContent>

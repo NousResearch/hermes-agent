@@ -15,7 +15,7 @@ import type { AuxiliaryModelsResponse, ModelOptionProvider, StaleAuxAssignment }
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
+import { startManualProviderOAuth } from '@/store/onboarding'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
@@ -224,23 +224,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [apiKeyDraft, selectedProviderRow])
 
   // OAuth / external providers can't be activated with a pasted key — hand off
-  // to the shared onboarding flow scoped to this provider's real sign-in. The
-  // custom / local endpoint is NOT an OAuth provider, so it gets the dedicated
-  // local-endpoint form (URL + optional API key) instead of being dead-ended
-  // on the OAuth picker (the original "booted back to the first screen" loop).
+  // to the shared onboarding flow scoped to this provider's real sign-in.
   const startProviderSetup = useCallback(() => {
-    const slug = selectedProviderRow?.slug
-
-    if (!slug) {
-      return
-    }
-
-    const lower = slug.toLowerCase()
-
-    if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
-      startManualLocalEndpoint()
-    } else {
-      startManualProviderOAuth(slug)
+    if (selectedProviderRow?.slug) {
+      startManualProviderOAuth(selectedProviderRow.slug)
     }
   }, [selectedProviderRow])
 

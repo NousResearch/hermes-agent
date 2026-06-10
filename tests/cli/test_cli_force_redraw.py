@@ -71,14 +71,18 @@ class TestForceFullRedraw:
             "invalidate",
         ]
 
-    def test_resize_recovery_uses_prompt_toolkit_original_resize_before_reset(self, bare_cli, monkeypatch):
-        """Resize recovery must preserve prompt_toolkit's tracked cursor state.
+    def test_resize_preserves_scrollback_and_resets_renderer(self, bare_cli, monkeypatch):
+        """Resize recovery must NOT erase screen or scrollback.
 
-        prompt_toolkit's built-in Application._on_resize() starts with
-        renderer.erase(leave_alternate_screen=False), which uses the renderer's
-        cached cursor position to move back to the live prompt origin before
-        erase_down(). If Hermes resets the renderer first, that cursor position
-        is lost and stale prompt glyphs can remain after a narrow resize.
+        The startup banner lives in normal terminal scrollback (printed
+        before prompt_toolkit owns the chrome).  Clearing scrollback on
+        SIGWINCH removes it and ``_replay_output_history`` cannot
+        reconstruct it.  The fix is to only reset the renderer cache and
+        let ``original_on_resize`` recalculate layout.
+
+        Additionally, ``_status_bar_suppressed_after_resize`` must be set
+        so the input rules and status bar hide until the next user input,
+        preventing duplicated-bar artifacts on column shrink (#19280).
         """
         app = MagicMock()
         events = []
@@ -90,9 +94,11 @@ class TestForceFullRedraw:
         bare_cli._status_bar_suppressed_after_resize = False
         bare_cli._recover_after_resize(app, original_on_resize)
 
-        assert events == ["original_resize"]
-        app.renderer.reset.assert_not_called()
-        app.invalidate.assert_not_called()
+        assert events == [
+            "renderer_reset",
+            "invalidate",
+            "original_resize",
+        ]
         # Must NOT clear the screen or scrollback — those destroy the banner.
         app.renderer.output.erase_screen.assert_not_called()
         app.renderer.output.write_raw.assert_not_called()

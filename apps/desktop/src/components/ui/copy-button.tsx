@@ -1,7 +1,6 @@
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
-import { ContextMenuItem } from '@/components/ui/context-menu'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -10,7 +9,7 @@ import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 type CopyPayload = string | (() => Promise<string> | string)
-type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'context-menu-item' | 'tool-row'
+type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'tool-row'
 type CopyStatus = 'copied' | 'error' | 'idle'
 const COPIED_RESET_MS = 1_500
 
@@ -160,11 +159,9 @@ export function CopyButton({
     status === 'copied' ? t.common.copied : status === 'error' ? resolvedErrorMessage : (title ?? resolvedLabel)
   const ariaLabel = status === 'idle' ? resolvedLabel : feedbackLabel
 
-  if (appearance === 'menu-item' || appearance === 'context-menu-item') {
-    const MenuItem = appearance === 'menu-item' ? DropdownMenuItem : ContextMenuItem
-
+  if (appearance === 'menu-item') {
     return (
-      <MenuItem
+      <DropdownMenuItem
         className={className}
         disabled={disabled}
         onSelect={event => {
@@ -173,7 +170,7 @@ export function CopyButton({
         }}
       >
         {content}
-      </MenuItem>
+      </DropdownMenuItem>
     )
   }
 

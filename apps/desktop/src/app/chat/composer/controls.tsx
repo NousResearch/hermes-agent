@@ -1,6 +1,5 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -64,14 +63,7 @@ export function ComposerControls({
 }) {
   const { t } = useI18n()
   const c = t.composer
-  const steerCombo = formatCombo('mod+enter')
-  const steerLabel = `${c.steer} (${steerCombo})`
-  const steerTip = (
-    <span className="inline-flex items-center gap-1.5">
-      {c.steer}
-      <KbdCombo combo="mod+enter" size="sm" variant="inverted" />
-    </span>
-  )
+  const steerLabel = `${c.steer} (${formatCombo('mod+enter')})`
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -83,7 +75,7 @@ export function ComposerControls({
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       {canSteer && (
-        <Tip label={steerTip}>
+        <Tip label={steerLabel}>
           <Button
             aria-label={steerLabel}
             className={GHOST_ICON_BTN}

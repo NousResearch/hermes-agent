@@ -131,18 +131,6 @@ export const en: Translations = {
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable'
-    },
-    native: {
-      approvalTitle: 'Approval needed',
-      approveAction: 'Approve',
-      rejectAction: 'Reject',
-      inputTitle: 'Input needed',
-      inputBody: 'Hermes is waiting for your response.',
-      turnDoneTitle: 'Hermes finished',
-      turnDoneBody: 'The response is ready.',
-      turnErrorTitle: 'Turn failed',
-      backgroundDoneTitle: 'Background task finished',
-      backgroundFailedTitle: 'Background task failed'
     }
   },
 
@@ -275,46 +263,7 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
-      about: 'About',
-      notifications: 'Notifications'
-    },
-    notifications: {
-      title: 'Notifications',
-      intro:
-        'Native desktop notifications, separate from in-app toasts. These are device-local — each computer keeps its own settings.',
-      enableAll: 'Enable notifications',
-      enableAllDesc: 'Master switch. Turn this off to silence every notification below.',
-      focusedHint: 'Completion alerts only fire while Hermes is in the background.',
-      kinds: {
-        approval: {
-          label: 'Approval needed',
-          description: 'A command is waiting for you to approve or reject it.'
-        },
-        input: {
-          label: 'Input needed',
-          description: 'Hermes asked a question or needs a password or secret.'
-        },
-        turnDone: {
-          label: 'Response ready',
-          description: 'A turn finished while Hermes was in the background.'
-        },
-        turnError: {
-          label: 'Turn failed',
-          description: 'A turn ended with an error.'
-        },
-        backgroundDone: {
-          label: 'Background task finished',
-          description: 'A backgrounded terminal command completed.'
-        }
-      },
-      test: 'Send test notification',
-      testTitle: 'Hermes',
-      testBody: 'Notifications are working.',
-      testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
-      testUnsupported: 'This system does not support native notifications.',
-      completionSoundTitle: 'Completion Sound',
-      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
+      about: 'About'
     },
     sections: {
       model: 'Model',
@@ -347,8 +296,6 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
-      translucencyTitle: 'Window Translucency',
-      translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
@@ -564,12 +511,6 @@ export const en: Translations = {
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
-      removeConfirm: provider => `Remove ${provider}?`,
-      removeExternal: (provider, command) => `${provider} is managed outside Hermes. Remove it with ${command}.`,
-      removeKeyManaged: provider => `${provider} is configured from an API key. Remove it from API Keys.`,
-      removedTitle: 'Account removed',
-      removedMessage: provider => `${provider} was removed.`,
-      failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
       loading: 'Loading providers...'
     },
@@ -700,7 +641,6 @@ export const en: Translations = {
     back: 'Back',
     searchPlaceholder: 'Search sessions, views, and actions',
     goTo: 'Go to',
-    goToSession: 'Go to session',
     commandCenter: 'Command Center',
     appearance: 'Appearance',
     settings: 'Settings',
@@ -960,9 +900,6 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
-    cloneFrom: 'Clone from',
-    cloneFromNone: 'None (blank)',
-    cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
     cloneFromDefault: 'Clone from default',
     cloneFromDefaultDesc: 'Copy config, skills, and SOUL.md from your default profile.',
     invalidName: hint => `Invalid name. ${hint}`,
@@ -1247,14 +1184,14 @@ export const en: Translations = {
       '/quit': 'exit hermes'
     },
     hotkeyDescs: {
-      'composer.mention': 'reference files, folders, urls, git',
-      'composer.slash': 'slash command palette',
-      'composer.help': 'this quick help (delete to dismiss)',
-      'composer.sendNewline': 'send · Shift+Enter for newline',
-      'composer.sendQueued': 'send next queued turn',
-      'keybinds.openPanel': 'all keyboard shortcuts',
-      'composer.cancel': 'close popover · cancel run',
-      'composer.history': 'cycle popover / history'
+      '@': 'reference files, folders, urls, git',
+      '/': 'slash command palette',
+      '?': 'this quick help (delete to dismiss)',
+      Enter: 'send · Shift+Enter for newline',
+      'Cmd/Ctrl+Shift+K': 'send next queued turn',
+      'Cmd/Ctrl+/': 'all keyboard shortcuts',
+      Esc: 'close popover · cancel run',
+      '↑ / ↓': 'cycle popover / history'
     },
     attachUrlTitle: 'Attach a URL',
     attachUrlDesc: 'Hermes will fetch the page and include it as context for this turn.',
@@ -1267,12 +1204,10 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
-    queueEdit: 'Edit',
-    queueSendNext: 'Next',
-    queueSend: 'Send',
-    queueDelete: 'Delete',
-    queueStuckTitle: 'Queued message not sent',
-    queueStuckBody: 'A queued turn kept failing to send. It is still in the queue — try sending it again.',
+    editQueued: 'Edit queued turn',
+    sendQueuedNext: 'Send queued turn next',
+    sendQueuedNow: 'Send queued turn now',
+    deleteQueued: 'Delete queued turn',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,
@@ -1317,17 +1252,6 @@ export const en: Translations = {
     }
   },
 
-  statusStack: {
-    agents: 'Agents',
-    background: count => `${count} Background`,
-    subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
-    todos: (done, total) => `Tasks ${done}/${total}`,
-    running: 'Running',
-    stop: 'Stop',
-    dismiss: 'Dismiss',
-    exit: code => `exit ${code}`
-  },
-
   updates: {
     stages: {
       idle: 'Getting ready…',
@@ -1363,8 +1287,7 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
-    applyingBodyBackend:
-      'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
+    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
@@ -1449,7 +1372,6 @@ export const en: Translations = {
     getKey: 'Get a key',
     replaceCurrent: 'Replace current value',
     pasteApiKey: 'Paste API key',
-    localApiKeyPlaceholder: 'API key (optional — only if your endpoint requires one)',
     couldNotSave: 'Could not save credential.',
     connecting: 'Connecting',
     update: 'Update',
@@ -1610,9 +1532,6 @@ export const en: Translations = {
     terminal: 'Terminal',
     noFolderSelected: 'No folder selected',
     changeCwdTitle: 'Change working directory',
-    remotePickerTitle: 'Choose remote folder',
-    remotePickerDescription: 'Browse folders on the connected backend.',
-    remotePickerSelect: 'Select folder',
     folderTip: cwd => `${cwd} — click to change folder`,
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
@@ -1716,7 +1635,6 @@ export const en: Translations = {
   assistant: {
     thread: {
       loadingSession: 'Loading session',
-      showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
@@ -1730,14 +1648,10 @@ export const en: Translations = {
       stopReading: 'Stop reading',
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
-      scrollToBottom: 'Scroll to bottom',
       stop: 'Stop',
+      editableCheckpoint: 'Editable checkpoint',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',
-      restoreFromHere: 'Restore checkpoint — rerun from this prompt',
-      restoreTitle: 'Restore to this checkpoint?',
-      restoreBody: 'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
-      restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
       sendEdited: 'Send edited message',
@@ -1747,11 +1661,9 @@ export const en: Translations = {
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send approval response',
       run: 'Run',
-      command: 'Command',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
       alwaysAllowMenu: 'Always allow…',
-      jumpToApproval: 'Approval needed',
       reject: 'Reject',
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
@@ -1765,7 +1677,7 @@ export const en: Translations = {
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
-      shortcutSuffix: ' to send',
+      shortcut: '⌘/Ctrl + Enter to send',
       back: 'Back',
       skip: 'Skip',
       send: 'Send'
@@ -1866,14 +1778,7 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
-    dropFiles: 'Drop files',
-    handoff: {
-      pickPlatform: 'Choose a destination',
-      success: platform => `Handed off to ${platform}. Resume here anytime.`,
-      systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
-      failed: error => `Handoff failed: ${error}`,
-      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
-    }
+    dropFiles: 'Drop files'
   },
 
   errors: {

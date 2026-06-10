@@ -276,54 +276,6 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
-    def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
-        """Posture-driven demotion keeps every skill NAME visible.
-
-        Demoted categories lose their descriptions, never their entries —
-        full pruning caused silent capability loss in a real workflow
-        (agent-created skills are the model's project memory, and models
-        don't rediscover them via skills_list once the index goes quiet).
-        """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
-            d = tmp_path / "skills" / cat / name
-            d.mkdir(parents=True)
-            (d / "SKILL.md").write_text(
-                f"---\nname: {name}\ndescription: Does {name} things\n---\n"
-            )
-
-        result = build_skills_system_prompt(
-            compact_categories=frozenset({"social-media"})
-        )
-        # Coding-adjacent category keeps its full entry.
-        assert "pr-review" in result and "Does pr-review things" in result
-        # Demoted category: name stays visible, description is dropped.
-        assert "tweet-stuff" in result
-        assert "Does tweet-stuff things" not in result
-        assert "social-media [names only]" in result
-        # Disclosure note explains the demotion and how to load.
-        assert "skill_view" in result
-
-    def test_compact_categories_demote_nested_and_miss_cache_separately(
-        self, monkeypatch, tmp_path
-    ):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
-        d.mkdir(parents=True)
-        (d / "SKILL.md").write_text(
-            "---\nname: thread-writer\ndescription: Write threads\n---\n"
-        )
-        # Nested category ("social-media/twitter") demoted via its parent:
-        # name visible, description gone.
-        compact = build_skills_system_prompt(
-            compact_categories=frozenset({"social-media"})
-        )
-        assert "thread-writer" in compact
-        assert "Write threads" not in compact
-        # Unfiltered call must not be served from the compacted cache entry.
-        full = build_skills_system_prompt()
-        assert "Write threads" in full
-
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -490,7 +442,6 @@ class TestBuildNousSubscriptionPrompt:
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
                     "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
-                    "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
                     "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                     "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
                 },
@@ -501,7 +452,7 @@ class TestBuildNousSubscriptionPrompt:
 
         assert "Browser Use" in prompt
         assert "Modal execution is optional" in prompt
-        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys" in prompt
+        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
 
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
@@ -516,7 +467,6 @@ class TestBuildNousSubscriptionPrompt:
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
                     "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
-                    "stt": NousFeatureState("stt", "Speech-to-text", True, False, False, False, False, True, ""),
                     "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
                     "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
                 },
@@ -835,29 +785,12 @@ class TestPromptBuilderConstants:
 
     def test_platform_hints_known_platforms(self):
         assert "whatsapp" in PLATFORM_HINTS
-        assert "whatsapp_cloud" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
-
-    def test_whatsapp_cloud_hint_mentions_24h_window(self):
-        """The Cloud API's 24-hour conversation window is a hard rule the
-        agent should know about. Phase 5 (template fallback) was deferred,
-        so the model needs to know free-form replies outside the window
-        will fail with Graph error 131047 — otherwise it'll cheerfully
-        try to schedule delayed messages that silently break."""
-        hint = PLATFORM_HINTS["whatsapp_cloud"]
-        assert "24-hour" in hint or "24h" in hint or "24 hour" in hint
-        assert "131047" in hint
-
-    def test_whatsapp_cloud_hint_advertises_media(self):
-        """Cloud adapter supports the same MEDIA:/path/ convention as
-        Baileys for outbound attachments."""
-        hint = PLATFORM_HINTS["whatsapp_cloud"]
-        assert "MEDIA:" in hint
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
@@ -876,23 +809,6 @@ class TestPromptBuilderConstants:
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
-
-    def test_telegram_hint_encourages_rich_markdown(self):
-        # Telegram Bot API 10.1 rich messages are default-on, so the hint must
-        # encourage native structured markdown instead of forbidding tables.
-        hint = PLATFORM_HINTS["telegram"]
-        lowered = hint.lower()
-        assert "Telegram has NO table syntax" not in hint
-        assert "rich markdown" in lowered
-        assert "table" in lowered
-        assert "task list" in lowered
-        assert "math" in lowered
-        # Hint should proactively steer toward structured formatting, not just
-        # permit it: bullet + numbered lists for scannable, structured output.
-        assert "bullet" in lowered
-        assert "numbered" in lowered
-        # Local media delivery guidance must remain intact.
-        assert "include MEDIA:" in hint
 
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]

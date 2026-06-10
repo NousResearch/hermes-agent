@@ -5,13 +5,6 @@ export interface CompletionEntry {
   text: string
   display?: unknown
   meta?: unknown
-  /** Optional section label (e.g. "Commands", "Skills"). The popover renders a
-   *  header whenever this changes between consecutive items, so the fetcher must
-   *  emit entries already grouped contiguously. */
-  group?: string
-  /** Optional completion-action id. When set, picking the item runs that action
-   *  (e.g. opening an overlay) instead of inserting a chip + waiting for submit. */
-  action?: string
 }
 
 export interface CompletionPayload {

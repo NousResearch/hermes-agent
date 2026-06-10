@@ -653,44 +653,6 @@ def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
     )
 
 
-def test_do_browse_reports_live_per_source_progress():
-    """do_browse must pass an on_source_done callback so the status line ticks
-    off each source as it resolves, instead of showing a frozen spinner while
-    a slow source blocks. The page is still rendered once, after the full
-    result set is merged and trust-sorted."""
-    from hermes_cli.skills_hub import do_browse
-    from tools.skills_hub import SkillMeta
-
-    meta = SkillMeta(
-        name="demo", description="d", source="official",
-        identifier="official/demo", trust_level="builtin",
-    )
-
-    captured = {}
-
-    def fake_parallel(sources, query="", per_source_limits=None,
-                      source_filter="all", overall_timeout=30,
-                      on_source_done=None):
-        # Simulate two sources completing — the callback must be wired through.
-        assert on_source_done is not None, "do_browse must pass on_source_done"
-        on_source_done("official", 1)
-        on_source_done("clawhub", 0)
-        captured["called"] = True
-        return [meta], {"official": 1, "clawhub": 0}, []
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None, width=120)
-
-    with patch("tools.skills_hub.create_source_router", return_value=[]), \
-         patch("tools.skills_hub.GitHubAuth"), \
-         patch("tools.skills_hub.parallel_search_sources", side_effect=fake_parallel):
-        do_browse(page=1, page_size=20, console=console)
-
-    assert captured.get("called"), "parallel_search_sources was not invoked"
-    # The rendered page still shows the (single) merged result.
-    assert "demo" in sink.getvalue()
-
-
 # ---------------------------------------------------------------------------
 # Regression: full identifier must be recoverable from `hermes skills search`
 # even when the slug is too long to fit the terminal width (issue #33674).

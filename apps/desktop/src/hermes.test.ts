@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { listAllProfileSessions, listSessions } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -45,16 +45,5 @@ describe('Hermes REST session helpers', () => {
         timeoutMs: 60_000
       })
     )
-  })
-
-  it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
-    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
-
-    await getSessionMessages('session-1', 'xiaoxuxu')
-
-    expect(api).toHaveBeenCalledWith({
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
-      profile: 'xiaoxuxu'
-    })
   })
 })

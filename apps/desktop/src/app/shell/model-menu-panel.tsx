@@ -162,9 +162,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   currentFastMode
                 )
 
-                // Grayed text is live session state only. Do not label inactive
-                // rows as "Fast" just because they have a fast-capable sibling:
-                // that makes an off Fast toggle look like it is already on.
+                // Grayed text: active row shows live state (Fast + effort);
+                // others show a fast-capability hint.
                 const meta = isCurrent
                   ? [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
@@ -172,7 +171,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     ]
                       .filter(Boolean)
                       .join(' ')
-                  : ''
+                  : caps?.fast || family.fastId
+                    ? copy.fast
+                    : ''
 
                 // Every row is a hover-Edit submenu trigger. Activating it
                 // (pointer or keyboard) switches to the family's base model;

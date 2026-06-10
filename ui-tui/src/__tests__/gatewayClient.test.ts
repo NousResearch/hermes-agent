@@ -1,103 +1,97 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { GatewayClient } from '../gatewayClient.js'
+
 interface ListenerEntry {
   callback: (event: any) => void
   once: boolean
 }
 
-const { FakeWebSocket } = vi.hoisted(() => {
-  class FakeWebSocket {
-    static CONNECTING = 0
-    static OPEN = 1
-    static CLOSING = 2
-    static CLOSED = 3
-    static instances: FakeWebSocket[] = []
+class FakeWebSocket {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
+  static instances: FakeWebSocket[] = []
 
-    readyState = FakeWebSocket.CONNECTING
-    sent: string[] = []
-    readonly url: string
-    private listeners = new Map<string, ListenerEntry[]>()
+  readyState = FakeWebSocket.CONNECTING
+  sent: string[] = []
+  readonly url: string
+  private listeners = new Map<string, ListenerEntry[]>()
 
-    constructor(url: string) {
-      this.url = url
-      FakeWebSocket.instances.push(this)
+  constructor(url: string) {
+    this.url = url
+    FakeWebSocket.instances.push(this)
+  }
+
+  static reset() {
+    FakeWebSocket.instances = []
+  }
+
+  addEventListener(type: string, callback: (event: any) => void, options?: unknown) {
+    const once =
+      typeof options === 'object' &&
+      options !== null &&
+      'once' in options &&
+      Boolean((options as { once?: unknown }).once)
+
+    const entries = this.listeners.get(type) ?? []
+
+    entries.push({ callback, once })
+    this.listeners.set(type, entries)
+  }
+
+  removeEventListener(type: string, callback: (event: any) => void) {
+    const entries = this.listeners.get(type)
+
+    if (!entries) {
+      return
     }
 
-    static reset() {
-      FakeWebSocket.instances = []
+    this.listeners.set(
+      type,
+      entries.filter(entry => entry.callback !== callback)
+    )
+  }
+
+  send(payload: string) {
+    if (this.readyState !== FakeWebSocket.OPEN) {
+      throw new Error('socket not open')
     }
 
-    addEventListener(type: string, callback: (event: any) => void, options?: unknown) {
-      const once =
-        typeof options === 'object' &&
-        options !== null &&
-        'once' in options &&
-        Boolean((options as { once?: unknown }).once)
+    this.sent.push(payload)
+  }
 
-      const entries = this.listeners.get(type) ?? []
-
-      entries.push({ callback, once })
-      this.listeners.set(type, entries)
+  close(code = 1000) {
+    if (this.readyState === FakeWebSocket.CLOSED) {
+      return
     }
 
-    removeEventListener(type: string, callback: (event: any) => void) {
-      const entries = this.listeners.get(type)
+    this.readyState = FakeWebSocket.CLOSED
+    this.emit('close', { code })
+  }
 
-      if (!entries) {
-        return
-      }
+  open() {
+    this.readyState = FakeWebSocket.OPEN
+    this.emit('open', {})
+  }
 
-      this.listeners.set(
-        type,
-        entries.filter(entry => entry.callback !== callback)
-      )
-    }
+  message(data: string) {
+    this.emit('message', { data })
+  }
 
-    send(payload: string) {
-      if (this.readyState !== FakeWebSocket.OPEN) {
-        throw new Error('socket not open')
-      }
+  private emit(type: string, event: any) {
+    const entries = [...(this.listeners.get(type) ?? [])]
 
-      this.sent.push(payload)
-    }
+    for (const entry of entries) {
+      entry.callback(event)
 
-    close(code = 1000) {
-      if (this.readyState === FakeWebSocket.CLOSED) {
-        return
-      }
-
-      this.readyState = FakeWebSocket.CLOSED
-      this.emit('close', { code })
-    }
-
-    open() {
-      this.readyState = FakeWebSocket.OPEN
-      this.emit('open', {})
-    }
-
-    message(data: string) {
-      this.emit('message', { data })
-    }
-
-    private emit(type: string, event: any) {
-      const entries = [...(this.listeners.get(type) ?? [])]
-
-      for (const entry of entries) {
-        entry.callback(event)
-
-        if (entry.once) {
-          this.removeEventListener(type, entry.callback)
-        }
+      if (entry.once) {
+        this.removeEventListener(type, entry.callback)
       }
     }
   }
-
-  return { FakeWebSocket }
-})
-
-vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
-
-import { GatewayClient } from '../gatewayClient.js'
+}
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -275,15 +269,30 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
-  it('uses the undici WebSocket fallback when global WebSocket is unavailable', () => {
+  it('redacts query string secrets in attach failure logs and events', () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
     delete (globalThis as { WebSocket?: unknown }).WebSocket
 
     const gw = new GatewayClient()
+    const stderrLines: string[] = []
 
+    gw.on('event', ev => {
+      if (ev.type === 'gateway.stderr' && typeof ev.payload?.line === 'string') {
+        stderrLines.push(ev.payload.line)
+      }
+    })
     gw.start()
-    expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(FakeWebSocket.instances[0]?.url).toBe('ws://gateway.test/api/ws?token=hunter2&channel=secret')
+    gw.drain()
+
+    expect(stderrLines.length).toBeGreaterThan(0)
+
+    for (const line of stderrLines) {
+      expect(line).not.toContain('hunter2')
+      expect(line).not.toContain('channel=secret')
+    }
+
+    expect(gw.getLogTail(20)).not.toContain('hunter2')
+    expect(gw.getLogTail(20)).not.toContain('channel=secret')
 
     gw.kill()
   })
@@ -354,16 +363,26 @@ describe('GatewayClient websocket attach mode', () => {
     expect(() => new URL(fixture)).toThrow()
 
     process.env.HERMES_TUI_GATEWAY_URL = fixture
-    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket extends FakeWebSocket {
-      constructor(url: string) {
-        throw new TypeError(`Invalid URL: ${url}`)
-      }
-    } as unknown as typeof WebSocket
+    delete (globalThis as { WebSocket?: unknown }).WebSocket
 
     const gw = new GatewayClient()
+    const stderrLines: string[] = []
 
+    gw.on('event', ev => {
+      if (ev.type === 'gateway.stderr' && typeof ev.payload?.line === 'string') {
+        stderrLines.push(ev.payload.line)
+      }
+    })
     gw.start()
     gw.drain()
+
+    expect(stderrLines.length).toBeGreaterThan(0)
+
+    for (const line of stderrLines) {
+      expect(line).not.toContain('alice')
+      expect(line).not.toContain('hunter2')
+      expect(line).not.toContain('token=secret')
+    }
 
     const tail = gw.getLogTail(20)
     expect(tail).not.toContain('alice')

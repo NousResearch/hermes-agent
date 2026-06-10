@@ -33,7 +33,6 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false,
     ...overrides
   }
 }
@@ -234,12 +233,10 @@ describe('OAuth onboarding', () => {
     const state = $desktopOnboarding.get()
     expect(state.reason).toBeNull()
     expect(state.flow.status).toBe('confirming_model')
-
     if (state.flow.status === 'confirming_model') {
       expect(state.flow.label).toBe('Nous Portal')
       expect(state.flow.currentModel).toBe(model)
     }
-
     expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
   })
 })
@@ -286,7 +283,7 @@ describe('saveOnboardingLocalEndpoint', () => {
       throw new Error(`unexpected api path: ${path}`)
     })
 
-    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', {
       requestGateway: readyGateway()
     })
 
@@ -316,7 +313,7 @@ describe('saveOnboardingLocalEndpoint', () => {
     installApiMock(api)
     const onCompleted = vi.fn()
 
-    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', {
       onCompleted,
       requestGateway: readyGateway()
     })
@@ -333,46 +330,6 @@ describe('saveOnboardingLocalEndpoint', () => {
 
     expect(onCompleted).toHaveBeenCalledTimes(1)
     expect($desktopOnboarding.get().configured).toBe(true)
-  })
-
-  it('forwards the API key to the probe and persists it for auth-gated endpoints', async () => {
-    const calls: { body?: unknown; path: string }[] = []
-
-    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
-      calls.push({ body, path })
-
-      if (path === '/api/providers/validate') {
-        return { ok: true, reachable: true, message: '', models: ['gpt-oss-120b'] }
-      }
-
-      if (path === '/api/model/set') {
-        return { ok: true, provider: 'custom', model: 'gpt-oss-120b', base_url: 'https://text.example.com/v1' }
-      }
-
-      throw new Error(`unexpected api path: ${path}`)
-    })
-
-    installApiMock(api)
-
-    const result = await saveOnboardingLocalEndpoint('https://text.example.com/v1', 'sk-secret', {
-      requestGateway: readyGateway()
-    })
-
-    expect(result.ok).toBe(true)
-
-    // The probe must receive the key so an auth-gated /v1/models enumerates.
-    const probe = calls.find(c => c.path === '/api/providers/validate')
-    expect(probe?.body).toMatchObject({ key: 'OPENAI_BASE_URL', value: 'https://text.example.com/v1', api_key: 'sk-secret' })
-
-    // And the key must be persisted alongside the endpoint for runtime auth.
-    const assign = calls.find(c => c.path === '/api/model/set')
-    expect(assign?.body).toMatchObject({
-      scope: 'main',
-      provider: 'custom',
-      model: 'gpt-oss-120b',
-      base_url: 'https://text.example.com/v1',
-      api_key: 'sk-secret'
-    })
   })
 
   it('reports the runtime reason when resolution still fails after saving', async () => {
@@ -404,7 +361,7 @@ describe('saveOnboardingLocalEndpoint', () => {
       throw new Error(`unexpected gateway method: ${method}`)
     }
 
-    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', {
       requestGateway: failingGateway
     })
 

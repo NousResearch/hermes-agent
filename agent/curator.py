@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,7 +33,6 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
-from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,20 @@ def load_state() -> Dict[str, Any]:
 def save_state(data: Dict[str, Any]) -> None:
     path = _state_file()
     try:
-        atomic_json_write(path, data, indent=2, sort_keys=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_state_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         logger.debug("Failed to save curator state: %s", e, exc_info=True)
 

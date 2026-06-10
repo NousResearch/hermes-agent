@@ -287,8 +287,7 @@ export const fr: Translations = {
     nameRule:
       "Lettres minuscules, chiffres, _ et - uniquement ; doit commencer par une lettre ou un chiffre ; jusqu'à 64 caractères.",
     invalidName: "Nom de profil invalide",
-    cloneFrom: "Cloner depuis le profil",
-    cloneFromNone: "Aucun (vide)",
+    cloneFromDefault: "Cloner la configuration du profil par défaut",
     allProfiles: "Profils",
     noProfiles: "Aucun profil trouvé.",
     defaultBadge: "défaut",

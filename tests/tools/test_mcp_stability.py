@@ -57,32 +57,6 @@ class TestMCPLoopExceptionHandler:
         finally:
             mcp_mod._stop_mcp_loop()
 
-    def test_probe_cleanup_does_not_stop_loop_with_registered_servers(self):
-        """Probe cleanup must not kill the shared loop used by live MCP tools."""
-        import tools.mcp_tool as mcp_mod
-
-        with mcp_mod._lock:
-            mcp_mod._servers.clear()
-            mcp_mod._server_connecting.clear()
-        try:
-            mcp_mod._ensure_mcp_loop()
-            with mcp_mod._lock:
-                loop = mcp_mod._mcp_loop
-                mcp_mod._servers["live"] = MagicMock(session=object())
-
-            assert mcp_mod._stop_mcp_loop_if_idle() is False
-
-            with mcp_mod._lock:
-                assert mcp_mod._mcp_loop is loop
-                assert mcp_mod._mcp_thread is not None
-            assert loop is not None
-            assert loop.is_running()
-        finally:
-            with mcp_mod._lock:
-                mcp_mod._servers.clear()
-                mcp_mod._server_connecting.clear()
-            mcp_mod._stop_mcp_loop()
-
 
 # ---------------------------------------------------------------------------
 # Fix 2: stdio PID tracking
@@ -347,19 +321,12 @@ class TestStdioPgroupReaping:
 
         psutil = pytest.importorskip("psutil")
 
-        # Grandchild: sleep forever, write its pid then wait.  The pid file
-        # is written to a temp path and os.replace()d into place so the
-        # polling reader below can never observe a created-but-empty file
-        # (CI flake: int('') ValueError when the reader won the race between
-        # open('w') creating the file and write() filling it).
+        # Grandchild: sleep forever, write its pid then wait.
         grandchild_pid_file = tmp_path / "grandchild.pid"
         grandchild_script = tmp_path / "grandchild.py"
         grandchild_script.write_text(
             "import os, sys, time\n"
-            f"tmp = {str(grandchild_pid_file)!r} + '.tmp'\n"
-            "with open(tmp, 'w') as f:\n"
-            "    f.write(str(os.getpid()))\n"
-            f"os.replace(tmp, {str(grandchild_pid_file)!r})\n"
+            f"open({str(grandchild_pid_file)!r}, 'w').write(str(os.getpid()))\n"
             "while True:\n"
             "    time.sleep(0.5)\n"
         )

@@ -704,7 +704,6 @@ class TestCreateInboundPipeline:
             "group-attribution",
             "classify-msg-type",
             "quote-context",
-            "forwarded-records-parse",
             "media-resolve",
             "patch-anchors",
             "dispatch",
@@ -1083,9 +1082,9 @@ class TestResolveYbresRefs:
         """Refs whose kind is outside ``_RESOLVABLE_MEDIA_KINDS`` are dropped silently."""
         adapter = make_adapter()
         refs = [
-            ("rid-a", "voice", ""),        # not resolvable
+            ("rid-v", "video", ""),       # not resolvable
             ("rid-i", "image", "ok.jpg"),  # resolvable
-            ("rid-?", "unknown", ""),      # not resolvable
+            ("rid-?", "unknown", ""),     # not resolvable
         ]
 
         with patch.object(

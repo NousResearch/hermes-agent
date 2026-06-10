@@ -303,6 +303,81 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _gateway_response_has_reasoning_prefix(text: str) -> bool:
+    body = str(text or "").lstrip()
+    return body.startswith("💭 **Reasoning:**") or body.startswith("🧠 **思考过程**")
+
+
+def _extract_gateway_display_reasoning(
+    agent_result: Optional[dict],
+    *,
+    fallback_reasoning: Optional[str] = None,
+) -> Optional[str]:
+    """Return same-turn reasoning suitable for gateway display.
+
+    Prefer ``last_reasoning``.  If it is absent, scan the returned messages
+    backwards and stop at the current user turn so stale prior-turn reasoning is
+    never leaked into the next reply.
+    """
+    if not isinstance(agent_result, dict):
+        return fallback_reasoning.strip() if isinstance(fallback_reasoning, str) and fallback_reasoning.strip() else None
+
+    direct = agent_result.get("last_reasoning")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    if isinstance(fallback_reasoning, str) and fallback_reasoning.strip():
+        return fallback_reasoning.strip()
+
+    messages = agent_result.get("messages") or []
+    if not isinstance(messages, list):
+        return None
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for key in ("reasoning", "reasoning_content"):
+            value = msg.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _format_gateway_display_reasoning(platform: Any, reasoning: str) -> str:
+    """Compact and redact visible reasoning before platform delivery."""
+    text = _redact_gateway_user_facing_secrets(str(reasoning or "").strip())
+    lines = text.splitlines()
+    platform_key = _gateway_platform_value(platform)
+    max_lines = 10 if platform_key in {"weixin", "wechat"} else 15
+    max_chars = 1200 if platform_key in {"weixin", "wechat"} else 2500
+    if len(lines) > max_lines:
+        omitted = len(lines) - max_lines
+        text = "\n".join(lines[:max_lines]) + f"\n_... ({omitted} more lines)_"
+    if len(text) > max_chars:
+        text = text[: max_chars - 30].rstrip() + "\n_... (truncated)_"
+    if platform_key in {"feishu", "weixin", "wechat"}:
+        label = "🧠 **思考过程**"
+    else:
+        label = "💭 **Reasoning:**"
+    if platform_key in {"weixin", "wechat"}:
+        return f"{label}\n{text}"
+    return f"{label}\n```\n{text}\n```"
+
+
+def _prepend_gateway_display_reasoning(
+    platform: Any,
+    response: str,
+    reasoning: Optional[str],
+) -> tuple[str, bool]:
+    if not response or not reasoning or _gateway_response_has_reasoning_prefix(response):
+        return response, False
+    return f"{_format_gateway_display_reasoning(platform, reasoning)}\n\n{response}", True
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
@@ -8456,16 +8531,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
             if _show_reasoning_effective and response:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                reasoning = _extract_gateway_display_reasoning(agent_result)
+                response, _reasoning_prepended = _prepend_gateway_display_reasoning(
+                    source.platform,
+                    response,
+                    reasoning,
+                )
+                if _reasoning_prepended:
+                    agent_result["response_transformed"] = True
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -12867,6 +12940,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             )
         )
+        show_reasoning_effective = bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "show_reasoning",
+                getattr(self, "_show_reasoning", False),
+            )
+        )
+        reasoning_deltas: List[str] = []
+
+        def _reasoning_delta_cb(text: str) -> None:
+            if not show_reasoning_effective or not _run_still_current():
+                return
+            body = str(text or "").strip()
+            if body:
+                reasoning_deltas.append(body)
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -12939,7 +13028,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
-            if not progress_queue or not _run_still_current():
+            if not _run_still_current():
+                return
+            if event_type == "reasoning.available":
+                if show_reasoning_effective:
+                    body = str(preview or kwargs.get("text") or "").strip()
+                    if body:
+                        reasoning_deltas.append(body)
+                return
+            if not progress_queue:
                 return
 
             # First-touch onboarding: the first time a tool takes longer than
@@ -13774,7 +13871,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            agent.tool_progress_callback = (
+                progress_callback
+                if (tool_progress_enabled or show_reasoning_effective)
+                else None
+            )
+            agent.reasoning_callback = (
+                _reasoning_delta_cb if show_reasoning_effective else None
+            )
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -14355,6 +14459,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+
+            _display_reasoning_fallback = (
+                "\n".join(reasoning_deltas) if reasoning_deltas else None
+            )
+            _display_reasoning = _extract_gateway_display_reasoning(
+                result_holder[0] if result_holder[0] else result,
+                fallback_reasoning=_display_reasoning_fallback,
+            )
+            if show_reasoning_effective and final_response:
+                final_response, _reasoning_prepended = _prepend_gateway_display_reasoning(
+                    source.platform,
+                    final_response,
+                    _display_reasoning,
+                )
+                if _reasoning_prepended:
+                    result["response_transformed"] = True
 
             # When compression created a new session, the messages list was
             # shortened.  Using the original history offset would produce an

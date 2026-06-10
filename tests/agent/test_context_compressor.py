@@ -1548,13 +1548,13 @@ class TestSummaryTargetRatio:
         """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
-        # 200K * 0.50 threshold * 0.40 ratio = 40K
-        assert c.tail_token_budget == 40_000
+        # 200K * 0.85 default threshold * 0.40 ratio = 68K
+        assert c.tail_token_budget == 68_000
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
-        # 1M * 0.50 threshold * 0.40 ratio = 200K
-        assert c.tail_token_budget == 200_000
+        # 1M * 0.85 default threshold * 0.40 ratio = 340K
+        assert c.tail_token_budget == 340_000
 
     def test_summary_cap_scales_with_context(self):
         """Max summary tokens should be 5% of context, capped at 12K."""

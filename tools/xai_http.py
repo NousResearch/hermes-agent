@@ -119,6 +119,25 @@ def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, st
     except Exception:
         pass
 
+    try:
+        from hermes_cli.auth import read_credential_pool
+
+        entries = read_credential_pool("xai-oauth")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                at = str(entry.get("access_token") or "").strip()
+                if at:
+                    bu = str(entry.get("base_url") or "").strip().rstrip("/")
+                    return {
+                        "provider": "xai-oauth",
+                        "api_key": at,
+                        "base_url": bu or "https://api.x.ai/v1",
+                    }
+    except Exception:
+        pass
+
     api_key = str(get_env_value("XAI_API_KEY") or "").strip()
     base_url = str(get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")
     return {

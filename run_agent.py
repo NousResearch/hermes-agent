@@ -1120,7 +1120,7 @@ class AIAgent:
             timeout = stale_base
 
         # Reasoning-effort multiplier (symmetric with the Codex stream
-        # watchdog at chat_completion_helpers.py:289-302). GPT-5+ models
+        # watchdog in chat_completion_helpers). GPT-5+ models
         # with any non-minimal reasoning_effort routinely spend 30-280s
         # in server-side thinking before emitting any response. On
         # non-streaming calls this manifests as zero bytes received until

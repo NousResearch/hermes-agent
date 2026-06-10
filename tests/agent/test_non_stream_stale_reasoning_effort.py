@@ -217,7 +217,6 @@ def test_env_var_disables_multiplier_when_one(monkeypatch, tmp_path):
         "input": "hi",
         "reasoning": {"effort": "high"},
     }
-    # 90.0 * 1.0 = 90.0 (medium would be 90 * 0.7 = 63, which is fine — lower bound is base behavior)
     assert agent._compute_non_stream_stale_timeout(payload) == 90.0
 
 

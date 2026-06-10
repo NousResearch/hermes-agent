@@ -1337,7 +1337,7 @@ export const zh: Translations = {
     ],
     startVoice: '开始语音对话',
     queueMessage: '排队消息',
-    steer: '引导当前运行 (⌘⏎)',
+    steer: '引导当前运行',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',
@@ -1672,6 +1672,8 @@ export const zh: Translations = {
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '关闭命令中心',
       openCommandCenter: '打开命令中心',
+      showTerminal: '显示终端',
+      hideTerminal: '隐藏终端',
       gateway: '网关',
       gatewayReady: '就绪',
       gatewayNeedsSetup: '需要设置',
@@ -1727,8 +1729,7 @@ export const zh: Translations = {
     tryAgain: '重试',
     loadingTree: '正在加载文件树',
     loadingFiles: '正在加载文件',
-    terminalFocus: '聚焦终端视图',
-    terminalSplit: '返回分栏视图',
+    terminalHide: '隐藏终端',
     addToChat: '添加到对话'
   },
 

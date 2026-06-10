@@ -16,7 +16,7 @@
  */
 
 import { ensureContrast, luminance, mix, normalizeHex, readableOn } from './color'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTerminalPalette, DesktopTheme, DesktopThemeColors } from './types'
 
 // Section headers / sidebar labels render in --theme-primary directly on the
 // sidebar surface as small (~10px) uppercase text, so the accent has to clear
@@ -99,6 +99,85 @@ const isDarkType = (raw: VscodeColorTheme, background: string): boolean => {
 
   // No usable `type` — bucket by background luminance.
   return luminance(background) < 0.4
+}
+
+// xterm ITheme ANSI slots ← VS Code `terminal.ansi*` tokens. Background is
+// deliberately excluded — the pane keeps the live skin surface (transparency).
+const ANSI_TOKENS: ReadonlyArray<readonly [keyof DesktopTerminalPalette, string]> = [
+  ['black', 'terminal.ansiBlack'],
+  ['red', 'terminal.ansiRed'],
+  ['green', 'terminal.ansiGreen'],
+  ['yellow', 'terminal.ansiYellow'],
+  ['blue', 'terminal.ansiBlue'],
+  ['magenta', 'terminal.ansiMagenta'],
+  ['cyan', 'terminal.ansiCyan'],
+  ['white', 'terminal.ansiWhite'],
+  ['brightBlack', 'terminal.ansiBrightBlack'],
+  ['brightRed', 'terminal.ansiBrightRed'],
+  ['brightGreen', 'terminal.ansiBrightGreen'],
+  ['brightYellow', 'terminal.ansiBrightYellow'],
+  ['brightBlue', 'terminal.ansiBrightBlue'],
+  ['brightMagenta', 'terminal.ansiBrightMagenta'],
+  ['brightCyan', 'terminal.ansiBrightCyan'],
+  ['brightWhite', 'terminal.ansiBrightWhite']
+]
+
+const BASE_ANSI: ReadonlyArray<keyof DesktopTerminalPalette> = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white'
+]
+
+const HEX_RE = /^#[0-9a-f]{3,8}$/i
+
+/**
+ * Lift a theme's integrated-terminal ANSI palette, if it ships one.
+ *
+ * All-or-nothing on the base-8 colors: a half-filled palette mixed with our
+ * defaults reads worse than just keeping the defaults, so we adopt the theme's
+ * palette only when the full base set is present. ANSI slots flatten alpha over
+ * the editor background; selection keeps its alpha so xterm can blend it.
+ */
+function extractTerminalPalette(colors: Record<string, unknown>, background: string): DesktopTerminalPalette | undefined {
+  const hex = (key: string): string | undefined =>
+    normalizeHex(typeof colors[key] === 'string' ? (colors[key] as string) : null, background) ?? undefined
+
+  const palette: DesktopTerminalPalette = {}
+
+  for (const [slot, token] of ANSI_TOKENS) {
+    const value = hex(token)
+
+    if (value) {
+      palette[slot] = value
+    }
+  }
+
+  if (!BASE_ANSI.every(slot => palette[slot])) {
+    return undefined
+  }
+
+  const foreground = hex('terminal.foreground')
+  const cursor = hex('terminalCursor.foreground') ?? hex('terminalCursor.background')
+  const selection = typeof colors['terminal.selectionBackground'] === 'string' ? colors['terminal.selectionBackground'].trim() : ''
+
+  if (foreground) {
+    palette.foreground = foreground
+  }
+
+  if (cursor) {
+    palette.cursor = cursor
+  }
+
+  if (HEX_RE.test(selection)) {
+    palette.selectionBackground = selection
+  }
+
+  return palette
 }
 
 /** First normalizable hex among `keys`, composited over `backdrop`. */
@@ -242,6 +321,7 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
 
   const label = (opts.label ?? raw.name ?? 'VS Code Theme').trim()
   const slug = opts.slug ?? vscodeThemeSlug(label)
+  const terminal = extractTerminalPalette(colors, background)
 
   return {
     derived,
@@ -254,7 +334,10 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
       // that have both a light and dark variant (a Marketplace extension family)
       // recombine them into proper colors/darkColors via buildThemeFromMarketplace.
       colors: palette,
-      darkColors: palette
+      darkColors: palette,
+      // Only set when the theme ships a full ANSI palette — the terminal keeps
+      // its built-in VS Code defaults otherwise.
+      ...(terminal ? { terminal } : {})
     }
   }
 }

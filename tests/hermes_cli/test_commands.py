@@ -336,20 +336,22 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, /reset, …) must be registered as standalone
+        """Aliases (/btw, /bg, …) must be registered as standalone
         slashes — this is the whole point of native-slashes parity.
 
         Asserts the contract (aliases are surfaced as first-class slashes),
         not a specific alias's survival of Slack's 50-slash clamp — which alias
-        lands last shifts whenever a canonical command is added, so pinning one
-        name (previously ``q``) made this a change-detector.
+        lands last shifts whenever a canonical command is added. Only the
+        explicitly pinned ``_SLACK_PRIORITY_ALIASES`` are guaranteed slots;
+        every other alias (e.g. ``reset``) may be clamped once the registry
+        fills the cap — canonical commands win the contest, and clamped
+        aliases stay reachable via ``/hermes <alias>``.
         """
         slashes = slack_native_slashes()
         names = {n for n, _d, _h in slashes}
-        # Aliases that sort early in the registry always fit under the cap.
+        # The pinned priority aliases are guaranteed to survive the clamp.
         assert "btw" in names
         assert "bg" in names
-        assert "reset" in names
         # And at least one alias is surfaced as an alias entry (description
         # carries the "Alias for /…" marker), proving the alias pass ran.
         assert any(d.startswith("Alias for /") for _n, d, _h in slashes)

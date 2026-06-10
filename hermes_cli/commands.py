@@ -1037,7 +1037,11 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # unrelated command landed. These claim their slots right after /hermes,
 # ahead of both canonical names and the rest of the aliases. Anything not
 # listed here still degrades gracefully (reachable via /hermes <command>).
-_SLACK_PRIORITY_ALIASES = ("btw", "bg", "reset")
+# Keep this list TIGHT: every pinned alias takes a slot a canonical command
+# would otherwise get, and the Telegram-parity test fails when a canonical
+# gets clamped ("reset" was unpinned for exactly that — /new keeps its
+# native slot, the alias spelling stays reachable via /hermes reset).
+_SLACK_PRIORITY_ALIASES = ("btw", "bg")
 
 
 def _sanitize_slack_name(raw: str) -> str:

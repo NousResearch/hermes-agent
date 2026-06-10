@@ -1218,6 +1218,7 @@ export const ja = defineLocale({
       export: 'エクスポート',
       rename: '名前を変更',
       archive: 'アーカイブ',
+      newWindow: '新しいウィンドウ',
       copyIdFailed: 'セッション ID をコピーできませんでした',
       actionsFor: title => `${title} のアクション`,
       sessionActions: 'セッションアクション',

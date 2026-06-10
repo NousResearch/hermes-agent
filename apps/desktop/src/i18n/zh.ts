@@ -1271,6 +1271,7 @@ export const zh: Translations = {
       export: '导出',
       rename: '重命名',
       archive: '归档',
+      newWindow: '新窗口',
       copyIdFailed: '无法复制会话 ID',
       actionsFor: title => `${title} 的操作`,
       sessionActions: '会话操作',

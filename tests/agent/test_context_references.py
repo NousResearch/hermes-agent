@@ -192,19 +192,38 @@ def test_expand_git_diff_staged_and_log(sample_repo: Path):
     assert "VALUE = 2" in result.message
 
 
-def test_binary_and_missing_files_become_warnings(sample_repo: Path):
+def test_missing_file_becomes_warning(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
     result = preprocess_context_references(
-        "Check @file:blob.bin and @file:nope.txt",
+        "Check @file:nope.txt",
         cwd=sample_repo,
         context_length=100_000,
     )
 
     assert result.expanded
-    assert len(result.warnings) == 2
-    assert "binary" in result.message.lower()
+    assert len(result.warnings) == 1
     assert "not found" in result.message.lower()
+
+
+def test_binary_file_yields_actionable_block_not_a_dead_warning(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    result = preprocess_context_references(
+        "Check @file:blob.bin",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    # The whole point: a binary attachment must NOT degrade into a discouraging
+    # warning that makes the model give up — it gets an actionable content block.
+    assert not result.warnings
+    assert "blob.bin" in result.message
+    assert "binary" in result.message.lower()
+    assert "not supported" not in result.message.lower()
+    # And it must point the agent at the file so it can act on it with tools.
+    assert str(sample_repo / "blob.bin") in result.message
 
 
 def test_soft_budget_warns_and_hard_budget_refuses(sample_repo: Path):

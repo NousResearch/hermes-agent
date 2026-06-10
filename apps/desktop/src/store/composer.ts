@@ -11,6 +11,10 @@ export interface ComposerAttachment {
   previewUrl?: string
   path?: string
   attachedSessionId?: string
+  /** Set while the file/image bytes are being staged into the session
+   * workspace (remote upload or local stage), and 'error' if that failed.
+   * Drives the spinner / error state on the composer attachment card. */
+  uploadState?: 'uploading' | 'error'
 }
 
 export const $composerDraft = atom('')
@@ -69,8 +73,42 @@ export function removeComposerAttachment(id: string): ComposerAttachment | null 
   return removed
 }
 
+/** Replace an existing attachment in place by id. No-op (returns false) when the
+ * id is gone — e.g. the user removed the chip while an eager upload was still in
+ * flight, so a late success must NOT resurrect it. Use this instead of
+ * addComposerAttachment for async results that may land after a removal. */
+export function updateComposerAttachment(attachment: ComposerAttachment): boolean {
+  const current = $composerAttachments.get()
+  const index = current.findIndex(item => item.id === attachment.id)
+
+  if (index < 0) {
+    return false
+  }
+
+  const next = [...current]
+  next[index] = attachment
+  $composerAttachments.set(next)
+
+  return true
+}
+
 export function clearComposerAttachments() {
   $composerAttachments.set([])
+}
+
+/** Update only the upload state of an existing attachment (no-op if it's gone,
+ * e.g. the user removed it mid-upload). Pass `undefined` to clear it. */
+export function setComposerAttachmentUploadState(id: string, uploadState?: ComposerAttachment['uploadState']) {
+  const current = $composerAttachments.get()
+  const index = current.findIndex(attachment => attachment.id === id)
+
+  if (index < 0) {
+    return
+  }
+
+  const next = [...current]
+  next[index] = { ...next[index]!, uploadState }
+  $composerAttachments.set(next)
 }
 
 const TERMINAL_REF_RE = /@terminal:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g

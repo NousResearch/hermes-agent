@@ -1802,7 +1802,8 @@ export const zh: Translations = {
       restoreCheckpoint: '恢复检查点',
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
-      sendEdited: '发送编辑后的消息'
+      sendEdited: '发送编辑后的消息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',

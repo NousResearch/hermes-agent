@@ -171,6 +171,40 @@ class TestHooksInert:
         mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
 
 
+class TestPayloadSanitization:
+    def test_safe_value_redacts_base64_data_uri_instead_of_truncating(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        payload = "data:image/png;base64," + ("a" * 20000)
+        result = mod._safe_value(payload)
+
+        assert result == {
+            "type": "data_uri",
+            "media_type": "image/png",
+            "omitted": True,
+            "length": len(payload),
+        }
+
+    def test_serialize_messages_redacts_data_uri_parts(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        payload = "data:image/jpeg;base64," + ("b" * 20000)
+        serialized = mod._serialize_messages([
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": payload}}]}
+        ])
+
+        assert serialized[0]["content"][0]["image_url"]["url"] == {
+            "type": "data_uri",
+            "media_type": "image/jpeg",
+            "omitted": True,
+            "length": len(payload),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Placeholder-credential guard (#23823).
 #

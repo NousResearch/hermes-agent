@@ -2443,6 +2443,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Track consecutive stale-stream kills within this streaming call.
+    # The first kill is a normal reconnect (same provider).  When the
+    # threshold is exceeded, the provider is persistently unhealthy and
+    # we escalate so the conversation loop can try the fallback chain.
+    _stale_stream_kill_count = 0
+    _max_stale_kills = env_int("HERMES_STALE_STREAM_MAX_KILLS", 2)
     while t.is_alive():
         t.join(timeout=0.3)
 
@@ -2496,6 +2502,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             agent._touch_activity(
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )
+            _stale_stream_kill_count += 1
+            if _stale_stream_kill_count >= _max_stale_kills:
+                logger.warning(
+                    "Stale stream killed %d times (threshold %d) — "
+                    "escalating to trigger provider fallback.",
+                    _stale_stream_kill_count, _max_stale_kills,
+                )
+                agent._buffer_status(
+                    f"❌ Provider unresponsive after {_stale_stream_kill_count} "
+                    f"stale-stream kills. Triggering fallback..."
+                )
+                result["error"] = RuntimeError(
+                    f"Stream stale for {_stale_stream_kill_count} consecutive "
+                    f"attempts — provider appears persistently unhealthy."
+                )
+                _request_cancelled["value"] = True
+                break
 
         if agent._interrupt_requested:
             # Mark THIS request cancelled before force-closing so the worker's

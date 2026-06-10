@@ -209,7 +209,62 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+  write_approval: false     # false = write freely (default) | true = require approval
 ```
+
+## Controlling memory writes (`write_approval`)
+
+By default the agent saves memory freely — including from the background
+self-improvement review that runs after a turn. If you'd rather approve saves
+first, set `memory.write_approval: true`. It's a simple on/off gate applied to
+**both** foreground turns and the background review:
+
+| `write_approval` | Behaviour |
+|------------------|-----------|
+| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
+| `true` | Require approval before anything is saved. Foreground writes prompt you inline (entries are small enough to read in a chat bubble). Background-review writes are **staged** instead of committed (a background thread can't block on a prompt). |
+
+> To turn memory off entirely (not just gate it), set `memory_enabled: false`.
+
+Review staged writes from the CLI or any messaging platform:
+
+```
+/memory pending             # list staged memory writes (auto ones tagged [auto])
+/memory approve <id>        # apply one (or 'all')
+/memory reject <id>         # drop one (or 'all')
+/memory approval on         # turn the gate on (or 'off') and persist it
+```
+
+This is the answer to "the agent saved a wrong assumption about me": set
+`write_approval: true`, and every save — especially the unprompted background
+ones — waits for your yes/no before it ever enters your profile.
+
+## Controlling skill writes (`skills.write_approval`)
+
+Skills use the same on/off gate, but the review UX differs because a
+`SKILL.md` is far too large to read in a chat bubble:
+
+```yaml
+skills:
+  write_approval: false     # false = write freely (default) | true = require approval
+```
+
+When `write_approval: true`, skill writes (create / edit / patch / write_file /
+delete) always **stage** regardless of origin. You review the one-line gist
+inline, but the full diff stays out-of-band:
+
+```
+/skills pending             # list staged skill writes + a one-line gist each
+/skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
+/skills approve <id>        # apply it (or 'all')
+/skills reject <id>         # drop it (or 'all')
+/skills approval on         # turn the gate on (or 'off') and persist it
+```
+
+On a messaging platform, approve a skill from its gist + metadata, or open
+`/skills diff` on the CLI / dashboard / the staged file under
+`~/.hermes/pending/skills/<id>.json` when you want to read the whole change.
+
 
 ## External Memory Providers
 

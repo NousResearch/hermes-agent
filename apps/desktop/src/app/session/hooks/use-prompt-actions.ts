@@ -1,11 +1,12 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { type MutableRefObject, useCallback } from 'react'
+import { useStore } from '@nanostores/react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
-  attachmentDisplayText,
+  optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
   pathLabel,
@@ -24,10 +25,11 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
 import {
   $composerAttachments,
-  addComposerAttachment,
   clearComposerAttachments,
   type ComposerAttachment,
-  terminalContextBlocksFromDraft
+  setComposerAttachmentUploadState,
+  terminalContextBlocksFromDraft,
+  updateComposerAttachment
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -116,6 +118,122 @@ async function readFileDataUrlForAttach(filePath: string): Promise<string | null
   const dataUrl = await reader(filePath)
 
   return dataUrl || null
+}
+
+// The readFileDataUrl IPC base64-loads the whole file into memory and is
+// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.cjs, which
+// rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
+// remote mode every attachment's bytes go through that read, so a big file
+// surfaces that internal message verbatim in the failure toast. Translate it
+// into a friendly "too large to upload to the remote gateway" line, parsing the
+// limit out of the message so it tracks the real cap. Non-cap errors pass
+// through unchanged.
+function friendlyRemoteAttachError(err: unknown, label: string): Error {
+  const message = err instanceof Error ? err.message : String(err)
+
+  if (!/too large/i.test(message)) {
+    return err instanceof Error ? err : new Error(message)
+  }
+
+  const limitBytes = Number(message.match(/limit (\d+) bytes/)?.[1])
+  const cap = Number.isFinite(limitBytes) && limitBytes > 0 ? ` (max ${Math.floor(limitBytes / (1024 * 1024))} MB)` : ''
+
+  return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
+}
+
+type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+/**
+ * Stage one file/image attachment into the session workspace and return the
+ * attachment rewritten with the gateway-side ref. Images upload their bytes in
+ * remote mode (so vision works) and pass the path locally; non-image files
+ * upload bytes remotely and pass the path locally. Throws on failure so callers
+ * can surface an error. Shared by submit-time sync, the eager drop-time upload,
+ * and the message-edit composer drop — keep them in lockstep.
+ */
+export async function uploadComposerAttachment(
+  attachment: ComposerAttachment,
+  opts: { remote: boolean; requestGateway: GatewayRequest; sessionId: string }
+): Promise<ComposerAttachment> {
+  const { remote, requestGateway, sessionId } = opts
+  const path = attachment.path ?? ''
+  const label = attachment.label || pathLabel(path)
+
+  if (attachment.kind === 'image') {
+    let result: ImageAttachResponse
+
+    if (remote) {
+      let payload: Awaited<ReturnType<typeof readImageForRemoteAttach>>
+
+      try {
+        payload = await readImageForRemoteAttach(path)
+      } catch (err) {
+        throw friendlyRemoteAttachError(err, label)
+      }
+
+      if (!payload) {
+        throw new Error(`Could not read ${label}`)
+      }
+
+      result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+        session_id: sessionId,
+        content_base64: payload.contentBase64,
+        filename: payload.filename
+      })
+    } else {
+      result = await requestGateway<ImageAttachResponse>('image.attach', {
+        path,
+        session_id: sessionId
+      })
+    }
+
+    if (!result.attached) {
+      throw new Error(result.message || `Could not attach ${label}`)
+    }
+
+    const attachedPath = result.path || path
+
+    return {
+      ...attachment,
+      attachedSessionId: sessionId,
+      label: attachedPath ? pathLabel(attachedPath) : attachment.label,
+      path: attachedPath,
+      uploadState: undefined
+    }
+  }
+
+  // Non-image file.
+  let dataUrl: string | null = null
+
+  if (remote) {
+    try {
+      dataUrl = await readFileDataUrlForAttach(path)
+    } catch (err) {
+      throw friendlyRemoteAttachError(err, label)
+    }
+
+    if (!dataUrl) {
+      throw new Error(`Could not read ${label}`)
+    }
+  }
+
+  const result = await requestGateway<FileAttachResponse>('file.attach', {
+    name: label,
+    path,
+    session_id: sessionId,
+    ...(dataUrl ? { data_url: dataUrl } : {})
+  })
+
+  if (!result.attached || !result.ref_text) {
+    throw new Error(result.message || `Could not attach ${label}`)
+  }
+
+  return {
+    ...attachment,
+    attachedSessionId: sessionId,
+    refText: result.ref_text,
+    uploadState: undefined
+  }
 }
 
 interface PromptActionsOptions {
@@ -227,6 +345,11 @@ export function usePromptActions({
     [selectedStoredSessionIdRef, updateSessionState]
   )
 
+  // In-flight drop-time eager uploads, keyed by attachment id. Submit joins
+  // these before re-uploading so a drop-then-immediately-Enter can't fire
+  // file.attach twice and stage duplicate copies on the gateway.
+  const eagerUploadInFlight = useRef<Map<string, Promise<void>>>(new Map())
+
   const syncAttachmentsForSubmit = useCallback(
     async (
       sessionId: string,
@@ -237,97 +360,40 @@ export function usePromptActions({
       const remote = $connection.get()?.mode === 'remote'
       const synced: ComposerAttachment[] = []
 
-      for (const attachment of attachments) {
+      for (const original of attachments) {
+        let attachment = original
+
+        // Join a drop-time eager upload still in flight for this attachment
+        // before deciding anything — otherwise submit and the eager task both
+        // call file.attach and stage duplicate files. After it settles, take the
+        // store's updated copy (its gateway ref, or its failure) over the stale
+        // pre-upload snapshot.
+        const inFlight = eagerUploadInFlight.current.get(attachment.id)
+
+        if (inFlight) {
+          await inFlight
+          attachment = $composerAttachments.get().find(item => item.id === attachment.id) ?? attachment
+        }
+
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
+        // A drop-time eager upload may already have staged this one (matching
+        // attachedSessionId) — don't re-upload it.
         if (!attachment.path || attachment.attachedSessionId === sessionId) {
           synced.push(attachment)
+
           continue
         }
 
-        if (attachment.kind === 'image') {
-          let result: ImageAttachResponse
+        if (attachment.kind === 'image' || attachment.kind === 'file') {
+          const nextAttachment = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
 
-          if (remote) {
-            // The gateway is on another machine — it can't read attachment.path
-            // (a path on THIS disk). Upload the bytes via image.attach_bytes.
-            const payload = await readImageForRemoteAttach(attachment.path)
-
-            if (!payload) {
-              const label = attachment.label || pathLabel(attachment.path)
-              throw new Error(`Could not read ${label}`)
-            }
-
-            result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-              session_id: sessionId,
-              content_base64: payload.contentBase64,
-              filename: payload.filename
-            })
-          } else {
-            result = await requestGateway<ImageAttachResponse>('image.attach', {
-              session_id: sessionId,
-              path: attachment.path
-            })
-          }
-
-          if (!result.attached) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(result.message || `Could not attach ${label}`)
-          }
-
-          const attachedPath = result.path || attachment.path
-          const nextAttachment: ComposerAttachment = {
-            ...attachment,
-            id: attachment.id,
-            label: attachedPath ? pathLabel(attachedPath) : attachment.label,
-            path: attachedPath,
-            attachedSessionId: sessionId
-          }
-
+          // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
-            addComposerAttachment(nextAttachment)
+            updateComposerAttachment(nextAttachment)
           }
 
           synced.push(nextAttachment)
-          continue
-        }
 
-        if (attachment.kind === 'file') {
-          // Non-image file refs are @file: paths the gateway reads with its file
-          // tools. On a remote gateway the desktop path doesn't exist there, so
-          // upload the bytes; the gateway stages them into the session workspace
-          // and hands back a workspace-relative ref that actually resolves.
-          // Local mode can pass the path directly (gateway shares this disk).
-          const dataUrl = remote ? await readFileDataUrlForAttach(attachment.path) : null
-
-          if (remote && !dataUrl) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(`Could not read ${label}`)
-          }
-
-          const result = await requestGateway<FileAttachResponse>('file.attach', {
-            session_id: sessionId,
-            path: attachment.path,
-            name: attachment.label || pathLabel(attachment.path),
-            ...(dataUrl ? { data_url: dataUrl } : {})
-          })
-
-          if (!result.attached || !result.ref_text) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(result.message || `Could not attach ${label}`)
-          }
-
-          const nextAttachment: ComposerAttachment = {
-            ...attachment,
-            id: attachment.id,
-            refText: result.ref_text,
-            attachedSessionId: sessionId
-          }
-
-          if (updateComposerAttachments) {
-            addComposerAttachment(nextAttachment)
-          }
-
-          synced.push(nextAttachment)
           continue
         }
 
@@ -338,6 +404,64 @@ export function usePromptActions({
     },
     [requestGateway]
   )
+
+  // Stage a freshly dropped file as soon as it lands (when a session already
+  // exists), so the upload runs while the user is still typing rather than
+  // stalling the send. The card shows a spinner via `uploadState`; on success
+  // the chip carries its gateway-side ref so submit skips re-uploading.
+  //
+  // Images are intentionally NOT eager-uploaded: attachImagePath adds the chip
+  // and then fills in `previewUrl` (the base64 thumbnail) on a second tick, so
+  // an eager upload would race that write — clobbering the thumbnail and
+  // swapping `path` to a gateway path the local preview can't read. Images are
+  // small and still byte-upload at submit via image.attach_bytes.
+  const eagerlyUploadAttachment = useCallback(
+    async (sessionId: string, attachment: ComposerAttachment) => {
+      const remote = $connection.get()?.mode === 'remote'
+
+      setComposerAttachmentUploadState(attachment.id, 'uploading')
+
+      try {
+        // Update-only: if the user removed the chip while this was uploading,
+        // don't resurrect it — just drop the staged result on the floor.
+        updateComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+      } catch (err) {
+        // Leave the chip in place so submit-time sync can retry (or the user can
+        // remove it) and flag the card; also toast so a hard failure (unreadable
+        // file, gateway perms) isn't swallowed while the user keeps typing.
+        setComposerAttachmentUploadState(attachment.id, 'error')
+        notifyError(err, copy.dropFiles)
+      }
+    },
+    [copy.dropFiles, requestGateway]
+  )
+
+  const composerAttachments = useStore($composerAttachments)
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      return
+    }
+
+    for (const attachment of composerAttachments) {
+      const needsUpload =
+        attachment.kind === 'file' &&
+        Boolean(attachment.path) &&
+        !attachment.attachedSessionId &&
+        !attachment.uploadState &&
+        !eagerUploadInFlight.current.has(attachment.id)
+
+      if (!needsUpload) {
+        continue
+      }
+
+      const task = eagerlyUploadAttachment(activeSessionId, attachment).finally(() =>
+        eagerUploadInFlight.current.delete(attachment.id)
+      )
+
+      eagerUploadInFlight.current.set(attachment.id, task)
+    }
+  }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
 
   const submitPromptText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
@@ -351,7 +475,9 @@ export function usePromptActions({
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
       // workspace-relative paths the remote gateway can resolve). Seed the
       // optimistic message with the pre-sync refs, then rewrite once synced.
-      let attachmentRefs = attachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+      // Images use their base64 preview so the thumbnail renders inline without
+      // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
+      let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
       const buildContextText = (atts: ComposerAttachment[]): string => {
         const contextRefs = atts
           .map(a => a.refText)
@@ -483,7 +609,8 @@ export function usePromptActions({
         })
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
-        attachmentRefs = syncedAttachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+        // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
+        attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
 

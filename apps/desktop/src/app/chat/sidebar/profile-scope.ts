@@ -1,5 +1,5 @@
-import type { SessionInfo } from '@/hermes'
 import { normalizeProfileKey } from '@/store/profile'
+import type { SessionInfo } from '@/types/hermes'
 
 export function filterSessionsByProfileScope(
   sessions: SessionInfo[],

@@ -246,7 +246,31 @@ def _has_valid_session_token(request: Request) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
+
+    Two auth schemes protect the dashboard, exactly one active per bind:
+
+    * **Loopback / ``--insecure`` mode** (``auth_required`` False): the
+      ephemeral ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed
+      back via ``X-Hermes-Session-Token`` (or the legacy ``Bearer`` header).
+      Validate it here.
+    * **Gated / OAuth mode** (``auth_required`` True): ``_SESSION_TOKEN`` is
+      NOT injected (the SPA authenticates with a session cookie), so there is
+      no token to check. The ``gated_auth_middleware`` has already verified the
+      cookie before the request reached this handler — any non-public ``/api/``
+      route it lets through carries a verified ``request.state.session``. The
+      legacy ``auth_middleware`` likewise short-circuits in this mode. Requiring
+      the (absent) token here would 401 every cookie-authenticated request,
+      making plugin install/enable/disable and the other ``_require_token``
+      endpoints permanently unreachable behind the gate. Defer to the gate.
+    """
+    if getattr(request.app.state, "auth_required", False):
+        # Gate is authoritative. It attaches ``request.state.session`` on
+        # success and 401s otherwise, so a request that reached us is already
+        # authenticated. Belt-and-braces: confirm the session is present.
+        if getattr(request.state, "session", None) is not None:
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -633,21 +657,6 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
-class ModelAssignment(BaseModel):
-    """Payload for POST /api/model/set — assign a provider/model to a slot.
-
-    scope="main"        → writes model.provider + model.default
-    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
-    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
-    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
-    """
-
-    scope: str
-    provider: str
-    model: str
-    task: str = ""
-
-
 _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "audio/aac": ".aac",
     "audio/flac": ".flac",
@@ -689,6 +698,7 @@ class ModelAssignment(BaseModel):
     # reads model.base_url from config (it ignores OPENAI_BASE_URL), so this is
     # the path that actually wires a local endpoint into resolution.
     base_url: str = ""
+    confirm_expensive_model: bool = False
 
 
 def _apply_main_model_assignment(
@@ -2445,6 +2455,30 @@ async def set_model_assignment(body: ModelAssignment):
 
     try:
         cfg = load_config()
+
+        if model and not body.confirm_expensive_model:
+            try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
+                    model,
+                    provider=provider,
+                    base_url=base_url,
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                return {
+                    "ok": False,
+                    "scope": scope,
+                    "provider": provider,
+                    "model": model,
+                    "confirm_required": True,
+                    "confirm_message": warning.message,
+                }
 
         if scope == "main":
             if not provider or not model:

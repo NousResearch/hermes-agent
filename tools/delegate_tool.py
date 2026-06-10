@@ -758,7 +758,13 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
+    """Remove toolsets that contain only blocked tools.
+
+    Also strips composite toolsets (e.g. ``hermes-cli``) whose tool lists
+    include any tool from :data:`DELEGATE_BLOCKED_TOOLS`.  Without this
+    expansion a child inheriting a composite name like ``hermes-cli``
+    silently retains ``send_message`` and ``cronjob`` access.
+    """
     blocked_toolset_names = {
         "delegation",
         "clarify",
@@ -767,7 +773,16 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "messaging",
         "cronjob",
     }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+    result: List[str] = []
+    for t in toolsets:
+        if t in blocked_toolset_names:
+            continue
+        # Expand composite toolsets to check for blocked individual tools.
+        ts_def = TOOLSETS.get(t)
+        if ts_def and DELEGATE_BLOCKED_TOOLS & set(ts_def.get("tools", [])):
+            continue
+        result.append(t)
+    return result
 
 
 def _build_child_progress_callback(

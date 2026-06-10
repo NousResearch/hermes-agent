@@ -167,6 +167,13 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertNotIn("messaging", result)
         self.assertNotIn("cronjob", result)
 
+    def test_strip_composite_toolset_with_blocked_tools(self):
+        """Composite toolsets containing blocked tools (e.g. hermes-cli with
+        send_message and cronjob) must be stripped entirely."""
+        result = _strip_blocked_tools(["hermes-cli"])
+        self.assertNotIn("hermes-cli", result,
+                         "hermes-cli bundles send_message and cronjob — must be stripped")
+
 
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):

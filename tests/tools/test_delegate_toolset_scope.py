@@ -66,6 +66,13 @@ class TestToolsetIntersection:
         assert "file" in child
         assert "web" in child
 
+    def test_strip_composite_hermes_cli(self):
+        """hermes-cli bundles send_message + cronjob — must be stripped."""
+        child = _strip_blocked_tools(["hermes-cli"])
+        assert "hermes-cli" not in child, (
+            "hermes-cli contains send_message and cronjob — must be stripped"
+        )
+
     def test_empty_intersection_yields_empty_toolsets(self):
         """If parent has no overlap with requested, child gets nothing extra."""
         parent = SimpleNamespace(enabled_toolsets=["terminal"])

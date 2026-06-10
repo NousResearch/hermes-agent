@@ -25,6 +25,7 @@ import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { setLocale } from '../locales/index.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
 
@@ -178,6 +179,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const info = r.info ?? null
       const requestedTitle = title?.trim() ?? ''
 
+      if (info?.language) {
+        setLocale(info.language as 'en' | 'zh')
+      }
+
       resetSession()
       setSessionStartedAt(Date.now())
 
@@ -302,47 +307,38 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           return
         }
 
-        const previousSid = getUiState().sid
+        closeSession(getUiState().sid === id ? null : getUiState().sid).then(() =>
+          gw
+            .request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+            .then(raw => {
+              const r = asRpcResult<SessionResumeResponse>(raw)
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
-          .then(raw => {
-            const r = asRpcResult<SessionResumeResponse>(raw)
+              if (!r) {
+                sys('error: invalid response: session.resume')
 
-            if (!r) {
-              sys('error: invalid response: session.resume')
+                return patchUiState({ status: 'ready' })
+              }
 
-              return patchUiState({ status: 'ready' })
-            }
+              resetSession()
+              setSessionStartedAt(Date.now())
 
-            const info = r.info ?? null
-            const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
+              const resumed = toTranscriptMessages(r.messages)
 
-            resetSession()
-            setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
-
-            const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
-
-            setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(r.resumed ?? r.session_id)
-            patchUiState({
-              busy: running,
-              info,
-              sid: r.session_id,
-              status: statusFromLiveSession(r.status, running),
-              usage: usageFrom(info)
+              setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
+              writeActiveSessionFile(r.resumed ?? r.session_id)
+              patchUiState({
+                info: r.info ?? null,
+                sid: r.session_id,
+                status: 'ready',
+                usage: usageFrom(r.info ?? null)
+              })
+              setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
             })
-            hydrateLiveSessionInflight(r.inflight)
-
-            if (previousSid && previousSid !== r.session_id) {
-              void closeSession(previousSid)
-            }
-
-            setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
-          })
-          .catch((e: Error) => {
-            sys(`error: ${e.message}`)
-            patchUiState({ status: 'ready' })
-          })
+            .catch((e: Error) => {
+              sys(`error: ${e.message}`)
+              patchUiState({ status: 'ready' })
+            })
+        )
       })
     },
     [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]

@@ -1,6 +1,5 @@
 import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 
-import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
@@ -120,7 +119,7 @@ export const coreCommands: SlashCommand[] = [
     help: 'update Hermes Agent to the latest version (exits TUI)',
     name: 'update',
     run: (_arg, ctx) => {
-      ctx.transcript.sys('exiting TUI to run update...')
+      ctx.transcript.sys('正在退出 TUI 以运行更新...')
       // Exit code 42 signals the Python wrapper to exec `hermes update`.
       // Use dieWithCode for proper cleanup (gateway kill + Ink unmount).
       setTimeout(() => ctx.session.dieWithCode(42), 100)
@@ -136,13 +135,13 @@ export const coreCommands: SlashCommand[] = [
       const next = mouseModeFromArg(arg, current)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /mouse [on|off|toggle|wheel|buttons|all]')
+        return ctx.transcript.sys('用法: /mouse [on|off|toggle|wheel|buttons|all]')
       }
 
       patchUiState({ mouseTracking: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next}`))
+      queueMicrotask(() => ctx.transcript.sys(`鼠标追踪 ${next}`))
     }
   },
 
@@ -159,12 +158,14 @@ export const coreCommands: SlashCommand[] = [
       const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
-        patchUiState({ status: 'forging session…' })
+        patchUiState({ status: '正在创建会话…' })
         ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
       }
 
-      if (NO_CONFIRM_DESTRUCTIVE) {
-        return commit()
+      if (isNew || NO_CONFIRM_DESTRUCTIVE) {
+        commit()
+
+        return
       }
 
       patchOverlayState({
@@ -185,7 +186,7 @@ export const coreCommands: SlashCommand[] = [
     name: 'redraw',
     run: (_arg, ctx) => {
       forceRedraw(process.stdout)
-      ctx.transcript.sys('ui redrawn')
+      ctx.transcript.sys('UI 已重绘')
     }
   },
 
@@ -194,12 +195,12 @@ export const coreCommands: SlashCommand[] = [
     name: 'status',
     run: (_arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session')
+        return ctx.transcript.sys('没有活动会话')
       }
 
       ctx.gateway
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
-        .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
+        .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(无状态)', 'Status')))
         .catch(ctx.guardedErr)
     }
   },
@@ -209,7 +210,7 @@ export const coreCommands: SlashCommand[] = [
     name: 'title',
     run: (arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session')
+        return ctx.transcript.sys('没有活动会话')
       }
 
       const title = arg.trim()
@@ -220,7 +221,7 @@ export const coreCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SessionTitleResponse>(r => {
               const current = (r?.title ?? '').trim()
-              ctx.transcript.sys(current ? `title: ${current}` : 'no title set')
+              ctx.transcript.sys(current ? `title: ${current}` : '未设置标题')
             })
           )
           .catch(ctx.guardedErr)
@@ -229,7 +230,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       if (!title) {
-        return ctx.transcript.sys('usage: /title <your session title>')
+        return ctx.transcript.sys('用法: /title <your session title>')
       }
 
       ctx.gateway
@@ -238,7 +239,7 @@ export const coreCommands: SlashCommand[] = [
           ctx.guarded<SessionTitleResponse>(r => {
             const next = (r?.title ?? title).trim()
             const suffix = r?.pending ? ' (queued while session initializes)' : ''
-            ctx.transcript.sys(`session title set: ${next}${suffix}`)
+            ctx.transcript.sys(`会话标题已设置: ${next}${suffix}`)
           })
         )
         .catch(ctx.guardedErr)
@@ -252,13 +253,13 @@ export const coreCommands: SlashCommand[] = [
       const next = flagFromArg(arg, ctx.ui.compact)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /compact [on|off|toggle]')
+        return ctx.transcript.sys('用法: /compact [on|off|toggle]')
       }
 
       patchUiState({ compact: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`compact ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(`紧凑模式 ${next ? '开启' : '关闭'}`))
     }
   },
 
@@ -284,9 +285,9 @@ export const coreCommands: SlashCommand[] = [
               .map(s => `${s}=${ui.sections[s]}`)
               .join(' ')
 
-            transcript.sys(`details: ${mode}${overrides ? `  (${overrides})` : ''}`)
+            transcript.sys(`详情: ${mode}${overrides ? `  (${overrides})` : ''}`)
           })
-          .catch(() => !ctx.stale() && transcript.sys(`details: ${ui.detailsMode}`))
+          .catch(() => !ctx.stale() && transcript.sys(`详情: ${ui.detailsMode}`))
 
         return
       }
@@ -322,7 +323,7 @@ export const coreCommands: SlashCommand[] = [
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
-      transcript.sys(`details: ${next}`)
+      transcript.sys(`详情: ${next}`)
     }
   },
 
@@ -340,7 +341,7 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(dailyFortune(ctx.sid))
       }
 
-      ctx.transcript.sys('usage: /fortune [random|daily]')
+      ctx.transcript.sys('用法: /fortune [random|daily]')
     }
   },
 
@@ -354,23 +355,23 @@ export const coreCommands: SlashCommand[] = [
         const text = await ctx.composer.selection.copySelection()
 
         if (text) {
-          return sys(`copied ${text.length} characters`)
+          return             sys(`已复制 ${text.length} 个字符`)
         } else {
           return sys(
-            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
+            '剪贴板复制失败 — 尝试设置 HERMES_TUI_FORCE_OSC52=1 来强制使用转义序列'
           )
         }
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {
-        return sys('usage: /copy [number]')
+        return sys('用法: /copy [number]')
       }
 
       const all = ctx.local.getHistoryItems().filter(m => m.role === 'assistant')
       const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
 
       if (!target) {
-        return sys('nothing to copy — start a conversation first')
+        return sys('没有可复制的内容 — 先开始一段对话')
       }
 
       void writeClipboardText(target.text)
@@ -380,7 +381,7 @@ export const coreCommands: SlashCommand[] = [
           }
 
           if (nativeOk) {
-            sys('copied to clipboard')
+            sys('已复制到剪贴板')
           } else {
             writeOsc52Clipboard(target.text)
             sys('sent OSC52 copy sequence (terminal support required)')
@@ -397,7 +398,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'attach clipboard image',
     name: 'paste',
-    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+    run: (arg, ctx) => (arg ? ctx.transcript.sys('用法: /paste') : ctx.composer.paste())
   },
 
   {
@@ -407,7 +408,7 @@ export const coreCommands: SlashCommand[] = [
       const target = arg.trim().toLowerCase()
 
       if (target && !['auto', 'cursor', 'vscode', 'windsurf'].includes(target)) {
-        return ctx.transcript.sys('usage: /terminal-setup [auto|vscode|cursor|windsurf]')
+        return ctx.transcript.sys('用法: /terminal-setup [auto|vscode|cursor|windsurf]')
       }
 
       const runner =
@@ -441,7 +442,7 @@ export const coreCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const text = ctx.gateway.gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
 
-      text ? ctx.transcript.page(text, 'Logs') : ctx.transcript.sys('no gateway logs')
+      text ? ctx.transcript.page(text, 'Logs') : ctx.transcript.sys('没有网关日志')
     }
   },
 
@@ -456,7 +457,7 @@ export const coreCommands: SlashCommand[] = [
       const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
 
       if (!items.length) {
-        return ctx.transcript.sys('no conversation yet')
+        return ctx.transcript.sys('还没有对话')
       }
 
       const preview = Math.max(80, parseInt(arg, 10) || 400)
@@ -482,11 +483,11 @@ export const coreCommands: SlashCommand[] = [
         .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
 
       if (!hasConversation) {
-        return ctx.transcript.sys('no conversation yet')
+        return ctx.transcript.sys('还没有对话')
       }
 
       if (!ctx.sid) {
-        return ctx.transcript.sys('no active session — nothing to save')
+        return ctx.transcript.sys('没有活动会话 — 无法保存')
       }
 
       ctx.gateway
@@ -496,9 +497,9 @@ export const coreCommands: SlashCommand[] = [
             const file = r?.file
 
             if (file) {
-              ctx.transcript.sys(`conversation saved to: ${file}`)
+              ctx.transcript.sys(`对话已保存到: ${file}`)
             } else {
-              ctx.transcript.sys('failed to save')
+              ctx.transcript.sys('保存失败')
             }
           })
         )
@@ -524,13 +525,13 @@ export const coreCommands: SlashCommand[] = [
               : null
 
       if (!next) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')
+        return ctx.transcript.sys('用法: /statusbar [on|off|top|bottom|toggle]')
       }
 
       patchUiState({ statusBar: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
+      queueMicrotask(() => ctx.transcript.sys(`状态栏 ${next}`))
     }
   },
 
@@ -544,7 +545,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.composer.enqueue(arg)
-      ctx.transcript.sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+      ctx.transcript.sys(`已排队: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
     }
   },
 
@@ -555,7 +556,7 @@ export const coreCommands: SlashCommand[] = [
       const payload = arg?.trim() ?? ''
 
       if (!payload) {
-        return ctx.transcript.sys('usage: /steer <prompt>')
+        return ctx.transcript.sys('用法: /steer <prompt>')
       }
 
       // If the agent isn't running, fall back to the queue so the user's
@@ -575,10 +576,10 @@ export const coreCommands: SlashCommand[] = [
           ctx.guarded<SessionSteerResponse>(r => {
             if (r?.status === 'queued') {
               ctx.transcript.sys(
-                `steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+                `steer 已排队 — 在下次工具调用后到达: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
               )
             } else {
-              ctx.transcript.sys('steer rejected')
+              ctx.transcript.sys('steer 被拒绝')
             }
           })
         )
@@ -591,16 +592,16 @@ export const coreCommands: SlashCommand[] = [
     name: 'undo',
     run: (_arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys('nothing to undo')
+        return ctx.transcript.sys('没有可撤销的内容')
       }
 
       ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) > 0) {
             ctx.transcript.setHistoryItems((prev: Msg[]) => ctx.transcript.trimLastExchange(prev))
-            ctx.transcript.sys(`undid ${r.removed} messages`)
+          ctx.transcript.sys(`已撤销 ${r.removed} 条消息`)
           } else {
-            ctx.transcript.sys('nothing to undo')
+            ctx.transcript.sys('没有可撤销的内容')
           }
         })
       )
@@ -614,7 +615,7 @@ export const coreCommands: SlashCommand[] = [
       const last = ctx.local.getLastUserMsg()
 
       if (!last) {
-        return ctx.transcript.sys('nothing to retry')
+        return ctx.transcript.sys('没有可重试的内容')
       }
 
       if (!ctx.sid) {
@@ -624,7 +625,7 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) <= 0) {
-            return ctx.transcript.sys('nothing to retry')
+            return ctx.transcript.sys('没有可重试的内容')
           }
 
           ctx.transcript.setHistoryItems((prev: Msg[]) => ctx.transcript.trimLastExchange(prev))

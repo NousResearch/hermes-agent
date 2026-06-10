@@ -5,8 +5,30 @@ import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { getLocale, t } from '../locales/index.js'
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
+
+function translateCompletion(item: { text: string; display: string; meta?: string }) {
+  const locale = getLocale()
+  if (locale !== 'zh') return item
+
+  const localeTexts = t()
+  const cmdName = item.text.replace(/^\//, '')
+  const zhDesc = localeTexts.commands?.[cmdName]
+
+  if (!zhDesc) return item
+
+  const display = `/${cmdName} ${zhDesc}`
+
+  const catMatch = item.meta?.match(/^\[(.+)\]$/)
+  if (catMatch) {
+    const zhCategory = localeTexts.categories?.[catMatch[1]]
+    return zhCategory ? { ...item, display, meta: `[${zhCategory}]` } : { ...item, display, meta: undefined }
+  }
+
+  return { ...item, display, meta: undefined }
+}
 
 export function completionRequestForInput(
   input: string
@@ -84,7 +106,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
 
           const r = asRpcResult<CompletionResponse>(raw)
 
-          setCompletions(r?.items ?? [])
+          setCompletions((r?.items ?? []).map(translateCompletion))
           setCompIdx(0)
           setCompReplace(request.method === 'complete.slash' ? (r?.replace_from ?? 1) : request.replaceFrom)
         })

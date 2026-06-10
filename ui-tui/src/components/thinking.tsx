@@ -4,6 +4,7 @@ import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
+import { useLocale } from '../locales/index.js'
 import {
   buildSubagentTree,
   fmtCost,
@@ -421,7 +422,7 @@ function SubagentAccordion({
           }}
           open={openThinking}
           t={t}
-          title="Thinking"
+          title={localeTexts.messages.thinking}
         />
       ),
       key: 'thinking',
@@ -454,7 +455,7 @@ function SubagentAccordion({
           }}
           open={openTools}
           t={t}
-          title="Tool calls"
+          title={localeTexts.messages.toolCalls}
         />
       ),
       key: 'tools',
@@ -495,7 +496,7 @@ function SubagentAccordion({
           }}
           open={openNotes}
           t={t}
-          title="Progress"
+          title={localeTexts.messages.progress}
           tone={statusTone}
         />
       ),
@@ -536,7 +537,7 @@ function SubagentAccordion({
           open={openKids}
           suffix={`d${item.depth + 1} · ${aggregate.descendantCount} total`}
           t={t}
-          title="Spawned"
+          title={localeTexts.messages.spawned}
         />
       ),
       key: 'subagents',
@@ -719,6 +720,7 @@ export const ToolTrail = memo(function ToolTrail({
   trail?: string[]
   activity?: ActivityItem[]
 }) {
+  const { t: localeTexts } = useLocale()
   const visible = useMemo(
     () => ({
       thinking: sectionMode('thinking', detailsMode, sections, commandOverride),
@@ -1062,7 +1064,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openTools}
           suffix={toolTokensLabel}
           t={t}
-          title="Tool calls"
+          title={localeTexts.messages.toolCalls}
         />
       ),
       key: 'tools',
@@ -1136,7 +1138,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openSubagents}
           suffix={suffix}
           t={t}
-          title="Spawn tree"
+          title={localeTexts.messages.spawnTree}
         />
       ),
       key: 'subagents',
@@ -1159,7 +1161,7 @@ export const ToolTrail = memo(function ToolTrail({
           }}
           open={openMeta}
           t={t}
-          title="Activity"
+          title={localeTexts.messages.activity}
           tone={metaTone}
         />
       ),

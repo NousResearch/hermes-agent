@@ -2,6 +2,7 @@ import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'
+import { useLocale } from '../locales/index.js'
 import { LONG_MSG } from '../config/limits.js'
 import { hasLeadGap } from '../domain/blockLayout.js'
 import { sectionMode } from '../domain/details.js'
@@ -39,6 +40,7 @@ export const MessageLine = memo(function MessageLine({
   t,
   tools = []
 }: MessageLineProps) {
+  const { t: localeTexts } = useLocale()
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
   // sections only — never on the global mode.  A `trail` message feeds Tool
@@ -104,7 +106,7 @@ export const MessageLine = memo(function MessageLine({
     const maxChars = Math.max(24, cols - 14)
     const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
     const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
-    const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
+    const preview = compactPreview(stripped, maxChars) || localeTexts.messages.emptyToolResult || '(empty tool result)'
 
     return (
       <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
@@ -173,13 +175,13 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
-      const [head, ...rest] = userDisplay(msg.text).split('[long message]')
+      const [head, ...rest] = userDisplay(msg.text).split(localeTexts.messages.longMessage || '[long message]')
 
       return (
         <Text color={body}>
           {head}
           <Text color={t.color.muted} dimColor>
-            [long message]
+            {localeTexts.messages.longMessage || '[long message]'}
           </Text>
           {rest.join('')}
         </Text>
@@ -221,7 +223,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.border}>└─ </Text>
           </NoSelect>
           <Text color={t.color.muted} dim>
-            Response
+            {localeTexts.messages.response || 'Response'}
           </Text>
         </Box>
       )}

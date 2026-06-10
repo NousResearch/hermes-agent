@@ -20,6 +20,7 @@ import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { setLocale } from '../locales/index.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
@@ -307,9 +308,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
-  const handleReady = (skin?: GatewaySkin) => {
+  const handleReady = (skin?: GatewaySkin, language?: string) => {
     if (skin) {
       applySkin(skin)
+    }
+
+    if (language) {
+      setLocale(language as 'en' | 'zh')
     }
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
@@ -405,7 +410,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     switch (ev.type) {
       case 'gateway.ready':
-        handleReady(ev.payload?.skin)
+        handleReady(ev.payload?.skin, ev.payload?.language)
 
         return
 

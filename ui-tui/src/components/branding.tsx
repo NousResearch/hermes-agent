@@ -4,6 +4,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
+import { useLocale } from '../locales/index.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
@@ -158,6 +159,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+  const { t: localeTexts } = useLocale()
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -198,7 +200,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const skillsBody = () => {
     if (info.lazy && skillEntries.length === 0) {
-      return <InlineLoader label="scanning skills" t={t} />
+      return <InlineLoader label={localeTexts.messages.scanningSkills || 'scanning skills'} t={t} />
     }
 
     const shown = skillEntries.slice(0, SKILLS_MAX)
@@ -213,7 +215,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
+          <Text color={t.color.muted}>({localeTexts.messages.andMoreCategories.replace('{count}', String(overflow)) || `and ${overflow} more categories…`})</Text>
         )}
       </>
     )
@@ -236,7 +238,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
+          <Text color={t.color.muted}>({localeTexts.messages.andMoreToolsets.replace('{count}', String(overflow)) || `and ${overflow} more toolsets…`})</Text>
         )}
       </>
     )
@@ -252,10 +254,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text color={t.color.muted}>: </Text>
           {s.connected ? (
             <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'}
+              {s.tools} {localeTexts.messages.tool || 'tool'}{s.tools === 1 ? '' : 's'}
             </Text>
           ) : (
-            <Text color={t.color.error}>failed</Text>
+            <Text color={t.color.error}>{localeTexts.messages.error || 'failed'}</Text>
           )}
         </Text>
       ))}
@@ -267,7 +269,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const systemBody = () => {
     if (sysPromptLen === 0) {
-      return <Text color={t.color.muted}>No system prompt loaded.</Text>
+      return <Text color={t.color.muted}>{localeTexts.messages.noSystemPrompt || 'No system prompt loaded.'}</Text>
     }
 
     return (
@@ -295,7 +297,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
           {sid && (
             <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionLabel}>{localeTexts.messages.session}: </Text>
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
           )}
@@ -324,8 +326,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             </Text>
             {sid && (
               <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
-                <Text color={t.color.sessionBorder}>{sid}</Text>
+              <Text color={t.color.sessionLabel}>{localeTexts.messages.session}: </Text>
+              <Text color={t.color.sessionBorder}>{sid}</Text>
               </Text>
             )}
           </Box>
@@ -337,7 +339,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             onToggle={() => setToolsOpen(v => !v)}
             open={toolsOpen}
             t={t}
-            title="Available Tools"
+            title={localeTexts.menu.availableTools || 'Available Tools'}
           />
           {toolsOpen && toolsBody()}
         </Box>
@@ -348,9 +350,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
-            suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+            suffix={skillsCatCount > 0 ? localeTexts.messages.andMoreCategories.replace('{count}', String(skillsCatCount)) : undefined}
             t={t}
-            title="Available Skills"
+            title={localeTexts.menu.availableSkills || 'Available Skills'}
           />
           {skillsOpen && skillsBody()}
         </Box>
@@ -363,7 +365,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               open={systemOpen}
               suffix={`— ${sysPromptLen.toLocaleString()} chars`}
               t={t}
-              title="System Prompt"
+              title={localeTexts.menu.systemPrompt || 'System Prompt'}
             />
             {systemOpen && systemBody()}
           </Box>
@@ -378,7 +380,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               open={mcpOpen}
               suffix="connected"
               t={t}
-              title="MCP Servers"
+              title={localeTexts.menu.mcpServers || 'MCP Servers'}
             />
             {mcpOpen && mcpBody()}
           </Box>
@@ -387,26 +389,26 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text />
 
         <Text color={t.color.text}>
-          {toolsTotal} tools{' · '}
-          {skillsTotal} skills
+          {toolsTotal} {localeTexts.messages.tools || 'tools'}{' · '}
+          {skillsTotal} {localeTexts.messages.skills || 'skills'}
           {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
           {' · '}
-          <Text color={t.color.muted}>/help for commands</Text>
+          <Text color={t.color.muted}>{localeTexts.messages.helpForCommands || '/help for commands'}</Text>
         </Text>
 
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
           <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+            ! {info.update_behind} {info.update_behind === 1 ? localeTexts.messages.commitBehind || 'commit behind' : localeTexts.messages.commitsBehind || 'commits behind'}
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              - run{' '}
+              - {localeTexts.messages.runToUpdate || 'run'}{' '}
             </Text>
             <Text bold color={t.color.warn}>
               {info.update_command || 'hermes update'}
             </Text>
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              to update
+              {localeTexts.messages.runToUpdate || 'to update'}
             </Text>
           </Text>
         )}

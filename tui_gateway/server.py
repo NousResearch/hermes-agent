@@ -5034,8 +5034,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
                     _cfg = _tui_load_config()
                     _mode = decide_image_input_mode(
-                        _read_main_provider(),
-                        _read_main_model(),
+                        getattr(agent, "provider", "") or _read_main_provider(),
+                        getattr(agent, "model", "") or _read_main_model(),
                         _cfg,
                     )
                     if getattr(agent, "api_mode", "") == "codex_app_server":

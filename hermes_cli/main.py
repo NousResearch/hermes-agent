@@ -6436,11 +6436,13 @@ def _is_windows() -> bool:
 
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
-        return None
-    scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
-    return scripts if scripts.is_dir() else None
+    for venv_name in ("venv", ".venv"):
+        venv_dir = PROJECT_ROOT / venv_name
+        if venv_dir.is_dir():
+            scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
+            if scripts.is_dir():
+                return scripts
+    return None
 
 
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:

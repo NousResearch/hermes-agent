@@ -7183,6 +7183,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # user for each slot value conversationally and then calls the
                 # cronjob tool (the /steer fall-through pattern). The seed
                 # enters as a normal user turn, preserving role alternation.
+                # Send the "Setting up X…" ack first so the user gets the same
+                # immediate feedback CLI users see, instead of silence until
+                # the agent's first question.
+                _ack = getattr(_recipe_result, "text", "") or ""
+                if _ack:
+                    try:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            _ack_meta = self._thread_metadata_for_source(source)
+                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+                    except Exception:
+                        logger.debug("cron-recipe ack send failed", exc_info=True)
                 try:
                     event.text = _recipe_seed
                 except Exception:
@@ -9281,7 +9293,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from hermes_cli.suggestions_cmd import handle_suggestions_command
 
-            return handle_suggestions_command(args, origin=origin)
+            return handle_suggestions_command(args, origin=origin, surface="gateway")
         except Exception as e:
             logger.debug("suggestions command failed: %s", e)
             return f"Suggestions command failed: {e}"
@@ -9314,7 +9326,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
 
-            return handle_cron_recipe_command(args, origin=origin)
+            return handle_cron_recipe_command(args, origin=origin, surface="gateway")
         except Exception as e:
             logger.debug("cron-recipe command failed: %s", e)
             from hermes_cli.cron_recipe_cmd import RecipeCommandResult

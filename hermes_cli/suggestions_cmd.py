@@ -67,13 +67,16 @@ def handle_suggestions_command(
     args: str,
     *,
     origin: Optional[Dict[str, Any]] = None,
+    surface: str = "cli",
 ) -> str:
     """Dispatch a ``/suggestions`` invocation. Returns text to show the user.
 
     ``args`` is everything after ``/suggestions`` (already stripped of the
     command word). ``origin`` is the platform/chat dict so an accepted job's
     "origin" delivery routes back to where the user accepted; when omitted it
-    is resolved from the session environment.
+    is resolved from the session environment. ``surface`` (``"cli"`` |
+    ``"gateway"``) picks the wording for follow-up hints — ``/cron`` only
+    exists on the CLI.
     """
     if origin is None:
         origin = _resolve_origin()
@@ -99,10 +102,15 @@ def handle_suggestions_command(
             return f"No pending suggestion matches '{rest}'. Run /suggestions to list them."
         sched = job.get("schedule_display") or (job.get("job_spec", {}) or {}).get("schedule", "")
         name = job.get("name", "automation")
+        manage = (
+            "Manage it with /cron."
+            if surface == "cli"
+            else "Ask me to list, pause, or remove it any time."
+        )
         return (
             f"Scheduled '{name}'"
             + (f" ({sched})" if sched else "")
-            + ". Manage it with /cron."
+            + f". {manage}"
         )
 
     if sub in ("dismiss", "no", "reject"):

@@ -715,6 +715,20 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                     "[dim]Added to your suggestions — run[/] [bold]/suggestions[/] "
                     "[dim]to schedule or dismiss it.[/]\n"
                 )
+            else:
+                # Dropped: already offered/dismissed (latched) or the pending
+                # list is at its cap. Say so instead of silently doing nothing —
+                # the user can still schedule it by hand.
+                c.print(
+                    f"[bold cyan]Recipe:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/]), but it wasn't added to "
+                    "your suggestions (already offered/dismissed, or the pending "
+                    "list is full — run [bold]/suggestions[/] to review)."
+                )
+                c.print(
+                    "[dim]You can still schedule it any time by asking the agent "
+                    "or via[/] [bold]hermes cron add[/][dim].[/]\n"
+                )
     except Exception:  # pragma: no cover - recipe detection is best-effort
         pass
 

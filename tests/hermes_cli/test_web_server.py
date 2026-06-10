@@ -754,6 +754,67 @@ class TestWebServerEndpoints:
         assert "/api/audio/transcribe" in paths
         assert "/api/audio/speak" in paths
         assert "/api/audio/elevenlabs/voices" in paths
+        assert "/api/audio/realtime/client-secret" in paths
+
+    def test_realtime_client_secret_prefers_dotenv_key_and_redacts_key(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "client_secret": {"value": "ek_test_secret", "expires_at": 1893456000},
+                    "session": {"id": "sess_test"},
+                }).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["headers"] = dict(request.header_items())
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        monkeypatch.setattr(web_server, "load_env", lambda: {"OPENAI_API_KEY": "sk-current-dotenv"})
+        monkeypatch.setattr(web_server, "load_config", lambda: {})
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-stale-process")
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", fake_urlopen)
+
+        resp = self.client.post("/api/audio/realtime/client-secret", json={})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["client_secret"] == "ek_test_secret"
+        assert body["expires_at"] == 1893456000
+        assert body["model"] == "gpt-realtime-2"
+        assert captured["url"].endswith("/v1/realtime/client_secrets")
+        assert captured["headers"]["Authorization"] == "Bearer sk-current-dotenv"
+        assert "sk-current-dotenv" not in json.dumps(body)
+        assert "sk-stale-process" not in json.dumps(body)
+        turn_detection = captured["body"]["session"]["audio"]["input"]["turn_detection"]
+        assert turn_detection["type"] == "server_vad"
+        assert turn_detection["create_response"] is True
+        assert turn_detection["interrupt_response"] is True
+
+    def test_realtime_client_secret_requires_openai_key(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_env", lambda: {})
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+
+        resp = self.client.post("/api/audio/realtime/client-secret", json={})
+
+        assert resp.status_code == 400
+        assert "OPENAI_API_KEY" in resp.json()["detail"]
+        assert "VOICE_TOOLS_OPENAI_KEY" in resp.json()["detail"]
 
     def test_elevenlabs_voices_unavailable_without_key(self, monkeypatch):
         import hermes_cli.web_server as web_server
@@ -787,8 +848,156 @@ class TestWebServerEndpoints:
         assert body["mime_type"] == "audio/mpeg"
         assert body["data_url"].startswith("data:audio/mpeg;base64,")
         assert body["provider"] == "test"
+        assert body["transport"] == "local"
+        assert body["playback"] == "local"
         # The handler streams the bytes back and removes the temp file.
         assert not audio_file.exists()
+
+    def test_speak_text_voice_conversation_stays_local_without_livekit_config(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+        import tools.tts_tool as tts_tool
+
+        audio_file = tmp_path / "speech.mp3"
+        audio_file.write_bytes(b"ID3voice-conversation")
+        monkeypatch.setattr(web_server, "load_config", lambda: {"voice": {}})
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", lambda _text: json.dumps({
+            "success": True,
+            "file_path": str(audio_file),
+            "provider": "test-local",
+        }))
+
+        resp = self.client.post(
+            "/api/audio/speak",
+            json={"text": "hello there", "source": "voice-conversation"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider"] == "test-local"
+        assert body["transport"] == "local"
+        assert body["playback"] == "local"
+        assert body["data_url"].startswith("data:audio/mpeg;base64,")
+
+    def test_speak_text_livekit_transport_posts_to_sidecar(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "ok": True,
+                    "data_url": "data:audio/wav;base64,ZmFrZQ==",
+                    "mime_type": "audio/wav",
+                    "provider": "migi_fish_livekit",
+                }).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {
+            "voice": {
+                "livekit": {
+                    "sidecar_url": "http://127.0.0.1:9191/speak",
+                    "room": "test-room",
+                    "identity": "test-identity",
+                    "timeout_seconds": 12,
+                    "required": False,
+                }
+            }
+        })
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", fake_urlopen)
+
+        resp = self.client.post(
+            "/api/audio/speak",
+            json={"text": "hello livekit", "transport": "livekit"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["provider"] == "migi_fish_livekit"
+        assert body["transport"] == "livekit"
+        assert body["playback"] == "both"
+        assert body["mime_type"] == "audio/wav"
+        assert body["data_url"] == "data:audio/wav;base64,ZmFrZQ=="
+        forwarded_request_id = captured["body"].pop("request_id")
+        assert forwarded_request_id == body["request_id"]
+        assert captured == {
+            "url": "http://127.0.0.1:9191/speak",
+            "timeout": 12.0,
+            "body": {
+                "text": "hello livekit",
+                "room": "test-room",
+                "identity": "test-identity",
+            },
+        }
+
+    def test_speak_text_livekit_failure_falls_back_when_not_required(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+        import tools.tts_tool as tts_tool
+
+        audio_file = tmp_path / "fallback.mp3"
+        audio_file.write_bytes(b"ID3fallback")
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {
+            "voice": {
+                "output_transport": "livekit",
+                "livekit": {
+                    "sidecar_url": "http://127.0.0.1:9/speak",
+                    "required": False,
+                },
+            }
+        })
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("down")))
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", lambda _text: json.dumps({
+            "success": True,
+            "file_path": str(audio_file),
+            "provider": "fallback-tts",
+        }))
+
+        resp = self.client.post(
+            "/api/audio/speak",
+            json={"text": "fallback please", "source": "voice-conversation"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider"] == "fallback-tts"
+        assert body["transport"] == "local"
+        assert body["playback"] == "local"
+        assert body["data_url"].startswith("data:audio/mpeg;base64,")
+
+    def test_speak_text_livekit_failure_502_when_required(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {
+            "voice": {
+                "output_transport": "livekit",
+                "livekit": {
+                    "sidecar_url": "http://127.0.0.1:9/speak",
+                    "required": True,
+                },
+            }
+        })
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("down")))
+
+        resp = self.client.post(
+            "/api/audio/speak",
+            json={"text": "must use livekit", "source": "voice-conversation"},
+        )
+
+        assert resp.status_code == 502
+        assert "LiveKit voice sidecar failed" in resp.json()["detail"]
 
     def test_speak_text_requires_nonempty_text(self):
         resp = self.client.post("/api/audio/speak", json={"text": "   "})

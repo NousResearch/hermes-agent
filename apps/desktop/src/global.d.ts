@@ -37,6 +37,11 @@ declare global {
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
+      playAudioDataUrl?: (
+        dataUrl: string,
+        options?: { audioBytes?: null | number; mimeType?: string; provider?: string; requestId?: string; source?: string; transport?: string }
+      ) => Promise<{ code?: null | number; durationMs?: number; ok: boolean; signal?: null | string }>
+      stopNativeAudioPlayback?: () => Promise<{ ok: boolean; stopped: boolean }>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       writeClipboard: (text: string) => Promise<boolean>

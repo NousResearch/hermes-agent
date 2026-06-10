@@ -9,6 +9,7 @@ export interface MicRecorderOptions {
   silenceLevel?: number
   silenceMs?: number
   idleSilenceMs?: number
+  minSpeechMs?: number
 }
 
 export interface MicRecording {
@@ -72,6 +73,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
   const heardSpeechRef = useRef(false)
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
+  const speechStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
 
   const cleanup = () => {
@@ -131,25 +133,34 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
         const speechThreshold = options.silenceLevel ?? 0
         const silenceMs = options.silenceMs ?? 0
         const idleSilenceMs = options.idleSilenceMs ?? 0
+        const minSpeechMs = options.minSpeechMs ?? 0
 
         if (speechThreshold > 0 && options.onSilence && !silenceTriggeredRef.current) {
           if (normalized >= speechThreshold) {
-            heardSpeechRef.current = true
+            speechStartedAtRef.current ??= now
             silenceStartedAtRef.current = null
-          } else if (heardSpeechRef.current && silenceMs > 0) {
-            silenceStartedAtRef.current ??= now
 
-            if (now - silenceStartedAtRef.current >= silenceMs) {
+            if (now - speechStartedAtRef.current >= minSpeechMs) {
+              heardSpeechRef.current = true
+            }
+          } else {
+            speechStartedAtRef.current = null
+
+            if (heardSpeechRef.current && silenceMs > 0) {
+              silenceStartedAtRef.current ??= now
+
+              if (now - silenceStartedAtRef.current >= silenceMs) {
+                silenceTriggeredRef.current = true
+                options.onSilence()
+
+                return
+              }
+            } else if (!heardSpeechRef.current && idleSilenceMs > 0 && now - startedAtRef.current >= idleSilenceMs) {
               silenceTriggeredRef.current = true
               options.onSilence()
 
               return
             }
-          } else if (!heardSpeechRef.current && idleSilenceMs > 0 && now - startedAtRef.current >= idleSilenceMs) {
-            silenceTriggeredRef.current = true
-            options.onSilence()
-
-            return
           }
         }
 
@@ -207,6 +218,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
     heardSpeechRef.current = false
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
+    speechStartedAtRef.current = null
     startedAtRef.current = Date.now()
 
     recorder.ondataavailable = event => {

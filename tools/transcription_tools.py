@@ -1085,6 +1085,50 @@ def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
 
 
+def _preload_nvidia_wheel_libs() -> None:
+    """Expose CUDA runtime libs shipped by NVIDIA PyPI wheels to ctranslate2.
+
+    On Arch/CachyOS-style hosts the NVIDIA driver can be healthy and
+    ctranslate2 can see the GPU, while faster-whisper still fails at first
+    transcribe() because libcublas/libcudnn are installed inside the Python
+    venv rather than the system dynamic-loader path. Loading these exact
+    venv-local shared libraries with RTLD_GLOBAL avoids process-wide
+    LD_LIBRARY_PATH hacks and keeps the fix scoped to local STT.
+    """
+    try:
+        import ctypes
+        import os as _os
+        from pathlib import Path as _Path
+        import site
+    except Exception:
+        return
+
+    mode = getattr(_os, "RTLD_GLOBAL", 0)
+    candidates: list[_Path] = []
+    for raw_site in site.getsitepackages():
+        site_path = _Path(raw_site)
+        candidates.extend(
+            [
+                site_path / "nvidia" / "cuda_nvrtc" / "lib" / "libnvrtc.so.12",
+                site_path / "nvidia" / "cublas" / "lib" / "libcublasLt.so.12",
+                site_path / "nvidia" / "cublas" / "lib" / "libcublas.so.12",
+            ]
+        )
+        cudnn_dir = site_path / "nvidia" / "cudnn" / "lib"
+        if cudnn_dir.is_dir():
+            candidates.extend(sorted(cudnn_dir.glob("libcudnn*.so*")))
+
+    for lib in candidates:
+        if not lib.exists():
+            continue
+        try:
+            ctypes.CDLL(str(lib), mode=mode)
+        except Exception:
+            # Best-effort: if a specific optional CUDA/CUDNN component is not
+            # loadable, let faster-whisper/ctranslate2 surface the real error.
+            continue
+
+
 def _load_local_whisper_model(model_name: str):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
@@ -1098,6 +1142,7 @@ def _load_local_whisper_model(model_name: str):
     We try ``auto`` first (fast CUDA path when it works), and on any CUDA
     library load failure fall back to CPU + int8.
     """
+    _preload_nvidia_wheel_libs()
     from faster_whisper import WhisperModel
     try:
         return WhisperModel(model_name, device="auto", compute_type="auto")

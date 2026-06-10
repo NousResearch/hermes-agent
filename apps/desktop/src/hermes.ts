@@ -33,6 +33,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  RealtimeClientSecretResponse,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
@@ -88,6 +89,7 @@ export type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  RealtimeClientSecretResponse,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -714,11 +716,31 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   })
 }
 
-export function speakText(text: string): Promise<AudioSpeakResponse> {
+export function speakText(
+  text: string,
+  options: { requestId?: string; source?: string; transport?: string } = {}
+): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: {
+      text,
+      ...(options.source ? { source: options.source } : {}),
+      ...(options.transport ? { transport: options.transport } : {}),
+      ...(options.requestId ? { request_id: options.requestId } : {})
+    }
+  })
+}
+
+export function createRealtimeClientSecret(body: {
+  instructions?: string
+  model?: string
+  voice?: string
+} = {}): Promise<RealtimeClientSecretResponse> {
+  return window.hermesDesktop.api<RealtimeClientSecretResponse>({
+    path: '/api/audio/realtime/client-secret',
+    method: 'POST',
+    body
   })
 }
 

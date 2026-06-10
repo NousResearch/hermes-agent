@@ -21,6 +21,20 @@ export interface AudioSpeakResponse {
   data_url: string
   mime_type: string
   provider?: string
+  transport?: string
+  playback?: string
+  request_id?: string
+  audio_bytes?: number | null
+  timings_ms?: Record<string, number | string | boolean | null>
+}
+
+export interface RealtimeClientSecretResponse {
+  ok: boolean
+  client_secret: string
+  expires_at?: number | null
+  model: string
+  session?: unknown
+  voice: string
 }
 
 export interface ElevenLabsVoice {

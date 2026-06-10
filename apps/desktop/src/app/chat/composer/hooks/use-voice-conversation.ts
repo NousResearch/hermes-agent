@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { buildSpokenDigest } from '@/lib/speech-text'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -43,8 +44,6 @@ export function useVoiceConversation({
   const turnClosingRef = useRef(false)
   const awaitingSpokenResponseRef = useRef(false)
   const responseIdRef = useRef<string | null>(null)
-  const spokenSourceLengthRef = useRef(0)
-  const speechBufferRef = useRef('')
   const enabledRef = useRef(enabled)
   const mutedRef = useRef(muted)
   const busyRef = useRef(busy)
@@ -76,58 +75,6 @@ export function useVoiceConversation({
 
   const resetSpeechBuffer = () => {
     responseIdRef.current = null
-    spokenSourceLengthRef.current = 0
-    speechBufferRef.current = ''
-  }
-
-  const appendSpeechText = (text: string) => {
-    if (!text) {
-      return
-    }
-
-    speechBufferRef.current = `${speechBufferRef.current}${text}`
-  }
-
-  const takeSpeechChunk = (force = false): string | null => {
-    const buffer = speechBufferRef.current.replace(/\s+/g, ' ').trim()
-
-    if (!buffer) {
-      speechBufferRef.current = ''
-
-      return null
-    }
-
-    const sentence = buffer.match(/^(.+?[.!?。！？])(?:\s+|$)/)
-
-    if (sentence?.[1] && (sentence[1].length >= 8 || force)) {
-      const chunk = sentence[1].trim()
-      speechBufferRef.current = buffer.slice(sentence[1].length).trim()
-
-      return chunk
-    }
-
-    if (!force && buffer.length > 220) {
-      const softBoundary = Math.max(
-        buffer.lastIndexOf(', ', 180),
-        buffer.lastIndexOf('; ', 180),
-        buffer.lastIndexOf(': ', 180)
-      )
-
-      if (softBoundary > 80) {
-        const chunk = buffer.slice(0, softBoundary + 1).trim()
-        speechBufferRef.current = buffer.slice(softBoundary + 1).trim()
-
-        return chunk
-      }
-    }
-
-    if (!force) {
-      return null
-    }
-
-    speechBufferRef.current = ''
-
-    return buffer
   }
 
   const handleTurn = useCallback(
@@ -198,11 +145,13 @@ export function useVoiceConversation({
     }
 
     try {
-      // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
+      // Tight Migi voice loop with a small speech-hold gate so fans, clicks,
+      // and room ghosts don't become fake turns.
       await handle.start({
-        silenceLevel: 0.075,
-        silenceMs: 1_250,
-        idleSilenceMs: 12_000,
+        silenceLevel: 0.105,
+        minSpeechMs: 280,
+        silenceMs: 750,
+        idleSilenceMs: 4_000,
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)
           pendingStartRef.current = false
@@ -315,8 +264,9 @@ export function useVoiceConversation({
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [enabled, stopTurn])
 
-  // Drive the loop: after a voice-submitted turn, speak stable chunks as the
-  // assistant stream grows. Otherwise start listening when idle between turns.
+  // Drive the loop: after a voice-submitted turn, wait for the assistant text
+  // to stabilize, then speak one compact digest. Joe prefers the ears to get a
+  // short Migi pulse, not the entire written response read aloud.
   useEffect(() => {
     if (!enabled || muted) {
       return
@@ -331,23 +281,19 @@ export function useVoiceConversation({
           responseIdRef.current = response.id
         }
 
-        if (response.text.length > spokenSourceLengthRef.current) {
-          appendSpeechText(response.text.slice(spokenSourceLengthRef.current))
-          spokenSourceLengthRef.current = response.text.length
-        }
-
-        const chunk = takeSpeechChunk(!response.pending && !busy)
-
-        if (chunk) {
-          void speak(chunk)
-
-          return
-        }
-
         if (!response.pending && !busy) {
+          const spokenDigest = buildSpokenDigest(response.text)
+
           awaitingSpokenResponseRef.current = false
           consumePendingResponse()
           resetSpeechBuffer()
+
+          if (spokenDigest) {
+            void speak(spokenDigest)
+
+            return
+          }
+
           pendingStartRef.current = true
           setStatus('idle')
 

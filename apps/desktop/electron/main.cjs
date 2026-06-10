@@ -21,6 +21,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
 const net = require('node:net')
+const os = require('node:os')
 const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -691,6 +692,176 @@ function rememberLog(chunk) {
   }
 
   scheduleDesktopLogFlush()
+}
+
+const NATIVE_VOICE_PLAYBACK_MAX_BYTES = 4 * 1024 * 1024
+const NATIVE_VOICE_MIME_EXT = {
+  'audio/mpeg': '.mp3',
+  'audio/mp3': '.mp3',
+  'audio/mp4': '.m4a',
+  'audio/ogg': '.ogg',
+  'audio/wav': '.wav',
+  'audio/x-wav': '.wav',
+  'audio/flac': '.flac'
+}
+let nativeVoicePlayback = null
+
+function decodeNativeVoiceDataUrl(dataUrl) {
+  const raw = String(dataUrl || '')
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(raw)
+
+  if (!match) {
+    throw new Error('Native voice playback requires a base64 data URL')
+  }
+
+  const mimeType = String(match[1] || '').toLowerCase()
+
+  if (!mimeType.startsWith('audio/')) {
+    throw new Error(`Native voice playback only accepts audio data URLs, got ${mimeType || 'unknown'}`)
+  }
+
+  const buffer = Buffer.from(match[2], 'base64')
+
+  if (!buffer.length) {
+    throw new Error('Native voice playback received an empty audio payload')
+  }
+
+  if (buffer.length > NATIVE_VOICE_PLAYBACK_MAX_BYTES) {
+    throw new Error(`Native voice playback payload too large: ${buffer.length} bytes`)
+  }
+
+  return {
+    buffer,
+    extension: NATIVE_VOICE_MIME_EXT[mimeType] || '.audio',
+    mimeType
+  }
+}
+
+function cleanupNativeVoicePlayback(playback) {
+  if (!playback) return
+  try {
+    if (playback.filePath) fs.rmSync(playback.filePath, { force: true })
+  } catch {
+    // Best effort cleanup only.
+  }
+  try {
+    if (playback.dirPath) fs.rmdirSync(playback.dirPath)
+  } catch {
+    // Best effort cleanup only.
+  }
+}
+
+function stopNativeVoicePlayback() {
+  const playback = nativeVoicePlayback
+  nativeVoicePlayback = null
+
+  if (playback?.process && !playback.process.killed) {
+    try {
+      playback.process.kill('SIGTERM')
+    } catch {
+      // Process may already have exited.
+    }
+  }
+
+  return Boolean(playback)
+}
+
+function nativeVoicePlayerCommand(filePath) {
+  if (process.env.HERMES_DESKTOP_NATIVE_AUDIO_PLAYER) {
+    return { command: process.env.HERMES_DESKTOP_NATIVE_AUDIO_PLAYER, args: [filePath] }
+  }
+
+  if (IS_MAC) return { command: 'afplay', args: [filePath] }
+  if (IS_WINDOWS) return null
+
+  return { command: 'mpv', args: ['--no-video', '--really-quiet', '--volume=95', filePath] }
+}
+
+function normalizeNativeVoicePayload(payload) {
+  if (typeof payload === 'string') {
+    return { dataUrl: payload }
+  }
+
+  if (payload && typeof payload === 'object') {
+    return {
+      audioBytes: payload.audioBytes ?? null,
+      dataUrl: String(payload.dataUrl || ''),
+      mimeType: payload.mimeType ? String(payload.mimeType) : null,
+      provider: payload.provider ? String(payload.provider) : null,
+      requestId: payload.requestId ? String(payload.requestId) : null,
+      source: payload.source ? String(payload.source) : null,
+      transport: payload.transport ? String(payload.transport) : null
+    }
+  }
+
+  return { dataUrl: '' }
+}
+
+function logNativeVoicePlaybackEvent(event, requestId, fields = {}) {
+  try {
+    rememberLog(`[voice] native playback event ${JSON.stringify({ event, request_id: requestId, ...fields })}`)
+  } catch {
+    rememberLog(`[voice] native playback event=${event} request_id=${requestId}`)
+  }
+}
+
+function playNativeVoiceDataUrl(payload) {
+  return new Promise((resolve, reject) => {
+    const nativePayload = normalizeNativeVoicePayload(payload)
+    const requestId = nativePayload.requestId || `native-${Date.now().toString(36)}`
+    const startedAt = Date.now()
+    const decoded = decodeNativeVoiceDataUrl(nativePayload.dataUrl)
+    const player = nativeVoicePlayerCommand('')
+
+    if (!player) {
+      reject(new Error('Native voice playback is not configured for this platform'))
+      return
+    }
+
+    stopNativeVoicePlayback()
+
+    const dirPath = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-voice-'))
+    const filePath = path.join(dirPath, `speech${decoded.extension}`)
+    fs.writeFileSync(filePath, decoded.buffer)
+
+    const commandSpec = nativeVoicePlayerCommand(filePath)
+    const child = spawn(commandSpec.command, commandSpec.args, {
+      detached: false,
+      stdio: 'ignore'
+    })
+    const playback = { dirPath, filePath, process: child }
+    nativeVoicePlayback = playback
+
+    logNativeVoicePlaybackEvent('started', requestId, {
+      audio_bytes: decoded.buffer.length,
+      claimed_audio_bytes: nativePayload.audioBytes,
+      command: commandSpec.command,
+      mime_type: nativePayload.mimeType || decoded.mimeType,
+      provider: nativePayload.provider,
+      source: nativePayload.source,
+      transport: nativePayload.transport
+    })
+
+    child.on('error', error => {
+      if (nativeVoicePlayback === playback) nativeVoicePlayback = null
+      cleanupNativeVoicePlayback(playback)
+      logNativeVoicePlaybackEvent('failed', requestId, {
+        duration_ms: Date.now() - startedAt,
+        error: error.message,
+        error_type: error.name || 'Error'
+      })
+      reject(error)
+    })
+
+    child.on('close', (code, signal) => {
+      if (nativeVoicePlayback === playback) nativeVoicePlayback = null
+      cleanupNativeVoicePlayback(playback)
+      const durationMs = Date.now() - startedAt
+      const ok = code === 0 || signal === 'SIGTERM'
+      logNativeVoicePlaybackEvent('closed', requestId, { code: code ?? null, duration_ms: durationMs, ok, signal: signal ?? null })
+      resolve({ ok, code, signal, durationMs })
+    })
+  })
 }
 
 function openExternalUrl(rawUrl) {
@@ -5234,6 +5405,10 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   const data = await fs.promises.readFile(resolvedPath)
   return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
 })
+
+ipcMain.handle('hermes:voice:native-play', async (_event, dataUrl) => playNativeVoiceDataUrl(dataUrl))
+
+ipcMain.handle('hermes:voice:native-stop', async () => ({ ok: true, stopped: stopNativeVoicePlayback() }))
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {

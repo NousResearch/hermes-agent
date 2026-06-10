@@ -1,5 +1,4 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
@@ -9,32 +8,6 @@ import { stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback } from '@/store/voice-playback'
 
 import type { VoiceActivityState } from './types'
-
-type BrowserAudioContext = typeof AudioContext
-
-interface ElementAnalyser {
-  analyser: AnalyserNode
-}
-
-const elementAnalysers = new WeakMap<HTMLAudioElement, ElementAnalyser>()
-let playbackAudioContext: AudioContext | null = null
-
-function getPlaybackAudioContext(): AudioContext | null {
-  if (playbackAudioContext && playbackAudioContext.state !== 'closed') {
-    return playbackAudioContext
-  }
-
-  const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
-  const AudioContextCtor = window.AudioContext || audioWindow.webkitAudioContext
-
-  if (!AudioContextCtor) {
-    return null
-  }
-
-  playbackAudioContext = new AudioContextCtor()
-
-  return playbackAudioContext
-}
 
 function formatElapsed(seconds: number) {
   const safeSeconds = Math.max(0, Math.floor(seconds))
@@ -68,99 +41,8 @@ function VoiceLevelBars({ level, active }: { active: boolean; level: number }) {
   )
 }
 
-function getElementAnalyser(audioElement: HTMLAudioElement): ElementAnalyser | null {
-  let entry = elementAnalysers.get(audioElement)
-
-  if (!entry) {
-    const context = getPlaybackAudioContext()
-
-    if (!context) {
-      return null
-    }
-
-    const source = context.createMediaElementSource(audioElement)
-    const analyser = context.createAnalyser()
-
-    analyser.fftSize = 512
-    analyser.smoothingTimeConstant = 0.65
-    source.connect(analyser)
-    analyser.connect(context.destination)
-    entry = { analyser }
-    elementAnalysers.set(audioElement, entry)
-  }
-
-  void playbackAudioContext?.resume()
-
-  return entry
-}
-
-const WAVE_W = 88
-const WAVE_H = 16
-const BAR_W = 2
-const BAR_GAP = 5
-const STEP = BAR_W + BAR_GAP
-const BARS = Math.floor((WAVE_W + BAR_GAP) / STEP)
-const X0 = Math.round((WAVE_W - (BARS * STEP - BAR_GAP)) / 2)
-
-function PlaybackWaveform({ audioElement }: { audioElement: HTMLAudioElement | null }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-
-    if (!canvas || !audioElement) {
-      return
-    }
-
-    const entry = getElementAnalyser(audioElement)
-    const ctx = canvas.getContext('2d')
-
-    if (!entry || !ctx) {
-      return
-    }
-
-    const dpr = Math.max(1, window.devicePixelRatio || 1)
-    const { analyser } = entry
-    const buf = new Uint8Array(analyser.frequencyBinCount)
-    const hi = Math.floor(buf.length * 0.9)
-
-    canvas.width = Math.round(WAVE_W * dpr)
-    canvas.height = Math.round(WAVE_H * dpr)
-    canvas.style.width = `${WAVE_W}px`
-    canvas.style.height = `${WAVE_H}px`
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.imageSmoothingEnabled = false
-    ctx.fillStyle = getComputedStyle(canvas).color
-
-    let raf = 0
-
-    const tick = () => {
-      analyser.getByteFrequencyData(buf)
-      ctx.clearRect(0, 0, WAVE_W, WAVE_H)
-
-      for (let i = 0; i < BARS; i++) {
-        const a = Math.floor((i / BARS) * hi)
-        const b = Math.floor(((i + 1) / BARS) * hi)
-        let peak = 0
-
-        for (let j = a; j < b; j++) {
-          peak = Math.max(peak, buf[j] ?? 0)
-        }
-
-        const amp = Math.sqrt(peak / 255)
-        const bh = Math.max(3, Math.round((0.18 + amp * 0.82) * WAVE_H))
-        ctx.fillRect(X0 + i * STEP, Math.round((WAVE_H - bh) / 2), BAR_W, bh)
-      }
-
-      raf = requestAnimationFrame(tick)
-    }
-
-    tick()
-
-    return () => cancelAnimationFrame(raf)
-  }, [audioElement])
-
-  return <canvas aria-hidden="true" className="block h-4 w-[88px]" ref={canvasRef} />
+function PlaybackActivityBars() {
+  return <VoiceLevelBars active level={0.55} />
 }
 
 export function VoiceActivity({ state }: { state: VoiceActivityState }) {
@@ -234,7 +116,7 @@ export function VoicePlaybackActivity() {
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate font-medium text-foreground/85">{title}</span>
-        {!preparing && <PlaybackWaveform audioElement={playback.audioElement} />}
+        {!preparing && <PlaybackActivityBars />}
       </div>
 
       <Button

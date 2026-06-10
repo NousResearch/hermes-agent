@@ -219,6 +219,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "fish-audio": 1200,   # matches the migi_fish_* command providers' cap
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -365,6 +366,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "fish-audio",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1529,6 +1531,50 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
+
+def _generate_fish_audio(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using Fish Audio with the configured reference voice."""
+    import json
+    import urllib.request
+    import urllib.error
+    from pathlib import Path as _Path
+
+    api_key = get_env_value("FISH_AUDIO_API_KEY")
+    ref_id = get_env_value("FISH_AUDIO_REFERENCE_ID")
+    model = get_env_value("FISH_AUDIO_MODEL", "s2-pro")
+
+    if not api_key or not ref_id:
+        raise RuntimeError("FISH_AUDIO_API_KEY and FISH_AUDIO_REFERENCE_ID must be set")
+
+    payload = {
+        "text": text,
+        "reference_id": ref_id,
+        "format": "mp3"
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.fish.audio/v1/tts",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            # Fish Audio selects the TTS model via this header, not the body.
+            "model": model
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            audio_bytes = resp.read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:400]
+        raise RuntimeError(f"Fish Audio HTTP {e.code}: {body}")
+
+    _Path(output_path).write_bytes(audio_bytes)
+    return output_path
+
 def _check_neutts_available() -> bool:
     """Check if the neutts engine is importable (installed locally)."""
     try:
@@ -2005,6 +2051,10 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "fish-audio":
+            logger.info("Generating speech with Fish Audio (custom Migi voice)...")
+            _generate_fish_audio(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():

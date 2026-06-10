@@ -633,6 +633,12 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
+class RealtimeClientSecretRequest(BaseModel):
+    model: Optional[str] = None
+    instructions: Optional[str] = None
+    voice: Optional[str] = None
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -664,11 +670,54 @@ _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "video/webm": ".webm",
 }
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
+_REALTIME_CLIENT_SECRET_URL = "https://api.openai.com/v1/realtime/client_secrets"
+_DEFAULT_REALTIME_MODEL = "gpt-realtime-2"
+_DEFAULT_REALTIME_VOICE = "alloy"
+_DEFAULT_REALTIME_INSTRUCTIONS = (
+    "You are Hermes/Migi in a live voice session. Be concise, useful, and direct. "
+    "Keep replies short unless the user asks for depth. Do not claim tool access from "
+    "this realtime voice path; route tool-heavy work back to the main Hermes chat."
+)
 
 
 def _audio_extension_for_mime(mime_type: str) -> str:
     normalized = (mime_type or "").split(";", 1)[0].strip().lower()
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
+
+
+def _openai_api_key_from_current_env() -> str:
+    """Return the current OpenAI key, preferring ~/.hermes/.env over stale process env.
+
+    Desktop can keep a backend process alive across key rotations. Mirroring the
+    Realtime2 TTS fix here prevents live voice from inheriting a rejected key
+    until the user restarts the whole app. Voice installs may intentionally keep
+    a separate OpenAI key under VOICE_TOOLS_OPENAI_KEY, so use that as the
+    Realtime fallback before stale inherited process env.
+    """
+    env = load_env()
+    return (
+        env.get("OPENAI_API_KEY")
+        or env.get("VOICE_TOOLS_OPENAI_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("VOICE_TOOLS_OPENAI_KEY")
+        or ""
+    ).strip()
+
+
+def _extract_realtime_client_secret(payload: Dict[str, Any]) -> str:
+    value = payload.get("value")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+
+    nested = payload.get("client_secret")
+    if isinstance(nested, dict):
+        value = nested.get("value")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if isinstance(nested, str) and nested.strip():
+        return nested.strip()
+
+    return ""
 
 
 class ModelAssignment(BaseModel):
@@ -1529,6 +1578,111 @@ async def check_hermes_update(force: bool = False):
     return payload
 
 
+@app.post("/api/audio/realtime/client-secret")
+async def create_realtime_client_secret(payload: RealtimeClientSecretRequest):
+    """Mint an ephemeral OpenAI Realtime client secret for Desktop WebRTC.
+
+    The long-lived OPENAI_API_KEY stays server-side. The renderer receives only
+    a short-lived client secret that can bootstrap a direct browser WebRTC
+    session with OpenAI's Realtime API.
+    """
+    api_key = _openai_api_key_from_current_env()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OPENAI_API_KEY or VOICE_TOOLS_OPENAI_KEY is not configured")
+
+    cfg = load_config() or {}
+    voice_cfg = cfg.get("voice", {}) if isinstance(cfg.get("voice"), dict) else {}
+    realtime_cfg = voice_cfg.get("realtime", {}) if isinstance(voice_cfg.get("realtime"), dict) else {}
+
+    model = (
+        (payload.model or "").strip()
+        or str(realtime_cfg.get("model") or "").strip()
+        or _DEFAULT_REALTIME_MODEL
+    )
+    voice = (
+        (payload.voice or "").strip()
+        or str(realtime_cfg.get("voice") or "").strip()
+        or _DEFAULT_REALTIME_VOICE
+    )
+    instructions = (
+        (payload.instructions or "").strip()
+        or str(realtime_cfg.get("instructions") or "").strip()
+        or _DEFAULT_REALTIME_INSTRUCTIONS
+    )
+
+    # VAD tuning (configurable via voice.realtime.turn_detection.*)
+    td = realtime_cfg.get("turn_detection", {}) if isinstance(realtime_cfg.get("turn_detection"), dict) else {}
+    vad = {
+        "type": "server_vad",
+        "create_response": True,
+        "interrupt_response": True,
+        "threshold": float(td.get("threshold", 0.45)),
+        "prefix_padding_ms": int(td.get("prefix_padding_ms", 250)),
+        "silence_duration_ms": int(td.get("silence_duration_ms", 450)),
+    }
+
+    session_payload: Dict[str, Any] = {
+        "session": {
+            "type": "realtime",
+            "model": model,
+            "instructions": instructions,
+            "audio": {
+                "input": {
+                    "turn_detection": vad
+                },
+                "output": {
+                    "voice": voice
+                },
+            },
+        }
+    }
+
+    request = urllib.request.Request(
+        _REALTIME_CLIENT_SECRET_URL,
+        data=json.dumps(session_payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        loop = asyncio.get_running_loop()
+
+        def _fetch() -> Dict[str, Any]:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        result = await loop.run_in_executor(None, _fetch)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        _log.warning("OpenAI Realtime client-secret request failed: %s", detail)
+        raise HTTPException(status_code=502, detail="Could not create Realtime client secret")
+    except Exception as exc:
+        _log.warning("OpenAI Realtime client-secret request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Could not create Realtime client secret")
+
+    client_secret = _extract_realtime_client_secret(result)
+    if not client_secret:
+        raise HTTPException(status_code=502, detail="Realtime client secret missing from OpenAI response")
+
+    expires_at = result.get("expires_at")
+    nested_secret = result.get("client_secret")
+    if expires_at is None and isinstance(nested_secret, dict):
+        expires_at = nested_secret.get("expires_at")
+
+    return {
+        "ok": True,
+        "client_secret": client_secret,
+        "expires_at": expires_at,
+        "model": model,
+        "voice": voice,
+        "session": result.get("session"),
+    }
+
+
 @app.post("/api/audio/transcribe")
 async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     data_url = (payload.data_url or "").strip()
@@ -1605,6 +1759,213 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
 
 class TTSSpeakRequest(BaseModel):
     text: str
+    source: Optional[str] = None
+    transport: Optional[str] = None
+    request_id: Optional[str] = None
+
+
+def _voice_output_config() -> Dict[str, Any]:
+    cfg = load_config() or {}
+    voice_cfg = cfg.get("voice", {}) if isinstance(cfg.get("voice"), dict) else {}
+    livekit_cfg = voice_cfg.get("livekit", {}) if isinstance(voice_cfg.get("livekit"), dict) else {}
+    transport = str(voice_cfg.get("output_transport") or livekit_cfg.get("output_transport") or "").strip().lower()
+    if not transport and livekit_cfg.get("enabled") is True:
+        transport = "livekit"
+    return {
+        "transport": transport,
+        "livekit": livekit_cfg,
+    }
+
+
+def _boolish(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _voice_request_id(raw: Optional[str] = None) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw or "").strip())[:80]
+    return candidate or f"voice-{int(time.time() * 1000):x}-{secrets.token_hex(3)}"
+
+
+def _ms_since(start: float) -> int:
+    return int(round((time.perf_counter() - start) * 1000))
+
+
+def _data_url_payload_bytes(data_url: Any) -> Optional[int]:
+    if not isinstance(data_url, str):
+        return None
+    try:
+        marker = ";base64,"
+        if marker not in data_url:
+            return len(data_url.encode("utf-8"))
+        return len(base64.b64decode(data_url.split(marker, 1)[1], validate=False))
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _voice_log(event: str, request_id: str, **fields: Any) -> None:
+    safe_fields: Dict[str, Any] = {}
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            safe_fields[key] = value
+        elif isinstance(value, (list, tuple)):
+            safe_fields[key] = [item for item in value if isinstance(item, (str, int, float, bool, type(None)))]
+        elif isinstance(value, dict):
+            safe_fields[key] = {
+                str(k): v for k, v in value.items()
+                if isinstance(v, (str, int, float, bool, type(None)))
+            }
+        else:
+            safe_fields[key] = str(value)
+    _log.info("voice_audio_event %s", json.dumps({"event": event, "request_id": request_id, **safe_fields}, sort_keys=True))
+
+
+async def _try_livekit_voice_output(text: str, payload: TTSSpeakRequest, request_id: str) -> Optional[Dict[str, Any]]:
+    requested_transport = (payload.transport or "").strip().lower()
+    cfg = _voice_output_config()
+    livekit_cfg = cfg.get("livekit", {}) if isinstance(cfg.get("livekit"), dict) else {}
+    configured_transport = str(cfg.get("transport") or "").strip().lower()
+    text_chars = len(text)
+
+    if payload.source != "voice-conversation" and requested_transport != "livekit":
+        _voice_log(
+            "livekit_route_skipped",
+            request_id,
+            reason="source_not_voice",
+            source=payload.source or "",
+            requested_transport=requested_transport,
+            configured_transport=configured_transport,
+        )
+        return None
+    if requested_transport != "livekit" and configured_transport != "livekit":
+        _voice_log(
+            "livekit_route_skipped",
+            request_id,
+            reason="transport_not_livekit",
+            requested_transport=requested_transport,
+            configured_transport=configured_transport,
+        )
+        return None
+
+    sidecar_url = str(livekit_cfg.get("sidecar_url") or "http://127.0.0.1:9191/speak").strip()
+    if not sidecar_url:
+        _voice_log("livekit_route_skipped", request_id, reason="missing_sidecar_url")
+        return None
+
+    sidecar_payload = {
+        "text": text,
+        "room": str(livekit_cfg.get("room") or "migi-pilot"),
+        "identity": str(livekit_cfg.get("identity") or "migi-desktop"),
+        "request_id": request_id,
+    }
+    try:
+        timeout = float(livekit_cfg.get("timeout_seconds") or 35)
+    except (TypeError, ValueError):
+        timeout = 35.0
+    sidecar_start = time.perf_counter()
+    parsed_sidecar = urllib.parse.urlparse(sidecar_url)
+
+    _voice_log(
+        "livekit_sidecar_request",
+        request_id,
+        sidecar_host=parsed_sidecar.netloc or parsed_sidecar.path,
+        room=sidecar_payload["room"],
+        identity=sidecar_payload["identity"],
+        timeout_seconds=timeout,
+        text_chars=text_chars,
+        playback=str(livekit_cfg.get("playback") or "both"),
+        required=_boolish(livekit_cfg.get("required"), False),
+    )
+
+    request = urllib.request.Request(
+        sidecar_url,
+        data=json.dumps(sidecar_payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+
+    try:
+        loop = asyncio.get_running_loop()
+
+        def _fetch() -> Dict[str, Any]:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read().decode("utf-8")
+                return json.loads(body)
+
+        result = await loop.run_in_executor(None, _fetch)
+        if not isinstance(result, dict):
+            raise ValueError(f"sidecar returned non-object JSON ({type(result).__name__})")
+    except Exception as exc:
+        elapsed_ms = _ms_since(sidecar_start)
+        _voice_log(
+            "livekit_sidecar_failed",
+            request_id,
+            duration_ms=elapsed_ms,
+            error_type=type(exc).__name__,
+            error=str(exc),
+            required=_boolish(livekit_cfg.get("required"), False),
+        )
+        if _boolish(livekit_cfg.get("required"), False):
+            raise HTTPException(status_code=502, detail=f"LiveKit voice sidecar failed: {exc}")
+        _log.warning("LiveKit voice sidecar unavailable; falling back to normal TTS: %s", exc)
+        return None
+
+    sidecar_ms = _ms_since(sidecar_start)
+    data_url = result.get("data_url")
+    audio_bytes = _data_url_payload_bytes(data_url)
+    raw_timings = result.get("timings_ms")
+    sidecar_timings: Dict[str, Any] = raw_timings if isinstance(raw_timings, dict) else {}
+    raw_fish = result.get("fish")
+    fish: Dict[str, Any] = raw_fish if isinstance(raw_fish, dict) else {}
+    raw_livekit = result.get("livekit")
+    livekit: Dict[str, Any] = raw_livekit if isinstance(raw_livekit, dict) else {}
+
+    _voice_log(
+        "livekit_sidecar_response",
+        request_id,
+        duration_ms=sidecar_ms,
+        provider=result.get("provider") or "livekit-fish-sidecar",
+        mime_type=result.get("mime_type") or "audio/mpeg",
+        data_url_chars=len(data_url) if isinstance(data_url, str) else 0,
+        audio_bytes=audio_bytes,
+        fish_bytes=fish.get("bytes"),
+        fish_chunks=fish.get("chunks"),
+        fish_format=fish.get("format"),
+        livekit_frames=livekit.get("frames"),
+        livekit_audio_ms=livekit.get("audio_duration_ms"),
+        livekit_remote_participants=livekit.get("remote_participants"),
+        sidecar_timings_ms=sidecar_timings,
+    )
+
+    if not data_url:
+        if _boolish(livekit_cfg.get("required"), False):
+            raise HTTPException(status_code=502, detail="LiveKit voice sidecar did not return audio")
+        _log.warning("LiveKit voice sidecar returned no audio; falling back to normal TTS")
+        return None
+
+    return {
+        "ok": True,
+        "data_url": data_url,
+        "mime_type": result.get("mime_type") or "audio/mpeg",
+        "provider": result.get("provider") or "livekit-fish-sidecar",
+        "transport": "livekit",
+        "playback": str(livekit_cfg.get("playback") or "both"),
+        "request_id": result.get("request_id") or request_id,
+        "audio_bytes": audio_bytes,
+        "timings_ms": {
+            # The sidecar reports its own internal "sidecar_total"; keep the
+            # HTTP round-trip as measured from this process under a distinct key.
+            "sidecar_roundtrip": sidecar_ms,
+            **sidecar_timings,
+        },
+        "livekit": livekit,
+        "fish": fish,
+    }
 
 
 def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
@@ -1673,24 +2034,80 @@ async def speak_text(payload: TTSSpeakRequest):
     existing TTS provider chain (Edge / OpenAI / ElevenLabs / etc.)
     configured in ``~/.hermes/config.yaml`` under ``tts.``.
     """
+    request_id = _voice_request_id(payload.request_id)
+    total_start = time.perf_counter()
     text = (payload.text or "").strip()
     if not text:
+        _voice_log("audio_speak_rejected", request_id, reason="empty_text")
         raise HTTPException(status_code=400, detail="Text is required")
 
+    _voice_log(
+        "audio_speak_start",
+        request_id,
+        source=payload.source or "",
+        requested_transport=(payload.transport or "").strip().lower(),
+        text_chars=len(text),
+    )
+
+    try:
+        livekit_audio = await _try_livekit_voice_output(text, payload, request_id)
+        if livekit_audio:
+            livekit_audio.setdefault("request_id", request_id)
+            raw_timings = livekit_audio.get("timings_ms")
+            timings: Dict[str, Any] = raw_timings if isinstance(raw_timings, dict) else {}
+            livekit_audio["timings_ms"] = {**timings, "api_total": _ms_since(total_start)}
+            _voice_log(
+                "audio_speak_done",
+                request_id,
+                transport="livekit",
+                playback=livekit_audio.get("playback"),
+                provider=livekit_audio.get("provider"),
+                mime_type=livekit_audio.get("mime_type"),
+                audio_bytes=livekit_audio.get("audio_bytes"),
+                total_ms=livekit_audio["timings_ms"].get("api_total"),
+            )
+            return livekit_audio
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _voice_log(
+            "livekit_route_error",
+            request_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        _log.exception("LiveKit voice route errored; falling back to local TTS")
+
+    local_start = time.perf_counter()
+    _voice_log("local_tts_start", request_id, text_chars=len(text))
     try:
         from tools.tts_tool import text_to_speech_tool
         loop = asyncio.get_running_loop()
         result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
     except Exception as exc:
+        _voice_log(
+            "local_tts_failed",
+            request_id,
+            duration_ms=_ms_since(local_start),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         _log.exception("Desktop voice TTS failed")
         raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}")
 
     try:
         result = json.loads(result_json) if isinstance(result_json, str) else result_json
     except Exception:
+        _voice_log("local_tts_failed", request_id, duration_ms=_ms_since(local_start), error="Invalid TTS response")
         raise HTTPException(status_code=500, detail="Invalid TTS response")
 
     if not result.get("success"):
+        _voice_log(
+            "local_tts_failed",
+            request_id,
+            duration_ms=_ms_since(local_start),
+            error=str(result.get("error") or "Speech synthesis failed"),
+        )
         raise HTTPException(
             status_code=400,
             detail=result.get("error") or "Speech synthesis failed",
@@ -1698,6 +2115,7 @@ async def speak_text(payload: TTSSpeakRequest):
 
     file_path = result.get("file_path")
     if not file_path or not os.path.isfile(file_path):
+        _voice_log("local_tts_failed", request_id, duration_ms=_ms_since(local_start), error="Audio file missing")
         raise HTTPException(status_code=500, detail="Audio file missing")
 
     ext = os.path.splitext(file_path)[1].lower()
@@ -1713,6 +2131,7 @@ async def speak_text(payload: TTSSpeakRequest):
         with open(file_path, "rb") as fh:
             audio_bytes = fh.read()
     except OSError as exc:
+        _voice_log("local_tts_failed", request_id, duration_ms=_ms_since(local_start), error=str(exc))
         raise HTTPException(status_code=500, detail=f"Could not read audio: {exc}")
     finally:
         try:
@@ -1721,11 +2140,30 @@ async def speak_text(payload: TTSSpeakRequest):
             pass
 
     encoded = base64.b64encode(audio_bytes).decode("ascii")
+    timings_ms = {
+        "local_tts_total": _ms_since(local_start),
+        "api_total": _ms_since(total_start),
+    }
+    _voice_log(
+        "audio_speak_done",
+        request_id,
+        transport="local",
+        playback="local",
+        provider=result.get("provider"),
+        mime_type=mime_type,
+        audio_bytes=len(audio_bytes),
+        total_ms=timings_ms["api_total"],
+    )
     return {
         "ok": True,
         "data_url": f"data:{mime_type};base64,{encoded}",
         "mime_type": mime_type,
         "provider": result.get("provider"),
+        "transport": "local",
+        "playback": "local",
+        "request_id": request_id,
+        "audio_bytes": len(audio_bytes),
+        "timings_ms": timings_ms,
     }
 
 

@@ -1690,9 +1690,20 @@ def get_model_context_length(
             # 2b. Ollama native /api/show — any URL might be an Ollama server
             # (local, cloud, or custom hosting).  Non-Ollama servers return
             # 404/405 quickly.  Fall through on failure.
-            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            # Local endpoints resolve num_ctx FIRST: local users control
+            # num_ctx themselves, and it is the runtime context Ollama
+            # actually allocates KV cache for — the GGUF training max that
+            # _query_ollama_api_show prefers can be larger, which would let
+            # conversations grow past the served window and silently
+            # truncate.  Hosted servers keep the GGUF-first order because
+            # their users can't set num_ctx.
+            if is_local_endpoint(base_url):
+                ctx = query_ollama_num_ctx(model, base_url, api_key=api_key)
+            else:
+                ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
             if ctx is not None:
-                save_context_length(model, base_url, ctx)
+                if provider != "lmstudio":
+                    save_context_length(model, base_url, ctx)
                 return ctx
             # 3. Try querying local server directly
             if is_local_endpoint(base_url):
@@ -1782,10 +1793,19 @@ def get_model_context_length(
     # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
     # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
     # once per hour.
+    # Same local-vs-hosted split as step 2b: local users control num_ctx
+    # themselves, so resolve the Modelfile num_ctx FIRST (the runtime
+    # KV-cache allocation) instead of the GGUF training max, which can
+    # over-report the window and silently truncate.  Hosted servers keep
+    # the GGUF-first order — their users can't set num_ctx.
     if base_url:
-        ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+        if is_local_endpoint(base_url):
+            ctx = query_ollama_num_ctx(model, base_url, api_key=api_key)
+        else:
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
         if ctx is not None:
-            save_context_length(model, base_url, ctx)
+            if provider != "lmstudio":
+                save_context_length(model, base_url, ctx)
             return ctx
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context

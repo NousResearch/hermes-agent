@@ -511,6 +511,131 @@ class TestQueryLocalContextLengthNetworkError:
 
 
 # ---------------------------------------------------------------------------
+# get_model_context_length — local vs hosted Ollama /api/show ordering
+# ---------------------------------------------------------------------------
+
+class TestOllamaApiShowLocalVsHostedOrdering:
+    """The Ollama /api/show probes inside get_model_context_length must be
+    num_ctx-FIRST for LOCAL endpoints and GGUF-first for HOSTED endpoints.
+
+    Local users control the Modelfile num_ctx — it is the runtime context
+    Ollama actually allocates KV cache for, so the GGUF training max
+    (model_info.*.context_length) over-reports the window and lets Hermes
+    grow conversations past the served limit (silent truncation).  Hosted
+    users can't set num_ctx, so there the GGUF training max is authoritative.
+    """
+
+    # /api/show body where the Modelfile num_ctx (65536) is smaller than the
+    # GGUF training max (131072) — the shape that triggered the original
+    # Gemma4-26B served-at-64k over-run.
+    SHOW_BODY = {
+        "model_info": {"gemma4.context_length": 131072},
+        "parameters": "num_ctx                        65536\ntemperature                    0.7\n",
+    }
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def _make_show_client(self, body):
+        """Mock httpx.Client whose POST /api/show returns *body*."""
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(200, body)
+        client_mock.get.return_value = self._make_resp(404, {})
+        return client_mock
+
+    def test_local_endpoint_num_ctx_wins_over_gguf_max(self):
+        """Step 2b: local Ollama with a Modelfile num_ctx resolves to num_ctx
+        (the served window), not the GGUF training max.
+
+        Uses a non-Gemma slug: gemma4:26b/gemma4-26b local is intercepted by
+        the explicit 64k pin BEFORE step 2b, so a gemma name would never reach
+        the generalized num_ctx-first path this test covers."""
+        from agent.model_metadata import get_model_context_length
+
+        client_mock = self._make_show_client(self.SHOW_BODY)
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata.save_context_length") as mock_save, \
+             patch("httpx.Client", return_value=client_mock):
+            result = get_model_context_length(
+                "qwen3-32b-ctx64k", "http://localhost:11434/v1"
+            )
+
+        assert result == 65536, (
+            f"Expected num_ctx (65536) to win over the GGUF max (131072) on a "
+            f"local endpoint, got {result}. Using the training max lets "
+            "conversations grow past the served window and silently truncate."
+        )
+        mock_save.assert_called_once_with(
+            "qwen3-32b-ctx64k", "http://localhost:11434/v1", 65536
+        )
+
+    def test_hosted_endpoint_keeps_gguf_first(self):
+        """Step 2b: hosted (non-local) Ollama keeps GGUF-first — the user
+        can't set num_ctx on a server they don't control."""
+        from agent.model_metadata import get_model_context_length
+
+        client_mock = self._make_show_client(self.SHOW_BODY)
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.save_context_length") as mock_save, \
+             patch("httpx.Client", return_value=client_mock):
+            result = get_model_context_length(
+                "gemma4-26b-ctx64k", "https://my-ollama.example.com"
+            )
+
+        assert result == 131072, (
+            f"Expected the GGUF max (131072) on a hosted endpoint, got {result}."
+        )
+        mock_save.assert_called_once_with(
+            "gemma4-26b-ctx64k", "https://my-ollama.example.com", 131072
+        )
+
+    def test_step5e_local_url_prefers_num_ctx(self):
+        """Step 5e (any-provider /api/show probe): the same num_ctx-first
+        ordering applies when a known-provider URL points at a local machine
+        (step 2 is skipped entirely for known provider hosts)."""
+        from agent.model_metadata import get_model_context_length
+
+        client_mock = self._make_show_client(self.SHOW_BODY)
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._is_known_provider_base_url", return_value=True), \
+             patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata.save_context_length"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = get_model_context_length(
+                "some-local-model", "http://192.168.1.50:11434/v1"
+            )
+
+        assert result == 65536, (
+            f"Expected num_ctx (65536) at step 5e for a local URL, got {result}."
+        )
+
+    def test_step5e_hosted_ollama_cloud_keeps_gguf_first(self):
+        """Step 5e: Ollama Cloud (ollama.com — a known provider host, so step
+        2 is skipped) keeps the GGUF-first order."""
+        from agent.model_metadata import get_model_context_length
+
+        client_mock = self._make_show_client(self.SHOW_BODY)
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = get_model_context_length(
+                "gemma4:31b-cloud", "https://ollama.com"
+            )
+
+        assert result == 131072, (
+            f"Expected the GGUF max (131072) for Ollama Cloud, got {result}."
+        )
+
+
+# ---------------------------------------------------------------------------
 # get_model_context_length — integration-style tests with mocked helpers
 # ---------------------------------------------------------------------------
 

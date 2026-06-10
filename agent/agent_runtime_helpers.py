@@ -606,7 +606,14 @@ def recover_with_credential_pool(
     pool = agent._credential_pool
     if pool is None:
         provider_source = getattr(agent, "_provider_source", None)
-        if provider_source == "hermes-auth-store":
+        if (
+            provider_source == "hermes-auth-store"
+            or provider_source == "pool"
+            or (isinstance(provider_source, str) and (
+                provider_source.startswith("manual:")
+                or provider_source.startswith("pool:")
+            ))
+        ):
             from agent.credential_pool import load_pool
             try:
                 loaded_pool = load_pool(agent.provider)

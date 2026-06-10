@@ -1118,6 +1118,15 @@ def get_model_context_length(
         if ctx:
             return ctx
     if effective_provider:
+        # MiniMax models are now inconsistent across registry snapshots (M3
+        # appears as 1,048,576 tokens in OpenRouter but older models.dev
+        # snapshots can return 512,000). Prefer OR metadata for MiniMax before
+        # falling back to models.dev.
+        if effective_provider in {"minimax", "minimax-cn"}:
+            ctx = _resolve_nous_context_length(model)
+            if ctx:
+                return ctx
+
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 
 class TestMinimaxContextLengths:
-    """Verify context length entries match official docs (204,800 for all models).
+    """Verify context length entries for MiniMax families.
 
     Source: https://platform.minimax.io/docs/api-reference/text-anthropic-api
     """
@@ -19,6 +19,13 @@ class TestMinimaxContextLengths:
         for model in ("MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"):
             ctx = get_model_context_length(model, "")
             assert ctx == 204_800, f"{model} expected 204800, got {ctx}"
+
+    def test_minimax_m3_resolves_to_one_million(self):
+        from agent.model_metadata import get_model_context_length
+        # MiniMax M3 and variants are 1,048,576 context in current OpenRouter metadata.
+        for model in ("MiniMax-M3", "minimax-m3", "minimax-m3-20260531"):
+            ctx = get_model_context_length(model, provider="minimax")
+            assert ctx == 1_048_576, f"{model} expected 1048576, got {ctx}"
 
 
 

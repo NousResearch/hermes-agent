@@ -157,6 +157,9 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
+
+    _normalize_provider_model_rows(rows)
+
     if pricing:
         _apply_pricing(rows)
     if capabilities:
@@ -190,17 +193,18 @@ def _apply_capabilities(rows: list[dict]) -> None:
         caps: dict[str, dict[str, bool]] = {}
 
         for model in row.get("models") or []:
+            model_id = _normalize_model_id(model)
             reasoning = True
             if get_model_capabilities is not None and slug:
                 try:
-                    meta = get_model_capabilities(slug, model)
+                    meta = get_model_capabilities(slug, model_id)
                     if meta is not None:
                         reasoning = bool(meta.supports_reasoning)
                 except Exception:
                     reasoning = True
 
-            caps[model] = {
-                "fast": bool(model_supports_fast_mode(model)),
+            caps[model_id] = {
+                "fast": bool(model_supports_fast_mode(model_id)),
                 "reasoning": reasoning,
             }
 
@@ -208,6 +212,24 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
+
+
+def _normalize_model_id(model: object) -> str:
+    from hermes_cli.model_normalize import normalize_model_entry
+
+    return normalize_model_entry(model)
+
+
+def _normalize_provider_model_rows(rows: list[dict]) -> None:
+    """Coerce each row's ``models`` list to plain id strings."""
+    for row in rows:
+        raw = row.get("models") or []
+        normalized: list[str] = []
+        for model in raw:
+            model_id = _normalize_model_id(model)
+            if model_id and model_id not in normalized:
+                normalized.append(model_id)
+        row["models"] = normalized
 
 
 def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
@@ -335,7 +357,8 @@ def _apply_pricing(rows: list[dict]) -> None:
 
         formatted: dict[str, dict] = {}
         for mid in models:
-            p = raw_pricing.get(mid)
+            model_id = _normalize_model_id(mid)
+            p = raw_pricing.get(model_id)
             if not p:
                 continue
             inp_raw = p.get("prompt", "")
@@ -346,7 +369,7 @@ def _apply_pricing(rows: list[dict]) -> None:
             cache = _format_price_per_mtok(cache_raw) if cache_raw else None
             # A model is "free" when both input and output cost nothing.
             is_free = inp == "free" and (out == "free" or out == "")
-            formatted[mid] = {
+            formatted[model_id] = {
                 "input": inp,
                 "output": out,
                 "cache": cache,

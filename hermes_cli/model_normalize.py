@@ -30,7 +30,24 @@ Inspired by Clawdbot's ``normalizeAnthropicModelId`` pattern.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
+
+
+def normalize_model_entry(model: Any) -> str:
+    """Return a stable model id string from config or picker entries.
+
+    ``providers:`` / ``custom_providers`` may store ``models`` as plain id
+    strings or as ``{id, name}`` dicts (common for Ollama endpoints). GUI
+    pickers and capability maps expect string ids.
+    """
+    if isinstance(model, str):
+        return model.strip()
+    if isinstance(model, dict):
+        for key in ("id", "name", "model"):
+            value = model.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return str(model).strip() if model else ""
 
 # ---------------------------------------------------------------------------
 # Vendor prefix mapping

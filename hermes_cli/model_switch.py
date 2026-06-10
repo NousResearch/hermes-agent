@@ -1678,22 +1678,29 @@ def list_authenticated_providers(
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
             # Build models list from both default_model and full models array
+            from hermes_cli.model_normalize import normalize_model_entry
+
             models_list = []
             if default_model:
-                models_list.append(default_model)
+                _dm = normalize_model_entry(default_model)
+                if _dm:
+                    models_list.append(_dm)
             # Also include the full models list from config.
             # Hermes writes ``models:`` as a dict keyed by model id
             # (see hermes_cli/main.py::_save_custom_provider); older
-            # configs or hand-edited files may still use a list.
+            # configs or hand-edited files may still use a list of ids or
+            # ``{id, name}`` dicts (e.g. Ollama endpoints).
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    model_id = normalize_model_entry(m)
+                    if model_id and model_id not in models_list:
+                        models_list.append(model_id)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    model_id = normalize_model_entry(m)
+                    if model_id and model_id not in models_list:
+                        models_list.append(model_id)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1832,19 +1839,23 @@ def list_authenticated_providers(
             # stores every configured model as a dict under ``models:``;
             # downstream readers (agent/models_dev.py, gateway/run.py,
             # run_agent.py, hermes_cli/config.py) already consume that dict.
-            default_model = (entry.get("model") or "").strip()
+            from hermes_cli.model_normalize import normalize_model_entry
+
+            default_model = normalize_model_entry(entry.get("model") or "")
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
             cfg_models = entry.get("models", {})
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    model_id = normalize_model_entry(m)
+                    if model_id and model_id not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(model_id)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    model_id = normalize_model_entry(m)
+                    if model_id and model_id not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(model_id)
 
         _section4_emitted_slugs: set = set()
         _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()

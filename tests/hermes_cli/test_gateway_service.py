@@ -523,6 +523,27 @@ class TestGeneratedSystemdUnits:
         assert "Environment=\"HERMES_HOME=" + str(hermes_home) + "\"" in unit
         assert "TimeoutStopSec=90" in unit
 
+    def test_user_unit_timeout_uses_read_raw_config_when_hermes_home_config_missing(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / "hermes-home-without-config"
+        hermes_home.mkdir()
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"agent": {"restart_drain_timeout": 120}},
+        )
+        monkeypatch.setattr(gateway_cli, "_build_wsl_interop_paths", lambda path_entries: [])
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "Environment=\"HERMES_HOME=" + str(hermes_home) + "\"" in unit
+        assert "TimeoutStopSec=150" in unit
+        assert self._expected_timeout_stop_sec() not in unit
+
     def test_systemd_current_comparison_ignores_environment_path_drift(self):
         installed = '[Service]\nEnvironment="PATH=/old/bin:/usr/bin"\nTimeoutStopSec=90\n'
         expected = '[Service]\nEnvironment="PATH=/new/bin:/usr/bin"\nTimeoutStopSec=90\n'

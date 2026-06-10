@@ -2800,24 +2800,24 @@ def _read_restart_drain_timeout_from_hermes_home(hermes_home: str | None) -> str
         import yaml
     except ImportError as exc:
         logger.debug(
-            "Unable to read restart drain timeout from %s: %s", config_path, exc
+            "Cannot read target Hermes config %s: PyYAML unavailable: %s",
+            config_path,
+            exc,
         )
         return None
 
     try:
-        with config_path.open(encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        config_text = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
     except OSError as exc:
-        logger.debug(
-            "Unable to read restart drain timeout from %s: %s", config_path, exc
-        )
+        logger.debug("Cannot read target Hermes config %s: %s", config_path, exc)
         return None
+
+    try:
+        cfg = yaml.safe_load(config_text) or {}
     except yaml.YAMLError as exc:
-        logger.debug(
-            "Unable to parse restart drain timeout from %s: %s", config_path, exc
-        )
+        logger.debug("Cannot parse target Hermes config %s: %s", config_path, exc)
         return None
     agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
     if not isinstance(agent_cfg, dict) or "restart_drain_timeout" not in agent_cfg:

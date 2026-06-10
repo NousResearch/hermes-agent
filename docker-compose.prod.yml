@@ -26,3 +26,11 @@ services:
       # Claude subscription; client bots are DeepSeek-direct and never touch
       # the proxy.
       - CLAUDE_PROXY_ALLOW_ANON=0
+      # Fleet broker endpoint. The prod containers run on a BRIDGE network, so
+      # the host's sshd is NOT at the container's 127.0.0.1 — it's at the
+      # docker host-gateway address, surfaced as host.docker.internal via the
+      # extra_hosts mapping below. (Under host networking this still resolves
+      # to a host address, so the mapping is correct in both modes.)
+      - HERMES_FLEET_HOST=host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

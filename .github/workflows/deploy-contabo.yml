@@ -448,19 +448,21 @@ jobs:
             VOL_FLEET="$VOL_SRC/fleet"
             install -d -m 0700 "$VOL_FLEET"
             cp "$KEYDIR/id_ed25519" "$VOL_FLEET/id_ed25519"; chmod 0600 "$VOL_FLEET/id_ed25519"
-            # Pin the host's REAL public host keys (all types) for 127.0.0.1,
-            # read straight from /etc/ssh/*.pub — deterministic, no keyscan race
-            # and no single-type mismatch under StrictHostKeyChecking=yes.
+            # Pin the host's REAL public host keys (all types), read straight
+            # from /etc/ssh/*.pub — deterministic, no keyscan race and no
+            # single-type mismatch under StrictHostKeyChecking=yes. Pin under
+            # BOTH names: host.docker.internal (what the bridge-networked prod
+            # container connects to, via the extra_hosts host-gateway mapping
+            # in docker-compose.prod.yml) and 127.0.0.1 (host-networking setups).
             : > "$VOL_FLEET/known_hosts"
             for hk in /etc/ssh/ssh_host_*_key.pub; do
               [ -f "$hk" ] || continue
-              printf '127.0.0.1 %s\n' "$(cut -d' ' -f1-2 "$hk")" >> "$VOL_FLEET/known_hosts"
+              keyline=$(cut -d' ' -f1-2 "$hk")
+              printf 'host.docker.internal %s\n' "$keyline" >> "$VOL_FLEET/known_hosts"
+              printf '127.0.0.1 %s\n' "$keyline" >> "$VOL_FLEET/known_hosts"
             done
             if [ ! -s "$VOL_FLEET/known_hosts" ]; then
-              ssh-keyscan -H 127.0.0.1 >> "$VOL_FLEET/known_hosts" 2>/dev/null
-            fi
-            if [ ! -s "$VOL_FLEET/known_hosts" ]; then
-              echo "fleet: WARN no host key found for 127.0.0.1 -- is sshd on :22?"
+              echo "fleet: WARN no host key found under /etc/ssh -- is sshd installed?"
             fi
             chmod 0644 "$VOL_FLEET/known_hosts"
             chown -R "$CUID:$CGID" "$VOL_FLEET"

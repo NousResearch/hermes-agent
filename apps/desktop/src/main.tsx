@@ -22,9 +22,6 @@ installClipboardShim()
 // scripts/dev-no-hmr.mjs for the surrounding workarounds.)
 if (import.meta.env.MODE !== 'production') {
   import('./app/chat/perf-probe')
-  // Dev-only sidebar stress harness — installs __hermesSidebarStress on window
-  // so the resize behaviour can be exercised with a populated sidebar.
-  import('./app/chat/sidebar/stress-probe')
 }
 
 createRoot(document.getElementById('root')!).render(

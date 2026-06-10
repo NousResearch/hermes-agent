@@ -217,7 +217,16 @@ export const ja = defineLocale({
       technicalDesc: '生のツール引数、結果、低レベルの詳細を含めます。',
       themeTitle: 'テーマ',
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
-      themeProfileNote: profile => `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`
+      themeProfileNote: profile => `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      installTitle: 'VS Code から導入',
+      installDesc: 'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'インストール',
+      installing: 'インストール中…',
+      installError: 'そのテーマをインストールできませんでした。',
+      installed: name => `「${name}」をインストールしました。`,
+      removeTheme: 'テーマを削除',
+      importedBadge: 'インポート済み'
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -716,6 +725,17 @@ export const ja = defineLocale({
     settings: '設定',
     changeTheme: 'テーマを変更...',
     changeColorMode: 'カラーモードを変更...',
+    installTheme: {
+      title: 'テーマをインストール...',
+      placeholder: 'VS Code Marketplace を検索...',
+      loading: 'Marketplace を検索中...',
+      error: 'Marketplace に接続できませんでした。',
+      empty: '一致するテーマがありません。',
+      install: 'インストール',
+      installing: 'インストール中...',
+      installed: 'インストール済み',
+      installs: count => `${count} 回インストール`
+    },
     settingsFields: '設定フィールド',
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
@@ -1166,7 +1186,7 @@ export const ja = defineLocale({
     archiveAllChecked: count => `表示中の ${count} 件のセッションが対象になります。`,
     archiveAllNone: 'アーカイブするセッションはありません。',
     allPinned: 'ここにあるものはすべてピン留めされています。チャットのピン留めを解除すると最近のものに表示されます。',
-    shiftClickHint: 'Shift クリックでピン留め · ドラッグで並べ替え',
+    shiftClickHint: 'チャットをここにドラッグ、または Shift クリックでピン留め',
     noWorkspace: 'ワークスペースなし',
     newSessionIn: label => `${label} で新しいセッション`,
     reorderWorkspace: label => `ワークスペース ${label} を並べ替え`,
@@ -1181,6 +1201,7 @@ export const ja = defineLocale({
       export: 'エクスポート',
       rename: '名前を変更',
       archive: 'アーカイブ',
+      newWindow: '新しいウィンドウ',
       copyIdFailed: 'セッション ID をコピーできませんでした',
       actionsFor: title => `${title} のアクション`,
       sessionActions: 'セッションアクション',
@@ -1567,6 +1588,8 @@ export const ja = defineLocale({
       branch: branch => `ブランチ ${branch}`,
       closeCommandCenter: 'コマンドセンターを閉じる',
       openCommandCenter: 'コマンドセンターを開く',
+      showTerminal: 'ターミナルを表示',
+      hideTerminal: 'ターミナルを非表示',
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
@@ -1622,8 +1645,7 @@ export const ja = defineLocale({
     tryAgain: '再試行',
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
-    terminalFocus: 'ターミナルビューにフォーカス',
-    terminalSplit: '分割ビューに戻る',
+    terminalHide: 'ターミナルを非表示',
     addToChat: 'チャットに追加'
   },
 
@@ -1729,7 +1751,8 @@ export const ja = defineLocale({
       restoreCheckpoint: 'チェックポイントを復元',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
-      sendEdited: '編集済みメッセージを送信'
+      sendEdited: '編集済みメッセージを送信',
+      attachingFile: '添付中…'
     },
     approval: {
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',

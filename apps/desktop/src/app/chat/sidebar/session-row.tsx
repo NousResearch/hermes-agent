@@ -10,6 +10,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds, sessionPinId } from '@/store/session'
+import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -94,6 +95,7 @@ export function SidebarSessionRow({
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
           className
         )}
+        data-session-id={session.id}
         data-working={isWorking ? 'true' : undefined}
         draggable
         onDragStart={event => {
@@ -130,11 +132,15 @@ export function SidebarSessionRow({
               return
             }
 
-            if (event.metaKey || event.ctrlKey) {
+            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
+            // window — the universal "open in a new window" gesture. Archive
+            // lives in the row's ⋯ and right-click menus. Falls through to a
+            // normal resume when standalone windows aren't available (web embed).
+            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              onArchive()
+              void openSessionInNewWindow(session.id)
 
               return
             }

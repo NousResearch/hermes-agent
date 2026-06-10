@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -9,7 +10,7 @@ import {
   writeSessionDrag
 } from '@/app/chat/composer/inline-refs'
 
-import { useSessionDropZone } from './use-session-drop-zone'
+import { sessionDropAnchor, useSessionDropZone } from './use-session-drop-zone'
 
 // jsdom has no DataTransfer; a plain object with the same surface is enough
 // for both the writer (setData/effectAllowed) and the zone (types/getData).
@@ -115,7 +116,8 @@ describe('useSessionDropZone', () => {
     expect(fireEvent.dragOver(zone, { dataTransfer: transfer })).toBe(false)
 
     fireEvent.drop(zone, { dataTransfer: transfer })
-    expect(onDropSession).toHaveBeenCalledWith(UNPINNED_ROW)
+    // The drop event rides along so handlers can compute the drop position.
+    expect(onDropSession).toHaveBeenCalledWith(UNPINNED_ROW, expect.objectContaining({ type: 'drop' }))
     expect(zone.dataset.active).toBe('false')
   })
 
@@ -129,7 +131,7 @@ describe('useSessionDropZone', () => {
     expect(zone.dataset.active).toBe('true')
 
     fireEvent.drop(zone, { dataTransfer: transfer })
-    expect(onDropSession).toHaveBeenCalledWith(PINNED_ROW)
+    expect(onDropSession).toHaveBeenCalledWith(PINNED_ROW, expect.objectContaining({ type: 'drop' }))
   })
 
   it('ignores drags whose pin-state it would not act on', () => {
@@ -192,5 +194,54 @@ describe('useSessionDropZone', () => {
 
     fireEvent.dragLeave(zone, { dataTransfer: accepted })
     expect(zone.dataset.active).toBe('false')
+  })
+})
+
+describe('sessionDropAnchor', () => {
+  // jsdom layout is all zeros; give the row a real box so the midpoint
+  // math has something to bisect.
+  function rowWithRect(sessionId: string, top: number, height: number) {
+    const row = document.createElement('div')
+    row.dataset.sessionId = sessionId
+    row.getBoundingClientRect = () =>
+      ({ bottom: top + height, height, left: 0, right: 240, top, width: 240 }) as DOMRect
+    document.body.appendChild(row)
+
+    return row
+  }
+
+  function dropEventAt(target: Element, clientY: number) {
+    return { clientY, target } as unknown as React.DragEvent
+  }
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('anchors before the row when the pointer is in its top half', () => {
+    const row = rowWithRect('s-anchor', 100, 26)
+
+    expect(sessionDropAnchor(dropEventAt(row, 105))).toEqual({ before: true, sessionId: 's-anchor' })
+  })
+
+  it('anchors after the row when the pointer is in its bottom half', () => {
+    const row = rowWithRect('s-anchor', 100, 26)
+
+    expect(sessionDropAnchor(dropEventAt(row, 120))).toEqual({ before: false, sessionId: 's-anchor' })
+  })
+
+  it('resolves through nested children to the enclosing row', () => {
+    const row = rowWithRect('s-nested', 50, 26)
+    const child = document.createElement('span')
+    row.appendChild(child)
+
+    expect(sessionDropAnchor(dropEventAt(child, 52))).toEqual({ before: true, sessionId: 's-nested' })
+  })
+
+  it('returns null for drops outside any session row (header / empty space)', () => {
+    const header = document.createElement('div')
+    document.body.appendChild(header)
+
+    expect(sessionDropAnchor(dropEventAt(header, 10))).toBeNull()
   })
 })

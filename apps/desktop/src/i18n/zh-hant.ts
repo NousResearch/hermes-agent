@@ -211,7 +211,16 @@ export const zhHant = defineLocale({
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
-      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      installTitle: '從 VS Code 安裝',
+      installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安裝',
+      installing: '安裝中…',
+      installError: '無法安裝該主題。',
+      installed: name => `已安裝「${name}」。`,
+      removeTheme: '移除主題',
+      importedBadge: '已匯入'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -699,6 +708,17 @@ export const zhHant = defineLocale({
     settings: '設定',
     changeTheme: '變更主題...',
     changeColorMode: '變更色彩模式...',
+    installTheme: {
+      title: '安裝主題...',
+      placeholder: '搜尋 VS Code Marketplace...',
+      loading: '正在搜尋 Marketplace...',
+      error: '無法連接到 Marketplace。',
+      empty: '沒有符合的主題。',
+      install: '安裝',
+      installing: '安裝中...',
+      installed: '已安裝',
+      installs: count => `${count} 次安裝`
+    },
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
@@ -1132,7 +1152,7 @@ export const zhHant = defineLocale({
     archiveAllChecked: count => `將封存 ${count} 個顯示中的工作階段。`,
     archiveAllNone: '沒有可封存的工作階段。',
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',
-    shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
+    shiftClickHint: '將聊天拖曳到此處，或 Shift + 點擊以釘選',
     noWorkspace: '無工作區',
     newSessionIn: label => `在 ${label} 中新建工作階段`,
     reorderWorkspace: label => `重新排序工作區 ${label}`,
@@ -1147,6 +1167,7 @@ export const zhHant = defineLocale({
       export: '匯出',
       rename: '重新命名',
       archive: '封存',
+      newWindow: '新視窗',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
@@ -1528,6 +1549,8 @@ export const zhHant = defineLocale({
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '關閉命令中心',
       openCommandCenter: '開啟命令中心',
+      showTerminal: '顯示終端機',
+      hideTerminal: '隱藏終端機',
       gateway: '閘道',
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
@@ -1583,8 +1606,7 @@ export const zhHant = defineLocale({
     tryAgain: '重試',
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
-    terminalFocus: '聚焦終端機檢視',
-    terminalSplit: '返回分割檢視',
+    terminalHide: '隱藏終端機',
     addToChat: '新增至聊天'
   },
 
@@ -1690,7 +1712,8 @@ export const zhHant = defineLocale({
       restoreCheckpoint: '還原檢查點',
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',
-      sendEdited: '傳送編輯後的訊息'
+      sendEdited: '傳送編輯後的訊息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 閘道未連線',

@@ -33,6 +33,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
@@ -52,10 +53,10 @@ export type {
   AnalyticsSkillEntry,
   AnalyticsSkillsSummary,
   AnalyticsTotals,
-  BackendUpdateCheckResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -165,6 +166,16 @@ export function bulkArchiveSessions(preserveIds: string[] = []): Promise<{ ok: b
   })
 }
 
+// Optional source scoping for session lists: `source` fetches one class's rows
+// (the cron slice, a single messaging platform), `excludeSources` drops classes
+// (recents exclude cron + messaging). The server applies the same filter to the
+// page AND its totals, so "load more" math always matches the rows a section
+// actually lists.
+export interface SessionSourceFilter {
+  source?: string
+  excludeSources?: string[]
+}
+
 // Unified, read-only session list aggregated across ALL profiles. Served by the
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged
@@ -174,12 +185,19 @@ export async function listAllProfileSessions(
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
-  profile: 'all' | (string & {}) = 'all'
+  profile: 'all' | (string & {}) = 'all',
+  filter: SessionSourceFilter = {}
 ): Promise<PaginatedSessions> {
+  const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
+
+  const excludeParam = filter.excludeSources?.length
+    ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
+    : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}`
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`
   })
 
   return {
@@ -497,6 +515,14 @@ export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
+}
+
+export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
+  const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
+  })
+
+  return runs ?? []
 }
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {

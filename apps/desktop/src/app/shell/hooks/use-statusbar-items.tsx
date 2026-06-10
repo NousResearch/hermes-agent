@@ -3,7 +3,9 @@ import type { ReactNode } from 'react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
+import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useI18n } from '@/i18n'
 import {
   Activity,
   AlertCircle,
@@ -13,20 +15,21 @@ import {
   Hash,
   Loader2,
   Sparkles,
+  Terminal,
   Zap,
   ZapFilled
 } from '@/lib/icons'
-import { useI18n } from '@/i18n'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, contextCapacityClassName, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setDesktopYoloMode } from '@/lib/yolo-session'
+import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $activeSessionId,
   $busy,
+  $connection,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -41,14 +44,23 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
-import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
+import {
+  $backendUpdateApply,
+  $backendUpdateStatus,
+  $desktopVersion,
+  $updateApply,
+  $updateStatus,
+  openUpdateOverlayFor
+} from '@/store/updates'
 import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
-import type { StatusbarItem } from '../statusbar-controls'
+import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
+  // Optional: callers without a chat-pane concept keep the terminal toggle visible.
+  chatOpen?: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
@@ -66,6 +78,7 @@ interface StatusbarItemsOptions {
 
 export function useStatusbarItems({
   agentsOpen,
+  chatOpen = true,
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
@@ -83,6 +96,7 @@ export function useStatusbarItems({
   const { t } = useI18n()
   const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
+  const terminalTakeover = useStore($terminalTakeover)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentFastMode = useStore($currentFastMode)
@@ -99,10 +113,14 @@ export function useStatusbarItems({
   const subagentsBySession = useStore($subagentsBySession)
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
+  const backendUpdateStatus = useStore($backendUpdateStatus)
+  const backendUpdateApply = useStore($backendUpdateApply)
   const desktopVersion = useStore($desktopVersion)
+  const connection = useStore($connection)
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+
   const contextCapacityClass = useMemo(
     () => contextCapacityClassName(currentUsage.context_percent),
     [currentUsage.context_percent]
@@ -111,18 +129,39 @@ export function useStatusbarItems({
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
   // path applies it once the backend session exists.
-  const toggleYolo = useCallback(async () => {
-    const next = !$yoloActive.get()
-    const sid = $activeSessionId.get()
+  //
+  // Shift+click flips the GLOBAL approvals.mode instead — a persistent,
+  // all-sessions/CLI/TUI/cron bypass that survives restarts.
+  const toggleYolo = useCallback(
+    async (modifiers?: StatusbarSelectModifiers) => {
+      const next = !$yoloActive.get()
 
-    setYoloActive(next)
+      setYoloActive(next)
 
-    try {
-      await setDesktopYoloMode(requestGateway, sid, next)
-    } catch {
-      setYoloActive(!next)
-    }
-  }, [requestGateway])
+      if (modifiers?.shiftKey) {
+        try {
+          await setGlobalYolo(requestGateway, next)
+        } catch {
+          setYoloActive(!next)
+        }
+
+        return
+      }
+
+      const sid = $activeSessionId.get()
+
+      if (!sid) {
+        return
+      }
+
+      try {
+        await setSessionYolo(requestGateway, sid, next)
+      } catch {
+        setYoloActive(!next)
+      }
+    },
+    [requestGateway]
+  )
 
   const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
 
@@ -179,20 +218,23 @@ export function useStatusbarItems({
       ? 'text-amber-600 hover:text-amber-600'
       : 'text-destructive hover:text-destructive'
 
-  const versionItem = useMemo<StatusbarItem>(() => {
+  const clientVersionItem = useMemo<StatusbarItem>(() => {
     const appVersion = desktopVersion?.appVersion
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
-    const rebuildNeeded = updateStatus?.rebuildNeeded === true
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const base = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
+    const remote = connection?.mode === 'remote'
+    // Stale-build detection: source HEAD moved past the packaged bundle's
+    // commit, so the running app needs a local rebuild (not a git pull).
+    const rebuildNeeded = updateStatus?.rebuildNeeded === true
+
+    const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
+    const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
     const rebuildHint = !applying && rebuildNeeded ? ' (+rebuild)' : ''
 
     const label = applying
-      ? updateApply.stage === 'restart'
-        ? `${base} · ${copy.restart}`
-        : `${base} · ${copy.update}`
+      ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
       : `${base}${behindHint}${rebuildHint}`
 
     const tooltip = [
@@ -208,24 +250,70 @@ export function useStatusbarItems({
 
     return {
       className: !applying && (behind > 0 || rebuildNeeded) ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying ? sha : undefined,
+      detail: appVersion && sha && !applying && !remote ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
-      id: 'version',
+      id: 'version-client',
       label,
-      onSelect: () => setUpdateOverlayOpen(true),
+      onSelect: () => openUpdateOverlayFor('client'),
       title: tooltip || undefined,
       variant: 'action'
     }
   }, [
     desktopVersion?.appVersion,
+    connection?.mode,
     copy,
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
     updateStatus?.behind,
     updateStatus?.branch,
-    updateStatus?.currentSha
+    updateStatus?.currentSha,
+    updateStatus?.rebuildNeeded
+  ])
+
+  const backendVersionItem = useMemo<StatusbarItem | null>(() => {
+    if (connection?.mode !== 'remote') {
+      return null
+    }
+
+    const backendVersion = statusSnapshot?.version
+    const behind = backendUpdateStatus?.behind ?? 0
+    const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
+
+    const base = copy.backendLabel(backendVersion ?? copy.unknown)
+    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+
+    const label = applying
+      ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
+      : `${base}${behindHint}`
+
+    const tooltip = [
+      applying ? backendUpdateApply.message || copy.updateInProgress : null,
+      !applying && behind > 0 && copy.commitsBehind(behind, 'main'),
+      backendVersion && copy.backendVersion(backendVersion)
+    ]
+      .filter(Boolean)
+      .join(' · ')
+
+    return {
+      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      hidden: !backendVersion,
+      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
+      id: 'version-backend',
+      label,
+      onSelect: () => openUpdateOverlayFor('backend'),
+      title: tooltip || undefined,
+      variant: 'action'
+    }
+  }, [
+    connection?.mode,
+    statusSnapshot?.version,
+    backendUpdateStatus?.behind,
+    backendUpdateApply.applying,
+    backendUpdateApply.message,
+    backendUpdateApply.stage,
+    copy
   ])
 
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
@@ -305,21 +393,23 @@ export function useStatusbarItems({
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
-        className: 'max-w-72',
-        hidden: !sessionActivityStatus,
-        icon: <Loader2 className="size-3 animate-spin" />,
-        id: 'activity-status',
-        label: <span className="truncate">{sessionActivityStatus?.text ?? ''}</span>,
-        title: sessionActivityStatus?.text,
-        variant: 'text'
-      },
-      {
         detail: <LiveDuration since={turnStartedAt} />,
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
         label: copy.turnRunning,
         title: copy.currentTurnElapsed,
+        variant: 'text'
+      },
+      {
+        // Gateway lifecycle statuses (compression progress, background-process
+        // notices) surfaced mid-turn; cleared by stream activity.
+        className: 'max-w-72',
+        hidden: !sessionActivityStatus,
+        icon: <Loader2 className="size-3 animate-spin" />,
+        id: 'activity-status',
+        label: <span className="truncate">{sessionActivityStatus?.text ?? ''}</span>,
+        title: sessionActivityStatus?.text,
         variant: 'text'
       },
       {
@@ -347,7 +437,7 @@ export function useStatusbarItems({
           <Zap className="size-3.5 shrink-0 opacity-70" />
         ),
         id: 'yolo',
-        onSelect: () => void toggleYolo(),
+        onSelect: modifiers => void toggleYolo(modifiers),
         title: yoloActive ? copy.yoloOn : copy.yoloOff,
         variant: 'action'
       },
@@ -382,11 +472,23 @@ export function useStatusbarItems({
               variant: 'action' as const
             })
       },
-      versionItem
+      {
+        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
+        hidden: !chatOpen,
+        icon: <Terminal className="size-3.5" />,
+        id: 'terminal',
+        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
+        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        variant: 'action'
+      },
+      clientVersionItem,
+      ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
       busy,
+      chatOpen,
       contextBar,
+      contextCapacityClass,
       contextUsage,
       copy,
       currentFastMode,
@@ -397,9 +499,11 @@ export function useStatusbarItems({
       sessionActivityStatus,
       sessionStartedAt,
       showYoloToggle,
+      terminalTakeover,
       toggleYolo,
       turnStartedAt,
-      versionItem,
+      clientVersionItem,
+      backendVersionItem,
       yoloActive
     ]
   )

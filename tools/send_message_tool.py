@@ -763,11 +763,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- WeCom: native media attachment support via adapter ---
+    if platform == Platform.WECOM and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_wecom(
+                pconfig.extra,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, wecom and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -775,7 +791,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, wecom and feishu"
         )
 
     last_result = None
@@ -1519,8 +1535,13 @@ async def _send_dingtalk(extra, chat_id, message):
         return _error(f"DingTalk send failed: {e}")
 
 
-async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
+async def _send_wecom(extra, chat_id, message, media_files=None):
+    """Send via WeCom using the adapter's WebSocket send pipeline.
+
+    When *media_files* is provided, each file is uploaded and sent as a media
+    message via the adapter's ``_send_media_source`` pipeline before the text
+    message is delivered.
+    """
     try:
         from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
         if not check_wecom_requirements():
@@ -1536,10 +1557,26 @@ async def _send_wecom(extra, chat_id, message):
         if not connected:
             return _error(f"WeCom: failed to connect - {adapter.fatal_error_message or 'unknown error'}")
         try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"WeCom send failed: {result.error}")
-            return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
+            # Send media files first (if any)
+            if media_files:
+                for media_path, _is_voice in media_files:
+                    if not os.path.exists(media_path):
+                        logger.warning("WeCom media file not found, skipping: %s", media_path)
+                        continue
+                    media_result = await adapter._send_media_source(
+                        chat_id=chat_id,
+                        media_source=media_path,
+                    )
+                    if not media_result.success:
+                        logger.warning("WeCom media send failed for %s: %s", media_path, media_result.error)
+
+            # Send text message
+            if message.strip():
+                result = await adapter.send(chat_id, message)
+                if not result.success:
+                    return _error(f"WeCom send failed: {result.error}")
+                return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
+            return {"success": True, "platform": "wecom", "chat_id": chat_id}
         finally:
             await adapter.disconnect()
     except Exception as e:

@@ -2846,3 +2846,154 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestSendWecomMedia:
+    """Tests for WeCom media attachment support in send_message_tool."""
+
+    @staticmethod
+    def _make_mock_adapter():
+        """Create a mock WeComAdapter with connect/send/disconnect/media."""
+        adapter = MagicMock()
+        adapter.connect = AsyncMock(return_value=True)
+        adapter.disconnect = AsyncMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="msg-123",
+        ))
+        adapter._send_media_source = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="media-456",
+        ))
+        adapter.fatal_error_message = None
+        return adapter
+
+    def test_send_wecom_with_media_files(self):
+        """_send_wecom sends media files then text message."""
+        import tempfile
+        adapter = self._make_mock_adapter()
+        media_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                tf.write(b"\x89PNG test")
+                media_path = tf.name
+
+            async def run():
+                with patch("gateway.platforms.wecom.WeComAdapter", return_value=adapter), \
+                     patch("gateway.platforms.wecom.check_wecom_requirements", return_value=True):
+                    from tools.send_message_tool import _send_wecom
+                    return await _send_wecom(
+                        {"bot_id": "test", "secret": "test"},
+                        "chat-1",
+                        "hello",
+                        media_files=[(media_path, False)],
+                    )
+
+            result = asyncio.run(run())
+            assert result["success"] is True
+            # Media was sent
+            adapter._send_media_source.assert_called_once()
+            call_kwargs = adapter._send_media_source.call_args
+            assert call_kwargs.kwargs["chat_id"] == "chat-1"
+            assert call_kwargs.kwargs["media_source"] == media_path
+            # Text was sent after media
+            adapter.send.assert_called_once_with("chat-1", "hello")
+        finally:
+            if media_path and os.path.exists(media_path):
+                os.unlink(media_path)
+
+    def test_send_wecom_without_media(self):
+        """_send_wecom without media_files sends text only (backward compat)."""
+        adapter = self._make_mock_adapter()
+
+        async def run():
+            with patch("gateway.platforms.wecom.WeComAdapter", return_value=adapter), \
+                 patch("gateway.platforms.wecom.check_wecom_requirements", return_value=True):
+                from tools.send_message_tool import _send_wecom
+                return await _send_wecom({"bot_id": "t", "secret": "s"}, "chat-1", "hello")
+
+        result = asyncio.run(run())
+        assert result["success"] is True
+        adapter._send_media_source.assert_not_called()
+        adapter.send.assert_called_once_with("chat-1", "hello")
+
+    def test_send_wecom_media_only_no_text(self):
+        """_send_wecom with media but empty text skips text send."""
+        import tempfile
+        adapter = self._make_mock_adapter()
+        media_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                tf.write(b"\xff\xd8\xff test")
+                media_path = tf.name
+
+            async def run():
+                with patch("gateway.platforms.wecom.WeComAdapter", return_value=adapter), \
+                     patch("gateway.platforms.wecom.check_wecom_requirements", return_value=True):
+                    from tools.send_message_tool import _send_wecom
+                    return await _send_wecom(
+                        {"bot_id": "t", "secret": "s"},
+                        "chat-1",
+                        "",
+                        media_files=[(media_path, False)],
+                    )
+
+            result = asyncio.run(run())
+            assert result["success"] is True
+            adapter._send_media_source.assert_called_once()
+            adapter.send.assert_not_called()  # empty text → skip
+        finally:
+            if media_path and os.path.exists(media_path):
+                os.unlink(media_path)
+
+    def test_send_wecom_media_file_not_found(self):
+        """_send_wecom skips missing media files gracefully."""
+        adapter = self._make_mock_adapter()
+
+        async def run():
+            with patch("gateway.platforms.wecom.WeComAdapter", return_value=adapter), \
+                 patch("gateway.platforms.wecom.check_wecom_requirements", return_value=True):
+                from tools.send_message_tool import _send_wecom
+                return await _send_wecom(
+                    {"bot_id": "t", "secret": "s"},
+                    "chat-1",
+                    "hello",
+                    media_files=[("/nonexistent/file.png", False)],
+                )
+
+        result = asyncio.run(run())
+        assert result["success"] is True
+        # Media send was skipped (file not found)
+        adapter._send_media_source.assert_not_called()
+        # Text still sent
+        adapter.send.assert_called_once_with("chat-1", "hello")
+
+    def test_send_to_platform_routes_wecom_media(self):
+        """_send_to_platform routes WeCom+media through the media branch."""
+        import tempfile
+        media_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                tf.write(b"\x89PNG test")
+                media_path = tf.name
+
+            mock_send_fn = AsyncMock(return_value={"success": True, "platform": "wecom"})
+
+            async def run():
+                pconfig = SimpleNamespace(
+                    extra={"bot_id": "t", "secret": "s"},
+                    token=None, api_key=None,
+                )
+                with patch("tools.send_message_tool._send_wecom", mock_send_fn):
+                    return await _send_to_platform(
+                        Platform.WECOM, pconfig, "chat-1", "hello",
+                        media_files=[(media_path, False)],
+                    )
+
+            result = asyncio.run(run())
+            assert result["success"] is True
+            # _send_wecom was called with media_files
+            mock_send_fn.assert_called_once()
+            call_kwargs = mock_send_fn.call_args
+            assert call_kwargs.kwargs.get("media_files") == [(media_path, False)]
+        finally:
+            if media_path and os.path.exists(media_path):
+                os.unlink(media_path)

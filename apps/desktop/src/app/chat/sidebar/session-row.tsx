@@ -12,7 +12,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, $completedUnreadSessionIds } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -80,6 +80,7 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const completedUnread = useStore($completedUnreadSessionIds).includes(session.id)
 
   return (
     <SessionContextMenu
@@ -170,6 +171,7 @@ export function SidebarSessionRow({
             >
               <SidebarRowDot
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                completedUnread={completedUnread}
                 isWorking={isWorking}
                 needsInput={needsInput}
               />
@@ -189,7 +191,7 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+              <SidebarRowDot completedUnread={completedUnread} isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
           {handoffSource && handoffLabel ? (
@@ -239,10 +241,12 @@ export function SidebarSessionRow({
 function SidebarRowDot({
   isWorking,
   needsInput = false,
+  completedUnread = false,
   className
 }: {
   isWorking: boolean
   needsInput?: boolean
+  completedUnread?: boolean
   className?: string
 }) {
   const { t } = useI18n()
@@ -259,6 +263,20 @@ function SidebarRowDot({
         className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
         role="status"
         title={r.waitingForAnswer}
+      />
+    )
+  }
+
+  // "Completed unread" shows when a background session finished its turn
+  // while the user was in a different session. Steady muted green dot,
+  // cleared when the user navigates to it.
+  if (completedUnread && !isWorking) {
+    return (
+      <span
+        aria-label={r.completedUnread}
+        className={cn('size-1.5 rounded-full bg-green-400/60', className)}
+        role="status"
+        title={r.responseReady}
       />
     )
   }

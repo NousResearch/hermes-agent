@@ -15,6 +15,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setSessionAttention,
+  setSessionCompletedUnread,
   setSessionWorking,
   setTurnStartedAt,
   setYoloActive
@@ -79,6 +80,10 @@ export function useSessionStateCache({
 
   useEffect(() => {
     selectedStoredSessionIdRef.current = selectedStoredSessionId
+    // Clear completed-unread indicator when the user navigates to a session.
+    if (selectedStoredSessionId) {
+      setSessionCompletedUnread(selectedStoredSessionId, false)
+    }
   }, [selectedStoredSessionId])
 
   const ensureSessionState = useCallback((sessionId: string, storedSessionId?: string | null) => {
@@ -240,6 +245,13 @@ export function useSessionStateCache({
 
       setSessionWorking(next.storedSessionId, next.busy)
       setSessionAttention(next.storedSessionId, next.needsInput)
+
+      // When a background session finishes its turn, mark it as completed-unread
+      // so the sidebar shows a green dot until the user navigates to it.
+      if (previous.busy && !next.busy && next.storedSessionId &&
+          next.storedSessionId !== selectedStoredSessionIdRef.current) {
+        setSessionCompletedUnread(next.storedSessionId, true)
+      }
 
       // Every state update is effectively a "still alive" heartbeat for
       // streaming events. The session-store watchdog uses this to keep the

@@ -859,6 +859,8 @@ export interface Translations {
       sessionRunning: string
       needsInput: string
       waitingForAnswer: string
+      completedUnread: string
+      responseReady: string
       handoffOrigin: (platform: string) => string
       renamed: string
       renameFailed: string

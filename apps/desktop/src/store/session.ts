@@ -365,6 +365,18 @@ export function setSessionAttention(sessionId: string | null | undefined, needsI
   }
 }
 
+// Sessions that completed a turn while not the active session. A steady muted
+// green dot appears in the sidebar and session-switcher until the user
+// navigates to them. Cleared automatically on session focus.
+export const $completedUnreadSessionIds = atom<string[]>([])
+export const setCompletedUnreadSessionIds = (next: Updater<string[]>) => updateAtom($completedUnreadSessionIds, next)
+
+export function setSessionCompletedUnread(sessionId: string | null | undefined, completed: boolean) {
+  if (sessionId) {
+    toggleMembership(setCompletedUnreadSessionIds, sessionId, completed)
+  }
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
     return

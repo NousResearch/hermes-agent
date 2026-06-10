@@ -1112,6 +1112,8 @@ export const en: Translations = {
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
       waitingForAnswer: 'Waiting for your answer',
+      completedUnread: 'Response ready',
+      responseReady: 'Background session finished — click to view',
       handoffOrigin: platform => `Handed off from ${platform}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',

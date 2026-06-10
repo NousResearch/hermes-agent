@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds, $workingSessionIds } from '@/store/session'
+import { $attentionSessionIds, $completedUnreadSessionIds, $workingSessionIds } from '@/store/session'
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
 import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
@@ -19,6 +19,7 @@ export function SessionSwitcher() {
   const index = useStore($switcherIndex)
   const working = useStore($workingSessionIds)
   const attention = useStore($attentionSessionIds)
+  const completedUnread = useStore($completedUnreadSessionIds)
   const navigate = useNavigate()
 
   const activeRef = useRef<HTMLDivElement>(null)
@@ -33,6 +34,7 @@ export function SessionSwitcher() {
 
   const workingIds = new Set(working)
   const attentionIds = new Set(attention)
+  const completedUnreadIds = new Set(completedUnread)
 
   const pick = (sessionId: string) => {
     closeSwitcher()
@@ -74,7 +76,7 @@ export function SessionSwitcher() {
               }}
               ref={selected ? activeRef : undefined}
             >
-              <SwitcherDot attention={attentionIds.has(session.id)} working={workingIds.has(session.id)} />
+              <SwitcherDot attention={attentionIds.has(session.id)} completedUnread={completedUnreadIds.has(session.id)} working={workingIds.has(session.id)} />
               <span className="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
               {i < 9 && (
                 <span
@@ -95,12 +97,12 @@ export function SessionSwitcher() {
   )
 }
 
-function SwitcherDot({ attention, working }: { attention: boolean; working: boolean }) {
+function SwitcherDot({ attention, completedUnread, working }: { attention: boolean; completedUnread: boolean; working: boolean }) {
   return (
     <span
       className={cn(
         'size-1 shrink-0 rounded-full',
-        attention ? 'bg-amber-400' : working ? 'animate-pulse bg-(--ui-accent)' : 'bg-(--ui-text-quaternary)/50'
+        attention ? 'bg-amber-400' : completedUnread && !working ? 'bg-green-400/60' : working ? 'animate-pulse bg-(--ui-accent)' : 'bg-(--ui-text-quaternary)/50'
       )}
     />
   )

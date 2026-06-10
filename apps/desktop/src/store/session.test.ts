@@ -5,6 +5,7 @@ import type { SessionInfo } from '@/types/hermes'
 import {
   $activeSessionId,
   $attentionSessionIds,
+  $completedUnreadSessionIds,
   $currentCwd,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
@@ -12,6 +13,7 @@ import {
   mergeSessionPage,
   sessionPinId,
   setSessionAttention,
+  setSessionCompletedUnread,
   setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
@@ -60,6 +62,32 @@ describe('setSessionAttention', () => {
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
+  })
+})
+
+describe('setSessionCompletedUnread', () => {
+  afterEach(() => {
+    $completedUnreadSessionIds.set([])
+  })
+
+  it('adds and removes a session id without duplicating it', () => {
+    setSessionCompletedUnread('s1', true)
+    setSessionCompletedUnread('s1', true)
+    expect($completedUnreadSessionIds.get()).toEqual(['s1'])
+
+    setSessionCompletedUnread('s2', true)
+    expect($completedUnreadSessionIds.get()).toEqual(['s1', 's2'])
+
+    setSessionCompletedUnread('s1', false)
+    expect($completedUnreadSessionIds.get()).toEqual(['s2'])
+  })
+
+  it('ignores empty ids and no-op clears', () => {
+    setSessionCompletedUnread(null, true)
+    setSessionCompletedUnread(undefined, true)
+    setSessionCompletedUnread('', true)
+    setSessionCompletedUnread('missing', false)
+    expect($completedUnreadSessionIds.get()).toEqual([])
   })
 })
 

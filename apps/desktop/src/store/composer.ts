@@ -21,6 +21,68 @@ export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
 
+const COMPOSER_DRAFT_STORAGE_PREFIX = 'hermes:composer-draft:v1:'
+const NEW_SESSION_DRAFT_SCOPE = '__new__'
+
+function storageScope(scope: string | null | undefined): string {
+  const trimmed = scope?.trim()
+
+  return trimmed || NEW_SESSION_DRAFT_SCOPE
+}
+
+function browserStorage(): Storage | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
+export function composerDraftStorageKey(scope: string | null | undefined): string {
+  return `${COMPOSER_DRAFT_STORAGE_PREFIX}${encodeURIComponent(storageScope(scope))}`
+}
+
+export function readPersistedComposerDraft(scope: string | null | undefined): string {
+  try {
+    return browserStorage()?.getItem(composerDraftStorageKey(scope)) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function writePersistedComposerDraft(scope: string | null | undefined, value: string) {
+  try {
+    const storage = browserStorage()
+
+    if (!storage) {
+      return
+    }
+
+    const key = composerDraftStorageKey(scope)
+
+    if (value.length === 0) {
+      storage.removeItem(key)
+    } else {
+      storage.setItem(key, value)
+    }
+  } catch {
+    // Draft persistence is a safety net only; storage quota/private-mode errors
+    // must never break typing or submission.
+  }
+}
+
+export function clearPersistedComposerDraft(scope: string | null | undefined) {
+  try {
+    browserStorage()?.removeItem(composerDraftStorageKey(scope))
+  } catch {
+    // Best-effort only.
+  }
+}
+
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }

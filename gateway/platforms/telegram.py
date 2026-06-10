@@ -5391,6 +5391,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Advance reply anchor to the latest message so the bot replies to
+            # the most recent user message when stacked prompts are batched.
+            if event.message_id:
+                existing.message_id = event.message_id
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)

@@ -123,6 +123,39 @@ class TestTextBatching:
         assert len(adapter._pending_text_batch_tasks) == 0
 
     @pytest.mark.asyncio
+    async def test_stacked_prompts_reply_anchor_advances_to_last_message(self):
+        """Reply anchor must track the latest message_id when user stacks prompts.
+
+        When two distinct user messages arrive quickly (stacked prompts, not
+        Telegram split-chunks), the batched event should carry the *last*
+        message_id so the bot replies to the most recent message the user sent,
+        not the first one.
+        """
+        adapter = _make_adapter()
+
+        event1 = _make_event("first prompt")
+        event1.message_id = "100"
+        event2 = _make_event("second prompt")
+        event2.message_id = "101"
+
+        adapter._enqueue_text_event(event1)
+        await asyncio.sleep(0.02)  # within batch window
+        adapter._enqueue_text_event(event2)
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        # Text must be merged
+        assert "first prompt" in dispatched.text
+        assert "second prompt" in dispatched.text
+        # Reply anchor must be the LAST message, not the first
+        assert dispatched.message_id == "101", (
+            f"Expected reply anchor '101' (last message) but got {dispatched.message_id!r}. "
+            "Bot would have replied to the wrong message."
+        )
+
+    @pytest.mark.asyncio
     async def test_dm_topic_batching_recovers_thread_before_keying(self):
         """DM-topic text batches should use the recovered topic lane."""
         adapter = _make_adapter()

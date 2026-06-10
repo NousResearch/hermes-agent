@@ -1,26 +1,56 @@
 import { useStore } from '@nanostores/react'
 
+import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
-import { $remoteSessions } from '@/store/remote-sessions'
+import { $remoteDevices, $remoteSessions, type RemoteDevice } from '@/store/remote-sessions'
 
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 interface SidebarRemoteSessionsSectionProps {
   label: string
+  // Localized "New session in {target}" — reused from the workspace-group label
+  // so create-from-anywhere needs no new strings.
+  newSessionLabel: (target: string) => string
+  onCreateOnDevice: (endpoint: string) => void
   onResumeSession: (sessionId: string) => void
   onToggle: () => void
   open: boolean
 }
 
+// A friendly device name for the create row: the presence record's host, else
+// the endpoint's host:port (so an unnamed peer still reads as more than a raw
+// ws URL).
+function deviceLabel(device: RemoteDevice): string {
+  if (device.host) {
+    return device.host
+  }
+
+  try {
+    return new URL(device.endpoint).host || device.endpoint
+  } catch {
+    return device.endpoint
+  }
+}
+
 // "Live on other devices": sessions discovered via presence on a peer gateway
 // (Phase 2b). Clicking one resumes it — useSessionActions.resumeSession dials
 // the advertised endpoint and the existing chat view streams it like a local
-// session. Renders nothing when there are no remote sessions, so single-device
-// users (or anyone without presence sync) never see it.
-export function SidebarRemoteSessionsSection({ label, onResumeSession, onToggle, open }: SidebarRemoteSessionsSectionProps) {
+// session. Each reachable peer also gets a "New session" row (Phase 3:
+// create-from-anywhere) that creates a fresh session ON that device. Renders
+// nothing when there are no remote sessions, so single-device users (or anyone
+// without presence sync) never see it.
+export function SidebarRemoteSessionsSection({
+  label,
+  newSessionLabel,
+  onCreateOnDevice,
+  onResumeSession,
+  onToggle,
+  open
+}: SidebarRemoteSessionsSectionProps) {
   const remotes = useStore($remoteSessions)
+  const devices = useStore($remoteDevices)
 
   if (remotes.length === 0) {
     return null
@@ -76,6 +106,23 @@ export function SidebarRemoteSessionsSection({ label, onResumeSession, onToggle,
                       </span>
                     )}
                   </span>
+                </button>
+              )
+            })}
+            {devices.map(device => {
+              const target = deviceLabel(device)
+              return (
+                <button
+                  className="group grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-1.5 rounded-md bg-transparent py-1 pl-2 pr-2 text-left text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground"
+                  key={`new:${device.endpoint}`}
+                  onClick={() => onCreateOnDevice(device.endpoint)}
+                  title={newSessionLabel(target)}
+                  type="button"
+                >
+                  <span className="grid w-3.5 shrink-0 place-items-center">
+                    <Codicon name="add" size="0.8125rem" />
+                  </span>
+                  <span className="block truncate text-[0.8125rem] font-normal">{newSessionLabel(target)}</span>
                 </button>
               )
             })}

@@ -574,6 +574,7 @@ export function DesktopController() {
     archiveSession,
     branchCurrentSession,
     createBackendSessionForSend,
+    createSessionOnDevice,
     openSettings,
     openPresenceSession,
     removeSession,
@@ -765,6 +766,7 @@ export function DesktopController() {
       currentView={currentView}
       onArchiveAllSessions={() => archiveAllSessions().then(() => refreshSessions())}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
+      onCreateOnDevice={endpoint => void createSessionOnDevice(endpoint)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}

@@ -453,6 +453,79 @@ export function useSessionActions({
     ]
   )
 
+  // Create-from-anywhere (channels Phase 3): start a NEW session on a peer
+  // device. Dial + activate that gateway so session.create — and every later
+  // call — routes there; the session lives on the peer and streams back over
+  // the dialed socket, exactly like opening an existing remote session. With no
+  // reachable peers this is never invoked (the affordance only renders for
+  // discovered devices), so the local path is untouched.
+  const createSessionOnDevice = useCallback(
+    async (endpoint: string): Promise<void> => {
+      const target = endpoint.trim()
+
+      if (!target) {
+        return
+      }
+
+      const startingRouteToken = getRouteToken()
+      creatingSessionRef.current = true
+
+      try {
+        await ensureGatewayForEndpoint(target)
+        const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
+        const created = await requestGateway<SessionCreateResponse>('session.create', {
+          cols: 96,
+          ...(cwd && { cwd })
+        })
+        const stored = created.stored_session_id ?? null
+
+        // The user navigated away while the peer was dialing — don't yank them
+        // into this session; close the orphan on the remote instead.
+        if (getRouteToken() !== startingRouteToken) {
+          await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
+
+          return
+        }
+
+        activeSessionIdRef.current = created.session_id
+        selectedStoredSessionIdRef.current = stored
+        ensureSessionState(created.session_id, stored)
+
+        if (stored) {
+          upsertOptimisticSession(created, stored)
+          navigate(sessionRoute(stored), { replace: true })
+        }
+
+        setFreshDraftReady(false)
+        setActiveSessionId(created.session_id)
+        setSelectedStoredSessionId(stored)
+        setSessionStartedAt(Date.now())
+        clearComposerDraft()
+        clearComposerAttachments()
+
+        const runtimeInfo = applyRuntimeInfo(created.info)
+
+        if (runtimeInfo) {
+          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
+        }
+      } catch (err) {
+        notifyError(err, 'Could not start a session on that device')
+      } finally {
+        creatingSessionRef.current = false
+      }
+    },
+    [
+      activeSessionIdRef,
+      creatingSessionRef,
+      ensureSessionState,
+      getRouteToken,
+      navigate,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
+  )
+
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
       if (item.action === 'new-session') {
@@ -1089,6 +1162,7 @@ export function useSessionActions({
     branchCurrentSession,
     closeSettings,
     createBackendSessionForSend,
+    createSessionOnDevice,
     openSettings,
     openPresenceSession,
     removeSession,

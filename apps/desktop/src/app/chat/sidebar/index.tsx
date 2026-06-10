@@ -285,6 +285,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string) => void
+  onCreateOnDevice: (endpoint: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onArchiveAllSessions: () => Promise<void> | void
@@ -300,6 +301,7 @@ export function ChatSidebar({
   onLoadMoreProfileSessions,
   onLoadMoreMessaging,
   onResumeSession,
+  onCreateOnDevice,
   onDeleteSession,
   onArchiveSession,
   onArchiveAllSessions,
@@ -1141,6 +1143,8 @@ export function ChatSidebar({
         {contentVisible && !trimmedQuery && (
           <SidebarRemoteSessionsSection
             label={s.liveElsewhere}
+            newSessionLabel={s.newSessionIn}
+            onCreateOnDevice={onCreateOnDevice}
             onResumeSession={onResumeSession}
             onToggle={() => setRemoteOpen(prev => !prev)}
             open={remoteOpen}

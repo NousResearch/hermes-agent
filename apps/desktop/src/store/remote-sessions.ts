@@ -83,6 +83,30 @@ export const $remoteSessions = computed([$sessionPresence, $sessions], (presence
   return [...bySession.values()].sort((a, b) => b.updatedAt - a.updatedAt)
 })
 
+export interface RemoteDevice {
+  endpoint: string
+  host: string
+}
+
+// The distinct peer gateways behind the discovered remote sessions — i.e. the
+// devices a NEW session can be created on (channels Phase 3: create-from-
+// anywhere). Derived from $remoteSessions, so a device only appears once it has
+// advertised at least one session; with no presence sync the list is empty and
+// the "new session on another device" affordance never renders.
+export const $remoteDevices = computed($remoteSessions, remotes => {
+  const byEndpoint = new Map<string, RemoteDevice>()
+
+  for (const remote of remotes) {
+    if (!remote.endpoint || byEndpoint.has(remote.endpoint)) {
+      continue
+    }
+
+    byEndpoint.set(remote.endpoint, { endpoint: remote.endpoint, host: remote.host })
+  }
+
+  return [...byEndpoint.values()].sort((a, b) => a.host.localeCompare(b.host))
+})
+
 // O(1) endpoint lookup for the resume path: given a session id, return the
 // remote gateway endpoint to dial, or null when the session is local.
 export function remoteSessionEndpoint(sessionId: string): string | null {

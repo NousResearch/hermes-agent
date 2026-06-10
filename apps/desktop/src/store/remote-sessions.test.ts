@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { SessionInfo, SessionPresenceRecord } from '@/types/hermes'
 
-import { $remoteSessions, remoteSessionEndpoint } from './remote-sessions'
-import { $sessions, $sessionPresence } from './session'
+import { $remoteDevices, $remoteSessions, remoteSessionEndpoint } from './remote-sessions'
+import { $sessionPresence, $sessions } from './session'
 
 const ENDPOINT = 'ws://192.168.1.20:8664/api/ws'
 
@@ -71,6 +71,42 @@ describe('$remoteSessions', () => {
   it('falls back to sane defaults for missing fields', () => {
     $sessionPresence.set([{ session_id: 'bare', endpoint: ENDPOINT }])
     expect($remoteSessions.get()[0]).toMatchObject({ title: 'Untitled session', host: '', model: '', status: 'idle' })
+  })
+})
+
+describe('$remoteDevices', () => {
+  beforeEach(() => {
+    $sessions.set([])
+    $sessionPresence.set([])
+  })
+
+  afterEach(() => {
+    $sessions.set([])
+    $sessionPresence.set([])
+  })
+
+  it('collapses multiple sessions on the same peer into one device', () => {
+    $sessionPresence.set([
+      presence({ session_id: 'a', updated_at: 2 }),
+      presence({ session_id: 'b', updated_at: 1 }) // same endpoint + host
+    ])
+    expect($remoteDevices.get()).toEqual([{ endpoint: ENDPOINT, host: 'ko-win11' }])
+  })
+
+  it('lists distinct peers sorted by host', () => {
+    const OTHER = 'ws://10.0.0.5:8664/api/ws'
+    $sessionPresence.set([
+      presence({ session_id: 'a', endpoint: ENDPOINT, host: 'ko-win11' }),
+      presence({ session_id: 'b', endpoint: OTHER, host: 'aurora-mac' })
+    ])
+    expect($remoteDevices.get()).toEqual([
+      { endpoint: OTHER, host: 'aurora-mac' },
+      { endpoint: ENDPOINT, host: 'ko-win11' }
+    ])
+  })
+
+  it('is empty without reachable peers', () => {
+    expect($remoteDevices.get()).toEqual([])
   })
 })
 

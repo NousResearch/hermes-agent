@@ -292,6 +292,41 @@ class TestSaveEnvValueSecure:
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
 
+    def test_save_env_value_updates_all_duplicate_keys(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "MY_KEY=old_first\n"
+            "OTHER_KEY=keep_me\n"
+            "MY_KEY=old_second\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("MY_KEY", "new_value")
+            content = env_path.read_text()
+            lines = content.strip().split("\n")
+            my_key_lines = [l for l in lines if l.startswith("MY_KEY=")]
+            assert len(my_key_lines) == 2, f"Expected 2 MY_KEY lines, got {len(my_key_lines)}"
+            for l in my_key_lines:
+                assert l == "MY_KEY=new_value", f"Unexpected line: {l}"
+            resolved = load_env()
+            assert resolved["MY_KEY"] == "new_value"
+
+    def test_save_env_value_duplicate_avoids_double_append(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "MY_KEY=old_first\n"
+            "OTHER_KEY=keep_me\n"
+            "MY_KEY=old_second\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("MY_KEY", "new_value")
+            content = env_path.read_text()
+            lines = content.strip().split("\n")
+            assert len(lines) == 3, f"Expected 3 lines, got {len(lines)} (no lines appended)"
+            my_key_lines = [l for l in lines if l.startswith("MY_KEY=")]
+            assert len(my_key_lines) == 2
+            non_my_key_lines = [l for l in lines if not l.startswith("MY_KEY=")]
+            assert non_my_key_lines == ["OTHER_KEY=keep_me"]
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):

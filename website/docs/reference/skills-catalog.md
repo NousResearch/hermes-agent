@@ -144,7 +144,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`llm-wiki`](/docs/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy's LLM Wiki — build and maintain a persistent, interlinked markdown knowledge base. Ingest sources, query compiled knowledge, and lint for consistency. | `research/llm-wiki` |
 | [`polymarket`](/docs/user-guide/skills/bundled/research/research-polymarket) | Query Polymarket prediction market data — search markets, get prices, orderbooks, and price history. Read-only via public REST APIs, no API key needed. | `research/polymarket` |
 | [`research-paper-writing`](/docs/user-guide/skills/bundled/research/research-research-paper-writing) | End-to-end pipeline for writing ML/AI research papers — from experiment design through analysis, drafting, revision, and submission. Covers NeurIPS, ICML, ICLR, ACL, AAAI, COLM. Integrates automated experiment monitoring, statistical ana... | `research/research-paper-writing` |
-| [`youdotcom`](/docs/user-guide/skills/bundled/research/research-youdotcom) | Deep research using the You.com Research API — get synthesized, cited answers to complex questions with multi-step reasoning and inline source verification. Requires YDC_API_KEY. | `research/youdotcom` |
+| [`youdotcom`](/docs/user-guide/skills/bundled/research/research-youdotcom) | Deep research using You.com Research and Finance Research APIs to get synthesized, cited answers to complex web and financial questions. Requires YDC_API_KEY. | `research/youdotcom` |
 
 ## smart-home
 

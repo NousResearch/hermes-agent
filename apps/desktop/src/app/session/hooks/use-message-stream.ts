@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -14,9 +15,11 @@ import {
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
+import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setClarifyRequest } from '@/store/clarify'
+import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -451,7 +454,8 @@ export function useMessageStream({
             busy: false,
             needsInput: false,
             pendingBranchGroup: null,
-            streamId: null
+            streamId: null,
+            turnStartedAt: null
           }
         }
 
@@ -541,7 +545,8 @@ export function useMessageStream({
           pendingBranchGroup: null,
           awaitingResponse: false,
           busy: false,
-          needsInput: false
+          needsInput: false,
+          turnStartedAt: null
         }
       })
 
@@ -599,7 +604,8 @@ export function useMessageStream({
           sawAssistantPayload: true,
           awaitingResponse: false,
           busy: false,
-          needsInput: false
+          needsInput: false,
+          turnStartedAt: null
         }
       })
     },
@@ -610,6 +616,9 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+        return
+      }
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -683,7 +692,8 @@ export function useMessageStream({
               if (busy) {
                 return {
                   ...state,
-                  busy
+                  busy,
+                  turnStartedAt: state.turnStartedAt ?? Date.now()
                 }
               }
 
@@ -696,7 +706,8 @@ export function useMessageStream({
                 awaitingResponse: false,
                 busy,
                 pendingBranchGroup: null,
-                streamId: null
+                streamId: null,
+                turnStartedAt: null
               }
             })
           }
@@ -735,7 +746,8 @@ export function useMessageStream({
           busy: true,
           awaitingResponse: true,
           sawAssistantPayload: false,
-          interrupted: false
+          interrupted: false,
+          turnStartedAt: Date.now()
         }))
 
         if (isActiveEvent) {
@@ -895,6 +907,21 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+        }
+      } else if (event.type === 'terminal.read.request') {
+        // read_terminal tool: serialize the renderer's xterm buffer and answer
+        // immediately (Python blocks on the respond). Empty text = no live pane.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const start = typeof payload?.start === 'number' ? payload.start : undefined
+          const count = typeof payload?.count === 'number' ? payload.count : undefined
+          const result = readActiveTerminal({ start, count })
+
+          void $gateway.get()?.request('terminal.read.respond', {
+            request_id: requestId,
+            text: result ? JSON.stringify(result) : ''
+          })
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

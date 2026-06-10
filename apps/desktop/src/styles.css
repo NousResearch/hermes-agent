@@ -5,6 +5,10 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
+/* Sidebar sections: tall viewports give each its own scroller; compact ones
+   (this variant) flatten everything into one shared scroll. See ChatSidebar. */
+@custom-variant compact (@media (max-height: 768px));
+
 @font-face {
   font-family: 'Collapse';
   font-style: normal;
@@ -266,10 +270,12 @@
     --dt-user-bubble: var(--ui-chat-bubble-background);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
-    --dt-font-sans: 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+    --dt-font-sans:
+      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
-    --dt-font-mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace,
-      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+    --dt-font-mono:
+      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
+      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -888,52 +894,46 @@ canvas {
 }
 
 .fit-text {
+  --fit-captured-length: initial;
+  --fit-support-sentinel: var(--fit-captured-length, 9999px);
+
   display: flex;
-  font-size: var(--fit-text-min, 1rem);
   container-type: inline-size;
-  --captured-length: initial;
-  --support-sentinel: var(--captured-length, 9999px);
 }
 
-.fit-text > [aria-hidden='true'] {
+.fit-text > [aria-hidden] {
   visibility: hidden;
 }
 
-.fit-text > :not([aria-hidden='true']) {
+.fit-text > :not([aria-hidden]) {
   flex-grow: 1;
   container-type: inline-size;
-  --captured-length: 100cqi;
-  --available-space: var(--captured-length);
+
+  --fit-captured-length: 100cqi;
+  --fit-available-space: var(--fit-captured-length);
 }
 
-.fit-text > :not([aria-hidden='true']) > * {
+.fit-text > :not([aria-hidden]) > * {
+  --fit-support-sentinel: inherit;
+  --fit-captured-length: 100cqi;
+  --fit-ratio: tan(atan2(var(--fit-available-space), var(--fit-available-space) - var(--fit-captured-length)));
+
   display: block;
-  inline-size: var(--available-space);
-  line-height: var(--fit-text-line-height, 1);
-  --support-sentinel: inherit;
-  --captured-length: 100cqi;
-  --ratio: tan(atan2(var(--available-space), var(--available-space) - var(--captured-length)));
-  --font-size: clamp(
-    var(--fit-text-min, 1em),
-    1em * var(--ratio),
-    var(--fit-text-max, infinity * 1px) - var(--support-sentinel)
+  inline-size: var(--fit-available-space);
+  font-size: clamp(
+    var(--fit-min, 1em),
+    1em * var(--fit-ratio),
+    var(--fit-max, infinity * 1px) - var(--fit-support-sentinel)
   );
-  font-size: var(--font-size);
 }
 
 @container (inline-size > 0) {
-  .fit-text > :not([aria-hidden='true']) > * {
+  .fit-text > :not([aria-hidden]) > * {
     white-space: nowrap;
   }
 }
 
-@property --captured-length {
-  syntax: '<length>';
-  initial-value: 0px;
-  inherits: true;
-}
-
-@property --captured-length2 {
+@property --fit-captured-length {
   syntax: '<length>';
   initial-value: 0px;
   inherits: true;

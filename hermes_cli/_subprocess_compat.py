@@ -35,6 +35,7 @@ __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
     "windows_detach_flags",
+    "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
 ]
@@ -150,6 +151,36 @@ def windows_detach_flags() -> int:
         | _CREATE_NO_WINDOW
         | _CREATE_BREAKAWAY_FROM_JOB
     )
+
+
+def windows_detach_flags_without_breakaway() -> int:
+    """Same as :func:`windows_detach_flags` minus ``CREATE_BREAKAWAY_FROM_JOB``.
+
+    The docstring on :func:`windows_detach_flags` notes that a process in
+    a job which disallows breakaway (no ``JOB_OBJECT_LIMIT_BREAKAWAY_OK``)
+    will see ``ERROR_ACCESS_DENIED`` from CreateProcess, surfacing as
+    ``OSError`` (``PermissionError``) on the ``subprocess.Popen`` call.
+    Callers that want to recover — by retrying without the breakaway
+    bit — can pair the two helpers symbolically rather than coding the
+    ``& ~0x01000000`` magic at every site:
+
+    .. code-block:: python
+
+        try:
+            subprocess.Popen(argv, creationflags=windows_detach_flags(), …)
+        except OSError:
+            subprocess.Popen(
+                argv,
+                creationflags=windows_detach_flags_without_breakaway(),
+                …,
+            )
+
+    See ``gateway_windows.py::_spawn_detached`` for the canonical
+    implementation of this pattern.  Returns 0 on non-Windows.
+    """
+    if not IS_WINDOWS:
+        return 0
+    return _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
 
 
 def windows_hide_flags() -> int:

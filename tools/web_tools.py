@@ -102,7 +102,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from tools.url_safety import async_is_safe_url
+from tools.url_safety import async_is_safe_url, normalize_url_for_request
 import sys
 
 logger = logging.getLogger(__name__)
@@ -110,9 +110,28 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+def _env_value(name: str) -> str:
+    """Resolve ``name`` via Hermes config-aware env, falling back to process env.
+
+    Mirrors the SearXNG provider's ``_searxng_url()`` so that values set
+    through Hermes' config/.env layer (``hermes config set``, ``hermes tools``)
+    are honored here too — not just raw process-env exports. Without this,
+    a config-only ``SEARXNG_URL`` (or any provider key) leaves the backend
+    auto-detect cascade and ``check_web_api_key()`` blind to it. See #34290.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value(name)
+    except Exception:
+        val = None
+    if val is None:
+        val = os.getenv(name, "")
+    return (val or "").strip()
+
+
 def _has_env(name: str) -> bool:
-    val = os.getenv(name)
-    return bool(val and val.strip())
+    return bool(_env_value(name))
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -902,17 +921,25 @@ async def web_extract_tool(
     # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
     from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
+    normalized_urls: List[str] = []
     for _url in urls:
-        if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
+        normalized_url = normalize_url_for_request(_url)
+        if (
+            _PREFIX_RE.search(_url)
+            or _PREFIX_RE.search(unquote(_url))
+            or _PREFIX_RE.search(normalized_url)
+            or _PREFIX_RE.search(unquote(normalized_url))
+        ):
             return json.dumps({
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "
                          "Secrets must not be sent in URLs.",
             })
+        normalized_urls.append(normalized_url)
 
     debug_call_data = {
         "parameters": {
-            "urls": urls,
+            "urls": normalized_urls,
             "format": format,
             "use_llm_processing": use_llm_processing,
             "model": model,
@@ -928,12 +955,12 @@ async def web_extract_tool(
     }
     
     try:
-        logger.info("Extracting content from %d URL(s)", len(urls))
+        logger.info("Extracting content from %d URL(s)", len(normalized_urls))
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
-        for url in urls:
+        for url in normalized_urls:
             if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",
@@ -1196,7 +1223,7 @@ if __name__ == "__main__":
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
         elif backend == "searxng":
-            print(f"   Using SearXNG (search only): {os.getenv('SEARXNG_URL', '').strip()}")
+            print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":

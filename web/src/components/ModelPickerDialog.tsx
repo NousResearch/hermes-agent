@@ -4,6 +4,7 @@ import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { AlertCircle, Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,9 +22,8 @@ import { fuzzyRank } from "@/lib/fuzzy";
  * Two invocation modes:
  *
  * 1. Chat-session mode (ChatSidebar) — pass `gw` + `sessionId`. The picker
- *    loads options via `model.options` JSON-RPC and emits the result as a
- *    slash command string (`/model <model> --provider <slug> [--global]`)
- *    through `onSubmit`, which the ChatPage pipes to `slashExec`.
+ *    loads options via `model.options` JSON-RPC and applies the choice via
+ *    `config.set`, so expensive-model confirmation can happen before switch.
  *
  * 2. Standalone mode (ModelsPage, Config settings) — pass a `loader` and
  *    `onApply`. The picker fetches options via the REST endpoint and calls
@@ -47,21 +47,47 @@ interface ModelOptionsResponse {
   providers?: ModelOptionProvider[];
 }
 
+interface ExpensiveModelConfirmResponse {
+  confirm_message?: string;
+  confirm_required?: boolean;
+  warning?: string;
+}
+
+interface ConfigSetResponse extends ExpensiveModelConfirmResponse {
+  value?: string;
+}
+
+interface PendingExpensiveConfirm {
+  message: string;
+  model: string;
+  persistGlobal: boolean;
+  provider: string;
+}
+
 interface Props {
-  /** Chat-mode: when present, picker emits a slash command via onSubmit.
-   *  May return a promise — when it does, confirm() awaits it and surfaces a
-   *  rejection inline (dialog stays open) instead of closing as if it worked. */
+  /** Chat-mode: when present, the picker applies the switch itself via the
+   *  gateway (config.set), including the expensive-model confirmation flow. */
   gw?: GatewayClient;
   sessionId?: string;
+  /** Legacy fallback when no gw/session is available: emits the `/model` slash
+   *  command. May return a promise — applySelection() awaits it and surfaces a
+   *  rejection inline (dialog stays open) instead of closing as if it worked. */
   onSubmit?(slashCommand: string): Promise<void> | void;
+  /** A benign post-switch advisory (the switch DID succeed — e.g. an
+   *  auto-corrected or non-recommended model). Hosts surface it as a toast. */
+  onWarning?(message: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
   loader?(): Promise<ModelOptionsResponse>;
   onApply?(args: {
+    confirmExpensiveModel?: boolean;
     provider: string;
     model: string;
     persistGlobal: boolean;
-  }): Promise<void> | void;
+  }):
+    | Promise<ExpensiveModelConfirmResponse | void>
+    | ExpensiveModelConfirmResponse
+    | void;
 
   onClose(): void;
   title?: string;
@@ -74,6 +100,7 @@ export function ModelPickerDialog(props: Props) {
     gw,
     sessionId,
     onSubmit,
+    onWarning,
     loader,
     onApply,
     onClose,
@@ -96,6 +123,8 @@ export function ModelPickerDialog(props: Props) {
   const [query, setQuery] = useState("");
   const [persistGlobal, setPersistGlobal] = useState(alwaysGlobal);
   const [applying, setApplying] = useState(false);
+  const [pendingConfirm, setPendingConfirm] =
+    useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
 
   // Load providers + models on open.
@@ -185,29 +214,76 @@ export function ModelPickerDialog(props: Props) {
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
 
-  // Both modes funnel through one await/try-catch so a failed switch surfaces
-  // the same way: standalone awaits onApply (REST), chat-mode awaits onSubmit
-  // (which runs the `/model` slash command through the gateway and rejects on a
-  // rejected switch / RPC error). On failure the dialog stays open with the
-  // error shown inline; it only closes once the switch actually took effect.
-  const confirm = async () => {
-    if (!canConfirm || !selectedProvider) return;
-    if (!onApply && !onSubmit) return;
+  // All three modes funnel through one await/try-catch so a failed switch
+  // surfaces the same way: standalone awaits onApply (REST), chat-mode awaits
+  // config.set through the gateway (which may demand an expensive-model
+  // confirmation), and the legacy onSubmit fallback awaits the `/model` slash
+  // command. On failure the dialog stays open with the error shown inline in
+  // the footer; it only closes once the switch actually took effect. A benign
+  // post-switch advisory (e.g. an auto-corrected model) fires onWarning so the
+  // host can toast it without blocking the close.
+  const applySelection = async (
+    confirmExpensiveModel = false,
+    forced?: PendingExpensiveConfirm,
+  ) => {
+    const providerSlug = forced?.provider ?? selectedProvider?.slug ?? "";
+    const model = forced?.model ?? selectedModel;
+    const shouldPersistGlobal = forced?.persistGlobal ?? persistGlobal;
+
+    if (!providerSlug || !model || applying) return;
+    if (!onApply && !onSubmit && !(gw && sessionId)) return;
 
     setSubmitError(null);
     setApplying(true);
     try {
       if (standalone && onApply) {
-        await onApply({
-          provider: selectedProvider.slug,
-          model: selectedModel,
-          persistGlobal,
+        const result = await onApply({
+          confirmExpensiveModel,
+          provider: providerSlug,
+          model,
+          persistGlobal: shouldPersistGlobal,
         });
+        if (result?.confirm_required) {
+          setPendingConfirm({
+            provider: providerSlug,
+            model,
+            persistGlobal: shouldPersistGlobal,
+            message:
+              result.confirm_message ||
+              result.warning ||
+              "This model has unusually high known pricing.",
+          });
+          return;
+        }
+        if (result?.warning) {
+          onWarning?.(result.warning);
+        }
+      } else if (gw && sessionId) {
+        const global = shouldPersistGlobal ? " --global" : "";
+        const result = await gw.request<ConfigSetResponse>("config.set", {
+          confirm_expensive_model: confirmExpensiveModel,
+          key: "model",
+          session_id: sessionId,
+          value: `${model} --provider ${providerSlug}${global}`,
+        });
+        if (result?.confirm_required) {
+          setPendingConfirm({
+            provider: providerSlug,
+            model,
+            persistGlobal: shouldPersistGlobal,
+            message:
+              result.confirm_message ||
+              result.warning ||
+              "This model has unusually high known pricing.",
+          });
+          return;
+        }
+        if (result?.warning) {
+          onWarning?.(result.warning);
+        }
       } else if (onSubmit) {
-        const global = persistGlobal ? " --global" : "";
-        await onSubmit(
-          `/model ${selectedModel} --provider ${selectedProvider.slug}${global}`,
-        );
+        const global = shouldPersistGlobal ? " --global" : "";
+        await onSubmit(`/model ${model} --provider ${providerSlug}${global}`);
       }
       onClose();
     } catch (e) {
@@ -215,6 +291,11 @@ export function ModelPickerDialog(props: Props) {
     } finally {
       setApplying(false);
     }
+  };
+
+  const confirm = () => {
+    if (!canConfirm) return;
+    void applySelection();
   };
 
   // Portal to document.body: the main dashboard column in App.tsx is
@@ -293,8 +374,12 @@ export function ModelPickerDialog(props: Props) {
             onSelect={setSelectedModel}
             onConfirm={(m) => {
               setSelectedModel(m);
-              // Confirm on next tick so state settles.
-              window.setTimeout(confirm, 0);
+              void applySelection(false, {
+                provider: selectedProvider?.slug ?? "",
+                model: m,
+                persistGlobal,
+                message: "",
+              });
             }}
           />
         </div>
@@ -343,6 +428,22 @@ export function ModelPickerDialog(props: Props) {
           </div>
         </footer>
       </div>
+      <ConfirmDialog
+        open={!!pendingConfirm}
+        title="Expensive Model Warning"
+        description={pendingConfirm?.message}
+        destructive
+        confirmLabel="Switch anyway"
+        cancelLabel="Cancel"
+        loading={applying}
+        onCancel={() => setPendingConfirm(null)}
+        onConfirm={() => {
+          const pending = pendingConfirm;
+          if (!pending) return;
+          setPendingConfirm(null);
+          void applySelection(true, pending);
+        }}
+      />
     </div>,
     document.body,
   );

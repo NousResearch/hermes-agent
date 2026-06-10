@@ -215,7 +215,17 @@ export const ja = defineLocale({
       technical: 'テクニカル',
       technicalDesc: '生のツール引数、結果、低レベルの詳細を含めます。',
       themeTitle: 'テーマ',
-      themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。'
+      themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
+      themeProfileNote: profile => `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      installTitle: 'VS Code から導入',
+      installDesc: 'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'インストール',
+      installing: 'インストール中…',
+      installError: 'そのテーマをインストールできませんでした。',
+      installed: name => `「${name}」をインストールしました。`,
+      removeTheme: 'テーマを削除',
+      importedBadge: 'インポート済み'
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -239,7 +249,11 @@ export const ja = defineLocale({
         backend: '実行バックエンド',
         timeout: 'コマンドタイムアウト',
         persistentShell: '永続シェル',
-        envPassthrough: '環境変数の引き継ぎ'
+        envPassthrough: '環境変数の引き継ぎ',
+        dockerImage: 'Docker イメージ',
+        singularityImage: 'Singularity イメージ',
+        modalImage: 'Modal イメージ',
+        daytonaImage: 'Daytona イメージ'
       },
       fileReadMaxChars: 'ファイル読み取り上限',
       toolOutput: {
@@ -280,6 +294,15 @@ export const ja = defineLocale({
           model: 'ローカル文字起こしモデル',
           language: '文字起こし言語'
         },
+        openai: {
+          model: 'OpenAI STT モデル'
+        },
+        groq: {
+          model: 'Groq STT モデル'
+        },
+        mistral: {
+          model: 'Mistral STT モデル'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT モデル',
           languageCode: 'ElevenLabs 言語',
@@ -299,6 +322,33 @@ export const ja = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 音声',
           modelId: 'ElevenLabs モデル'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 音声',
+          language: 'xAI 言語'
+        },
+        minimax: {
+          model: 'MiniMax TTS モデル',
+          voiceId: 'MiniMax 音声'
+        },
+        mistral: {
+          model: 'Mistral TTS モデル',
+          voiceId: 'Mistral 音声'
+        },
+        gemini: {
+          model: 'Gemini TTS モデル',
+          voice: 'Gemini 音声'
+        },
+        neutts: {
+          model: 'NeuTTS モデル',
+          device: 'NeuTTS デバイス'
+        },
+        kittentts: {
+          model: 'KittenTTS モデル',
+          voice: 'KittenTTS 音声'
+        },
+        piper: {
+          voice: 'Piper 音声'
         }
       },
       memory: {
@@ -721,6 +771,17 @@ export const ja = defineLocale({
     settings: '設定',
     changeTheme: 'テーマを変更...',
     changeColorMode: 'カラーモードを変更...',
+    installTheme: {
+      title: 'テーマをインストール...',
+      placeholder: 'VS Code Marketplace を検索...',
+      loading: 'Marketplace を検索中...',
+      error: 'Marketplace に接続できませんでした。',
+      empty: '一致するテーマがありません。',
+      install: 'インストール',
+      installing: 'インストール中...',
+      installed: 'インストール済み',
+      installs: count => `${count} 回インストール`
+    },
     settingsFields: '設定フィールド',
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
@@ -999,8 +1060,6 @@ export const ja = defineLocale({
   cron: {
     close: 'Cron を閉じる',
     search: 'Cron ジョブを検索...',
-    refresh: 'Cron ジョブを更新',
-    refreshing: 'Cron ジョブを更新中',
     loading: 'Cron ジョブを読み込み中...',
     states: {
       enabled: '有効',
@@ -1053,9 +1112,7 @@ export const ja = defineLocale({
     monthlyOnDayAt: (dayOfMonth, time) => `毎月 ${dayOfMonth} 日 ${time} に`,
     topOfHour: '毎時 0 分',
     everyHourAt: minute => `毎時 :${minute} に`,
-    active: (enabled, total) => `${enabled}/${total} 有効`,
     newCron: '新しい Cron',
-    createFirst: '最初の Cron を作成',
     emptyDescNew:
       'Cron 式でプロンプトを実行するスケジュールを設定します。Hermes が実行して、選択した宛先に結果を送信します。',
     emptyDescSearch: '検索キーワードを広げてください。',
@@ -1063,6 +1120,11 @@ export const ja = defineLocale({
     emptyTitleSearch: '一致なし',
     last: '前回',
     next: '次回',
+    noRuns: 'まだ実行されていません',
+    manage: '管理',
+    showRuns: '実行履歴を表示',
+    hideRuns: '実行履歴を隠す',
+    runHistory: '実行履歴',
     actionsFor: title => `${title} のアクション`,
     actionsTitle: 'Cron ジョブのアクション',
     resume: '再開',
@@ -1155,6 +1217,7 @@ export const ja = defineLocale({
     results: '結果',
     pinned: 'ピン留め',
     sessions: 'セッション',
+    cronJobs: 'Cronジョブ',
     groupAriaGrouped: 'セッションを単一リストとして表示',
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     groupTitleGrouped: 'セッションのグループ化を解除',
@@ -1175,12 +1238,14 @@ export const ja = defineLocale({
       export: 'エクスポート',
       rename: '名前を変更',
       archive: 'アーカイブ',
+      newWindow: '新しいウィンドウ',
       copyIdFailed: 'セッション ID をコピーできませんでした',
       actionsFor: title => `${title} のアクション`,
       sessionActions: 'セッションアクション',
       sessionRunning: 'セッション実行中',
       needsInput: '入力が必要です',
       waitingForAnswer: '回答を待っています',
+      handoffOrigin: platform => `${platform} から引き継ぎ`,
       renamed: '名前を変更しました',
       renameFailed: '名前の変更に失敗しました',
       renameTitle: 'セッションの名前を変更',
@@ -1336,9 +1401,13 @@ export const ja = defineLocale({
     unsupportedMessage: 'このバージョンの Hermes はアプリ内から自分を更新できません。',
     connectionRetry: '接続を確認してもう一度試してください。',
     latestBody: '最新バージョンを実行しています。',
+    latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',
     availableTitle: '新しい更新が利用可能',
     availableBody: '新しいバージョンの Hermes をインストールする準備ができています。',
+    availableTitleBackend: 'バックエンドの更新があります',
+    availableBodyBackend: '接続中の Hermes バックエンドの新しいバージョンをインストールできます。',
+    availableBodyNoChangelog: '新しいバージョンを利用できます。このインストール形式ではリリースノートは表示できません。',
     updateNow: '今すぐ更新',
     maybeLater: '後で',
     moreChanges: count => `さらに ${count} 件の変更が含まれています。`,
@@ -1350,10 +1419,19 @@ export const ja = defineLocale({
     copied: 'コピーしました',
     done: '完了',
     applyingBody: 'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に Hermes を再度開きます。',
+    applyingBodyBackend: 'リモートバックエンドが更新を適用して再起動します。復帰すると Hermes が自動的に再接続します。',
     applyingClose: 'Hermes は更新を適用するために閉じます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
-    notNow: '今は後で'
+    notNow: '今は後で',
+    applyStatus: {
+      preparing: 'バックエンドを更新しています…',
+      pulling: 'バックエンドを更新中…',
+      restarting: 'バックエンドが更新を読み込むため再起動しています…',
+      notAvailable: 'このバックエンドでは更新を利用できません。',
+      failed: 'バックエンドの更新に失敗しました。',
+      noReturn: 'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
+    }
   },
 
   install: {
@@ -1540,10 +1618,15 @@ export const ja = defineLocale({
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `${branch} より ${count} コミット遅れています`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `バックエンド v${version}`,
+      clientLabel: version => `クライアント v${version}`,
+      backendLabel: version => `バックエンド v${version}`,
       commit: sha => `コミット ${sha}`,
       branch: branch => `ブランチ ${branch}`,
       closeCommandCenter: 'コマンドセンターを閉じる',
       openCommandCenter: 'コマンドセンターを開く',
+      showTerminal: 'ターミナルを表示',
+      hideTerminal: 'ターミナルを非表示',
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
@@ -1564,8 +1647,8 @@ export const ja = defineLocale({
       contextUsage: 'コンテキスト使用状況',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
-      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。',
-      yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。',
+      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
+      yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',
       noModel: 'モデルなし',
       switchModel: 'モデルを切り替え',
@@ -1599,8 +1682,7 @@ export const ja = defineLocale({
     tryAgain: '再試行',
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
-    terminalFocus: 'ターミナルビューにフォーカス',
-    terminalSplit: '分割ビューに戻る',
+    terminalHide: 'ターミナルを非表示',
     addToChat: 'チャットに追加'
   },
 
@@ -1706,7 +1788,8 @@ export const ja = defineLocale({
       restoreCheckpoint: 'チェックポイントを復元',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
-      sendEdited: '編集済みメッセージを送信'
+      sendEdited: '編集済みメッセージを送信',
+      attachingFile: '添付中…'
     },
     approval: {
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',

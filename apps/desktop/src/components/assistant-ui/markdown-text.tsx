@@ -17,6 +17,8 @@ import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   filePathFromMediaPath,
+  gatewayMediaDataUrl,
+  isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
@@ -49,6 +51,12 @@ async function mediaSrc(path: string): Promise<string> {
   // load the whole file into memory, which broke playback for larger videos.
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
     return mediaStreamUrl(path)
+  }
+
+  // Remote gateway: the image lives on the gateway machine, so read it over the
+  // authenticated API rather than this machine's disk.
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -417,7 +425,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
             <table
               className={cn(
-                'm-0 w-full border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+                'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
                 className
               )}
               {...props}
@@ -430,7 +438,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         th: ({ className, ...props }: ComponentProps<'th'>) => (
           <th
             className={cn(
-              'px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+              'whitespace-nowrap px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
               className
             )}
             {...props}
@@ -486,11 +494,9 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
 
 const MarkdownTextImpl = () => {
   return (
-    <SmoothStreamingText>
-      <DeferStreamingText>
-        <MarkdownTextSurface />
-      </DeferStreamingText>
-    </SmoothStreamingText>
+    <DeferStreamingText>
+      <MarkdownTextSurface />
+    </DeferStreamingText>
   )
 }
 

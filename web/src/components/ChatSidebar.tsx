@@ -126,7 +126,11 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         if (cancelled) {
           return;
         }
-        return gw.request<{ session_id: string }>("session.create", {});
+        // close_on_disconnect: the gateway reaps this sidecar session (and its
+        // slash_worker subprocess) when the WS drops, instead of leaking it.
+        return gw.request<{ session_id: string }>("session.create", {
+          close_on_disconnect: true,
+        });
       })
       .then((created) => {
         if (cancelled || !created?.session_id) {
@@ -294,44 +298,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     setVersion((v) => v + 1);
   }, []);
 
-  // Picker hands us a fully-formed slash command (e.g. "/model anthropic/...").
-  // We AWAIT slash.exec and surface failures instead of firing-and-forgetting:
-  //   - the WS rejects (not connected / timeout) or the RPC returns an error
-  //     → the promise rejects;
-  //   - the switch is rejected by the backend (e.g. an unavailable model) →
-  //     it resolves with a structured `error` field (the live-agent sync
-  //     failed even though the RPC itself succeeded — see slash.exec in
-  //     tui_gateway/server.py).
-  // In both cases we throw so the picker keeps the dialog open and shows the
-  // reason; on success the badge updates from the `session.info` event the
-  // backend emits, and any benign `warning` is shown as a toast. Returning the
-  // promise lets ModelPickerDialog.confirm() await + catch it.
-  const onModelSubmit = useCallback(
-    async (slashCommand: string) => {
-      if (!sessionId) {
-        throw new Error("no active session — reconnect and try again");
-      }
-
-      const result = await gw.request<{
-        output?: string;
-        warning?: string;
-        error?: string;
-      }>("slash.exec", {
-        session_id: sessionId,
-        command: slashCommand,
-      });
-
-      if (result?.error) {
-        throw new Error(result.error);
-      }
-
-      if (result?.warning) {
-        showToast(result.warning, "success");
-      }
-    },
-    [gw, sessionId, showToast],
-  );
-
   const canPickModel = state === "open" && !!sessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
   const banner = error ?? info.credential_warning ?? null;
@@ -412,7 +378,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           gw={gw}
           sessionId={sessionId}
           onClose={() => setModelOpen(false)}
-          onSubmit={onModelSubmit}
+          onWarning={(message) => showToast(message, "success")}
         />
       )}
 

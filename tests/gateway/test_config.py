@@ -1,5 +1,6 @@
 """Tests for gateway configuration management."""
 
+import logging
 import os
 from unittest.mock import patch
 
@@ -213,6 +214,43 @@ class TestGatewayConfigRoundtrip:
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
 
+    def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
+        assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
+        assert GatewayConfig.from_dict({"max_concurrent_sessions": None}).max_concurrent_sessions is None
+        assert GatewayConfig.from_dict({"max_concurrent_sessions": 0}).max_concurrent_sessions is None
+        assert GatewayConfig.from_dict({"max_concurrent_sessions": -1}).max_concurrent_sessions is None
+
+    def test_max_concurrent_sessions_from_dict_accepts_positive_integer(self):
+        config = GatewayConfig.from_dict({"max_concurrent_sessions": "3"})
+
+        assert config.max_concurrent_sessions == 3
+
+    def test_max_concurrent_sessions_from_dict_ignores_invalid_values(self, caplog):
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+
+        config = GatewayConfig.from_dict({"max_concurrent_sessions": "many"})
+
+        assert config.max_concurrent_sessions is None
+        assert any(
+            "Ignoring invalid max_concurrent_sessions='many'" in record.message
+            for record in caplog.records
+        )
+
+    def test_max_concurrent_sessions_from_dict_accepts_nested_fallback(self):
+        config = GatewayConfig.from_dict({"gateway": {"max_concurrent_sessions": 4}})
+
+        assert config.max_concurrent_sessions == 4
+
+    def test_max_concurrent_sessions_top_level_overrides_nested(self):
+        config = GatewayConfig.from_dict(
+            {
+                "gateway": {"max_concurrent_sessions": 4},
+                "max_concurrent_sessions": 2,
+            }
+        )
+
+        assert config.max_concurrent_sessions == 2
+
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             unauthorized_dm_behavior="ignore",
@@ -308,6 +346,51 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is False
+
+    def test_bridges_top_level_max_concurrent_sessions_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("max_concurrent_sessions: 2\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_concurrent_sessions == 2
+
+    def test_bridges_nested_max_concurrent_sessions_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  max_concurrent_sessions: 3\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_concurrent_sessions == 3
+
+    def test_top_level_max_concurrent_sessions_overrides_nested_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "max_concurrent_sessions: 2\n"
+            "gateway:\n"
+            "  max_concurrent_sessions: 3\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_concurrent_sessions == 2
 
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""

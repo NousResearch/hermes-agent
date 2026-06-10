@@ -3903,3 +3903,106 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
+
+
+class TestListCronJobRuns:
+    """``list_cron_job_runs`` powers the desktop cron run-history endpoint.
+
+    It must scope to exactly one job's runs via an id prefix range (not a
+    substring), order newest-first, enrich with preview/last_active, and stay
+    bounded by the requested window rather than the whole cron history.
+    """
+
+    def _seed_run(self, db, job_id: str, idx: int, started_at: float):
+        sid = f"cron_{job_id}_{idx:08d}"
+        db.create_session(session_id=sid, source="cron")
+        db.append_message(sid, role="user", content=f"run {idx} for {job_id}")
+        db.append_message(sid, role="assistant", content="done")
+        db.end_session(sid, "completed")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (started_at, sid)
+        )
+        db._conn.commit()
+        return sid
+
+    def test_scopes_to_job_newest_first_and_enriched(self, db):
+        base = 1_700_000_000.0
+        # Target job: 5 runs, ascending started_at.
+        for i in range(5):
+            self._seed_run(db, "alpha", i, base + i * 60)
+        # A different job that must not leak in.
+        for i in range(3):
+            self._seed_run(db, "beta", i, base + i * 60)
+
+        runs = db.list_cron_job_runs("alpha", limit=20)
+
+        assert len(runs) == 5
+        assert all(r["id"].startswith("cron_alpha_") for r in runs)
+        # Newest started_at first.
+        sts = [r["started_at"] for r in runs]
+        assert sts == sorted(sts, reverse=True)
+        # Enriched like list_sessions_rich.
+        assert runs[0]["preview"].startswith("run 4 for alpha")
+        assert runs[0]["last_active"] >= runs[0]["started_at"]
+
+    def test_prefix_match_excludes_substring_collision(self, db):
+        """A job whose id contains the target id as a substring must not leak.
+
+        The old code used a leading-wildcard ``LIKE %cron_<id>_%`` which would
+        also match ``cron_xalpha_...``; the range scan binds to the true prefix.
+        """
+        base = 1_700_000_000.0
+        self._seed_run(db, "alpha", 0, base)
+        # Collision: id is "xalpha", which contains "alpha".
+        self._seed_run(db, "xalpha", 0, base + 10)
+        # Collision the other way: id "alpha2" extends past the underscore.
+        self._seed_run(db, "alpha2", 0, base + 20)
+
+        runs = db.list_cron_job_runs("alpha", limit=20)
+
+        assert [r["id"] for r in runs] == ["cron_alpha_00000000"]
+
+    def test_ignores_non_cron_sessions(self, db):
+        base = 1_700_000_000.0
+        self._seed_run(db, "alpha", 0, base)
+        # A non-cron session whose id happens to share the prefix shape.
+        db.create_session(session_id="cron_alpha_99999999", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (base + 100, "cron_alpha_99999999"),
+        )
+        db._conn.commit()
+
+        runs = db.list_cron_job_runs("alpha", limit=20)
+
+        assert [r["id"] for r in runs] == ["cron_alpha_00000000"]
+
+    def test_limit_and_offset_paging(self, db):
+        base = 1_700_000_000.0
+        for i in range(10):
+            self._seed_run(db, "alpha", i, base + i * 60)
+
+        page1 = db.list_cron_job_runs("alpha", limit=4, offset=0)
+        page2 = db.list_cron_job_runs("alpha", limit=4, offset=4)
+
+        assert len(page1) == 4
+        assert len(page2) == 4
+        assert {r["id"] for r in page1}.isdisjoint({r["id"] for r in page2})
+        # Combined window is still newest-first and contiguous.
+        combined = [r["started_at"] for r in page1 + page2]
+        assert combined == sorted(combined, reverse=True)
+
+    def test_uses_index_range_scan(self, db):
+        """The query must use the (source, id) index, not a full table scan."""
+        prefix = "cron_alpha_"
+        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT s.* FROM sessions s "
+            "WHERE s.source = 'cron' AND s.id >= ? AND s.id < ? "
+            "ORDER BY s.started_at DESC LIMIT 20",
+            (prefix, prefix_hi),
+        ).fetchall()
+        detail = " ".join(row[-1] for row in plan)
+        assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
+        assert "idx_sessions_source" in detail, detail

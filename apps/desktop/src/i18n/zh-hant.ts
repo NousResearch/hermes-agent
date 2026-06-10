@@ -209,7 +209,17 @@ export const zhHant = defineLocale({
       technical: '技術',
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
-      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
+      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      installTitle: '從 VS Code 安裝',
+      installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安裝',
+      installing: '安裝中…',
+      installError: '無法安裝該主題。',
+      installed: name => `已安裝「${name}」。`,
+      removeTheme: '移除主題',
+      importedBadge: '已匯入'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -233,7 +243,11 @@ export const zhHant = defineLocale({
         backend: '執行後端',
         timeout: '指令逾時',
         persistentShell: '持久化 Shell',
-        envPassthrough: '環境變數傳遞'
+        envPassthrough: '環境變數傳遞',
+        dockerImage: 'Docker 映像',
+        singularityImage: 'Singularity 映像',
+        modalImage: 'Modal 映像',
+        daytonaImage: 'Daytona 映像'
       },
       fileReadMaxChars: '檔案讀取上限',
       toolOutput: {
@@ -274,6 +288,15 @@ export const zhHant = defineLocale({
           model: '本機轉寫模型',
           language: '轉寫語言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 語言',
@@ -293,6 +316,33 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 語音',
+          language: 'xAI 語言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 語音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 語音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 語音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 裝置'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 語音'
+        },
+        piper: {
+          voice: 'Piper 語音'
         }
       },
       memory: {
@@ -704,6 +754,17 @@ export const zhHant = defineLocale({
     settings: '設定',
     changeTheme: '變更主題...',
     changeColorMode: '變更色彩模式...',
+    installTheme: {
+      title: '安裝主題...',
+      placeholder: '搜尋 VS Code Marketplace...',
+      loading: '正在搜尋 Marketplace...',
+      error: '無法連接到 Marketplace。',
+      empty: '沒有符合的主題。',
+      install: '安裝',
+      installing: '安裝中...',
+      installed: '已安裝',
+      installs: count => `${count} 次安裝`
+    },
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
@@ -966,8 +1027,6 @@ export const zhHant = defineLocale({
   cron: {
     close: '關閉排程',
     search: '搜尋排程工作…',
-    refresh: '重新整理排程工作',
-    refreshing: '正在重新整理排程工作',
     loading: '正在載入排程工作…',
     states: {
       enabled: '已啟用',
@@ -1020,9 +1079,7 @@ export const zhHant = defineLocale({
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每個整點',
     everyHourAt: minute => `每小時的 :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} 個啟用`,
     newCron: '新排程工作',
-    createFirst: '建立第一個排程工作',
     emptyDescNew:
       '按 cron 表達式排程一個提示詞。Hermes 會執行它，並將結果傳送至您選擇的目的地。',
     emptyDescSearch: '請嘗試更廣泛的搜尋詞。',
@@ -1030,6 +1087,11 @@ export const zhHant = defineLocale({
     emptyTitleSearch: '無相符項目',
     last: '上次：',
     next: '下次：',
+    noRuns: '尚無執行',
+    manage: '管理',
+    showRuns: '顯示執行記錄',
+    hideRuns: '隱藏執行記錄',
+    runHistory: '執行記錄',
     actionsFor: title => `${title} 的動作`,
     actionsTitle: '排程工作動作',
     resume: '繼續',
@@ -1121,6 +1183,7 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
+    cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     groupTitleGrouped: '取消分組',
@@ -1141,12 +1204,14 @@ export const zhHant = defineLocale({
       export: '匯出',
       rename: '重新命名',
       archive: '封存',
+      newWindow: '新視窗',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
       sessionRunning: '工作階段執行中',
       needsInput: '需要您的輸入',
       waitingForAnswer: '等待您的回答',
+      handoffOrigin: platform => `從 ${platform} 轉接`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -1302,9 +1367,13 @@ export const zhHant = defineLocale({
     unsupportedMessage: '此版本的 Hermes 無法在應用程式內自行更新。',
     connectionRetry: '請檢查網路連線後重試。',
     latestBody: '您正在執行最新版本。',
+    latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安裝。',
+    availableTitleBackend: '後端有可用更新',
+    availableBodyBackend: '已連接的 Hermes 後端有新版本可安裝。',
+    availableBodyNoChangelog: '已有新版本可用。此安裝方式無法顯示更新日誌。',
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
@@ -1315,10 +1384,19 @@ export const zhHant = defineLocale({
     copied: '已複製',
     done: '完成',
     applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後重新開啟 Hermes。',
+    applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
     applyingClose: 'Hermes 將關閉以套用更新。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
-    notNow: '暫不'
+    notNow: '暫不',
+    applyStatus: {
+      preparing: '正在更新後端…',
+      pulling: '後端更新中…',
+      restarting: '後端正在重新啟動以載入更新…',
+      notAvailable: '此後端無法更新。',
+      failed: '後端更新失敗。',
+      noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
+    }
   },
 
   install: {
@@ -1501,10 +1579,15 @@ export const zhHant = defineLocale({
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `落後 ${branch} ${count} 個提交`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `後端 v${version}`,
+      clientLabel: version => `用戶端 v${version}`,
+      backendLabel: version => `後端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '關閉命令中心',
       openCommandCenter: '開啟命令中心',
+      showTerminal: '顯示終端機',
+      hideTerminal: '隱藏終端機',
       gateway: '閘道',
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
@@ -1525,8 +1608,8 @@ export const zhHant = defineLocale({
       contextUsage: '上下文使用量',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
-      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。',
-      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。',
+      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
+      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。Shift+點擊可全域切換。',
       modelNone: '無',
       noModel: '無模型',
       switchModel: '切換模型',
@@ -1560,8 +1643,7 @@ export const zhHant = defineLocale({
     tryAgain: '重試',
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
-    terminalFocus: '聚焦終端機檢視',
-    terminalSplit: '返回分割檢視',
+    terminalHide: '隱藏終端機',
     addToChat: '新增至聊天'
   },
 
@@ -1667,7 +1749,8 @@ export const zhHant = defineLocale({
       restoreCheckpoint: '還原檢查點',
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',
-      sendEdited: '傳送編輯後的訊息'
+      sendEdited: '傳送編輯後的訊息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 閘道未連線',

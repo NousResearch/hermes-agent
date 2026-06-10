@@ -890,6 +890,10 @@ def _cleanup_all_browsers(*args, **kwargs):
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
+# One-shot CLI finalization runs before process cleanup so plugins can observe
+# the session boundary while the agent is still attached. If a signal lands in
+# that narrow window, atexit cleanup must not emit that session finalize again.
+_single_query_finalize_attempted_session_ids: set[str | None] = set()
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 _deferred_agent_startup_done = False
@@ -989,11 +993,13 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     if notify_session_finalize:
-        _notify_session_finalize(
-            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
-            platform="cli",
-            reason="shutdown",
-        )
+        cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
+        if _should_emit_cleanup_session_finalize(cleanup_session_id):
+            _notify_session_finalize(
+                session_id=cleanup_session_id,
+                platform="cli",
+                reason="shutdown",
+            )
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             # Forward the agent's own transcript so memory providers'
@@ -1009,6 +1015,14 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
                 _active_agent_ref.shutdown_memory_provider()
     except Exception:
         pass
+
+
+def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
+    if not _single_query_finalize_attempted_session_ids:
+        return True
+    if session_id is None:
+        return False
+    return session_id not in _single_query_finalize_attempted_session_ids
 
 
 def _notify_session_finalize(
@@ -1068,11 +1082,17 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
 def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> None:
     agent = getattr(cli, "agent", None)
     session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
-    _notify_session_finalize(
-        session_id=session_id,
-        platform=getattr(agent, "platform", None) or "cli",
-        reason=reason,
-    )
+    if session_id in _single_query_finalize_attempted_session_ids:
+        return
+
+    try:
+        _notify_session_finalize(
+            session_id=session_id,
+            platform=getattr(agent, "platform", None) or "cli",
+            reason=reason,
+        )
+    finally:
+        _single_query_finalize_attempted_session_ids.add(session_id)
 
 
 def _finalize_single_query(cli) -> None:

@@ -181,7 +181,7 @@ def run_oneshot(
             run — even when the run fails — so pipelines can account for
             spend per invocation.
 
-    Returns the exit code.  Caller should sys.exit() with the return.
+    Returns the exit code.  The caller owns process termination.
     """
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
@@ -380,44 +380,75 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
-    # Read the effective fallback chain from profile config so oneshot workers
-    # honour the same merge semantics as interactive CLI and gateway sessions.
-    _fb = get_fallback_chain(cfg)
+    # The try spans agent construction (not just ``chat``) so the SQLite store
+    # opened above is always closed — including when ``AIAgent(...)`` itself
+    # raises on a provider/config error. The one-shot exit path hard-exits via
+    # os._exit and skips finalizers, so an un-closed connection here would leak.
+    agent = None
+    try:
+        # Read the effective fallback chain from profile config so oneshot
+        # workers honour the same merge semantics as interactive CLI and
+        # gateway sessions.
+        _fb = get_fallback_chain(cfg)
 
-    agent = AIAgent(
-        api_key=runtime.get("api_key"),
-        base_url=runtime.get("base_url"),
-        provider=runtime.get("provider"),
-        api_mode=runtime.get("api_mode"),
-        model=effective_model,
-        enabled_toolsets=toolsets_list,
-        quiet_mode=True,
-        platform="cli",
-        session_db=session_db,
-        credential_pool=runtime.get("credential_pool"),
-        fallback_model=_fb or None,
-        # Interactive callbacks are intentionally NOT wired beyond this
-        # one.  In oneshot mode there's no user sitting at a terminal:
-        #   - clarify  → returns a synthetic "pick a default" instruction
-        #                so the agent continues instead of stalling on
-        #                the tool's built-in "not available" error
-        #   - sudo password prompt → terminal_tool gates on
-        #                HERMES_INTERACTIVE which we never set
-        #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
-        #                (set above); also falls back to deny on non-tty
-        #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
-        #   - skill secret capture → returns gracefully when no callback set
-        clarify_callback=_oneshot_clarify_callback,
-    )
+        agent = AIAgent(
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            model=effective_model,
+            enabled_toolsets=toolsets_list,
+            quiet_mode=True,
+            platform="cli",
+            session_db=session_db,
+            credential_pool=runtime.get("credential_pool"),
+            fallback_model=_fb or None,
+            # Interactive callbacks are intentionally NOT wired beyond this
+            # one.  In oneshot mode there's no user sitting at a terminal:
+            #   - clarify  → returns a synthetic "pick a default" instruction
+            #                so the agent continues instead of stalling on
+            #                the tool's built-in "not available" error
+            #   - sudo password prompt → terminal_tool gates on
+            #                HERMES_INTERACTIVE which we never set
+            #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
+            #                (set above); also falls back to deny on non-tty
+            #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
+            #   - skill secret capture → returns gracefully when no callback set
+            clarify_callback=_oneshot_clarify_callback,
+        )
 
-    # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
-    # display callbacks that would bypass our stdout capture.
-    agent.suppress_status_output = True
-    agent.stream_delta_callback = None
-    agent.tool_gen_callback = None
+        # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
+        # display callbacks that would bypass our stdout capture.
+        agent.suppress_status_output = True
+        agent.stream_delta_callback = None
+        agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
-    return (result.get("final_response") or "", result)
+        result = agent.run_conversation(prompt)
+        return (result.get("final_response") or "", result)
+    finally:
+        if agent is not None:
+            try:
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+            except Exception:
+                logging.debug("oneshot memory/context cleanup failed", exc_info=True)
+            try:
+                agent.close()
+            except Exception:
+                logging.debug("oneshot agent cleanup failed", exc_info=True)
+        # Close the recall SQLite store we opened for this run. Message rows
+        # are committed synchronously during the turn, so nothing is lost, but
+        # the one-shot exit path hard-exits via os._exit and skips finalizers
+        # — close here so the connection (and its WAL) is checkpointed cleanly
+        # instead of relying on interpreter teardown.
+        if session_db is not None:
+            try:
+                session_db.close()
+            except Exception:
+                logging.debug("oneshot session store cleanup failed", exc_info=True)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

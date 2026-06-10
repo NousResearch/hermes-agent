@@ -161,6 +161,12 @@ except (ValueError, TypeError):
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+_LEONIDAS_PLAN_METHOD = "leonidas.plan"
+_LEONIDAS_PLAN_PROTOCOL_V1 = "leonidas.hermes.plan.v1"
+_LEONIDAS_FEATURE_FLAGS = {
+    "semantic_projection_input": False,
+    "improvement_propose": False,
+}
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -793,6 +799,32 @@ def _ok(rid, result: dict) -> dict:
 
 def _err(rid, code: int, msg: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
+
+
+def _leonidas_capabilities_payload() -> dict:
+    """Build the Leonidas gateway capability envelope."""
+    methods = {_LEONIDAS_PLAN_METHOD: [_LEONIDAS_PLAN_PROTOCOL_V1]}
+    features = dict(_LEONIDAS_FEATURE_FLAGS)
+
+    if not all(
+        isinstance(method_name, str)
+        and method_name
+        and isinstance(versions, list)
+        and versions
+        and all(isinstance(version, str) and version for version in versions)
+        for method_name, versions in methods.items()
+    ):
+        raise ValueError("invalid Leonidas capability methods")
+
+    if not all(
+        isinstance(feature_name, str)
+        and feature_name
+        and isinstance(enabled, bool)
+        for feature_name, enabled in features.items()
+    ):
+        raise ValueError("invalid Leonidas capability features")
+
+    return {"methods": methods, "features": features}
 
 
 def method(name: str):
@@ -7980,6 +8012,15 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as e:
         return _err(rid, 5020, str(e))
+
+
+@method("leonidas.capabilities")
+def _(rid, params: dict) -> dict:
+    """Report Leonidas-specific protocol support exposed by this fork."""
+    try:
+        return _ok(rid, _leonidas_capabilities_payload())
+    except Exception as e:
+        return _err(rid, 5036, str(e))
 
 
 @method("model.options")

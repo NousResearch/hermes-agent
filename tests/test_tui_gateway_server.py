@@ -359,6 +359,38 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_leonidas_capabilities_returns_structured_result():
+    resp = server.dispatch({"id": "1", "method": "leonidas.capabilities"})
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "methods": {"leonidas.plan": ["leonidas.hermes.plan.v1"]},
+            "features": {
+                "semantic_projection_input": False,
+                "improvement_propose": False,
+            },
+        },
+    }
+
+
+def test_leonidas_capabilities_fails_closed_when_payload_build_fails(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_leonidas_capabilities_payload",
+        lambda: (_ for _ in ()).throw(RuntimeError("capabilities unavailable")),
+    )
+
+    resp = server.dispatch({"id": "1", "method": "leonidas.capabilities"})
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "error": {"code": 5036, "message": "capabilities unavailable"},
+    }
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,

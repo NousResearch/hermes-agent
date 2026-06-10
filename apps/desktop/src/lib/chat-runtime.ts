@@ -46,7 +46,8 @@ export function createClientSessionState(
     sawAssistantPayload: false,
     pendingBranchGroup: null,
     interrupted: false,
-    needsInput: false
+    needsInput: false,
+    turnStartedAt: null
   }
 }
 

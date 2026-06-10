@@ -145,6 +145,30 @@ export interface DesktopVersionInfo {
   hermesRoot: string
 }
 
+export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
+
+export interface DesktopUninstallSummary {
+  hermes_home: string
+  agent_installed: boolean
+  gui_installed: boolean
+  source_built_artifacts: string[]
+  packaged_app_paths: string[]
+  userdata_dir: string
+  userdata_exists: boolean
+  platform: string
+  running_app_path?: null | string
+  probe?: string
+}
+
+export interface DesktopUninstallResult {
+  ok: boolean
+  mode?: DesktopUninstallMode
+  willRemoveAppBundle?: boolean
+  scriptPath?: string
+  error?: string
+  message?: string
+}
+
 export interface DesktopUpdateCommit {
   sha: string
   summary: string

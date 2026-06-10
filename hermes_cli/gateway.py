@@ -641,7 +641,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     #
     # ``windows_detach_popen_kwargs()`` returns the right kwargs for the
     # host platform and is a no-op on POSIX (just ``start_new_session=True``).
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from hermes_cli._subprocess_compat import (
+        windows_detach_flags_without_breakaway,
+        windows_detach_popen_kwargs,
+    )
 
     watcher = textwrap.dedent(
         """
@@ -664,6 +667,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         # Platform-appropriate detach for the respawned gateway.  On POSIX
         # start_new_session=True maps to os.setsid; on Windows we need
         # explicit creationflags because start_new_session is a no-op there.
+        # CREATE_BREAKAWAY_FROM_JOB is critical: the watcher itself may have
+        # been spawned inside a job object (Electron/Tauri parent), and
+        # without breakaway the respawned gateway would die when that job
+        # tears down. See _subprocess_compat.windows_detach_flags().
         _popen_kwargs = {
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
@@ -672,32 +679,67 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
             _CREATE_NEW_PROCESS_GROUP = 0x00000200
             _DETACHED_PROCESS = 0x00000008
             _CREATE_NO_WINDOW = 0x08000000
-            _popen_kwargs["creationflags"] = (
-                _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
+            _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+            _flags = (
+                _CREATE_NEW_PROCESS_GROUP
+                | _DETACHED_PROCESS
+                | _CREATE_NO_WINDOW
+                | _CREATE_BREAKAWAY_FROM_JOB
             )
+            try:
+                _popen_kwargs["creationflags"] = _flags
+                subprocess.Popen(cmd, **_popen_kwargs)
+            except OSError:
+                # CREATE_BREAKAWAY_FROM_JOB can be rejected with
+                # ERROR_ACCESS_DENIED when the parent's job object refuses
+                # breakaway. Retry without it — DETACHED_PROCESS et al.
+                # alone are enough in most setups. Mirrors the canonical
+                # fallback in gateway_windows._spawn_detached.
+                _popen_kwargs["creationflags"] = _flags & ~_CREATE_BREAKAWAY_FROM_JOB
+                subprocess.Popen(cmd, **_popen_kwargs)
         else:
             _popen_kwargs["start_new_session"] = True
-        subprocess.Popen(cmd, **_popen_kwargs)
+            subprocess.Popen(cmd, **_popen_kwargs)
         """
     ).strip()
 
+    watcher_argv = [
+        sys.executable,
+        "-c",
+        watcher,
+        str(old_pid),
+        *_gateway_run_args_for_profile(profile),
+    ]
+
+    # Same platform-aware detach for the watcher process itself — so
+    # closing the user's terminal doesn't kill the watcher.
     try:
-        # Same platform-aware detach for the watcher process itself — so
-        # closing the user's terminal doesn't kill the watcher.
         subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                watcher,
-                str(old_pid),
-                *_gateway_run_args_for_profile(profile),
-            ],
+            watcher_argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
-        return False
+        # CREATE_BREAKAWAY_FROM_JOB rejected by the parent job object
+        # (Electron, Windows Terminal with restrictive job settings, …).
+        # Retry without it. POSIX never reaches this branch — there
+        # ``start_new_session=True`` cannot raise OSError — so the
+        # fallback is only meaningful on Windows.
+        try:
+            fallback_kwargs: dict = (
+                {"creationflags": windows_detach_flags_without_breakaway()}
+                if sys.platform == "win32"
+                else {"start_new_session": True}
+            )
+            subprocess.Popen(
+                watcher_argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **fallback_kwargs,
+            )
+        except OSError:
+            return False
     return True
 
 
@@ -2427,6 +2469,29 @@ def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+# Directives that older systemd versions silently ignore/strip.  Normalize
+# them out of stale-check comparisons so a unit that differs only by these
+# directives is not perpetually flagged as outdated.
+_SYSTEMD_OPTIONAL_DIRECTIVES = (
+    "RestartMaxDelaySec",
+    "RestartSteps",
+)
+
+
+def _strip_optional_systemd_directives(text: str) -> str:
+    """Remove systemd directives that older hosts silently drop."""
+    lines = text.splitlines()
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            key = stripped.split("=", 1)[0].strip()
+            if key in _SYSTEMD_OPTIONAL_DIRECTIVES:
+                continue
+        filtered.append(line)
+    return "\n".join(filtered)
+
+
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
     """Normalize launchd plist text for staleness checks.
 
@@ -2454,9 +2519,16 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
-    return _normalize_service_definition(installed) == _normalize_service_definition(
-        expected
+    # Normalize out directives that older systemd versions silently drop
+    # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
+    # those directives is not perpetually flagged as outdated.
+    norm_installed = _normalize_service_definition(
+        _strip_optional_systemd_directives(installed)
     )
+    norm_expected = _normalize_service_definition(
+        _strip_optional_systemd_directives(expected)
+    )
+    return norm_installed == norm_expected
 
 
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:

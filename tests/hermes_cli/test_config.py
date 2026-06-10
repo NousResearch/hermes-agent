@@ -560,6 +560,29 @@ class TestSanitizeEnvLines:
             fixes = sanitize_env_file()
             assert fixes == 0
 
+    def test_sanitize_env_file_preserves_existing_file_mode_on_posix(self, tmp_path):
+        """sanitize_env_file rewrites the .env in place, so an operator-set
+        mode (e.g. 0640 for a Docker bind-mount) must survive the rewrite
+        rather than being clobbered to 0600 by _secure_file. Mirrors the
+        save_env_value / remove_env_value preservation (#33699 / #43349).
+        """
+        if os.name == "nt":
+            return
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "FAL_KEY=good\n"
+            "OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n"
+        )
+        os.chmod(env_file, 0o640)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+
+        assert fixes > 0  # a rewrite actually happened
+        env_mode = env_file.stat().st_mode & 0o777
+        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+
 
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""

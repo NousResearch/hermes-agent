@@ -5,6 +5,25 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clear_api_models_memo():
+    """Reset the short-TTL fetch_api_models memo between tests.
+
+    ``hermes_cli.models._fetch_api_models_memo`` keeps a 30s in-process
+    memo of live /models probes so repeated /model picker opens don't
+    re-pay HTTP roundtrips. Entries are already pinned to the exact
+    ``fetch_api_models`` function object that produced them (so one
+    test's monkeypatched fake can never satisfy another's), but clearing
+    before every test keeps the suite order-independent regardless.
+    """
+    try:
+        from hermes_cli.models import clear_api_models_memo
+        clear_api_models_memo()
+    except Exception:
+        pass
+    yield
+
+
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.

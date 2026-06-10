@@ -907,3 +907,98 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestFetchApiModelsMemo:
+    """Short-TTL in-process memo around fetch_api_models (picker hot path).
+
+    The memo must collapse repeated probes of the same endpoint within the
+    TTL into one underlying call, never cache empty/None results (so a down
+    server is retried next picker open), and stay invisible across
+    monkeypatched fetch_api_models functions (test hermeticity).
+    """
+
+    URL = "http://localhost:59999/v1"
+
+    @staticmethod
+    def _fake(result):
+        calls = []
+
+        def fake_fetch(api_key, base_url):
+            calls.append((api_key, base_url))
+            return result
+
+        return fake_fetch, calls
+
+    def test_hit_within_ttl_is_one_underlying_call(self):
+        from hermes_cli.models import _fetch_api_models_memo, clear_api_models_memo
+        clear_api_models_memo()
+        fake, calls = self._fake(["m-a", "m-b"])
+        with patch("hermes_cli.models.fetch_api_models", fake):
+            first = _fetch_api_models_memo("sk-test", self.URL)
+            second = _fetch_api_models_memo("sk-test", self.URL)
+        assert first == ["m-a", "m-b"]
+        assert second == ["m-a", "m-b"]
+        assert calls == [("sk-test", self.URL)], (
+            "second probe within the TTL must be served from the memo"
+        )
+
+    def test_expired_ttl_refetches(self):
+        from hermes_cli.models import _fetch_api_models_memo, clear_api_models_memo
+        clear_api_models_memo()
+        fake, calls = self._fake(["m-a"])
+        with patch("hermes_cli.models.fetch_api_models", fake):
+            _fetch_api_models_memo("sk-test", self.URL)
+            # ttl_seconds=0 means any stored entry is already expired.
+            _fetch_api_models_memo("sk-test", self.URL, ttl_seconds=0.0)
+        assert len(calls) == 2, "an expired entry must trigger a live refetch"
+
+    def test_clear_refetches(self):
+        from hermes_cli.models import _fetch_api_models_memo, clear_api_models_memo
+        clear_api_models_memo()
+        fake, calls = self._fake(["m-a"])
+        with patch("hermes_cli.models.fetch_api_models", fake):
+            _fetch_api_models_memo("sk-test", self.URL)
+            clear_api_models_memo()
+            _fetch_api_models_memo("sk-test", self.URL)
+        assert len(calls) == 2, "clear_api_models_memo() must drop the entry"
+
+    def test_empty_result_is_not_memoized(self):
+        from hermes_cli.models import _fetch_api_models_memo, clear_api_models_memo
+        clear_api_models_memo()
+        for empty in ([], None):
+            fake, calls = self._fake(empty)
+            with patch("hermes_cli.models.fetch_api_models", fake):
+                assert _fetch_api_models_memo("sk-test", self.URL) == empty
+                assert _fetch_api_models_memo("sk-test", self.URL) == empty
+            assert len(calls) == 2, (
+                f"empty result {empty!r} must not be cached — a down server "
+                "has to be retried on the next picker open"
+            )
+
+    def test_entry_is_pinned_to_the_producing_function(self):
+        """A memo entry written under one monkeypatched fetch_api_models must
+        be invisible once a different function is installed — this is what
+        keeps the memo from leaking across tests."""
+        from hermes_cli.models import _fetch_api_models_memo, clear_api_models_memo
+        clear_api_models_memo()
+        fake_one, calls_one = self._fake(["from-one"])
+        fake_two, calls_two = self._fake(["from-two"])
+        with patch("hermes_cli.models.fetch_api_models", fake_one):
+            assert _fetch_api_models_memo("sk-test", self.URL) == ["from-one"]
+        with patch("hermes_cli.models.fetch_api_models", fake_two):
+            assert _fetch_api_models_memo("sk-test", self.URL) == ["from-two"]
+        assert len(calls_one) == 1
+        assert len(calls_two) == 1
+
+    def test_distinct_credentials_and_urls_get_distinct_entries(self):
+        from hermes_cli.models import _fetch_api_models_memo, clear_api_models_memo
+        clear_api_models_memo()
+        fake, calls = self._fake(["m-a"])
+        with patch("hermes_cli.models.fetch_api_models", fake):
+            _fetch_api_models_memo("sk-one", self.URL)
+            _fetch_api_models_memo("sk-two", self.URL)
+            _fetch_api_models_memo("sk-one", "http://localhost:58888/v1")
+            # Repeats of an already-seen pair stay memoized.
+            _fetch_api_models_memo("sk-one", self.URL)
+        assert len(calls) == 3

@@ -1737,8 +1737,12 @@ def list_authenticated_providers(
                 _live_ok = bool(api_url) and bool(api_key) and discover
             if _live_ok:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
+                    # Short-TTL memo around fetch_api_models so repeated
+                    # picker opens (and section 4 re-probing the same
+                    # endpoint) reuse the last live result instead of
+                    # paying the HTTP roundtrip/timeout again.
+                    from hermes_cli.models import _fetch_api_models_memo
+                    live_models = _fetch_api_models_memo(api_key, api_url)
                     if live_models:
                         models_list = live_models
                 except Exception:
@@ -1946,9 +1950,14 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    # Short-TTL memo: keyless-local endpoints (Ollama /
+                    # llama.cpp) burn the full HTTP timeout when the server
+                    # is down — memoizing the last NON-EMPTY live result
+                    # keeps repeated picker opens within the window cheap
+                    # while still retrying a down server on the next open.
+                    from hermes_cli.models import _fetch_api_models_memo
 
-                    live_models = fetch_api_models(api_key, api_url)
+                    live_models = _fetch_api_models_memo(api_key, api_url)
                     if live_models:
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import urllib.request
 import urllib.error
 import time
@@ -2198,7 +2199,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 or os.getenv("OPENAI_API_KEY", "")
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
-            live = fetch_api_models(api_key, base_url)
+            # Short-TTL memo: this branch is hit live on every picker open
+            # whenever the disk cache has nothing usable (empty results are
+            # never persisted), so a down local server would otherwise burn
+            # the full HTTP timeout per open.
+            live = _fetch_api_models_memo(api_key, base_url)
             if live:
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that
@@ -3319,6 +3324,90 @@ def fetch_api_models(
     be reached (network error, timeout, auth failure, etc.).
     """
     return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+
+
+# ---------------------------------------------------------------------------
+# Short-TTL in-process memo for fetch_api_models() — /model picker hot path.
+# ---------------------------------------------------------------------------
+#
+# The picker probes custom/user endpoints live on every open
+# (list_authenticated_providers sections 3/4, plus the ``custom`` branch of
+# provider_model_ids). Empty results are deliberately never persisted to the
+# disk cache (stale-beats-empty), so with a local server down every picker
+# open re-burns the full HTTP timeout per endpoint. This memo collapses
+# repeated probes of the same endpoint within a short window into one live
+# call, without touching the disk-cache semantics above.
+#
+#   - Keyed by (normalized api_url, credential fingerprint). The raw key
+#     never sits in the dict.
+#   - Each entry also pins the exact ``fetch_api_models`` function object
+#     that produced it. ``_fetch_api_models_memo`` resolves
+#     ``hermes_cli.models.fetch_api_models`` dynamically at call time, so a
+#     monkeypatched function is both honored AND fingerprinted — an entry
+#     produced by one patch is invisible to a different patch (or to the
+#     real function), keeping tests hermetic.
+#   - Only NON-EMPTY successful results are memoized. Empty/None results
+#     and exceptions propagate verbatim and are NOT cached, so a down
+#     server is retried on the next picker open — but repeated probes
+#     within one open still only pay the timeout once per endpoint when a
+#     prior probe in the same open succeeded.
+#   - 30s default TTL: long enough to cover one picker open and quick
+#     re-opens; short enough that catalog changes surface promptly.
+
+_API_MODELS_MEMO_TTL = 30.0  # seconds
+
+_api_models_memo: dict[tuple[str, str], tuple[float, list[str], Any]] = {}
+_api_models_memo_lock = threading.Lock()
+
+
+def clear_api_models_memo() -> None:
+    """Drop every memoized ``fetch_api_models`` result (tests, --refresh)."""
+    with _api_models_memo_lock:
+        _api_models_memo.clear()
+
+
+def _fetch_api_models_memo(
+    api_key: Optional[str],
+    api_url: Optional[str],
+    *,
+    ttl_seconds: float = _API_MODELS_MEMO_TTL,
+) -> Optional[list[str]]:
+    """:func:`fetch_api_models` with a small in-process TTL memo.
+
+    See the block comment above for the full policy. Returns the same
+    shape as :func:`fetch_api_models` (list of model IDs, or ``None`` when
+    the endpoint could not be reached).
+    """
+    import hashlib
+    import sys
+
+    # Dynamic lookup so tests monkeypatching hermes_cli.models.fetch_api_models
+    # still intercept every call.
+    fetch_fn = sys.modules[__name__].fetch_api_models
+
+    # blake2b as an identity fingerprint only — never reversed, collisions
+    # merely cause a redundant live fetch (same rationale as
+    # _credential_fingerprint above).
+    key_fp = hashlib.blake2b(
+        (api_key or "").encode("utf-8", errors="replace"), digest_size=8
+    ).hexdigest()
+    memo_key = (str(api_url or "").strip().rstrip("/"), key_fp)
+
+    now = time.time()
+    with _api_models_memo_lock:
+        entry = _api_models_memo.get(memo_key)
+        if (
+            entry is not None
+            and (now - entry[0]) < ttl_seconds
+            and entry[2] is fetch_fn
+        ):
+            return list(entry[1])
+
+    result = fetch_fn(api_key, api_url)
+    if result:
+        with _api_models_memo_lock:
+            _api_models_memo[memo_key] = (time.time(), list(result), fetch_fn)
+    return result
 
 
 # ---------------------------------------------------------------------------

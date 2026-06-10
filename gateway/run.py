@@ -593,6 +593,60 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
 
 
+def _compact_handoff_text(value: Any, *, max_chars: int = 320) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "…"
+    return text
+
+
+def _build_session_rotation_handoff(
+    history: List[Dict[str, Any]],
+    *,
+    max_messages: int = 12,
+    max_chars: int = 4000,
+) -> Optional[str]:
+    """Build a deterministic compact handoff for gateway session rotation.
+
+    This is intentionally not an LLM summary. Session hygiene rotation runs
+    specifically when the current transcript is too risky to replay, so the
+    handoff must be bounded, cheap, and reliable. It keeps only the recent
+    user/assistant text needed for continuity and leaves raw tool output behind.
+    """
+
+    if not history:
+        return None
+
+    recent: List[str] = []
+    for msg in reversed(history):
+        role = msg.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        content = _compact_handoff_text(msg.get("content"))
+        if not content:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        recent.append(f"- {label}: {content}")
+        if len(recent) >= max_messages:
+            break
+
+    if not recent:
+        return None
+
+    body = "\n".join(reversed(recent))
+    handoff = (
+        "[Session rotation handoff]\n"
+        "The previous gateway session was automatically rotated because it had "
+        "grown too large for reliable Telegram replies. Use this compact recent "
+        "context to continue naturally. Do not claim there is no prior context "
+        "when this handoff is present.\n"
+        f"{body}"
+    )
+    if len(handoff) > max_chars:
+        handoff = handoff[: max_chars - 1].rstrip() + "…"
+    return handoff
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -609,6 +663,7 @@ def _build_gateway_agent_history(
 
     agent_history: List[Dict[str, Any]] = []
     observed_group_context: List[str] = []
+    handoff_context: List[str] = []
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
     for msg in history or []:
@@ -619,6 +674,9 @@ def _build_gateway_agent_history(
         # Skip metadata entries (tool definitions, session info) -- these are
         # for transcript logging, not for the LLM.
         if role in {"session_meta",}:
+            handoff = msg.get("handoff_context") or msg.get("content")
+            if handoff:
+                handoff_context.append(str(handoff).strip())
             continue
 
         # Skip system messages -- the agent rebuilds its own system prompt.
@@ -647,7 +705,12 @@ def _build_gateway_agent_history(
             entry = _build_replay_entry(role, content, msg)
             agent_history.append(entry)
 
-    observed_context = "\n".join(observed_group_context).strip() or None
+    context_parts = []
+    if handoff_context:
+        context_parts.append("\n\n".join(handoff_context))
+    if observed_group_context:
+        context_parts.append("\n".join(observed_group_context))
+    observed_context = "\n\n".join(part for part in context_parts if part).strip() or None
     return agent_history, observed_context
 
 
@@ -9414,6 +9477,7 @@ class GatewayRunner:
                             _werr,
                         )
 
+                    _rotation_handoff = _build_session_rotation_handoff(history)
                     _new_entry = await self._auto_reset_session_boundary(
                         session_key=session_key,
                         source=source,
@@ -9421,14 +9485,27 @@ class GatewayRunner:
                     )
                     if _new_entry is not None:
                         session_entry = _new_entry
+                        if _rotation_handoff:
+                            self.session_store.append_to_transcript(
+                                session_entry.session_id,
+                                {
+                                    "role": "session_meta",
+                                    "content": _rotation_handoff,
+                                    "handoff_context": _rotation_handoff,
+                                    "handoff_reason": "hygiene_message_limit",
+                                },
+                            )
                         history = []
                         context_prompt += (
                             "\n\n[System note: The previous Telegram session "
                             "was automatically rotated because the gateway "
                             "transcript exceeded the configured hygiene "
-                            "message limit. Treat the current user message as "
-                            "the start of a fresh conversation.]"
+                            "message limit. A compact recent-context handoff "
+                            "was preserved when available; use it to continue "
+                            "naturally.]"
                         )
+                        if _rotation_handoff:
+                            context_prompt += "\n\n" + _rotation_handoff
 
                 # Hard safety valve: force compression if message count is
                 # extreme, regardless of token estimates.  This breaks the
@@ -9576,6 +9653,7 @@ class GatewayRunner:
                                                 _werr,
                                             )
                                         if _auto_reset_after_abort and session_key:
+                                            _rotation_handoff = _build_session_rotation_handoff(history)
                                             _new_entry = await self._auto_reset_session_boundary(
                                                 session_key=session_key,
                                                 source=source,
@@ -9583,16 +9661,29 @@ class GatewayRunner:
                                             )
                                             if _new_entry is not None:
                                                 session_entry = _new_entry
+                                                if _rotation_handoff:
+                                                    self.session_store.append_to_transcript(
+                                                        session_entry.session_id,
+                                                        {
+                                                            "role": "session_meta",
+                                                            "content": _rotation_handoff,
+                                                            "handoff_context": _rotation_handoff,
+                                                            "handoff_reason": "hygiene_compression_abort",
+                                                        },
+                                                    )
                                                 history = []
                                                 context_prompt += (
                                                     "\n\n[System note: The previous "
                                                     "Telegram session was automatically "
                                                     "rotated because gateway session "
                                                     "hygiene could not compress its "
-                                                    "oversized transcript. Treat the "
-                                                    "current user message as the start "
-                                                    "of a fresh conversation.]"
+                                                    "oversized transcript. A compact "
+                                                    "recent-context handoff was preserved "
+                                                    "when available; use it to continue "
+                                                    "naturally.]"
                                                 )
+                                                if _rotation_handoff:
+                                                    context_prompt += "\n\n" + _rotation_handoff
                                     # Separately: if the user's CONFIGURED aux
                                     # model failed and we recovered by falling
                                     # back to the main model, tell them — a

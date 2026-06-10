@@ -37,6 +37,48 @@ def _make_history(n_messages: int, content_size: int = 100) -> list:
     return history
 
 
+def test_gateway_history_injects_rotation_handoff_context():
+    gateway_run = importlib.import_module("gateway.run")
+
+    history = [
+        {
+            "role": "session_meta",
+            "handoff_context": "[Session rotation handoff]\n- User: previous context",
+        },
+        {"role": "user", "content": "new question"},
+    ]
+
+    agent_history, context = gateway_run._build_gateway_agent_history(history)
+
+    assert agent_history == [{"role": "user", "content": "new question"}]
+    assert context is not None
+    assert "Session rotation handoff" in context
+    assert "previous context" in context
+
+
+def test_rotation_handoff_builder_is_bounded_and_skips_tool_output():
+    gateway_run = importlib.import_module("gateway.run")
+
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "tool", "content": "large raw tool output should not appear"},
+        {"role": "assistant", "content": "second " + ("x" * 1000)},
+    ]
+
+    handoff = gateway_run._build_session_rotation_handoff(
+        history,
+        max_messages=4,
+        max_chars=700,
+    )
+
+    assert handoff is not None
+    assert "Session rotation handoff" in handoff
+    assert "first" in handoff
+    assert "second" in handoff
+    assert "large raw tool output" not in handoff
+    assert len(handoff) <= 700
+
+
 def _make_large_history_tokens(target_tokens: int) -> list:
     """Build a history that estimates to roughly target_tokens tokens."""
     # estimate_messages_tokens_rough counts total chars in str(msg) // 4
@@ -764,6 +806,18 @@ async def test_session_hygiene_auto_resets_telegram_at_configured_message_limit(
     assert result == "ok"
     runner.session_store.reset_session.assert_called_once_with(old_entry.session_key)
     assert runner._run_agent.await_args.kwargs["history"] == []
+    context_prompt = runner._run_agent.await_args.kwargs["context_prompt"]
+    assert "Session rotation handoff" in context_prompt
+    assert "Do not claim there is no prior context" in context_prompt
+    handoff_writes = [
+        call.args[1]
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if call.args[0] == "sess-new"
+        and isinstance(call.args[1], dict)
+        and call.args[1].get("handoff_context")
+    ]
+    assert handoff_writes
+    assert handoff_writes[0]["handoff_reason"] == "hygiene_message_limit"
     assert FakeCompressAgent.last_instance is None
     notices = [
         s for s in adapter.sent if "rotated it to a fresh Hermes session" in s["content"]

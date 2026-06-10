@@ -1399,6 +1399,20 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # Merge user-configured models from providers.<id>.models so they
+        # appear alongside curated entries (Section 3 skips slugs already in
+        # seen_slugs, so user models for built-in providers would be lost).
+        if user_providers and isinstance(user_providers, dict):
+            _ucfg = user_providers.get(hermes_id) or user_providers.get(hermes_id.lower())
+            if isinstance(_ucfg, dict):
+                _extra = []
+                _cfg_models = _ucfg.get("models", [])
+                if isinstance(_cfg_models, dict):
+                    _extra = [m for m in _cfg_models if m]
+                elif isinstance(_cfg_models, list):
+                    _extra = [m for m in _cfg_models if m]
+                if _extra:
+                    model_ids = list(model_ids) + [m for m in _extra if m not in model_ids]
         total = len(model_ids)
         top = model_ids[:max_models]
 

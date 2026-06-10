@@ -719,3 +719,49 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
     assert gateway_prov is not None
     assert calls == [], "string 'false' must disable live discovery"
     assert gateway_prov["models"] == ["only-model"]
+
+def test_builtin_provider_merges_user_configured_models(monkeypatch):
+    """User-configured models for a built-in provider must appear in the
+    picker alongside curated models, not be silently skipped because the
+    slug is already in seen_slugs (Section 3 skip)."""
+    import hermes_cli.models as models_mod
+    import hermes_cli.providers as providers_mod
+
+    # Simulate a built-in provider with curated models (deepseek is not an
+    # alias so it won't be skipped by the aggregator-alias guard).
+    fake_curated = {"deepseek": ["deepseek-chat", "deepseek-reasoner"]}
+    monkeypatch.setattr(models_mod, "_PROVIDER_MODELS", fake_curated)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {
+        "deepseek": {"env": ["DEEPSEEK_API_KEY"], "name": "DeepSeek"},
+    })
+    # Prevent cached_provider_model_ids from hitting real APIs
+    monkeypatch.setattr(models_mod, "cached_provider_model_ids", lambda *a, **kw: [])
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    # User has added custom models under providers.deepseek.models
+    user_providers = {
+        "deepseek": {
+            "models": {
+                "deepseek-v4-pro": {"label": "DeepSeek V4 Pro"},
+                "deepseek-v4-flash": {"label": "DeepSeek V4 Flash"},
+            },
+        },
+    }
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    providers = list_authenticated_providers(
+        current_provider="deepseek",
+        user_providers=user_providers,
+        max_models=50,
+    )
+
+    ds = [p for p in providers if p["slug"] == "deepseek"]
+    assert len(ds) == 1, "deepseek should appear exactly once"
+    models = ds[0]["models"]
+    # Curated models must be present
+    assert "deepseek-chat" in models
+    assert "deepseek-reasoner" in models
+    # User-configured models must also be present
+    assert "deepseek-v4-pro" in models, "user-configured model missing from picker"
+    assert "deepseek-v4-flash" in models, "user-configured model missing from picker"

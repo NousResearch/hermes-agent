@@ -4,6 +4,11 @@
 // or "r". `mod` is Cmd on macOS / Ctrl elsewhere, so a single binding works on
 // both. We derive the base key from `event.code` (not `event.key`) so Shift never
 // mutates it ("shift+/" stays "shift+/" instead of becoming "shift+?").
+//
+// `ctrl` is physical Control, distinct from `mod`. It only matters on macOS,
+// where `mod` is Cmd and Cmd+Tab is OS-reserved — so `ctrl+tab` is literally
+// Control+Tab. Off macOS, Control already *is* `mod`, so `canonicalizeCombo`
+// folds `ctrl` → `mod`.
 
 export const IS_MAC =
   typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '')
@@ -81,8 +86,14 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
 
   const parts: string[] = []
 
-  if (event.metaKey || event.ctrlKey) {
+  // macOS reports Cmd (`mod`) and Control (`ctrl`) separately; elsewhere
+  // Control IS the accelerator, so it folds into `mod`.
+  if (event.metaKey || (event.ctrlKey && !IS_MAC)) {
     parts.push('mod')
+  }
+
+  if (event.ctrlKey && IS_MAC) {
+    parts.push('ctrl')
   }
 
   if (event.altKey) {
@@ -96,6 +107,13 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
   parts.push(base)
 
   return parts.join('+')
+}
+
+// Rewrites a binding to the form `comboFromEvent` emits, so it indexes under
+// the same key a live keypress produces. Off macOS, `ctrl+…` and `mod+…` are
+// the one Control chord, so a shipped `ctrl+tab` matches a real Control+Tab.
+export function canonicalizeCombo(combo: string): string {
+  return IS_MAC ? combo : combo.replace(/\bctrl\b/g, 'mod')
 }
 
 const TOKEN_LABELS: Record<string, string> = {
@@ -133,6 +151,10 @@ export function formatCombo(combo: string): string {
       return IS_MAC ? '⌘' : 'Ctrl'
     }
 
+    if (mod === 'ctrl') {
+      return IS_MAC ? '⌃' : 'Ctrl'
+    }
+
     if (mod === 'alt') {
       return IS_MAC ? '⌥' : 'Alt'
     }
@@ -162,8 +184,8 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   )
 }
 
-// Combos with a primary modifier (Cmd/Ctrl) are safe to fire even while typing
-// (e.g. ⌘K from the composer); bare/Shift-only combos are suppressed in inputs.
+// A primary modifier (Cmd/Ctrl/Control) fires even while typing (e.g. ⌘K or
+// ⌃Tab from the composer); bare/Shift-only combos are suppressed in inputs.
 export function comboAllowedInInput(combo: string): boolean {
-  return combo.startsWith('mod+') || combo === 'mod'
+  return /^(?:mod|ctrl)(?:\+|$)/.test(combo)
 }

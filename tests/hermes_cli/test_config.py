@@ -538,6 +538,25 @@ class TestSanitizeEnvLines:
             fixes = sanitize_env_file()
             assert fixes == 0
 
+    def test_sanitize_env_file_preserves_existing_file_mode_on_posix(self, tmp_path):
+        """Regression: pre-existing .env mode (e.g. 0640 for a Docker
+        bind-mount) survives sanitize_env_file(). Previously _secure_file
+        ran unconditionally and re-tightened to 0600.
+        """
+        if os.name == "nt":
+            return
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n")
+        os.chmod(env_file, 0o640)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+            assert fixes > 0
+
+        env_mode = env_file.stat().st_mode & 0o777
+        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+
 
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""

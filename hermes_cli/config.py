@@ -5637,6 +5637,12 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
+    # Preserve original permissions so Docker volume mounts aren't clobbered.
+    original_mode = None
+    try:
+        original_mode = stat.S_IMODE(env_path.stat().st_mode)
+    except OSError:
+        pass
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
     try:
         with os.fdopen(fd, "w", **write_kw) as f:
@@ -5644,13 +5650,21 @@ def sanitize_env_file() -> int:
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
+        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
+        # instead of letting _secure_file unconditionally tighten to 0600.
+        if original_mode is not None:
+            try:
+                os.chmod(env_path, original_mode)
+            except OSError:
+                pass
+        else:
+            _secure_file(env_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-    _secure_file(env_path)
     invalidate_env_cache()
     return fixes
 

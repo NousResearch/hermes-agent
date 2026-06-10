@@ -404,7 +404,9 @@ def extract_edit_diff(
     snapshot: LocalEditSnapshot | None = None,
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
-    if tool_name == "patch" and result:
+    # Tools that natively include a 'diff' field in their JSON response.
+    _json_diff_tools = {"patch", "cronjob", "todo", "memory"}
+    if tool_name in _json_diff_tools and result:
         data = safe_json_loads(result)
         if isinstance(data, dict):
             diff = data.get("diff")

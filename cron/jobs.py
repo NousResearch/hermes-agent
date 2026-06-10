@@ -827,9 +827,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
             updated["next_run_at"] = compute_next_run(updated["schedule"])
 
+        # Capture old prompt for diff when prompt is being updated
+        _prompt_diff = None
+        if "prompt" in updates:
+            _prompt_diff = {"old": job.get("prompt", ""), "new": updates["prompt"]}
+
         jobs[i] = updated
         save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
+        result = _normalize_job_record(jobs[i])
+        if _prompt_diff is not None:
+            result["_prompt_diff"] = _prompt_diff
+        return result
     return None
 
 

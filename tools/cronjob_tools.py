@@ -545,6 +545,16 @@ def cronjob(
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
             )
+            # Build creation diff (green '+' lines for what was created)
+            created_fields = []
+            if job.get("prompt"):
+                created_fields.append(f"+ prompt: {job['prompt'][:150]}")
+            created_fields.append(f"+ schedule: {job.get('schedule_display', '?')}")
+            created_fields.append(f"+ name: {job.get('name', job['id'])}")
+            if job.get("skills"):
+                created_fields.append(f"+ skills: {', '.join(job['skills'])}")
+            created_fields.append(f"+ deliver: {job.get('deliver', 'local')}")
+
             return json.dumps(
                 {
                     "success": True,
@@ -558,6 +568,7 @@ def cronjob(
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
                     "message": f"Cron job '{job['name']}' created.",
+                    "diff": "\\n".join(created_fields),
                 },
                 indent=2,
             )
@@ -609,6 +620,7 @@ def cronjob(
                         "name": job["name"],
                         "schedule": job.get("schedule_display"),
                     },
+                    "diff": f"- name: {job['name']}\n- schedule: {job.get('schedule_display', '?')}\n- id: {job_id}",
                 },
                 indent=2,
             )
@@ -711,7 +723,14 @@ def cronjob(
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            result = {"success": True, "job": _format_job(updated)}
+            prompt_diff = updated.get("_prompt_diff")
+            if prompt_diff:
+                result["diff"] = (
+                    f"- prompt: {prompt_diff['old']}\n"
+                    f"+ prompt: {prompt_diff['new']}"
+                )
+            return json.dumps(result, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 

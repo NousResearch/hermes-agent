@@ -19,12 +19,17 @@ import time
 
 import pytest
 
+import os
+import socket
+
 from gateway.platforms.whatsapp import (
     _bridge_pid_is_ours,
+    _kill_port_process,
     _kill_stale_bridge_by_pidfile,
+    _listener_pids_on_port,
     _write_bridge_pidfile,
 )
-from gateway.status import get_process_start_time
+from gateway.status import get_process_start_time, _pid_exists
 
 
 def _spawn_sleeper(*extra_argv) -> subprocess.Popen:
@@ -116,3 +121,66 @@ class TestIdentityGuard:
     def test_missing_pidfile_is_noop(self, tmp_path):
         # No file -> must not raise.
         _kill_stale_bridge_by_pidfile(tmp_path)
+
+
+class TestKillPortProcess:
+    """Freeing the bridge port must target only LISTENers, never clients.
+
+    Root cause of the live Firefox kills: ``lsof -ti :PORT`` (and ``fuser
+    PORT/tcp``) also returned *client* sockets whose connection merely involved
+    the port number. The WhatsApp bridge uses port 3000 by default — a common
+    local dev-server port — so a browser tab on ``localhost:3000`` was matched
+    and SIGTERMed every time the (crash-looping) bridge restarted.
+    """
+
+    def test_listener_lookup_excludes_client_process(self):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        port = srv.getsockname()[1]
+        srv.listen(5)
+        # A separate process holding a *client* connection to that port.
+        client = subprocess.Popen([
+            sys.executable, "-c",
+            "import socket,time; c=socket.create_connection(('127.0.0.1',%d)); time.sleep(30)" % port,
+        ])
+        try:
+            conn, _ = srv.accept()  # establish the client connection
+            pids = _listener_pids_on_port(port)
+            if os.getpid() not in pids:
+                pytest.skip("neither lsof nor ss detected the listener here")
+            # The listener (this process) is found; the client process is NOT —
+            # the LISTEN filter is what spares unrelated clients like a browser.
+            assert client.pid not in pids
+            conn.close()
+        finally:
+            client.kill()
+            client.wait()
+            srv.close()
+
+    def test_kill_port_spares_client_process(self):
+        # Listener in a SEPARATE process — the legitimate kill target. This
+        # pytest process is the CLIENT: if port cleanup matched clients it would
+        # SIGTERM the test runner, so simply reaching the asserts proves the
+        # client was spared.
+        listener = subprocess.Popen(
+            [
+                sys.executable, "-c",
+                "import socket,time;"
+                "s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
+                "s.bind(('127.0.0.1',0));print(s.getsockname()[1],flush=True);"
+                "s.listen(5);time.sleep(30)",
+            ],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            port = int(listener.stdout.readline().strip())
+            cli = socket.create_connection(("127.0.0.1", port))  # we are the client
+            _kill_port_process(port)
+            assert _pid_exists(os.getpid()), "client (test process) must survive"
+            assert _wait_dead(listener, timeout=5.0), "stale listener should be killed"
+            cli.close()
+        finally:
+            if listener.poll() is None:
+                listener.kill()
+                listener.wait()

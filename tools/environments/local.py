@@ -492,6 +492,68 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     return prelude + cmd_string
 
 
+def _kill_process_tree(pid: int, *, timeout: float = 3.0) -> bool:
+    """Best-effort kill of ``pid`` and every transitive descendant via psutil.
+
+    Returns True when every targeted process is verified gone, False when
+    anything survived (or could not be inspected) so the caller can fall
+    back to its legacy single-process kill.
+
+    This exists because the Windows spawn path in this module has no process
+    group: ``_run_bash`` only sets ``preexec_fn=os.setsid`` on POSIX, so the
+    ``killpg`` escalation in ``_kill_process`` has no Windows equivalent and
+    a bare ``proc.terminate()`` reaches just the direct child (the shell
+    wrapper), orphaning grandchildren. Same psutil sweep as
+    ``gateway/platforms/whatsapp.py`` and the replacement
+    ``scripts/check-windows-footguns.py`` prescribes for ``os.kill`` misuse.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return False
+
+    def _collect_targets(p):
+        # A dead parent cannot be asked for its children, and a denied one
+        # may still be killable — either way the root itself stays targeted.
+        try:
+            return [p] + p.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return [p]
+
+    def _sweep(targets):
+        for target in targets:
+            try:
+                target.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        _, alive = psutil.wait_procs(targets, timeout=timeout)
+        return alive
+
+    try:
+        root = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.AccessDenied:
+        return False
+
+    alive = _sweep(_collect_targets(root))
+
+    # Children spawned between enumeration and the first kill escape sweep
+    # one; re-enumerate the survivors once rather than looping forever.
+    if alive:
+        retargets = []
+        for survivor in alive:
+            retargets.extend(_collect_targets(survivor))
+        alive = _sweep(retargets)
+
+    if alive:
+        logger.debug(
+            "_kill_process_tree: %d process(es) survived both sweeps", len(alive)
+        )
+        return False
+    return True
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
@@ -658,7 +720,18 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                # No process group exists on Windows (``_run_bash`` only sets
+                # ``preexec_fn=os.setsid`` on POSIX), so the killpg escalation
+                # below has no equivalent here and a bare ``terminate()``
+                # reaches just the shell wrapper — grandchildren survive as
+                # orphans. Enumerate and kill the whole tree instead; fall
+                # back to the wrapper-only kill if the sweep cannot finish.
+                if not _kill_process_tree(proc.pid):
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=0.2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             else:
                 try:
                     pgid = os.getpgid(proc.pid)

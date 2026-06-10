@@ -83,6 +83,12 @@ export function droppedFileInlineRef(candidate: DroppedFile, cwd: string | null 
   return `@${kind}:${formatRefValue(rel)}`
 }
 
+/** Resolve a batch of drops to their inline `@file:`/`@line:`/`@folder:` refs,
+ * dropping any that carry no path. */
+export function droppedFileInlineRefs(candidates: DroppedFile[], cwd: string | null | undefined): string[] {
+  return candidates.map(candidate => droppedFileInlineRef(candidate, cwd)).filter((ref): ref is string => Boolean(ref))
+}
+
 export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonly InlineRefInput[]) {
   if (!refs.length) {
     return null

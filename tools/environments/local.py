@@ -300,6 +300,72 @@ _SANE_PATH = (
 )
 
 
+def _append_missing_sane_path_entries(existing_path: str) -> str:
+    """Return a normalised POSIX PATH with missing sane entries appended.
+
+    On POSIX the caller-supplied PATH is rewritten (not merely appended to):
+    empty entries and duplicate entries are dropped, preserving
+    first-occurrence order, then each missing ``_SANE_PATH`` entry is appended
+    once at the end so existing entries keep their precedence.
+
+    Two intentional normalisations beyond the bare "add Homebrew dirs" fix:
+
+    - **Empty entries are stripped.** A leading/trailing/double ``:`` encodes
+      an empty PATH element, which POSIX shells interpret as the current
+      working directory — a mild foot-gun in a default terminal environment.
+      We drop these rather than carry them through.
+    - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
+      that already contains repeats is not propagated verbatim.
+
+    For a well-formed PATH (no empties, no duplicates) the leading segment is
+    byte-identical to the input and ordering is preserved; only the missing
+    sane entries are appended. On Windows this is a no-op passthrough (the
+    separator is ``;`` and the native PATH must not be touched).
+    """
+    if _IS_WINDOWS:
+        return existing_path
+
+    sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
+    if not existing_path:
+        return ":".join(sane_entries)
+
+    # De-duplicate the caller PATH (first occurrence wins) and drop empty
+    # entries before merging in the sane fallbacks.
+    seen: set[str] = set()
+    ordered_entries: list[str] = []
+    for entry in existing_path.split(":"):
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        ordered_entries.append(entry)
+
+    # _SANE_PATH is a static, duplicate-free constant, so a membership check
+    # against the caller entries is sufficient — no need to track `seen` here.
+    for entry in sane_entries:
+        if entry not in seen:
+            ordered_entries.append(entry)
+
+    return ":".join(ordered_entries)
+
+
+def _path_env_key(run_env: dict) -> str | None:
+    """Return the PATH env key to update without altering Windows casing.
+
+    Note: this is deliberately a *second* Windows guard, distinct from the
+    early-return in ``_append_missing_sane_path_entries``. Its job is to pick
+    the correctly-cased key (``Path`` vs ``PATH``) so completion writes back to
+    the key the caller already used; the helper's guard makes that helper safe
+    to call standalone (it is, e.g. in the Windows unit tests). Both are
+    intentional.
+    """
+    if not _IS_WINDOWS:
+        return "PATH"
+    for key in run_env:
+        if key.upper() == "PATH":
+            return key
+    return None
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
@@ -315,17 +381,9 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
-    existing_path = run_env.get("PATH", "")
-    # The "/usr/bin not already present → inject sane POSIX path" heuristic
-    # only makes sense on POSIX.  On Windows the PATH separator is ";"
-    # (the split(":") above turns a full Windows PATH into a single
-    # unrecognisable chunk, which then triggers prepending POSIX paths
-    # to a Windows PATH — completely wrong).  Skip the injection entirely
-    # on Windows; the native PATH already points at whatever shell
-    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
-    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
-    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    path_key = _path_env_key(run_env)
+    if path_key is not None:
+        run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
 
     _inject_context_hermes_home(run_env)
 

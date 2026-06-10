@@ -422,6 +422,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
 
+    # Matrix clients commonly reserve typed "/" for client-local commands;
+    # the adapter accepts "!command" as the alias that always reaches Hermes
+    # (see _normalize_matrix_bang_command), so instruction text shows "!".
+    typed_command_prefix = "!"
+
     # Threshold for detecting Matrix client-side message splits.
     # When a chunk is near the ~4000-char practical limit, a continuation
     # is almost certain.
@@ -1348,10 +1353,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         scope_text = (
-            "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
-            "`/approve always` to approve permanently, or `/deny` to cancel."
+            "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, "
+            "`!approve always` to approve permanently, or `!deny` to cancel."
             if allow_permanent
-            else "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, or `/deny` to cancel."
+            else "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, or `!deny` to cancel."
         )
         text = (
             "⚠️ **Dangerous command requires approval**\n"
@@ -1359,8 +1364,8 @@ class MatrixAdapter(BasePlatformAdapter):
             f"Reason: {description}\n\n"
             f"{scope_text}\n\n"
             "You can also click the reaction to approve:\n"
-            "✅ = /approve\n"
-            "❎ = /deny"
+            "✅ = approve\n"
+            "❎ = deny"
         )
 
         result = await self.send(chat_id, text, metadata=metadata)

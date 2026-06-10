@@ -53,8 +53,8 @@ class TestMatrixExecApprovalReactions:
         send_args = adapter.send.await_args
         assert send_args is not None
         text = send_args.args[1]
-        assert "/approve session" in text
-        assert "/approve always" not in text
+        assert "!approve session" in text
+        assert "!approve always" not in text
         assert "approve permanently" not in text
 
     @pytest.mark.asyncio

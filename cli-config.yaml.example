@@ -528,6 +528,15 @@ session_reset:
   idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
   at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
 
+# Maximum number of simultaneously active chat sessions across CLI, TUI,
+# dashboard chat, and messaging gateway. Set to null, 0, or omit to allow
+# unlimited concurrent sessions. When the limit is reached, new sessions get a
+# clean error while existing active sessions keep their normal behavior. This
+# top-level key takes precedence over gateway.max_concurrent_sessions. The cap
+# is a best-effort single-host/profile runtime guard; Hermes fails open if the
+# local runtime lease registry cannot be read or locked.
+max_concurrent_sessions: null
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

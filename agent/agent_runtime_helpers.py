@@ -49,7 +49,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
 )
 
 
@@ -1784,6 +1784,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
+    elif function_name == "read_terminal":
+        def _execute(next_args: dict) -> Any:
+            from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
+            return _finish_agent_tool(
+                _read_terminal_tool(
+                    start_line=next_args.get("start_line"),
+                    count=next_args.get("count"),
+                    callback=getattr(agent, "read_terminal_callback", None),
+                ),
+                next_args,
+            )
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
@@ -1843,6 +1854,27 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     import re
     from difflib import get_close_matches
 
+    if not tool_name:
+        return None
+
+    # VolcEngine api/plan workaround (issue #33007): the endpoint's
+    # protocol-translation layer occasionally leaks raw XML attribute
+    # fragments into tool_use.name, e.g.
+    #   `terminal" parameter="command" string="true`
+    #   `execute_code" parameter="code" string="true`
+    #   `session_search" parameter="session_id" string="true`
+    # We trim at the first unambiguous XML/quote character so the rest
+    # of the repair pipeline (lowercase / snake_case / fuzzy match)
+    # can resolve the cleaned name to a real tool.
+    #
+    # Crucially we DO NOT split on whitespace: legitimate inputs like
+    # "write file" must keep flowing through ``_norm`` -> ``write_file``
+    # (covered by test_space_to_underscore in
+    # tests/run_agent/test_repair_tool_call_name.py).
+    for _xml_sep in ('"', "'", "<", ">"):
+        _idx = tool_name.find(_xml_sep)
+        if _idx > 0:
+            tool_name = tool_name[:_idx]
     if not tool_name:
         return None
 

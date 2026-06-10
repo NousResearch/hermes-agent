@@ -65,6 +65,15 @@ def test_resolve_provider_full_finds_named_custom_provider():
     assert resolved.source == "user-config"
 
 
+def test_is_aggregator_recognizes_named_custom_provider():
+    assert providers_mod.is_aggregator("custom:hpc-ai") is True
+    assert providers_mod.is_aggregator("custom:litellm") is True
+
+
+def test_is_aggregator_leaves_unknown_provider_non_aggregator():
+    assert providers_mod.is_aggregator("not-a-provider") is False
+
+
 def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     """Shared /model switch pipeline should accept --provider for custom_providers."""
     monkeypatch.setattr(

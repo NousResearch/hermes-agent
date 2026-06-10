@@ -390,6 +390,50 @@ def test_prune_builtins_restore_clears_suppression(curator_env, monkeypatch):
     assert "bundled" not in u.read_suppressed_names()
 
 
+def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypatch):
+    """A protected built-in (e.g. `plan`) is never archived, even when it is a
+    stale bundled skill under prune_builtins — it backs a load-bearing slash
+    command and must survive every curator pass."""
+    u = curator_env["usage"]
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))  # the real protected name(s)
+    _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Force a record that is far past the archive cutoff.
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    data[name] = u._empty_record()
+    data[name]["last_used_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 0
+    # Not even enumerated as a candidate → not "checked".
+    assert name not in u.list_agent_created_skill_names()
+    assert (skills_dir / name).exists()
+    assert name not in u.read_suppressed_names()
+
+
+def test_protected_builtin_is_not_curation_eligible(curator_env, monkeypatch):
+    """is_curation_eligible() returns False for protected built-ins regardless
+    of prune_builtins, and archive_skill() refuses them directly."""
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))
+    _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    assert u.is_protected_builtin(name) is True
+    assert u.is_curation_eligible(name) is False
+    ok, msg = u.archive_skill(name)
+    assert ok is False
+    assert (skills_dir / name).exists()
+
+
 def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
     u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"

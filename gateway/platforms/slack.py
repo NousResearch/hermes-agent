@@ -318,6 +318,11 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    # Slack blocks typed native slash commands inside threads ("/approve is
+    # not supported in threads. Sorry!").  The adapter rewrites a leading
+    # "!" to "/" for known commands (see _handle_slack_message), so "!" is
+    # the prefix that works everywhere — instruction text must show it.
+    typed_command_prefix = "!"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -2291,7 +2296,38 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            # Channel message session scoping.
+            #
+            # Three cases:
+            #   (a) genuine thread reply   → scope session per thread
+            #   (b) top-level, reply_in_thread=true (the default)  →
+            #       legacy behaviour: each top-level message becomes its
+            #       own thread, so the UX still "replies in a thread"
+            #       and sessions are keyed per thread root
+            #   (c) top-level, reply_in_thread=false → scope one session
+            #       across the whole channel so context accumulates across
+            #       messages (#15421 bug 1)
+            event_thread_ts_raw = event.get("thread_ts")
+            # Align with ``is_thread_reply`` below — a ``thread_ts ==
+            # ts`` payload (some thread-root shapes) is not a real reply
+            # and must not prevent the shared-session path from taking
+            # effect.  Matching the same invariant here keeps the two
+            # branches in sync even if Slack introduces new payload
+            # variants (Copilot on #15464).
+            if event_thread_ts_raw and event_thread_ts_raw != ts:
+                thread_ts = event_thread_ts_raw
+            elif self.config.extra.get("reply_in_thread", True):
+                # Legacy default: treat ts as a synthetic thread root so
+                # this top-level message gets its own session.
+                thread_ts = ts
+            else:
+                # reply_in_thread=false: no thread key → session manager
+                # groups by (platform, channel_id, None) and the channel
+                # shares one conversation.  reply_to_message_id at the
+                # outbound side is already gated on ``thread_ts != ts``
+                # so None here produces a non-threaded reply without
+                # further changes.
+                thread_ts = None
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
@@ -2662,8 +2698,19 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
+
+            # Slack hard-caps a section block's text at 3000 chars; an
+            # oversized block fails the whole send with ``invalid_blocks``
+            # and the gateway falls back to the plain-text prompt (no
+            # buttons).  execute_code approvals embed the entire script in
+            # ``command``, so budget the preview against the fixed parts
+            # instead of a flat truncation that overflows once the header +
+            # reason are added.
+            header = ":warning: *Command Approval Required*\n"
+            reason = f"Reason: {description[:500]}"
+            budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
+            cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
             actions = [
                 {
@@ -2704,11 +2751,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": (
-                            f":warning: *Command Approval Required*\n"
-                            f"```{cmd_preview}```\n"
-                            f"Reason: {description}"
-                        ),
+                        "text": f"{header}```{cmd_preview}```\n{reason}",
                     },
                 },
                 {
@@ -2749,8 +2792,13 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            body = message[:2900] + "..." if len(message) > 2900 else message
             thread_ts = self._resolve_thread_ts(None, metadata)
+            # Same 3000-char section-block cap as send_exec_approval: budget
+            # the body against the rendered title so the wrapper never pushes
+            # the block over the limit (overflow → invalid_blocks → no buttons).
+            _title = (title or "Confirm")[:150]
+            budget = 3000 - len(f"*{_title}*\n\n") - len("...")
+            body = message[:budget] + "..." if len(message) > budget else message
             # Encode session_key and confirm_id into the button value so the
             # callback handler can resolve without extra bookkeeping.
             value = f"{session_key}|{confirm_id}"
@@ -2760,7 +2808,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{title or 'Confirm'}*\n\n{body}",
+                        "text": f"*{_title}*\n\n{body}",
                     },
                 },
                 {

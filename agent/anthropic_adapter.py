@@ -512,20 +512,29 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
         The content[].thinking in the thinking mode must be passed back
         to the API.
 
-    Per DeepSeek's published compatibility matrix the blocks are unsigned
-    (no Anthropic-proprietary signature, no ``redacted_thinking`` support),
-    so this endpoint is handled with the same strip-signed / keep-unsigned
-    policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
-    the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
-    base URL (which never reaches this adapter) is not misclassified.
+    DeepSeek's thinking blocks carry a DeepSeek-owned ``signature`` field
+    (not an Anthropic-proprietary signature), so signed blocks must be
+    preserved for DeepSeek endpoints.  Internal proxies (e.g.
+    ``deepgate.ximalaya.local/deepseek-v4-pro-anthropic/api``) are
+    detected via the URL path containing ``deepseek``.
     See hermes-agent#16748.
     """
-    if not base_url_host_matches(base_url or "", "api.deepseek.com"):
-        return False
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
-    return "/anthropic" in normalized.rstrip("/").lower()
+    normalized_lower = normalized.rstrip("/").lower()
+    # Official DeepSeek /anthropic endpoint
+    if base_url_host_matches(base_url or "", "api.deepseek.com") and "/anthropic" in normalized_lower:
+        return True
+    # Internal proxies serving DeepSeek's Anthropic-compatible API
+    from urllib.parse import urlparse
+    try:
+        path = urlparse(normalized_lower).path
+    except Exception:
+        path = ""
+    if "deepseek" in path:
+        return True
+    return False
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
@@ -1957,12 +1966,16 @@ def _manage_thinking_signatures(
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
-    # (neither upstream can validate Anthropic signatures), preserve unsigned
-    # ones synthesised from reasoning_content.  See #13848, #16748.
+    _is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
+    # Kimi's /coding endpoint enables thinking server-side and requires
+    # unsigned thinking blocks on replayed assistant tool-call messages.
+    # Signed Anthropic blocks must be stripped (Kimi can't validate
+    # Anthropic's signatures).  DeepSeek endpoints preserve ALL thinking
+    # blocks (DeepSeek's own signatures must round-trip).
+    # See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_deepseek
     )
 
     last_assistant_idx = None
@@ -1976,15 +1989,15 @@ def _manage_thinking_signatures(
             continue
 
         if _preserve_unsigned_thinking:
-            # Kimi / DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
-                if b.get("signature") or b.get("data"):
-                    # Signed (or redacted-with-data) — upstream can't validate, strip.
+                if not _is_deepseek and (b.get("signature") or b.get("data")):
+                    # Anthropic-signed block on Kimi — upstream can't validate, strip
                     continue
+                # Unsigned thinking (Kimi), or DeepSeek-signed thinking — keep it.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:

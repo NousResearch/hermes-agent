@@ -119,11 +119,11 @@ class TestDeepSeekAnthropicPreservesThinking:
             assert len(thinking) == 1
             assert thinking[0]["thinking"] == expected
 
-    def test_signed_anthropic_thinking_block_is_stripped(self) -> None:
-        """Anthropic-signed blocks (that leaked through) must still be stripped.
+    def test_signed_thinking_block_preserved_on_deepseek(self) -> None:
+        """DeepSeek-signed thinking blocks must be preserved.
 
-        DeepSeek issues its own signatures and cannot validate Anthropic's —
-        the strip-signed / keep-unsigned split matches the Kimi policy.
+        DeepSeek issues its own signatures and requires thinking blocks to
+        round-trip on subsequent requests — stripping them triggers HTTP 400.
         """
         from agent.anthropic_adapter import convert_messages_to_anthropic
 
@@ -134,8 +134,8 @@ class TestDeepSeekAnthropicPreservesThinking:
                 "content": [
                     {
                         "type": "thinking",
-                        "thinking": "anthropic-signed payload",
-                        "signature": "anthropic-sig-xyz",
+                        "thinking": "deepseek-signed payload",
+                        "signature": "deepseek-sig-xyz",
                     },
                     {"type": "text", "text": "hello"},
                 ],
@@ -151,10 +151,12 @@ class TestDeepSeekAnthropicPreservesThinking:
             b for b in assistant_msg["content"]
             if isinstance(b, dict) and b.get("type") == "thinking"
         ]
-        assert thinking_blocks == [], (
-            "Signed Anthropic thinking blocks must be stripped on DeepSeek — "
-            "DeepSeek cannot validate Anthropic-proprietary signatures."
+        assert len(thinking_blocks) == 1, (
+            "Signed DeepSeek thinking blocks must be preserved — "
+            "DeepSeek requires its own signatures to round-trip."
         )
+        assert thinking_blocks[0]["thinking"] == "deepseek-signed payload"
+        assert thinking_blocks[0]["signature"] == "deepseek-sig-xyz"
 
     def test_cache_control_stripped_from_thinking_block(self) -> None:
         """cache_control must still be stripped even when the block is preserved.

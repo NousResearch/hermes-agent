@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -33,6 +33,15 @@ const PEEK_POLL_INTERVAL_MS = 8000
 const INITIAL_VISIBLE_JOBS = 3
 const LOAD_MORE_STEP = 10
 
+function lastRunMs(job: CronJob): null | number {
+  if (!job.last_run_at) {
+    return null
+  }
+
+  const ms = Date.parse(job.last_run_at)
+
+  return Number.isNaN(ms) ? null : ms
+}
 function nextRunMs(job: CronJob): null | number {
   if (!job.next_run_at) {
     return null
@@ -192,7 +201,35 @@ function CronJobSidebarRow({
   const next = nextRunMs(job)
   const label = jobTitle(job)
 
-  const meta = INACTIVE_STATES.has(state) ? (c.states[state] ?? state) : next !== null ? relativeTime(next, nowMs) : '—'
+  // Track the last time next_run_at was within 10s of "now" (i.e. the job
+  // is currently running or just completed). When next_run_at jumps to a
+  // far-future value (scheduler recalculates), keep the "X ago" counter
+  // going until the scheduler also advances last_run_at (which confirms
+  // the job completed and the session is visible in the runs list).
+  const jobStartRef = useRef<number | null>(null)
+  const lastLastRunRef = useRef<number | null>(null)
+  const lastRun = lastRunMs(job)
+  if (next !== null && Math.abs(next - nowMs) < 10_000) {
+    jobStartRef.current = next
+  }
+  // When last_run_at advances to a new value, the job completed — reset
+  // the grace counter so the display shows "in X hr." (the next run).
+  if (lastRun !== null && lastRun !== lastLastRunRef.current) {
+    lastLastRunRef.current = lastRun
+    jobStartRef.current = null
+  }
+
+  const meta = INACTIVE_STATES.has(state)
+    ? (c.states[state] ?? state)
+    : next !== null && (next - nowMs) > 3_600_000 && jobStartRef.current !== null
+      // next_run_at jumped to far future but the job started recently.
+      // Keep showing "X ago" until last_run_at advances (confirming
+      // the session is visible in the runs list), then fall through
+      // to normal "in X hr." display.
+      ? relativeTime(jobStartRef.current, nowMs)
+      : next !== null
+        ? relativeTime(next, nowMs)
+        : '—'
 
   return (
     <div>

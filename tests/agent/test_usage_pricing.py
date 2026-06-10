@@ -5,6 +5,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -615,3 +616,50 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_minimax_global_detected_by_base_url_host():
+    """Ensure the global MiniMax host is detected when provider is unset."""
+    route = resolve_billing_route(
+        "minimax-m2.7",
+        provider="",
+        base_url="https://api.minimax.io/anthropic",
+    )
+    assert route.billing_mode == "official_docs_snapshot"
+    assert route.provider == "minimax"
+
+
+def test_minimax_cn_detected_by_base_url_host():
+    """Ensure the China MiniMax host is detected when provider is unset."""
+    route = resolve_billing_route(
+        "minimax-m2.7",
+        provider="",
+        base_url="https://api.minimaxi.com/anthropic",
+    )
+    assert route.billing_mode == "official_docs_snapshot"
+    assert route.provider == "minimax-cn"
+
+
+def test_minimax_m3_pricing_is_unknown_until_tiered_pricing_is_supported():
+    """MiniMax-M3 uses tiered official pricing that this table cannot encode."""
+    assert get_pricing_entry("minimax-m3", provider="minimax") is None
+
+    result = estimate_usage_cost(
+        "minimax-m3",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="minimax",
+    )
+    assert result.status == "unknown"
+    assert result.amount_usd is None
+
+
+def test_minimax_cn_known_pricing_estimates_cost_not_unknown():
+    """Ensure a known minimax-cn pricing row produces an estimate."""
+    result = estimate_usage_cost(
+        "minimax-m2.7",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="minimax-cn",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert result.amount_usd > 0

@@ -2089,8 +2089,13 @@ class TelegramAdapter(BasePlatformAdapter):
             # so without this the "...typing" bubble disappears mid-response
             # (especially noticeable when the agent sends intermediate progress
             # messages like "Checking:" before running tools).
+            # Skip when typing is paused for this chat — the turn has ended
+            # and the _keep_typing loop has been cancelled; re-triggering here
+            # would create a dangling typing indicator that lingers for ~5s
+            # and causes layout shifts on Android clients.
             try:
-                await self.send_typing(chat_id, metadata=metadata)
+                if chat_id not in self._typing_paused:
+                    await self.send_typing(chat_id, metadata=metadata)
             except Exception:
                 pass  # Typing failures are non-fatal
 
@@ -4396,6 +4401,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Cancel the typing indicator explicitly after agent turn completes.
+
+        The base adapter calls stop_typing() during cleanup (``_keep_typing``
+        finally block) and on session interruption.  Without this method the
+        Telegram typing indicator simply expires after ~5 seconds, leaving a
+        lingering "is typing…" status bar on Android clients that shifts the
+        conversation layout and can leave empty space at the bottom of the
+        chat view.
+        """
+        if self._bot:
+            try:
+                await self._bot.send_chat_action(
+                    chat_id=int(chat_id),
+                    action="cancel",
+                )
+            except Exception:
+                pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""

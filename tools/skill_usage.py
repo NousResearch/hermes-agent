@@ -708,7 +708,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
     try:
         skill_dir.rename(dest)
-    except OSError as e:
+    except OSError as _e:
         # Cross-device — fall back to shutil.move
         import shutil
         try:

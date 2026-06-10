@@ -144,6 +144,9 @@ matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0",
 wecom = ["defusedxml==0.7.1"]
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
+# SSH remote execution — used by the remote_run tool.
+# Paramiko is loaded lazily in the tool handler, gated via check_fn.
+ssh = ["paramiko>=3.0,<4"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
   # so keep it out of the base install for source-build packagers like Homebrew.

@@ -157,6 +157,12 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
+    "ssh": {
+        "description": "SSH remote execution — run commands on remote hosts via SSH with structured output",
+        "tools": ["remote_run"],
+        "includes": []
+    },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",

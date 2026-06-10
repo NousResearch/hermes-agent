@@ -10,7 +10,35 @@ import {
 interface SessionDropZoneOptions {
   /** Which drags this zone acts on: pinned rows (true) or unpinned rows (false). */
   acceptPinned: boolean
-  onDropSession: (session: SessionDragPayload) => void
+  /** The drop event rides along so handlers can resolve the drop position
+   * (see {@link sessionDropAnchor}). */
+  onDropSession: (session: SessionDragPayload, event: ReactDragEvent) => void
+}
+
+export interface SessionDropAnchor {
+  /** Live session id of the row under the pointer. */
+  sessionId: string
+  /** True when the pointer sat in the row's top half → insert before it. */
+  before: boolean
+}
+
+/**
+ * Resolve the session row under a drop point (rows carry `data-session-id`)
+ * so drop handlers can insert at the pointer position instead of appending.
+ * Null for drops on the section header or empty space.
+ */
+export function sessionDropAnchor(event: ReactDragEvent): null | SessionDropAnchor {
+  const target = event.target as HTMLElement | null
+  const row = target?.closest?.('[data-session-id]') as HTMLElement | null
+  const sessionId = row?.dataset.sessionId
+
+  if (!row || !sessionId) {
+    return null
+  }
+
+  const rect = row.getBoundingClientRect()
+
+  return { before: event.clientY < rect.top + rect.height / 2, sessionId }
 }
 
 /**
@@ -88,7 +116,7 @@ export function useSessionDropZone({ acceptPinned, onDropSession }: SessionDropZ
       const session = readSessionDrag(event.dataTransfer)
 
       if (session) {
-        onDropSession(session)
+        onDropSession(session, event)
       }
     },
     [accepts, onDropSession, reset]

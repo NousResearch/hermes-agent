@@ -3531,6 +3531,39 @@ def test_session_info_includes_mcp_servers(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# reasoning_effort: Desktop Thinking toggle must not revert to "Med".
+# When reasoning_config.enabled is False, _session_info must return "none"
+# instead of empty string — otherwise the frontend falls back to "medium".
+# ---------------------------------------------------------------------------
+
+
+def test_session_info_reasoning_effort_disabled():
+    """reasoning_config.enabled=False → reasoning_effort="none" (not "")."""
+    agent = types.SimpleNamespace(
+        tools=[], model="", reasoning_config={"enabled": False}
+    )
+    info = server._session_info(agent)
+    assert info["reasoning_effort"] == "none"
+
+
+def test_session_info_reasoning_effort_explicit_effort():
+    """reasoning_config with enabled=True returns the configured effort."""
+    agent = types.SimpleNamespace(
+        tools=[], model="",
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+    info = server._session_info(agent)
+    assert info["reasoning_effort"] == "high"
+
+
+def test_session_info_reasoning_effort_no_config():
+    """No reasoning_config → reasoning_effort stays empty string."""
+    agent = types.SimpleNamespace(tools=[], model="", reasoning_config=None)
+    info = server._session_info(agent)
+    assert info["reasoning_effort"] == ""
+
+
+# ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either
 # clobbers the mutation (version matches) or silently drops the agent's

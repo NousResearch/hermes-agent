@@ -29,18 +29,32 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
+        # Snapshot module globals that tests in this file assign directly
+        # (handler-registry entries, stdout redirection, config paths) so
+        # each test — and any later test file sharing this already-imported
+        # module — starts from a clean slate.
+        saved_methods = dict(mod._methods)
+        saved_attrs = {
+            name: getattr(mod, name)
+            for name in ("_real_stdout", "_hermes_home", "_cfg_cache", "_cfg_mtime", "_cfg_path")
+        }
         yield mod
         # Reset module-level session state without re-importing. importlib.reload
         # would re-register the module's atexit hooks (ThreadPoolExecutor
         # shutdown, _shutdown_sessions); the duplicates race the stderr
         # buffer at interpreter shutdown and surface as Fatal Python error:
         # _enter_buffered_busy. Clearing the per-session dicts gives the
-        # next test a clean slate; _methods is NOT cleared because it's
-        # populated at module import time and re-registration only happens
-        # via reload (which we don't do).
+        # next test a clean slate; _methods is restored in place (same dict
+        # object) from the snapshot taken above because dispatch tests
+        # overwrite entries like "slash.exec" and "session.compress", and
+        # re-registration only happens via reload (which we don't do).
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
+        mod._methods.clear()
+        mod._methods.update(saved_methods)
+        for name, value in saved_attrs.items():
+            setattr(mod, name, value)
 
 
 @pytest.fixture()

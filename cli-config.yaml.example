@@ -349,6 +349,19 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 
 # =============================================================================
+# Agentic Stall Retry
+# =============================================================================
+# Default-off: set model to a higher-quality lane served by the same endpoint to
+# rescue local models that stop after an action preamble with no tool call. When
+# enabled, Hermes records bounded local telemetry in ~/.hermes/logs/stall-retry.ndjson.
+stall_retry:
+  model: ""                  # Example: qwen3.6-27b-256k
+  max_per_turn: 5
+  max_chars: 400
+  nudge: true                # Retry-only "make the tool call now" continuation
+  telemetry: true            # Local NDJSON only; never logs raw request messages
+
+# =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================
 # When conversation approaches model's context limit, middle turns are

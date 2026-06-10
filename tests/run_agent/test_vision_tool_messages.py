@@ -40,6 +40,7 @@ def _make_agent(provider="openrouter", model="gpt-4o"):
     agent._content_has_image_parts = _real_content_has_image_parts
     agent._model_supports_vision = lambda: AIAgent._model_supports_vision(agent)
     agent._provider_supports_vision_tool_messages = lambda: AIAgent._provider_supports_vision_tool_messages(agent)
+    agent._compact_text_tool_result_for_active_model = lambda _name, result: result
     agent._tool_result_content_for_active_model = (
         lambda name, result: AIAgent._tool_result_content_for_active_model(agent, name, result)
     )

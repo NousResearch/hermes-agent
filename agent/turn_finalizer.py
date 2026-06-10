@@ -354,6 +354,14 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    try:
+        from agent.stall_retry import stall_retry_summary
+
+        _stall_retry = stall_retry_summary(agent)
+        if _stall_retry:
+            result["stall_retry"] = _stall_retry
+    except Exception:
+        pass
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

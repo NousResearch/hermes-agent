@@ -201,6 +201,8 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname, i
 
 
 _MAX_TOOL_WORKERS = 8
+_TEXT_TOOL_COMPACT_DEFAULT_THRESHOLD = 4_000
+_TEXT_TOOL_COMPACT_DEFAULT_CHARS = 3_000
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
@@ -4434,6 +4436,65 @@ class AIAgent:
             )
         return transformed
 
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        try:
+            value = int(os.environ.get(name, str(default)) or default)
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    def _should_compact_text_tool_results_for_active_model(self) -> bool:
+        """Return True when raw text tool outputs should be kept compact.
+
+        The dflash lane is a local llama.cpp/Qwen quant where long raw tool
+        outputs have repeatedly pushed the next decision turn into ordinary
+        text completion instead of structured tool calls. The env override is
+        intentionally generic so operators can opt other local lanes in/out
+        without a code change.
+        """
+        override = os.environ.get("HERMES_COMPACT_TEXT_TOOL_RESULTS", "").strip().lower()
+        if override in {"1", "true", "yes", "on"}:
+            return True
+        if override in {"0", "false", "no", "off"}:
+            return False
+
+        model_lower = (getattr(self, "model", "") or "").strip().lower()
+        if "dflash" in model_lower:
+            return True
+
+        return False
+
+    def _compact_text_tool_result_for_active_model(self, tool_name: str, result: str) -> str:
+        if not self._should_compact_text_tool_results_for_active_model():
+            return result
+
+        threshold = self._env_int(
+            "HERMES_TEXT_TOOL_RESULT_COMPACT_THRESHOLD",
+            _TEXT_TOOL_COMPACT_DEFAULT_THRESHOLD,
+        )
+        if len(result) <= threshold:
+            return result
+
+        keep_chars = self._env_int(
+            "HERMES_TEXT_TOOL_RESULT_COMPACT_CHARS",
+            _TEXT_TOOL_COMPACT_DEFAULT_CHARS,
+        )
+        keep_chars = max(500, min(keep_chars, threshold))
+        head_chars = keep_chars // 2
+        tail_chars = keep_chars - head_chars
+        original_size = len(result)
+
+        head = result[:head_chars].rstrip()
+        tail = result[-tail_chars:].lstrip()
+        return (
+            f"{head}\n\n"
+            f"[Tool output compacted for {getattr(self, 'model', 'the active model')}: "
+            f"original result was {original_size:,} characters. Rerun a narrower "
+            "command or read a specific file/range if more detail is needed.]\n\n"
+            f"{tail}"
+        )
+
     def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
         """Return the tool message content that is safe for the active model.
 
@@ -4444,6 +4505,8 @@ class AIAgent:
         the agent has a chance to recover.
         """
         if not _is_multimodal_tool_result(result):
+            if isinstance(result, str):
+                return self._compact_text_tool_result_for_active_model(tool_name, result)
             return result
 
         content = result.get("content") or []
@@ -4975,6 +5038,15 @@ class AIAgent:
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
             self._tool_guardrail_halt_decision = decision
 
+    def _log_tool_guardrail_decision(self, decision: ToolGuardrailDecision) -> None:
+        if decision.action == "allow":
+            return
+        try:
+            metadata = json.dumps(decision.to_metadata(), ensure_ascii=False, sort_keys=True)
+        except Exception:
+            metadata = str(decision.to_metadata())
+        logger.info("tool_guardrail_decision %s", metadata)
+
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
         return (
@@ -4998,13 +5070,15 @@ class AIAgent:
             function_result,
             failed=failed,
         )
-        if decision.action in {"warn", "halt"}:
+        if decision.action in {"warn", "redirect", "halt"}:
+            self._log_tool_guardrail_decision(decision)
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         return function_result
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
+        self._log_tool_guardrail_decision(decision)
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 
@@ -5134,7 +5208,10 @@ class AIAgent:
             str: Final assistant response
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
-        return result["final_response"]
+        # run_conversation's error/failure return paths (API error after retries,
+        # billing/credits exhaustion, policy halt, etc.) omit "final_response";
+        # surface the error message instead of raising KeyError here.
+        return result.get("final_response") or result.get("error") or ""
 
     def _run_codex_app_server_turn(
         self,
@@ -5327,7 +5404,7 @@ def main(
     print(f"📞 API Calls: {result['api_calls']}")
     print(f"💬 Messages: {len(result['messages'])}")
     
-    if result['final_response']:
+    if result.get('final_response'):
         print("\n🎯 FINAL RESPONSE:")
         print("-" * 30)
         print(result['final_response'])

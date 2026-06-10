@@ -1098,6 +1098,8 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    _stall_retry_cfg = _agent_cfg.get("stall_retry", {})
+    agent._stall_retry_config = _stall_retry_cfg if isinstance(_stall_retry_cfg, dict) else {}
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

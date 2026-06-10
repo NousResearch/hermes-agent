@@ -255,6 +255,33 @@ def test_exit4_no_retry_when_file_genuinely_missing(tmp_path, monkeypatch):
     assert calls["n"] == 1, f"missing file must NOT be retried, got {calls['n']} calls"
 
 
+def test_exit4_missing_discovered_file_can_be_skipped(tmp_path, monkeypatch):
+    """A discovered shard path that disappears before execution may be skipped."""
+    rtp = _load_runner_module()
+    missing = tmp_path / "test_disappeared.py"  # never created
+
+    calls = {"n": 0}
+
+    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
+        calls["n"] += 1
+        return 4, "ERROR: file or directory not found"
+
+    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
+    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)
+
+    file, rc, output, summary, _wall = rtp._run_one_file(
+        missing,
+        [],
+        tmp_path,
+        30.0,
+        skip_missing=True,
+    )
+
+    assert rc == 0
+    assert calls["n"] == 1
+    assert "skipping stale discovered test path" in output
+
+
 def test_exit4_retry_gives_up_after_max_attempts(tmp_path, monkeypatch):
     """If the transient never clears, we stop after the bounded attempt count."""
     rtp = _load_runner_module()

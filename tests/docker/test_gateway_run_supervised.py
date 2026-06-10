@@ -37,13 +37,33 @@ def _svstat(container: str, slot: str = "gateway-default") -> str:
 
 def _svstat_wants_up(container: str, slot: str = "gateway-default") -> bool:
     """See test_profile_gateway._svstat_wants_up for the format rules."""
-    state = _svstat(container, slot)
+    return _svstat_state_wants_up(_svstat(container, slot))
+
+
+def _svstat_state_wants_up(state: str) -> bool:
     if not state:
         return False
     head = state.split()[0] if state.split() else ""
     if head == "up":
         return "want down" not in state
     return "want up" in state
+
+
+def _wait_for_svstat_wants_up(
+    container: str,
+    slot: str = "gateway-default",
+    *,
+    timeout: float = 20.0,
+    interval: float = 0.5,
+) -> tuple[bool, str]:
+    deadline = time.monotonic() + timeout
+    last = ""
+    while time.monotonic() < deadline:
+        last = _svstat(container, slot)
+        if _svstat_state_wants_up(last):
+            return True, last
+        time.sleep(interval)
+    return False, last
 
 
 def test_gateway_run_redirects_to_supervised(
@@ -91,9 +111,8 @@ def test_gateway_run_redirects_to_supervised(
     # gateway may or may not be currently up depending on whether the
     # harness profile has a configured model, but the want-intent
     # contract holds either way.
-    assert _svstat_wants_up(container_name), (
-        f"gateway-default slot want-state not up: {_svstat(container_name)!r}"
-    )
+    wants_up, state = _wait_for_svstat_wants_up(container_name)
+    assert wants_up, f"gateway-default slot want-state not up: {state!r}"
 
     # The CMD process (PID under /init that the wrapper exec'd into)
     # should be sleeping, not the gateway. We grep `ps` for the
@@ -392,4 +411,3 @@ def test_supervised_gateway_stdout_reaches_docker_logs(
         "destination may have been dropped by the new s6-log script. "
         f"File contents:\n{file_contents}"
     )
-

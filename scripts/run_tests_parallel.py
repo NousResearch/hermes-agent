@@ -343,6 +343,8 @@ def _run_one_file(
     pytest_args: List[str],
     repo_root: Path,
     file_timeout: float,
+    *,
+    skip_missing: bool = False,
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
@@ -394,6 +396,14 @@ def _run_one_file(
             cmd, repo_root, file_timeout,
             timeout_note=f"per-file timeout on exit-4 retry {attempt}",
         )
+
+    if rc == 4 and skip_missing and not _file_present(file):
+        output = output + (
+            "\n"
+            f"skipping stale discovered test path after exit 4: {file}\n"
+            f"retries_used={attempt}"
+        )
+        rc = 0
 
     if rc == 4:
         # Exit-4 survived the retries (or the file was judged absent).
@@ -873,7 +883,12 @@ def main() -> int:
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
-                _run_one_file, file, pytest_passthrough, repo_root, args.file_timeout
+                _run_one_file,
+                file,
+                pytest_passthrough,
+                repo_root,
+                args.file_timeout,
+                skip_missing=True,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)

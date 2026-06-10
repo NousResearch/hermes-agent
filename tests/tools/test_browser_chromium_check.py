@@ -16,8 +16,12 @@ from tools import browser_tool as bt
 @pytest.fixture(autouse=True)
 def _reset_chromium_cache():
     bt._cached_chromium_installed = None
+    bt._cached_preferred_local_chromium = None
+    bt._preferred_local_chromium_resolved = False
     yield
     bt._cached_chromium_installed = None
+    bt._cached_preferred_local_chromium = None
+    bt._preferred_local_chromium_resolved = False
 
 
 class TestChromiumSearchRoots:
@@ -60,8 +64,37 @@ class TestChromiumInstalled:
         (tmp_path / "chromium_headless_shell-1208").mkdir()
         assert bt._chromium_installed() is True
 
+    def test_snap_chromium_env_is_overridden_by_playwright_chrome(self, monkeypatch, tmp_path):
+        """Ubuntu Snap Chromium wrapper should not block managed Chromium use."""
+        chrome = tmp_path / "chromium-1223" / "chrome-linux64" / "chrome"
+        chrome.parent.mkdir(parents=True)
+        chrome.write_text("#!/bin/sh\n")
+        chrome.chmod(0o755)
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        bt._cached_preferred_local_chromium = None
+        bt._preferred_local_chromium_resolved = False
 
+        env = {"AGENT_BROWSER_EXECUTABLE_PATH": "/snap/bin/chromium"}
+        bt._apply_local_chromium_env(env)
 
+        assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == str(chrome)
+
+    def test_custom_non_snap_executable_is_preserved(self, monkeypatch, tmp_path):
+        chrome = tmp_path / "chromium-1223" / "chrome-linux64" / "chrome"
+        chrome.parent.mkdir(parents=True)
+        chrome.write_text("#!/bin/sh\n")
+        chrome.chmod(0o755)
+        custom = tmp_path / "custom-chrome"
+        custom.write_text("#!/bin/sh\n")
+        custom.chmod(0o755)
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        bt._cached_preferred_local_chromium = None
+        bt._preferred_local_chromium_resolved = False
+
+        env = {"AGENT_BROWSER_EXECUTABLE_PATH": str(custom)}
+        bt._apply_local_chromium_env(env)
+
+        assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == str(custom)
 
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))

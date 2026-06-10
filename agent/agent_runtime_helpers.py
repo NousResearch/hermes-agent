@@ -2280,11 +2280,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
+            action = next_args.get("action")
+            # Write-protect MEMORY.md/USER.md in cron context.
+            # Cron jobs inherit user context (system-prompt injection) but
+            # must not write automation artifacts into curated memory stores.
+            if agent.session_id.startswith("cron_") and agent.platform == "cron" and action in ("add", "replace", "remove"):
+                return json.dumps({"success": False, "error": (
+                    "Cron jobs have read-only access to MEMORY.md and USER.md. "
+                    "Write operations are not available in scheduled tasks."
+                )})
             target = next_args.get("target", "memory")
             operations = next_args.get("operations")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
-                action=next_args.get("action"),
+                action=action,
                 target=target,
                 content=next_args.get("content"),
                 old_text=next_args.get("old_text"),

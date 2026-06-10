@@ -166,6 +166,13 @@ _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
+# Per-job failure diagnostics populated by _run_job_impl's except block and
+# consumed by _process_job's delivery path.  Keyed by job id; values are dicts
+# with provider, model, session_id, iteration info, etc.  Entries are
+# short-lived — written just before _run_job_impl returns False and read
+# immediately after in _process_job.
+_CRON_FAILURE_DIAGNOSTICS: dict[str, dict] = {}
+
 # Sequential (env/context-mutating) cron jobs — workdir/profile jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
 # ticker thread.  A persistent single-thread executor preserves ordering across
@@ -1380,6 +1387,105 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
+def _extract_failure_diagnostics(
+    agent: object,
+    job: dict,
+    error_msg: str,
+    session_id: str = "",
+    provider: str = "",
+    model: str = "",
+) -> dict:
+    """Extract diagnostic context from the agent at failure time.
+
+    Returns a dict suitable for enriching the failure notification with
+    fields that help the user diagnose the root cause without SSH-ing
+    into the machine.
+    """
+    diag: dict = {
+        "provider": provider or "unknown",
+        "model": model or "unknown",
+        "session_id": session_id or "",
+    }
+
+    # Pull iteration / tool info from the agent's activity tracker.
+    try:
+        if hasattr(agent, "get_activity_summary"):
+            summary = agent.get_activity_summary()
+            diag["api_call_count"] = summary.get("api_call_count", 0)
+            diag["max_iterations"] = summary.get("max_iterations", 0)
+            diag["current_tool"] = summary.get("current_tool") or ""
+            diag["last_activity_desc"] = summary.get("last_activity_desc") or ""
+    except Exception:
+        pass
+
+    # Pull token usage from the agent's budget tracker.
+    try:
+        if hasattr(agent, "iteration_budget"):
+            budget = agent.iteration_budget
+            diag["budget_used"] = getattr(budget, "used", 0)
+            diag["budget_max"] = getattr(budget, "max_total", 0)
+    except Exception:
+        pass
+
+    # Pull token counts from the agent's usage accumulator if available.
+    try:
+        if hasattr(agent, "_total_usage"):
+            usage = agent._total_usage
+            if isinstance(usage, dict):
+                diag["prompt_tokens"] = usage.get("prompt_tokens", 0)
+                diag["completion_tokens"] = usage.get("completion_tokens", 0)
+    except Exception:
+        pass
+
+    return diag
+
+
+def _format_failure_notification(
+    job_name: str,
+    error: str,
+    diag: Optional[dict] = None,
+) -> str:
+    """Build the delivery content for a failed cron job.
+
+    When *diag* is provided (non-empty dict), enriches the basic error
+    message with provider, model, iteration, and session context so the
+    user can diagnose without SSH.
+    """
+    lines = [f"⚠️ Cron job '{job_name}' failed:"]
+
+    if diag and any(diag.get(k) for k in ("provider", "model", "session_id")):
+        lines.append("")
+        lines.append(f"Error:    {error}")
+        if diag.get("provider") and diag["provider"] != "unknown":
+            lines.append(f"Provider: {diag['provider']}")
+        if diag.get("model") and diag["model"] != "unknown":
+            lines.append(f"Model:    {diag['model']}")
+        tokens_parts = []
+        if diag.get("prompt_tokens"):
+            tokens_parts.append(f"~{diag['prompt_tokens']:,} prompt")
+        if diag.get("completion_tokens"):
+            tokens_parts.append(f"{diag['completion_tokens']:,} completion")
+        if tokens_parts:
+            lines.append(f"Tokens:   {' + '.join(tokens_parts)}")
+        call_count = diag.get("api_call_count", 0)
+        max_iter = diag.get("max_iterations", 0)
+        if call_count:
+            detail = f"{call_count}"
+            if max_iter:
+                detail += f"/{max_iter}"
+            last_tool = diag.get("current_tool") or diag.get("last_activity_desc")
+            if last_tool:
+                detail += f", last: {last_tool}"
+            lines.append(f"At turn:  {detail}")
+        if diag.get("session_id"):
+            lines.append(f"Session:  {diag['session_id']}")
+            lines.append(f"Log:      ~/.hermes/logs/agent.log (search: {diag['session_id']})")
+    else:
+        lines.append(f"{error}")
+
+    return "\n".join(lines)
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
@@ -1979,7 +2085,22 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
-        
+
+        # Extract diagnostic context for the failure notification so the
+        # user can diagnose without SSH-ing into the machine.
+        try:
+            diag = _extract_failure_diagnostics(
+                agent=agent,
+                job=job,
+                error_msg=error_msg,
+                session_id=_cron_session_id,
+                provider=str((runtime.get("provider") or "") if isinstance(runtime, dict) else ""),
+                model=model if isinstance(model, str) else "",
+            )
+            _CRON_FAILURE_DIAGNOSTICS[job_id] = diag
+        except Exception:
+            pass
+
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
@@ -2141,7 +2262,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                if success:
+                    deliver_content = final_response
+                else:
+                    diag = _CRON_FAILURE_DIAGNOSTICS.pop(job["id"], None)
+                    deliver_content = _format_failure_notification(
+                        job.get("name", job["id"]), error, diag=diag,
+                    )
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.

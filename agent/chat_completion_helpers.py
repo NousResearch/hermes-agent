@@ -25,7 +25,11 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.timeouts import (
+    get_provider_content_stale_timeout,
+    get_provider_request_timeout,
+    get_provider_stale_timeout,
+)
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
@@ -120,6 +124,59 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _is_deepseek_stream_target(agent) -> bool:
+    """Return True when a stream belongs to DeepSeek or a DeepSeek-compatible URL.
+
+    The visible-output watchdog below is intentionally narrow by default: it
+    protects the known DeepSeek failure mode without changing behavior for
+    providers whose long reasoning/prefill pauses are expected.
+    """
+    values = (
+        getattr(agent, "provider", None),
+        getattr(agent, "model", None),
+        getattr(agent, "base_url", None),
+        getattr(agent, "_anthropic_base_url", None),
+        getattr(agent, "_base_url_lower", None),
+        getattr(agent, "_base_url_hostname", None),
+    )
+    return any("deepseek" in str(value).lower() for value in values if value)
+
+
+def _compute_stream_content_stale_timeout(agent) -> float:
+    """Seconds of reasoning-only stream activity allowed before reconnect.
+
+    ``inf`` means disabled. Provider/model config wins, then explicit env vars.
+    With no explicit setting, enable only for DeepSeek at 300s. A value <= 0
+    disables the watchdog.
+    """
+    configured = get_provider_content_stale_timeout(
+        getattr(agent, "provider", ""), getattr(agent, "model", None)
+    )
+    if configured is not None:
+        if configured <= 0:
+            return float("inf")
+        return configured
+
+    for env_name in (
+        "HERMES_STREAM_CONTENT_STALE_TIMEOUT_SECONDS",
+        "HERMES_STREAM_CONTENT_STALE_TIMEOUT",
+    ):
+        raw = os.getenv(env_name)
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            return float("inf")
+        return value
+
+    if _is_deepseek_stream_target(agent):
+        return 300.0
+    return float("inf")
 
 
 def interruptible_api_call(agent, api_kwargs: dict):
@@ -1698,6 +1755,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
     last_chunk_time = {"t": time.time()}
+    # Separate visible-output timer for DeepSeek reasoning-only streams. A
+    # provider can keep the wire active forever by sending reasoning chunks;
+    # those should not postpone a reconnect when no user-visible text or
+    # tool-call deltas arrive.
+    last_visible_output_time = {"t": last_chunk_time["t"]}
+    reasoning_since_visible_output = {"yes": False}
+
+    def _mark_visible_stream_output() -> None:
+        last_visible_output_time["t"] = time.time()
+        reasoning_since_visible_output["yes"] = False
+
+    def _mark_reasoning_stream_output() -> None:
+        reasoning_since_visible_output["yes"] = True
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -1757,6 +1827,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Reset stale-stream timer so the detector measures from this
         # attempt's start, not a previous attempt's last chunk.
         last_chunk_time["t"] = time.time()
+        last_visible_output_time["t"] = last_chunk_time["t"]
+        reasoning_since_visible_output["yes"] = False
         agent._touch_activity("waiting for provider response (streaming)")
         # Initialize per-attempt stream diagnostics so the retry block can
         # reach for them after the stream dies.  Lives on
@@ -1833,11 +1905,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
+                _mark_reasoning_stream_output()
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
+                _mark_visible_stream_output()
                 content_parts.append(delta.content)
                 if not tool_calls_acc:
                     _fire_first_delta()
@@ -1863,6 +1937,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate tool call deltas — notify display on first name
             if delta and delta.tool_calls:
+                _mark_visible_stream_output()
                 for tc_delta in delta.tool_calls:
                     raw_idx = tc_delta.index if tc_delta.index is not None else 0
                     delta_id = tc_delta.id or ""
@@ -2073,6 +2148,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         # Reset stale-stream timer for this attempt
         last_chunk_time["t"] = time.time()
+        last_visible_output_time["t"] = last_chunk_time["t"]
+        reasoning_since_visible_output["yes"] = False
         # Per-attempt diagnostic dict for the retry block to consume.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
@@ -2126,6 +2203,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 if event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
+                        _mark_visible_stream_output()
                         has_tool_use = True
                         tool_name = getattr(block, "name", None)
                         if tool_name:
@@ -2138,6 +2216,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         delta_type = getattr(delta, "type", None)
                         if delta_type == "text_delta":
                             text = getattr(delta, "text", "")
+                            if text:
+                                _mark_visible_stream_output()
                             if text and not has_tool_use:
                                 _fire_first_delta()
                                 agent._fire_stream_delta(text)
@@ -2145,11 +2225,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         elif delta_type == "thinking_delta":
                             thinking_text = getattr(delta, "thinking", "")
                             if thinking_text:
+                                _mark_reasoning_stream_output()
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
 
             # Return the native Anthropic Message for downstream processing
             return stream.get_final_message()
+
+    def _rebuild_stream_pool_client(reason: str) -> None:
+        if agent.api_mode == "anthropic_messages":
+            try:
+                client = getattr(agent, "_anthropic_client", None)
+                if client is not None:
+                    client.close()
+            except Exception:
+                pass
+            try:
+                agent._rebuild_anthropic_client()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to rebuild Anthropic client (%s) %s error=%s",
+                    reason,
+                    agent._client_log_context(),
+                    exc,
+                )
+        else:
+            agent._replace_primary_openai_client(reason=reason)
 
     def _call():
         import httpx as _httpx
@@ -2294,9 +2395,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         )
                         _close_request_client_once("stream_mid_tool_retry_cleanup")
                         try:
-                            agent._replace_primary_openai_client(
-                                reason="stream_mid_tool_retry_pool_cleanup"
-                            )
+                            _rebuild_stream_pool_client("stream_mid_tool_retry_pool_cleanup")
                         except Exception:
                             pass
                         continue
@@ -2347,9 +2446,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             # Also rebuild the primary client to purge
                             # any dead connections from the pool.
                             try:
-                                agent._replace_primary_openai_client(
-                                    reason="stream_retry_pool_cleanup"
-                                )
+                                _rebuild_stream_pool_client("stream_retry_pool_cleanup")
                             except Exception:
                                 pass
                             continue
@@ -2439,6 +2536,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         else:
             _stream_stale_timeout = _stream_stale_timeout_base
 
+    _stream_content_stale_timeout = _compute_stream_content_stale_timeout(agent)
+
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()
@@ -2487,7 +2586,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
             try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                _rebuild_stream_pool_client("stale_stream_pool_cleanup")
             except Exception:
                 pass
             # Reset the timer so we don't kill repeatedly while
@@ -2496,6 +2595,45 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             agent._touch_activity(
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )
+
+        # DeepSeek V4 Flash can emit reasoning/thinking tokens indefinitely
+        # without visible text or tool-call deltas. Those chunks keep the
+        # normal wire-activity stale detector fresh, so use a separate
+        # visible-output watchdog gated by observed reasoning activity.
+        if reasoning_since_visible_output["yes"] and _stream_content_stale_timeout < float("inf"):
+            _content_stale_elapsed = time.time() - last_visible_output_time["t"]
+            if _content_stale_elapsed > _stream_content_stale_timeout:
+                _est_ctx = estimate_request_context_tokens(api_kwargs)
+                logger.warning(
+                    "Stream content-stale for %.0fs (threshold %.0fs) — reasoning "
+                    "chunks received but no visible output. model=%s context=~%s "
+                    "tokens. Killing connection.",
+                    _content_stale_elapsed,
+                    _stream_content_stale_timeout,
+                    api_kwargs.get("model", "unknown"),
+                    f"{_est_ctx:,}",
+                )
+                agent._buffer_status(
+                    f"⚠️ Provider sent reasoning for {int(_content_stale_elapsed)}s "
+                    "without visible text or a tool call. Reconnecting..."
+                )
+                try:
+                    _close_request_client_once("content_stale_stream_kill")
+                except Exception:
+                    pass
+                try:
+                    _rebuild_stream_pool_client("content_stale_stream_pool_cleanup")
+                except Exception:
+                    pass
+                # Avoid repeated kills while the worker thread notices the
+                # aborted connection and enters the retry/error path.
+                _now = time.time()
+                last_chunk_time["t"] = _now
+                last_visible_output_time["t"] = _now
+                reasoning_since_visible_output["yes"] = False
+                agent._touch_activity(
+                    f"content-stale stream detected after {int(_content_stale_elapsed)}s, reconnecting"
+                )
 
         if agent._interrupt_requested:
             # Mark THIS request cancelled before force-closing so the worker's

@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 
 from hermes_cli.timeouts import (
+    get_provider_content_stale_timeout,
     get_provider_request_timeout,
     get_provider_stale_timeout,
 )
@@ -128,6 +129,48 @@ def test_invalid_stale_timeout_values_return_none(monkeypatch, tmp_path):
 
     assert get_provider_stale_timeout("openai-codex", "gpt-5.4") is None
     assert get_provider_stale_timeout("openai-codex", "gpt-5.5") is None
+
+
+def test_content_stale_timeout_model_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          deepseek:
+            content_stale_timeout_seconds: 300
+            models:
+              deepseek-v4-flash:
+                content_stale_timeout_seconds: 120
+        """,
+    )
+
+    assert get_provider_content_stale_timeout("deepseek", "deepseek-v4-flash") == 120.0
+    assert get_provider_content_stale_timeout("deepseek", "deepseek-chat") == 300.0
+
+
+def test_content_stale_timeout_legacy_key_and_invalid_values(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          deepseek:
+            stream_content_stale_timeout_seconds: 240
+            models:
+              deepseek-v4-flash:
+                content_stale_timeout_seconds: -1
+          anthropic:
+            content_stale_timeout_seconds: "slow"
+          gemini:
+            content_stale_timeout_seconds: 0
+        """,
+    )
+
+    assert get_provider_content_stale_timeout("deepseek", "deepseek-chat") == 240.0
+    assert get_provider_content_stale_timeout("deepseek", "deepseek-v4-flash") == 240.0
+    assert get_provider_content_stale_timeout("anthropic", "claude-opus-4.6") is None
+    assert get_provider_content_stale_timeout("gemini", "gemini-pro") == 0.0
 
 
 def test_anthropic_adapter_honors_timeout_kwarg():

@@ -711,8 +711,101 @@ class TestReasoningStreaming:
         assert response.choices[0].message.reasoning_content == "Let me think about this"
         assert response.choices[0].message.content == "The answer is 42"
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_deepseek_reasoning_only_chat_stream_trips_content_stale_watchdog(
+        self, mock_close, mock_create, monkeypatch,
+    ):
+        """DeepSeek reasoning chunks must not postpone visible-output stale detection forever."""
+        from run_agent import AIAgent
+        import httpx
+        import time
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "30")
+        monkeypatch.setenv("HERMES_STREAM_CONTENT_STALE_TIMEOUT_SECONDS", "0.05")
+
+        class _ReasoningOnlyStream:
+            def __init__(self, client):
+                self.client = client
+                self.guard_exhausted = False
+                self.chunks = 0
+
+            def __iter__(self):
+                while not self.client.closed and self.chunks < 200:
+                    self.chunks += 1
+                    time.sleep(0.005)
+                    yield _make_stream_chunk(reasoning_content="thinking")
+                if self.client.closed:
+                    raise httpx.ReadTimeout("closed by content stale watchdog")
+                self.guard_exhausted = True
+                raise AssertionError(
+                    "content stale watchdog did not close reasoning-only stream"
+                )
+
+        client = SimpleNamespace(closed=False)
+        stream = _ReasoningOnlyStream(client)
+        client.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: stream)
+        )
+        mock_create.return_value = client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.deepseek.com/v1",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._abort_request_openai_client = lambda c, reason=None: setattr(c, "closed", True)
+
+        with pytest.raises(httpx.ReadTimeout, match="content stale watchdog"):
+            agent._interruptible_streaming_api_call({})
+
+        assert client.closed is True
+        assert stream.guard_exhausted is False
+
 
 # ── Test: _has_stream_consumers ──────────────────────────────────────────
+
+
+def test_content_stale_watchdog_default_is_deepseek_only(monkeypatch):
+    from agent.chat_completion_helpers import _compute_stream_content_stale_timeout
+
+    monkeypatch.delenv("HERMES_STREAM_CONTENT_STALE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_STREAM_CONTENT_STALE_TIMEOUT", raising=False)
+
+    deepseek_agent = SimpleNamespace(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com/anthropic",
+    )
+    anthropic_agent = SimpleNamespace(
+        provider="anthropic",
+        model="claude-opus-4.6",
+        base_url="https://api.anthropic.com",
+    )
+
+    assert _compute_stream_content_stale_timeout(deepseek_agent) == 300.0
+    assert _compute_stream_content_stale_timeout(anthropic_agent) == float("inf")
+
+
+def test_content_stale_watchdog_env_zero_disables(monkeypatch):
+    from agent.chat_completion_helpers import _compute_stream_content_stale_timeout
+
+    monkeypatch.setenv("HERMES_STREAM_CONTENT_STALE_TIMEOUT_SECONDS", "0")
+    agent = SimpleNamespace(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com/anthropic",
+    )
+
+    assert _compute_stream_content_stale_timeout(agent) == float("inf")
+
 
 
 class TestHasStreamConsumers:
@@ -986,11 +1079,82 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
-    def test_anthropic_stream_parser_valueerror_retries_before_delivery(
-        self, mock_replace, monkeypatch,
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    def test_deepseek_reasoning_only_anthropic_stream_hits_content_stale_watchdog(
+        self, mock_rebuild, monkeypatch,
     ):
-        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
+        """DeepSeek /anthropic thinking deltas must not bypass stale detection."""
+        from run_agent import AIAgent
+        import httpx
+        import time
+
+        class _ReasoningOnlyAnthropicStream:
+            response = None
+
+            def __init__(self, client):
+                self.client = client
+                self.guard_events = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                while not self.client.closed:
+                    self.guard_events += 1
+                    if self.guard_events > 200:
+                        raise AssertionError("content-stale watchdog did not close Anthropic stream")
+                    time.sleep(0.005)
+                    yield SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="thinking_delta", thinking="thinking"),
+                    )
+                raise httpx.ReadTimeout("closed by content-stale watchdog")
+
+            def get_final_message(self):
+                return SimpleNamespace(content=[], stop_reason="end_turn")
+
+        class _AnthropicClient:
+            def __init__(self):
+                self.closed = False
+                self.messages = SimpleNamespace(
+                    stream=lambda **_kw: _ReasoningOnlyAnthropicStream(self)
+                )
+
+            def close(self):
+                self.closed = True
+
+        client = _AnthropicClient()
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.deepseek.com/anthropic",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._anthropic_client = client
+        agent._try_refresh_anthropic_client_credentials = lambda: None
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "10")
+        monkeypatch.setenv("HERMES_STREAM_CONTENT_STALE_TIMEOUT_SECONDS", "0.05")
+
+        with pytest.raises(httpx.ReadTimeout, match="content-stale watchdog"):
+            agent._interruptible_streaming_api_call({})
+
+        assert client.closed is True
+        assert mock_rebuild.call_count >= 1
+
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    def test_anthropic_stream_parser_valueerror_retries_before_delivery(
+        self, mock_rebuild, monkeypatch,
+    ):
+        """Malformed Anthropic event-stream frames retry with an Anthropic client rebuild."""
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1035,7 +1199,7 @@ class TestAnthropicStreamCallbacks:
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert mock_replace.call_count == 1
+        assert mock_rebuild.call_count == 1
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(

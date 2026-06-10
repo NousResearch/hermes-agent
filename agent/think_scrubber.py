@@ -44,6 +44,11 @@ Tag variants handled (case-insensitive):
   ``<think>``, ``<thinking>``, ``<reasoning>``, ``<thought>``,
   ``<REASONING_SCRATCHPAD>``.
 
+MiniMax-M3 also emits Chinese reasoning markers as bare line markers
+(`` 思考``, `` 反思``, `` 推理``, `` 推敲``).  Those are treated like
+open/close tags only at block boundaries so normal prose mentioning the
+same words is preserved.
+
 Block-boundary rule for opens: an opening tag is only treated as a
 reasoning-block opener when it appears at the start of the stream,
 after a newline (optionally followed by whitespace), or when only
@@ -58,7 +63,9 @@ from __future__ import annotations
 
 from typing import Tuple
 
-__all__ = ["StreamingThinkScrubber"]
+CHINESE_REASONING_MARKERS: Tuple[str, ...] = ("思考", "反思", "推理", "推敲")
+
+__all__ = ["CHINESE_REASONING_MARKERS", "StreamingThinkScrubber"]
 
 
 class StreamingThinkScrubber:
@@ -86,8 +93,14 @@ class StreamingThinkScrubber:
 
     # Materialise literal tag strings so the hot path does string
     # operations, not regex compilation per feed().
-    _OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name}>" for name in _OPEN_TAG_NAMES)
-    _CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name}>" for name in _OPEN_TAG_NAMES)
+    _XML_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name}>" for name in _OPEN_TAG_NAMES)
+    _XML_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name}>" for name in _OPEN_TAG_NAMES)
+    # MiniMax-M3's Chinese markers include a leading space in the stream.
+    # Keep them separate from XML tags because closed XML pairs are stripped
+    # anywhere, while bare natural-language markers must stay boundary-gated.
+    _CHINESE_MARKER_TAGS: Tuple[str, ...] = tuple(f" {name}" for name in CHINESE_REASONING_MARKERS)
+    _OPEN_TAGS: Tuple[str, ...] = _XML_OPEN_TAGS + _CHINESE_MARKER_TAGS
+    _CLOSE_TAGS: Tuple[str, ...] = _XML_CLOSE_TAGS + _CHINESE_MARKER_TAGS
 
     # Pre-compute the longest tag (for partial-tag hold-back bound).
     _MAX_TAG_LEN: int = max(len(tag) for tag in _OPEN_TAGS + _CLOSE_TAGS)
@@ -254,7 +267,7 @@ class StreamingThinkScrubber:
         """
         buf_lower = buf.lower()
         best: "tuple[int, int] | None" = None
-        for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
+        for open_tag, close_tag in zip(self._XML_OPEN_TAGS, self._XML_CLOSE_TAGS):
             open_lower = open_tag.lower()
             close_lower = close_tag.lower()
             open_idx = buf_lower.find(open_lower)
@@ -347,6 +360,8 @@ class StreamingThinkScrubber:
         for i in range(max_check, 0, -1):
             suffix = buf_lower[-i:]
             for tag in tags:
+                if tag.startswith(" ") and suffix.isspace():
+                    continue
                 tag_lower = tag.lower()
                 if len(tag_lower) > i and tag_lower.startswith(suffix):
                     return i
@@ -368,7 +383,7 @@ class StreamingThinkScrubber:
         while i < len(text):
             matched = False
             if text_lower[i:i + 2] == "</":
-                for tag in cls._CLOSE_TAGS:
+                for tag in cls._XML_CLOSE_TAGS:
                     tag_lower = tag.lower()
                     tag_len = len(tag_lower)
                     if text_lower[i:i + tag_len] == tag_lower:

@@ -4661,8 +4661,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # suppress them during streaming too — unless show_reasoning is
         # enabled, in which case we route the inner content to the
         # reasoning display box instead of discarding it.
-        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>")
-        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>", "</thought>")
+        from agent.think_scrubber import CHINESE_REASONING_MARKERS
+        _CHINESE_TAGS = tuple(f" {marker}" for marker in CHINESE_REASONING_MARKERS)
+        _OPEN_TAGS = (
+            "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>",
+        ) + _CHINESE_TAGS
+        _CLOSE_TAGS = (
+            "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>", "</thought>",
+        ) + _CHINESE_TAGS
 
         # Append to a pre-filter buffer first
         self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text

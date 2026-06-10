@@ -1400,6 +1400,12 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate("<THINKING>caps</THINKING>answer")
         assert c._accumulated == "answer"
 
+    @pytest.mark.parametrize("marker", ["思考", "反思", "推理", "推敲"])
+    def test_chinese_reasoning_marker_variant(self, marker):
+        c = _make_consumer()
+        c._filter_and_accumulate(f" {marker}\n隐藏推理\n {marker}\nanswer")
+        assert c._accumulated == "\nanswer"
+
     def test_prose_mention_not_stripped(self):
         """<think> mentioned mid-line in prose should NOT trigger filtering."""
         c = _make_consumer()
@@ -1944,4 +1950,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-

@@ -37,6 +37,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
+from agent.think_scrubber import CHINESE_REASONING_MARKERS
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -487,6 +488,19 @@ def strip_think_blocks(agent, content: str) -> str:
     content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    # MiniMax-M3 emits Chinese reasoning markers as bare line markers instead
+    # of XML tags.  Require block-boundary markers so prose such as "我在思考"
+    # is not stripped, while transcript-shaped blocks are removed before they
+    # reach persistence or final delivery.
+    for _marker in CHINESE_REASONING_MARKERS:
+        content = re.sub(
+            rf'(^|[\r\n])[ \t]*{re.escape(_marker)}[ \t]*'
+            rf'.*?'
+            rf'(?:[\r\n][ \t]*{re.escape(_marker)}[ \t]*(?:\r?\n)?)',
+            r'\1',
+            content,
+            flags=re.DOTALL,
+        )
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.

@@ -328,6 +328,17 @@ class TestStripThinkBlocks:
         result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
         assert "<thought>" not in result
 
+    @pytest.mark.parametrize("marker", ["思考", "反思", "推理", "推敲"])
+    def test_chinese_reasoning_marker_block_removed(self, agent, marker):
+        result = agent._strip_think_blocks(f" {marker}\n隐藏推理\n {marker}\n最终答案")
+        assert "隐藏推理" not in result
+        assert marker not in result
+        assert "最终答案" in result
+
+    def test_chinese_reasoning_word_in_prose_not_stripped(self, agent):
+        text = "我在思考这个问题。"
+        assert agent._strip_think_blocks(text) == text
+
     # ─── Unterminated-block coverage (#8878, #9568, #10408) ──────────────
     # Reasoning models served via NIM / MiniMax M2.7 frequently drop the
     # closing tag, leaking raw reasoning into assistant content. The open

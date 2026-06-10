@@ -155,6 +155,28 @@ class TestTheMiniMaxScenario:
         out = _drive(s, ["<think>", "The user wants", " to know something"])
         assert out == ""
 
+    @pytest.mark.parametrize("marker", ["思考", "反思", "推理", "推敲"])
+    def test_minimax_m3_chinese_reasoning_markers(self, marker: str) -> None:
+        """MiniMax-M3 emits bare Chinese reasoning markers instead of XML tags."""
+        s = StreamingThinkScrubber()
+        out = _drive(s, [f" {marker}\n隐藏推理\n {marker}\n最终答案"])
+        assert out == "\n最终答案"
+
+    def test_chinese_reasoning_marker_split_across_deltas(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, [" 思", "考\nhidden\n 思", "考\nanswer"])
+        assert out == "\nanswer"
+
+    def test_plain_trailing_space_not_held_for_chinese_marker_prefix(self) -> None:
+        s = StreamingThinkScrubber()
+        assert s.feed("lo ") == "lo "
+        assert s.feed("World") == "World"
+
+    def test_chinese_reasoning_word_in_prose_is_preserved(self) -> None:
+        s = StreamingThinkScrubber()
+        text = "我在思考这个问题。"
+        assert _drive(s, [text]) == text
+
 
 class TestResetAndReentry:
     def test_reset_clears_in_block_state(self) -> None:

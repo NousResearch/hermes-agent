@@ -179,6 +179,7 @@ def cron_create(args):
         workdir=getattr(args, "workdir", None),
         profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        wrap_response=getattr(args, "wrap_response", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -197,6 +198,8 @@ def cron_create(args):
         print(f"  Workdir: {job_data['workdir']}")
     if job_data.get("profile"):
         print(f"  Profile: {job_data['profile']}")
+    if job_data.get("wrap_response") is not None:
+        print(f"  Wrap: {'on' if job_data['wrap_response'] else 'off (bare output)'}")
     print(f"  Next run: {result['next_run_at']}")
     return 0
 
@@ -244,6 +247,7 @@ def cron_edit(args):
         workdir=getattr(args, "workdir", None),
         profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", None),
+        wrap_response=getattr(args, "wrap_response", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -265,6 +269,8 @@ def cron_edit(args):
         print(f"  Workdir: {updated['workdir']}")
     if updated.get("profile"):
         print(f"  Profile: {updated['profile']}")
+    if updated.get("wrap_response") is not None:
+        print(f"  Wrap: {'on' if updated['wrap_response'] else 'off (bare output)'}")
     return 0
 
 

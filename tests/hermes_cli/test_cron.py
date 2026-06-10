@@ -111,3 +111,47 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_create_and_edit_wrap_response(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 5m",
+                prompt="watchdog check",
+                name="quiet-watchdog",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                profile=None,
+                wrap_response=False,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        assert "Wrap: off (bare output)" in out
+
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["wrap_response"] is False
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=jobs[0]["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                profile=None,
+                clear_skills=False,
+                wrap_response=True,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Updated job" in out
+        assert "Wrap: on" in out
+        assert get_job(jobs[0]["id"])["wrap_response"] is True

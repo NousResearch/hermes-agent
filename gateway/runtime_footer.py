@@ -19,8 +19,8 @@ The footer is appended to the final response text in ``gateway/run.py`` right
 before returning the response to the adapter send path — so it only lands on
 the final message a user sees, not on tool-progress updates or streaming
 partials.  When streaming is on and the final text has already been delivered
-piecemeal, the footer is sent as a separate trailing message via
-``send_trailing_footer()``.
+piecemeal, ``gateway/run.py`` sends the footer line as a separate trailing
+adapter message instead (see the ``already_sent`` handling there).
 """
 
 from __future__ import annotations

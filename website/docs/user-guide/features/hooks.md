@@ -344,6 +344,9 @@ An earlier version of Hermes shipped this as a built-in hook and silently spawne
 3. Handlers are registered for their declared events
 4. At each lifecycle point, `hooks.emit()` fires all matching handlers
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
+6. A hook fires **at most once per event**: duplicate names in the `events` list and exact+wildcard overlap (`agent:start` + `agent:*`) are deduplicated, and repeated discovery never double-registers handlers
+
+If a hook that sends messages fires more than once per agent turn, check its `events` list — `agent:step` fires on **every turn of the tool-calling loop**, so a hook meant to run once per reply should use `agent:end` (or `agent:start`) instead.
 
 :::info
 Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, Teams). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).

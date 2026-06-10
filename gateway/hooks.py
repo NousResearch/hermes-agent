@@ -46,6 +46,7 @@ class HookRegistry:
         # event_type -> [handler_fn, ...]
         self._handlers: Dict[str, List[Callable]] = {}
         self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._discovered = False  # idempotency guard for discover_and_load()
 
     @property
     def loaded_hooks(self) -> List[dict]:
@@ -61,7 +62,7 @@ class HookRegistry:
         """
         return
 
-    def discover_and_load(self) -> None:
+    def discover_and_load(self, force: bool = False) -> None:
         """
         Scan the hooks directory for hook directories and load their handlers.
 
@@ -70,7 +71,17 @@ class HookRegistry:
         Each hook directory must contain:
           - HOOK.yaml with at least 'name' and 'events' keys
           - handler.py with a top-level 'handle' function (sync or async)
+
+        Idempotent: a repeat call is a no-op so handlers are never registered
+        twice (which would make every hook fire twice per event). Pass
+        ``force=True`` to drop all registered handlers and re-scan from disk.
         """
+        if self._discovered and not force:
+            return
+        self._handlers.clear()
+        self._loaded_hooks.clear()
+        self._discovered = True
+
         self._register_builtin_hooks()
 
         if not HOOKS_DIR.exists():
@@ -93,7 +104,10 @@ class HookRegistry:
                     continue
 
                 hook_name = manifest.get("name", hook_dir.name)
-                events = manifest.get("events", [])
+                # Dedupe the declared events (order-preserving) — a repeated
+                # event name in HOOK.yaml would register the handler twice
+                # and fire it twice per emit.
+                events = list(dict.fromkeys(manifest.get("events", [])))
                 if not events:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
@@ -146,14 +160,23 @@ class HookRegistry:
         """Return all handlers that should fire for ``event_type``.
 
         Exact matches fire first, followed by wildcard matches (e.g.
-        ``command:*`` matches ``command:reset``).
+        ``command:*`` matches ``command:reset``). Each handler fires at most
+        once per event — a hook declared for both an exact event and a
+        matching wildcard (``agent:start`` + ``agent:*``) must not run twice.
         """
         handlers = list(self._handlers.get(event_type, []))
         if ":" in event_type:
             base = event_type.split(":")[0]
             wildcard_key = f"{base}:*"
             handlers.extend(self._handlers.get(wildcard_key, []))
-        return handlers
+
+        seen: set[int] = set()
+        deduped: List[Callable] = []
+        for fn in handlers:
+            if id(fn) not in seen:
+                seen.add(id(fn))
+                deduped.append(fn)
+        return deduped
 
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """

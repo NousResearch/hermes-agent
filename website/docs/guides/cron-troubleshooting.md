@@ -97,6 +97,8 @@ cron:
   wrap_response: false
 ```
 
+Individual jobs can also override the global setting with their own `wrap_response` field (e.g. `cronjob(action='update', job_id=..., wrap_response=False)`) — useful when only one noisy monitoring job should be unwrapped.
+
 ---
 
 ## Skill Loading Failures

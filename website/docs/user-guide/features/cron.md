@@ -327,6 +327,16 @@ cron:
   wrap_response: false
 ```
 
+The wrapper can also be controlled per job with the `wrap_response` field, which overrides the global setting for that job only. This is the right tool for monitoring and watchdog jobs whose repeated header/footer is pure noise, while leaving normal report jobs wrapped:
+
+```text
+You: make the disk watchdog send just the alert text, no cron header
+
+Hermes: (calls cronjob(action='update', job_id='abc123', wrap_response=False))
+```
+
+`wrap_response: false` on a job delivers the bare content, `true` always wraps, and omitting it inherits the global `cron.wrap_response` setting.
+
 ### Silent suppression
 
 If the agent's final response starts with `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
@@ -359,6 +369,7 @@ For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/mem
 ```bash
 hermes cron create "every 5m" \
   --no-agent \
+  --no-wrap \
   --script memory-watchdog.sh \
   --deliver telegram \
   --name "memory-watchdog"
@@ -371,6 +382,7 @@ Semantics:
 - Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
+- `--no-wrap` (optional) drops the `Cronjob Response:` header/footer so the alert text is the entire message — recommended for watchdogs. See [Response wrapping](#response-wrapping).
 
 `.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
 

@@ -335,6 +335,77 @@ class TestCallbackSubprocess:
         )
         assert msg == "blocked-by-shell"
 
+    def test_shell_hooks_survive_force_plugin_reload(self, tmp_path, monkeypatch):
+        """PluginManager.discover_and_load(force=True) clears manager._hooks —
+        which also wipes shell-hook callbacks. The reload path must re-wire
+        them, otherwise a runtime rediscovery (tts_tool, image_gen, etc.)
+        silently kills every shell hook for the rest of the process."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path, "block.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"decision": "block", "reason": "blocked-by-shell"}\\n\'\n',
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+
+        plugins._plugin_manager = plugins.PluginManager()
+
+        cfg = {
+            "hooks": {
+                "pre_tool_call": [
+                    {"matcher": "terminal", "command": str(script)},
+                ],
+            },
+        }
+        registered = shell_hooks.register_from_config(cfg, accept_hooks=True)
+        assert len(registered) == 1
+
+        # Keep the force-reload hermetic: no real plugin scanning, and the
+        # re-registration reads our cfg instead of the user's config file.
+        monkeypatch.setattr(
+            plugins.PluginManager, "_scan_directory", lambda self, *a, **k: []
+        )
+        monkeypatch.setattr(
+            plugins.PluginManager, "_scan_entry_points", lambda self: []
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+        plugins.get_plugin_manager().discover_and_load(force=True)
+
+        msg = plugins.get_pre_tool_call_block_message(
+            tool_name="terminal",
+            args={"command": "rm"},
+        )
+        assert msg == "blocked-by-shell"
+
+    def test_allowlisted_only_skips_unapproved_pairs(self, tmp_path, monkeypatch):
+        """allowlisted_only=True must never prompt or auto-approve — pairs
+        missing from the allowlist are skipped outright."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path, "noop.sh", "#!/usr/bin/env bash\nprintf '{}\\n'\n",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.delenv("HERMES_ACCEPT_HOOKS", raising=False)
+
+        plugins._plugin_manager = plugins.PluginManager()
+
+        cfg = {
+            "hooks": {
+                "pre_tool_call": [{"command": str(script)}],
+            },
+        }
+        registered = shell_hooks.register_from_config(
+            cfg, accept_hooks=True, allowlisted_only=True,
+        )
+        assert registered == []
+        assert shell_hooks.allowlist_entry_for("pre_tool_call", str(script)) is None
+
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""
         calls = tmp_path / "calls.log"

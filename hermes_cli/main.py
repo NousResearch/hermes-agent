@@ -12330,6 +12330,25 @@ def main():
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
     )
+    cron_create.add_argument(
+        "--no-wrap",
+        dest="wrap_response",
+        action="store_const",
+        const=False,
+        default=None,
+        help=(
+            "Deliver the job's bare output without the 'Cronjob Response' "
+            "header/footer wrapper. Ideal for watchdogs and monitoring jobs "
+            "where the wrapper is repetitive noise."
+        ),
+    )
+    cron_create.add_argument(
+        "--wrap",
+        dest="wrap_response",
+        action="store_const",
+        const=True,
+        help="Always wrap this job's output, even when cron.wrap_response is globally false.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -12397,6 +12416,21 @@ def main():
     cron_edit.add_argument(
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--no-wrap",
+        dest="wrap_response",
+        action="store_const",
+        const=False,
+        default=None,
+        help="Deliver this job's bare output without the 'Cronjob Response' header/footer wrapper.",
+    )
+    cron_edit.add_argument(
+        "--wrap",
+        dest="wrap_response",
+        action="store_const",
+        const=True,
+        help="Always wrap this job's output, even when cron.wrap_response is globally false.",
     )
 
     # lifecycle actions

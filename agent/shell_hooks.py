@@ -150,6 +150,7 @@ def register_from_config(
     cfg: Optional[Dict[str, Any]],
     *,
     accept_hooks: bool = False,
+    allowlisted_only: bool = False,
 ) -> List[ShellHookSpec]:
     """Register every configured shell hook on the plugin manager.
 
@@ -162,6 +163,11 @@ def register_from_config(
     setting.  ``HERMES_ACCEPT_HOOKS=1`` and ``hooks_auto_accept: true`` are
     also honored inside this function so either CLI or gateway call sites
     pick them up.
+
+    ``allowlisted_only=True`` never prompts and never auto-approves: pairs
+    that aren't already in the allowlist are skipped.  Used for mid-session
+    re-registration (after a force plugin reload) where surprising the user
+    with a consent prompt — or silently widening consent — would be wrong.
 
     Returns the list of :class:`ShellHookSpec` entries that ended up wired
     up on the plugin manager.  Skipped entries (unknown events, malformed,
@@ -195,6 +201,12 @@ def register_from_config(
             already_allowlisted = _is_allowlisted(spec.event, spec.command)
 
         if not already_allowlisted:
+            if allowlisted_only:
+                logger.info(
+                    "shell hook for %s (%s) not allowlisted — skipped during "
+                    "re-registration", spec.event, spec.command,
+                )
+                continue
             if not _prompt_and_record(
                 spec.event, spec.command, accept_hooks=effective_accept,
             ):
@@ -233,6 +245,31 @@ def reset_for_tests() -> None:
     """Clear the idempotence set.  Test-only helper."""
     with _registered_lock:
         _registered.clear()
+
+
+def reregister_after_plugin_reload() -> None:
+    """Re-wire shell hooks after ``PluginManager.discover_and_load(force=True)``.
+
+    A force rediscovery clears ``manager._hooks`` — which also drops the
+    shell-hook callbacks living there — while the idempotence keys in
+    ``_registered`` keep claiming they're wired up.  Left alone, every shell
+    hook silently stops firing for the rest of the process.
+
+    Clears the idempotence set and registers again from the current config.
+    Runs in ``allowlisted_only`` mode: previously-approved pairs re-register
+    silently (registration recorded their approval), and nothing new is
+    prompted for or auto-approved mid-session.
+    """
+    with _registered_lock:
+        _registered.clear()
+    try:
+        from hermes_cli.config import load_config
+        register_from_config(load_config(), allowlisted_only=True)
+    except Exception:
+        logger.warning(
+            "shell hook re-registration after plugin reload failed",
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

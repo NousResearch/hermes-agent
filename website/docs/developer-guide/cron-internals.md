@@ -190,6 +190,8 @@ By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 - A header identifying the cron job name and task
 - A footer noting the agent cannot see the delivered message in conversation
 
+A job's own `wrap_response` field (boolean, default `null`) overrides the global setting for that job: `false` delivers the bare content, `true` always wraps, `null` inherits `cron.wrap_response`.
+
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
 ### Session Isolation

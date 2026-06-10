@@ -546,6 +546,7 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    wrap_response: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -595,6 +596,11 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        wrap_response: Per-job override for the delivery wrapper (the
+                "Cronjob Response: ..." header and "To stop or manage this
+                job ..." footer). True forces wrapping, False delivers the
+                bare content, None (default) inherits the global
+                ``cron.wrap_response`` config setting.
 
     Returns:
         The created job dict
@@ -630,6 +636,9 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
+    # None means "inherit the global cron.wrap_response setting"; only an
+    # explicit boolean is stored as a per-job override.
+    normalized_wrap = bool(wrap_response) if wrap_response is not None else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -680,6 +689,7 @@ def create_job(
         "last_delivery_error": None,
         # Delivery configuration
         "deliver": deliver,
+        "wrap_response": normalized_wrap,  # None = inherit cron.wrap_response
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
@@ -781,6 +791,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = None
             else:
                 updates["profile"] = _normalize_profile(_profile)
+
+        # Normalize wrap_response: None clears the override (inherit the
+        # global cron.wrap_response setting); anything else is coerced to bool.
+        if "wrap_response" in updates:
+            _wr = updates["wrap_response"]
+            updates["wrap_response"] = None if _wr is None else bool(_wr)
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

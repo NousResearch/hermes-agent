@@ -229,6 +229,30 @@ class TestJobCRUD:
         assert remove_job(job["id"]) is True
         assert get_job(job["id"]) is None
 
+    def test_wrap_response_defaults_to_inherit(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="every 1h")
+        assert job["wrap_response"] is None
+
+    def test_wrap_response_stored_as_bool(self, tmp_cron_dir):
+        job = create_job(prompt="Quiet", schedule="every 1h", wrap_response=False)
+        assert job["wrap_response"] is False
+
+        job = create_job(prompt="Loud", schedule="every 1h", wrap_response=True)
+        assert job["wrap_response"] is True
+
+    def test_update_wrap_response_override_and_clear(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="every 1h")
+
+        updated = update_job(job["id"], {"wrap_response": False})
+        assert updated["wrap_response"] is False
+
+        # Truthy non-bool values are coerced; None clears back to inherit.
+        updated = update_job(job["id"], {"wrap_response": 1})
+        assert updated["wrap_response"] is True
+
+        updated = update_job(job["id"], {"wrap_response": None})
+        assert updated["wrap_response"] is None
+
     def test_remove_job_rejects_unsafe_legacy_id_before_output_cleanup(self, tmp_cron_dir):
         """Legacy unsafe IDs left over from before the create-time guard
         must fail closed without half-applying the removal."""

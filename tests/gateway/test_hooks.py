@@ -111,6 +111,78 @@ class TestDiscoverAndLoad:
         assert len(reg.loaded_hooks) == 2
 
 
+class TestNoDuplicateFiring:
+    """Each hook must fire at most once per event, no matter how it was declared
+    or how many times discovery ran — duplicates surface to users as repeated
+    messages in chat."""
+
+    def test_discover_and_load_is_idempotent(self, tmp_path):
+        _create_hook(tmp_path, "my-hook", '["agent:start"]',
+                      "def handle(e, c): pass\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+            reg.discover_and_load()  # second call should no-op
+
+        assert len(reg.loaded_hooks) == 1
+        assert len(reg._handlers["agent:start"]) == 1
+
+    def test_force_reload_rescans_without_duplicating(self, tmp_path):
+        _create_hook(tmp_path, "my-hook", '["agent:start"]',
+                      "def handle(e, c): pass\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+            reg.discover_and_load(force=True)
+
+        assert len(reg.loaded_hooks) == 1
+        assert len(reg._handlers["agent:start"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_repeated_event_name_fires_once(self, tmp_path):
+        results = []
+
+        _create_hook(tmp_path, "dup-events", '["agent:start", "agent:start"]',
+                      "results = []\n"
+                      "def handle(event_type, context):\n"
+                      "    results.append(event_type)\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+            reg.discover_and_load()
+
+        handler_fn = reg._handlers["agent:start"][0]
+        handler_fn.__globals__["results"] = results
+
+        await reg.emit("agent:start", {})
+        assert results == ["agent:start"]
+
+    @pytest.mark.asyncio
+    async def test_exact_plus_wildcard_fires_once(self, tmp_path):
+        results = []
+
+        _create_hook(tmp_path, "overlap", '["command:reset", "command:*"]',
+                      "results = []\n"
+                      "def handle(event_type, context):\n"
+                      "    results.append(event_type)\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+            reg.discover_and_load()
+
+        handler_fn = reg._handlers["command:reset"][0]
+        handler_fn.__globals__["results"] = results
+
+        await reg.emit("command:reset", {})
+        assert results == ["command:reset"]
+
+        # The wildcard registration still covers other command events.
+        await reg.emit("command:model", {})
+        assert results == ["command:reset", "command:model"]
+
+
 class TestEmit:
     @pytest.mark.asyncio
     async def test_emit_calls_sync_handler(self, tmp_path):

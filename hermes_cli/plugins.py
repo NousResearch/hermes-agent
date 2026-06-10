@@ -1192,6 +1192,23 @@ class PluginManager:
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
 
+        if force:
+            # The force-reload clear above wiped self._hooks — including any
+            # shell-hook callbacks that agent.shell_hooks registered there.
+            # Without re-wiring, a runtime rediscovery (e.g. tts_tool calling
+            # _ensure_plugins_discovered(force=True)) silently kills every
+            # configured shell hook for the rest of the process.  Re-register
+            # them after plugin hooks so Python-plugin block decisions keep
+            # winning ties (the documented ordering invariant).
+            try:
+                from agent.shell_hooks import reregister_after_plugin_reload
+                reregister_after_plugin_reload()
+            except Exception:
+                logger.warning(
+                    "shell hook re-registration after plugin reload failed",
+                    exc_info=True,
+                )
+
     # -----------------------------------------------------------------------
     # Directory scanning
     # -----------------------------------------------------------------------
